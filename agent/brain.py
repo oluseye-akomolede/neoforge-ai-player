@@ -1,0 +1,47 @@
+import json
+import requests
+from config import OLLAMA_URL
+
+
+def think(model, system_prompt, observation, history):
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": observation})
+
+    resp = requests.post(
+        f"{OLLAMA_URL}/api/chat",
+        json={
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "format": "json",
+            "options": {
+                "temperature": 0.7,
+                "num_predict": 512,
+            },
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    content = resp.json()["message"]["content"]
+
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        start = content.find("{")
+        end = content.rfind("}") + 1
+        if start >= 0 and end > start:
+            parsed = json.loads(content[start:end])
+        else:
+            parsed = {"thoughts": "Failed to parse response", "actions": []}
+
+    return parsed
+
+
+def check_ollama(url):
+    try:
+        r = requests.get(f"{url}/api/tags", timeout=5)
+        models = [m["name"] for m in r.json().get("models", [])]
+        return True, models
+    except Exception as e:
+        return False, str(e)
