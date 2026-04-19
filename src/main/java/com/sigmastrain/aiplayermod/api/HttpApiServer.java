@@ -129,7 +129,7 @@ public class HttpApiServer {
         JsonObject body = "GET".equals(exchange.getRequestMethod()) ? new JsonObject() : readBody(exchange);
 
         switch (action) {
-            case "status" -> sendJson(exchange, 200, bot.getStatus());
+            case "status" -> sendJson(exchange, 200, bot.getCachedStatus());
             case "chat" -> {
                 String message = body.get("message").getAsString();
                 BotManager.getServer().execute(() -> bot.chat(message));
@@ -181,15 +181,9 @@ public class HttpApiServer {
                 BotManager.getServer().execute(() -> bot.teleport(x, y, z));
                 sendJson(exchange, 200, Map.of("status", "teleported"));
             }
-            case "inventory" -> sendJson(exchange, 200, Map.of("inventory", bot.getInventory()));
-            case "entities" -> {
-                double radius = body.has("radius") ? body.get("radius").getAsDouble() : 16.0;
-                sendJson(exchange, 200, Map.of("entities", bot.getNearbyEntities(radius)));
-            }
-            case "blocks" -> {
-                int radius = body.has("radius") ? body.get("radius").getAsInt() : 8;
-                sendJson(exchange, 200, Map.of("blocks", bot.getNearbyBlocks(radius)));
-            }
+            case "inventory" -> sendJson(exchange, 200, Map.of("inventory", bot.getCachedInventory()));
+            case "entities" -> sendJson(exchange, 200, Map.of("entities", bot.getCachedEntities()));
+            case "blocks" -> sendJson(exchange, 200, Map.of("blocks", bot.getCachedBlocks()));
             case "actions" -> sendJson(exchange, 200, Map.of(
                     "current", bot.getActionQueue().currentAction(),
                     "queued", bot.getActionQueue().queueSize()
@@ -237,12 +231,16 @@ public class HttpApiServer {
                 String block = body.get("block").getAsString();
                 int radius = body.has("radius") ? body.get("radius").getAsInt() : 32;
                 int max = body.has("max") ? body.get("max").getAsInt() : 10;
-                sendJson(exchange, 200, Map.of("blocks", bot.findBlocks(block, radius, max)));
+                var blockFuture = new java.util.concurrent.CompletableFuture<List<Map<String, Object>>>();
+                BotManager.getServer().execute(() -> blockFuture.complete(bot.findBlocks(block, radius, max)));
+                sendJson(exchange, 200, Map.of("blocks", blockFuture.join()));
             }
             case "find_entities" -> {
                 String target = body.get("target").getAsString();
                 double radius = body.has("radius") ? body.get("radius").getAsDouble() : 32.0;
-                sendJson(exchange, 200, Map.of("entities", bot.findEntities(target, radius)));
+                var entityFuture = new java.util.concurrent.CompletableFuture<List<Map<String, Object>>>();
+                BotManager.getServer().execute(() -> entityFuture.complete(bot.findEntities(target, radius)));
+                sendJson(exchange, 200, Map.of("entities", entityFuture.join()));
             }
             case "swap" -> {
                 int from = body.get("from").getAsInt();

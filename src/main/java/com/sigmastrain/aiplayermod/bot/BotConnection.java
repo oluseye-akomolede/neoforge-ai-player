@@ -12,6 +12,8 @@ import java.net.InetSocketAddress;
 
 public class BotConnection extends Connection {
 
+    private static final EmbeddedChannel DUMMY_CHANNEL = new EmbeddedChannel();
+
     public BotConnection(MinecraftServer server) {
         super(PacketFlow.SERVERBOUND);
         try {
@@ -41,6 +43,11 @@ public class BotConnection extends Connection {
 
     @Override
     public boolean isConnected() {
+        return true;
+    }
+
+    @Override
+    public boolean isMemoryConnection() {
         return true;
     }
 }

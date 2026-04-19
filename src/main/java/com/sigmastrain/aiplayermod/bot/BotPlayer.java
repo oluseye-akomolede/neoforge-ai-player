@@ -27,6 +27,11 @@ public class BotPlayer {
     private final ActionQueue actionQueue;
     private boolean alive = true;
 
+    private volatile Map<String, Object> cachedStatus = new LinkedHashMap<>();
+    private volatile List<Map<String, Object>> cachedInventory = new ArrayList<>();
+    private volatile List<Map<String, Object>> cachedEntities = new ArrayList<>();
+    private volatile List<Map<String, Object>> cachedBlocks = new ArrayList<>();
+
     private BotPlayer(ServerPlayer player) {
         this.player = player;
         this.actionQueue = new ActionQueue(this);
@@ -40,11 +45,15 @@ public class BotPlayer {
         botPlayer.moveTo(overworld.getSharedSpawnPos(), 0.0f, 0.0f);
 
         PlayerList playerList = server.getPlayerList();
-        playerList.placeNewPlayer(
-                new BotConnection(server),
-                botPlayer,
-                CommonListenerCookie.createInitial(profile, false)
-        );
+        try {
+            playerList.placeNewPlayer(
+                    new BotConnection(server),
+                    botPlayer,
+                    CommonListenerCookie.createInitial(profile, false)
+            );
+        } catch (Exception e) {
+            AIPlayerMod.LOGGER.warn("Non-fatal error during bot spawn (likely mod payload): {}", e.getMessage());
+        }
 
         return new BotPlayer(botPlayer);
     }
@@ -71,7 +80,20 @@ public class BotPlayer {
     public void tickActions() {
         if (!isAlive()) return;
         actionQueue.tick();
+        refreshCache();
     }
+
+    private void refreshCache() {
+        cachedStatus = getStatus();
+        cachedInventory = getInventory();
+        cachedEntities = getNearbyEntities(24.0);
+        cachedBlocks = getNearbyBlocks(8);
+    }
+
+    public Map<String, Object> getCachedStatus() { return cachedStatus; }
+    public List<Map<String, Object>> getCachedInventory() { return cachedInventory; }
+    public List<Map<String, Object>> getCachedEntities() { return cachedEntities; }
+    public List<Map<String, Object>> getCachedBlocks() { return cachedBlocks; }
 
     // ── Chat ──
 
