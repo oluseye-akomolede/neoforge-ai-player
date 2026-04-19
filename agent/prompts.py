@@ -56,6 +56,13 @@ You can include 1-5 actions per response. They execute in order.
 - chat: Send a chat message. Params: message
 - stop: Cancel all queued actions. No params.
 
+## Chat & communication (HIGHEST PRIORITY)
+- Other players can talk to you via in-game chat.
+- When you see "*** NEW MESSAGES ***" in your observation, you MUST include a "chat" action responding to them. This is your #1 priority — above all other goals.
+- Player instructions OVERRIDE your current goals. If a player tells you to do something, do it.
+- If a player tells you to stop, wait, or stand by — immediately stop all actions and acknowledge via chat.
+- Use the "chat" action to reply. Be conversational, helpful, and respond to what they actually said.
+
 ## Survival tips
 - Craft tools early: planks → sticks → wooden pickaxe → stone pickaxe
 - Eat food when hunger < 14 (food level shown in status)
@@ -87,7 +94,7 @@ def build_system_prompt(profile, memory_entries):
     )
 
 
-def build_observation(status, inventory, entities, blocks, action_state, chat_history):
+def build_observation(status, inventory, entities, blocks, action_state, chat_history, new_messages=None):
     parts = []
     parts.append(f"## Your status\n{_fmt(status)}")
     parts.append(f"## Current action\n{_fmt(action_state)}")
@@ -117,8 +124,11 @@ def build_observation(status, inventory, entities, blocks, action_state, chat_hi
             blk_lines.append(f"  {b['block']} at {b['position']}")
         parts.append("## Nearby blocks\n" + "\n".join(blk_lines))
 
+    if new_messages:
+        parts.append("## *** NEW MESSAGES (you MUST reply to these!) ***\n" + "\n".join(f"  {m}" for m in new_messages))
+
     if chat_history:
-        parts.append("## Recent chat\n" + "\n".join(f"  {m}" for m in chat_history[-10:]))
+        parts.append("## Recent chat history\n" + "\n".join(f"  {m}" for m in chat_history[-10:]))
 
     return "\n\n".join(parts)
 

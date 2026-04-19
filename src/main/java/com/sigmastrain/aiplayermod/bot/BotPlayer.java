@@ -5,6 +5,8 @@ import com.sigmastrain.aiplayermod.actions.ActionQueue;
 import com.mojang.authlib.GameProfile;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.protocol.game.*;
+import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.server.network.CommonListenerCookie;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ClientInformation;
@@ -12,6 +14,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.players.PlayerList;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
@@ -21,11 +24,15 @@ import net.minecraft.world.phys.Vec3;
 import net.minecraft.core.registries.BuiltInRegistries;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 public class BotPlayer {
     private final ServerPlayer player;
     private final ActionQueue actionQueue;
     private boolean alive = true;
+
+    private final ConcurrentLinkedQueue<Map<String, String>> chatInbox = new ConcurrentLinkedQueue<>();
+    private static final int MAX_INBOX_SIZE = 50;
 
     private volatile Map<String, Object> cachedStatus = new LinkedHashMap<>();
     private volatile List<Map<String, Object>> cachedInventory = new ArrayList<>();
@@ -41,28 +48,65 @@ public class BotPlayer {
         ServerLevel overworld = server.overworld();
         GameProfile profile = new GameProfile(UUID.nameUUIDFromBytes(("Bot:" + name).getBytes()), name);
 
-        ServerPlayer botPlayer = new ServerPlayer(server, overworld, profile, ClientInformation.createDefault());
-        botPlayer.moveTo(overworld.getSharedSpawnPos(), 0.0f, 0.0f);
+        ServerPlayer botPlayer = new BotServerPlayer(server, overworld, profile, ClientInformation.createDefault());
+        BlockPos spawn = overworld.getSharedSpawnPos();
+        botPlayer.moveTo(spawn.getX() + 0.5, spawn.getY(), spawn.getZ() + 0.5, 0.0f, 0.0f);
+        botPlayer.setOnGround(true);
 
-        PlayerList playerList = server.getPlayerList();
-        try {
-            playerList.placeNewPlayer(
-                    new BotConnection(server),
-                    botPlayer,
-                    CommonListenerCookie.createInitial(profile, false)
-            );
-        } catch (Exception e) {
-            AIPlayerMod.LOGGER.warn("Non-fatal error during bot spawn (likely mod payload): {}", e.getMessage());
+        BotConnection connection = new BotConnection(server);
+        CommonListenerCookie cookie = CommonListenerCookie.createInitial(profile, false);
+
+        new BotPacketListener(server, connection, botPlayer, cookie);
+
+        // Do NOT add the bot to the level or PlayerList — any method of registering
+        // a ServerPlayer entity with the level causes it to appear in level.players(),
+        // which FTB Chunks iterates on real player login (NPE on missing team data).
+        // Instead, handle all client visibility via manual packet sending.
+        BotPlayer bot = new BotPlayer(botPlayer);
+        bot.broadcastSpawn();
+
+        return bot;
+    }
+
+    // ── Packet-based visibility ──
+
+    private void broadcastSpawn() {
+        for (ServerPlayer online : player.getServer().getPlayerList().getPlayers()) {
+            sendSpawnPackets(online);
         }
+    }
 
-        return new BotPlayer(botPlayer);
+    public void sendSpawnPackets(ServerPlayer target) {
+        target.connection.send(new ClientboundPlayerInfoUpdatePacket(
+                ClientboundPlayerInfoUpdatePacket.Action.ADD_PLAYER, player));
+        target.connection.send(new ClientboundAddEntityPacket(
+                player.getId(), player.getUUID(),
+                player.getX(), player.getY(), player.getZ(),
+                player.getXRot(), player.getYRot(),
+                EntityType.PLAYER, 0, Vec3.ZERO, player.getYHeadRot()));
+        List<SynchedEntityData.DataValue<?>> entityData = player.getEntityData().getNonDefaultValues();
+        if (entityData != null && !entityData.isEmpty()) {
+            target.connection.send(new ClientboundSetEntityDataPacket(player.getId(), entityData));
+        }
+    }
+
+    private void broadcastPosition() {
+        ClientboundTeleportEntityPacket teleport = new ClientboundTeleportEntityPacket(player);
+        ClientboundRotateHeadPacket head = new ClientboundRotateHeadPacket(player,
+                (byte) ((int) (player.getYHeadRot() * 256.0f / 360.0f)));
+        for (ServerPlayer online : player.getServer().getPlayerList().getPlayers()) {
+            online.connection.send(teleport);
+            online.connection.send(head);
+        }
     }
 
     public void remove() {
         if (!alive) return;
         alive = false;
         actionQueue.clear();
-        player.getServer().getPlayerList().remove(player);
+        PlayerList playerList = player.getServer().getPlayerList();
+        playerList.broadcastAll(new ClientboundRemoveEntitiesPacket(player.getId()));
+        playerList.broadcastAll(new ClientboundPlayerInfoRemovePacket(List.of(player.getUUID())));
     }
 
     public boolean isAlive() {
@@ -79,7 +123,16 @@ public class BotPlayer {
 
     public void tickActions() {
         if (!isAlive()) return;
-        actionQueue.tick();
+        try {
+            actionQueue.tick();
+        } catch (UnsupportedOperationException e) {
+            if (e.getMessage() != null && e.getMessage().contains("may not be sent to the client")) {
+                AIPlayerMod.LOGGER.debug("Suppressed mod packet error for bot {}: {}", player.getName().getString(), e.getMessage());
+            } else {
+                throw e;
+            }
+        }
+        broadcastPosition();
         refreshCache();
     }
 
@@ -95,6 +148,25 @@ public class BotPlayer {
     public List<Map<String, Object>> getCachedEntities() { return cachedEntities; }
     public List<Map<String, Object>> getCachedBlocks() { return cachedBlocks; }
 
+    public void addChatMessage(String sender, String message) {
+        Map<String, String> entry = new LinkedHashMap<>();
+        entry.put("sender", sender);
+        entry.put("message", message);
+        chatInbox.add(entry);
+        while (chatInbox.size() > MAX_INBOX_SIZE) {
+            chatInbox.poll();
+        }
+    }
+
+    public List<Map<String, String>> drainChatInbox() {
+        List<Map<String, String>> messages = new ArrayList<>();
+        Map<String, String> msg;
+        while ((msg = chatInbox.poll()) != null) {
+            messages.add(msg);
+        }
+        return messages;
+    }
+
     // ── Chat ──
 
     public void chat(String message) {
@@ -107,7 +179,7 @@ public class BotPlayer {
 
     public void teleport(double x, double y, double z) {
         if (!isAlive()) return;
-        player.teleportTo(player.serverLevel(), x, y, z, player.getYRot(), player.getXRot());
+        player.moveTo(x, y, z, player.getYRot(), player.getXRot());
     }
 
     public void lookAt(double x, double y, double z) {

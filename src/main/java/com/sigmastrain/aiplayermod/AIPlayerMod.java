@@ -8,6 +8,8 @@ import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
+import net.neoforged.neoforge.event.ServerChatEvent;
+import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
 import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
@@ -58,5 +60,25 @@ public class AIPlayerMod {
     @SubscribeEvent
     public void onRegisterCommands(RegisterCommandsEvent event) {
         ModCommands.register(event.getDispatcher());
+    }
+
+    @SubscribeEvent
+    public void onPlayerLoggedIn(PlayerEvent.PlayerLoggedInEvent event) {
+        if (event.getEntity() instanceof net.minecraft.server.level.ServerPlayer joiner) {
+            for (var bot : BotManager.getAllBots().values()) {
+                bot.sendSpawnPackets(joiner);
+            }
+        }
+    }
+
+    @SubscribeEvent
+    public void onServerChat(ServerChatEvent event) {
+        String sender = event.getPlayer().getName().getString();
+        String message = event.getRawText();
+        for (var bot : BotManager.getAllBots().values()) {
+            if (!sender.equals(bot.getPlayer().getName().getString())) {
+                bot.addChatMessage(sender, message);
+            }
+        }
     }
 }

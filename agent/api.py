@@ -109,3 +109,6 @@ def swap(bot, from_slot, to_slot):
 
 def stop(bot):
     return _post(f"/bot/{bot}/stop")
+
+def chat_inbox(bot):
+    return _get(f"/bot/{bot}/chat_inbox")

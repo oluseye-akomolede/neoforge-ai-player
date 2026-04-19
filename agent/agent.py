@@ -30,7 +30,17 @@ def observe(bot_name):
     ents = api.entities(bot_name, OBSERVE_ENTITY_RADIUS)
     blks = api.blocks(bot_name, OBSERVE_BLOCK_RADIUS)
     action_state = api.actions(bot_name)
-    return prompts.build_observation(status, inv, ents, blks, action_state, chat_history)
+
+    inbox = api.chat_inbox(bot_name)
+    new_messages = []
+    for msg in inbox.get("messages", []):
+        entry = f"{msg['sender']}: {msg['message']}"
+        chat_history.append(entry)
+        new_messages.append(entry)
+        if len(chat_history) > MAX_CHAT_HISTORY:
+            chat_history.pop(0)
+
+    return prompts.build_observation(status, inv, ents, blks, action_state, chat_history, new_messages)
 
 
 def execute_actions(bot_name, actions):

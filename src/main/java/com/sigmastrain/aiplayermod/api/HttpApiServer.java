@@ -248,6 +248,9 @@ public class HttpApiServer {
                 BotManager.getServer().execute(() -> bot.swapSlot(from, to));
                 sendJson(exchange, 200, Map.of("status", "swapped", "from", from, "to", to));
             }
+            case "chat_inbox" -> {
+                sendJson(exchange, 200, Map.of("messages", bot.drainChatInbox()));
+            }
             case "stop" -> {
                 BotManager.getServer().execute(() -> bot.getActionQueue().clear());
                 sendJson(exchange, 200, Map.of("status", "stopped"));
