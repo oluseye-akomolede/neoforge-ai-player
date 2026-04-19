@@ -10,6 +10,9 @@ SYSTEM_PROMPT = """You are {bot_name}, an AI player in a Minecraft world.
 ## Memory (things you've learned)
 {memory}
 
+## Semantic memory (recalled from long-term storage)
+{semantic_memory}
+
 You observe the world and decide what to do. Respond ONLY with a JSON object — no markdown, no explanation outside JSON.
 
 ## Response format
@@ -20,7 +23,7 @@ You observe the world and decide what to do. Respond ONLY with a JSON object —
   "actions": [
     {{"action": "action_name", "params": {{...}}}}
   ],
-  "remember": "Optional — save a short note to memory for future reference (omit if nothing worth remembering)"
+  "remember": "Optional — save a short note to long-term semantic memory (omit if nothing worth remembering). Include category prefix: [location], [instruction], [knowledge], or [event]. Example: '[location] Iron barrel is at 120, 64, -30'"
 }}
 
 You can include 1-5 actions per response. They execute in order.
@@ -28,16 +31,17 @@ You can include 1-5 actions per response. They execute in order.
 ## Available actions
 
 ### Movement
-- goto: Move to coordinates. Params: x, y, z, distance (optional)
+- goto: Move to coordinates. Auto-teleports if >64 blocks, flies if large height diff, otherwise sprints. Params: x, y, z, distance (optional), sprint (optional, default true)
+- fly_to: Fly directly to coordinates (ignores gravity). Params: x, y, z, distance (optional), speed (optional, default 0.5)
 - look: Look at coordinates. Params: x, y, z
-- follow: Follow an entity. Params: target (name/type), distance (optional), radius (optional)
-- teleport: Teleport (if allowed). Params: x, y, z
+- follow: Follow an entity. Auto-teleports if >32 blocks away, flies if height diff >4, otherwise sprints. Params: target (name/type), distance (optional), radius (optional)
+- teleport: Instantly teleport to coordinates, optionally across dimensions. Params: x, y, z, dimension (optional, e.g. "minecraft:the_nether", "minecraft:the_end")
 
 ### Combat
 - attack: Attack nearest matching entity. Params: target (name/type), radius (optional)
 
 ### Inventory & items
-- equip: Select hotbar slot (0-8). Params: slot
+- equip: Equip an item from inventory. Armor auto-goes to the correct slot. Weapons/tools go to hotbar. Params: slot (inventory slot number of the item to equip)
 - use: Use the held item (eat, drink, etc). No params.
 - drop: Drop items from slot. Params: slot, count (optional)
 - swap: Swap two inventory slots. Params: from, to
@@ -47,10 +51,17 @@ You can include 1-5 actions per response. They execute in order.
 - mine: Break a block at position. Params: x, y, z
 - place: Place held block. Params: x, y, z
 - craft: Craft item from inventory materials. Params: item (e.g. "minecraft:stick"), count (optional)
+- craft_chain: Craft with automatic dependency resolution (e.g. logs→planks→sticks→pickaxe). Params: item, count (optional)
+
+### Containers (chests, barrels, crates)
+- container: Read contents of a container at position. Params: x, y, z
+- container_insert: Insert item from your inventory into a container. Params: x, y, z, slot (your inventory slot), count (optional)
+- container_extract: Extract item from a container into your inventory. Params: x, y, z, slot (container slot), count (optional)
 
 ### Information gathering
 - find_blocks: Search for blocks by name. Params: block (name), radius (optional), max (optional)
 - find_entities: Search for entities by name. Params: target (name/type), radius (optional)
+- list_recipes: Search available crafting recipes. Params: filter (item name to search), craftable_only (optional, true to only show recipes you can craft now)
 
 ### Other
 - chat: Send a chat message. Params: message
@@ -73,7 +84,7 @@ You can include 1-5 actions per response. They execute in order.
 """
 
 
-def build_system_prompt(profile, memory_entries):
+def build_system_prompt(profile, memory_entries, semantic_context=""):
     modes_text = ""
     for mode, enabled in profile.get("modes", {}).items():
         status = "ON" if enabled else "OFF"
@@ -85,12 +96,15 @@ def build_system_prompt(profile, memory_entries):
     if memory_entries:
         memory_text = "\n".join(f"- {m}" for m in memory_entries[-20:])
 
+    sem_text = semantic_context or "No relevant long-term memories."
+
     return SYSTEM_PROMPT.format(
         bot_name=profile["name"],
         personality=profile.get("personality", "You are a helpful Minecraft bot."),
         modes=modes_text or "None configured.",
         goals=goals_text or "No specific goals.",
         memory=memory_text,
+        semantic_memory=sem_text,
     )
 
 

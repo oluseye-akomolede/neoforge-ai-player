@@ -68,8 +68,11 @@ def actions(bot):
 def chat(bot, message):
     return _post(f"/bot/{bot}/chat", {"message": message})
 
-def goto(bot, x, y, z, distance=2.0):
-    return _post(f"/bot/{bot}/goto", {"x": x, "y": y, "z": z, "distance": distance})
+def goto(bot, x, y, z, distance=2.0, sprint=False):
+    return _post(f"/bot/{bot}/goto", {"x": x, "y": y, "z": z, "distance": distance, "sprint": sprint})
+
+def fly_to(bot, x, y, z, distance=2.0, speed=0.5):
+    return _post(f"/bot/{bot}/fly_to", {"x": x, "y": y, "z": z, "distance": distance, "speed": speed})
 
 def attack(bot, target, radius=16.0):
     return _post(f"/bot/{bot}/attack", {"target": target, "radius": radius})
@@ -95,17 +98,35 @@ def drop(bot, slot, count=64):
 def collect(bot, radius=16.0):
     return _post(f"/bot/{bot}/collect", {"radius": radius})
 
-def follow(bot, target, distance=3.0, radius=32.0):
-    return _post(f"/bot/{bot}/follow", {"target": target, "distance": distance, "radius": radius})
+def follow(bot, target, distance=3.0, radius=32.0, sprint=False):
+    return _post(f"/bot/{bot}/follow", {"target": target, "distance": distance, "radius": radius, "sprint": sprint})
 
 def look(bot, x, y, z):
     return _post(f"/bot/{bot}/look", {"x": x, "y": y, "z": z})
 
-def teleport(bot, x, y, z):
-    return _post(f"/bot/{bot}/teleport", {"x": x, "y": y, "z": z})
+def teleport(bot, x, y, z, dimension=None):
+    data = {"x": x, "y": y, "z": z}
+    if dimension:
+        data["dimension"] = dimension
+    return _post(f"/bot/{bot}/teleport", data)
 
 def swap(bot, from_slot, to_slot):
     return _post(f"/bot/{bot}/swap", {"from": from_slot, "to": to_slot})
+
+def container(bot, x, y, z):
+    return _post(f"/bot/{bot}/container", {"x": x, "y": y, "z": z})
+
+def container_insert(bot, x, y, z, slot, count=64):
+    return _post(f"/bot/{bot}/container_insert", {"x": x, "y": y, "z": z, "slot": slot, "count": count})
+
+def container_extract(bot, x, y, z, slot, count=64):
+    return _post(f"/bot/{bot}/container_extract", {"x": x, "y": y, "z": z, "slot": slot, "count": count})
+
+def list_recipes(bot, filter_str="", craftable_only=False):
+    return _post(f"/bot/{bot}/list_recipes", {"filter": filter_str, "craftable_only": craftable_only})
+
+def craft_chain(bot, item, count=1):
+    return _post(f"/bot/{bot}/craft_chain", {"item": item, "count": count})
 
 def stop(bot):
     return _post(f"/bot/{bot}/stop")

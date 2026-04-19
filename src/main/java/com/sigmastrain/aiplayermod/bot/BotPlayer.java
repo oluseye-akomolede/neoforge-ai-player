@@ -7,6 +7,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.game.*;
 import net.minecraft.network.syncher.SynchedEntityData;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.network.CommonListenerCookie;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ClientInformation;
@@ -18,6 +19,8 @@ import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
@@ -33,6 +36,8 @@ public class BotPlayer {
 
     private final ConcurrentLinkedQueue<Map<String, String>> chatInbox = new ConcurrentLinkedQueue<>();
     private static final int MAX_INBOX_SIZE = 50;
+    private static final int FORCE_CHUNK_RADIUS = 2;
+    private final Set<Long> forcedChunks = new HashSet<>();
 
     private volatile Map<String, Object> cachedStatus = new LinkedHashMap<>();
     private volatile List<Map<String, Object>> cachedInventory = new ArrayList<>();
@@ -104,6 +109,7 @@ public class BotPlayer {
         if (!alive) return;
         alive = false;
         actionQueue.clear();
+        releaseForcedChunks();
         PlayerList playerList = player.getServer().getPlayerList();
         playerList.broadcastAll(new ClientboundRemoveEntitiesPacket(player.getId()));
         playerList.broadcastAll(new ClientboundPlayerInfoRemovePacket(List.of(player.getUUID())));
@@ -132,8 +138,73 @@ public class BotPlayer {
                 throw e;
             }
         }
+        updateForcedChunks();
         broadcastPosition();
         refreshCache();
+    }
+
+    // ── Chunk forcing ──
+
+    private void updateForcedChunks() {
+        ServerLevel level = (ServerLevel) player.level();
+        ChunkPos center = new ChunkPos(player.blockPosition());
+        Set<Long> needed = new HashSet<>();
+        for (int dx = -FORCE_CHUNK_RADIUS; dx <= FORCE_CHUNK_RADIUS; dx++) {
+            for (int dz = -FORCE_CHUNK_RADIUS; dz <= FORCE_CHUNK_RADIUS; dz++) {
+                ChunkPos cp = new ChunkPos(center.x + dx, center.z + dz);
+                needed.add(cp.toLong());
+            }
+        }
+        for (long key : needed) {
+            if (!forcedChunks.contains(key)) {
+                ChunkPos cp = new ChunkPos(key);
+                level.setChunkForced(cp.x, cp.z, true);
+            }
+        }
+        for (long key : forcedChunks) {
+            if (!needed.contains(key)) {
+                ChunkPos cp = new ChunkPos(key);
+                level.setChunkForced(cp.x, cp.z, false);
+            }
+        }
+        forcedChunks.clear();
+        forcedChunks.addAll(needed);
+    }
+
+    private void releaseForcedChunks() {
+        ServerLevel level = (ServerLevel) player.level();
+        for (long key : forcedChunks) {
+            ChunkPos cp = new ChunkPos(key);
+            level.setChunkForced(cp.x, cp.z, false);
+        }
+        forcedChunks.clear();
+    }
+
+    // ── Dimension travel ──
+
+    public boolean teleportToDimension(ResourceKey<Level> dimension, double x, double y, double z) {
+        if (!isAlive()) return false;
+        MinecraftServer server = player.getServer();
+        ServerLevel targetLevel = server.getLevel(dimension);
+        if (targetLevel == null) return false;
+
+        releaseForcedChunks();
+
+        remove();
+
+        player.moveTo(x, y, z, player.getYRot(), player.getXRot());
+        try {
+            var levelField = net.minecraft.world.entity.Entity.class.getDeclaredField("level");
+            levelField.setAccessible(true);
+            levelField.set(player, targetLevel);
+        } catch (Exception e) {
+            AIPlayerMod.LOGGER.error("Failed to set bot dimension", e);
+            return false;
+        }
+
+        alive = true;
+        broadcastSpawn();
+        return true;
     }
 
     private void refreshCache() {
@@ -262,6 +333,153 @@ public class BotPlayer {
                 item.put("count", stack.getCount());
                 result.add(item);
             }
+        }
+        return result;
+    }
+
+    // ── Container interaction ──
+
+    public List<Map<String, Object>> readContainer(int x, int y, int z) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        BlockPos pos = new BlockPos(x, y, z);
+        var blockEntity = player.level().getBlockEntity(pos);
+        if (blockEntity instanceof net.minecraft.world.Container container) {
+            for (int i = 0; i < container.getContainerSize(); i++) {
+                ItemStack stack = container.getItem(i);
+                if (!stack.isEmpty()) {
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("slot", i);
+                    item.put("item", BuiltInRegistries.ITEM.getKey(stack.getItem()).toString());
+                    item.put("name", stack.getHoverName().getString());
+                    item.put("count", stack.getCount());
+                    result.add(item);
+                }
+            }
+        }
+        return result;
+    }
+
+    public Map<String, Object> insertIntoContainer(int x, int y, int z, int invSlot, int count) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        BlockPos pos = new BlockPos(x, y, z);
+        var blockEntity = player.level().getBlockEntity(pos);
+        if (!(blockEntity instanceof net.minecraft.world.Container container)) {
+            result.put("error", "No container at position");
+            return result;
+        }
+        ItemStack source = player.getInventory().getItem(invSlot);
+        if (source.isEmpty()) {
+            result.put("error", "Empty inventory slot");
+            return result;
+        }
+        int toInsert = Math.min(count, source.getCount());
+        ItemStack toPlace = source.copy();
+        toPlace.setCount(toInsert);
+
+        for (int i = 0; i < container.getContainerSize(); i++) {
+            ItemStack existing = container.getItem(i);
+            if (existing.isEmpty()) {
+                container.setItem(i, toPlace);
+                source.shrink(toInsert);
+                container.setChanged();
+                result.put("status", "inserted");
+                result.put("count", toInsert);
+                return result;
+            } else if (ItemStack.isSameItemSameComponents(existing, toPlace)
+                    && existing.getCount() + toInsert <= existing.getMaxStackSize()) {
+                existing.grow(toInsert);
+                source.shrink(toInsert);
+                container.setChanged();
+                result.put("status", "inserted");
+                result.put("count", toInsert);
+                return result;
+            }
+        }
+        result.put("error", "Container full");
+        return result;
+    }
+
+    public Map<String, Object> extractFromContainer(int x, int y, int z, int containerSlot, int count) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        BlockPos pos = new BlockPos(x, y, z);
+        var blockEntity = player.level().getBlockEntity(pos);
+        if (!(blockEntity instanceof net.minecraft.world.Container container)) {
+            result.put("error", "No container at position");
+            return result;
+        }
+        if (containerSlot < 0 || containerSlot >= container.getContainerSize()) {
+            result.put("error", "Invalid container slot");
+            return result;
+        }
+        ItemStack source = container.getItem(containerSlot);
+        if (source.isEmpty()) {
+            result.put("error", "Empty container slot");
+            return result;
+        }
+        int toExtract = Math.min(count, source.getCount());
+        ItemStack extracted = source.split(toExtract);
+        if (!player.getInventory().add(extracted)) {
+            source.grow(extracted.getCount());
+            result.put("error", "Bot inventory full");
+            return result;
+        }
+        container.setChanged();
+        result.put("status", "extracted");
+        result.put("item", BuiltInRegistries.ITEM.getKey(extracted.getItem()).toString());
+        result.put("count", toExtract);
+        return result;
+    }
+
+    // ── Recipe queries ──
+
+    public List<Map<String, Object>> listRecipes(String filter, boolean craftableOnly) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        var server = player.getServer();
+        var allRecipes = server.getRecipeManager().getAllRecipesFor(net.minecraft.world.item.crafting.RecipeType.CRAFTING);
+        String search = filter != null ? filter.toLowerCase() : "";
+
+        for (var holder : allRecipes) {
+            ItemStack output = holder.value().getResultItem(server.registryAccess());
+            if (output.isEmpty()) continue;
+
+            String outputId = BuiltInRegistries.ITEM.getKey(output.getItem()).toString();
+            String outputName = output.getHoverName().getString().toLowerCase();
+            if (!search.isEmpty() && !outputId.contains(search) && !outputName.contains(search)) {
+                continue;
+            }
+
+            var ingredients = holder.value().getIngredients();
+            List<String> ingredientNames = new ArrayList<>();
+            boolean canCraft = true;
+
+            for (var ing : ingredients) {
+                if (ing.isEmpty()) continue;
+                ItemStack[] items = ing.getItems();
+                if (items.length > 0) {
+                    ingredientNames.add(BuiltInRegistries.ITEM.getKey(items[0].getItem()).toString());
+                    if (craftableOnly) {
+                        boolean found = false;
+                        for (int s = 0; s < player.getInventory().getContainerSize(); s++) {
+                            if (ing.test(player.getInventory().getItem(s))) {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) canCraft = false;
+                    }
+                }
+            }
+
+            if (craftableOnly && !canCraft) continue;
+
+            Map<String, Object> recipe = new LinkedHashMap<>();
+            recipe.put("output", outputId);
+            recipe.put("output_name", output.getHoverName().getString());
+            recipe.put("output_count", output.getCount());
+            recipe.put("ingredients", ingredientNames);
+            recipe.put("craftable", canCraft);
+            result.add(recipe);
+            if (result.size() >= 50) break;
         }
         return result;
     }

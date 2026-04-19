@@ -6,12 +6,6 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.sigmastrain.aiplayermod.AIPlayerMod;
 import com.sigmastrain.aiplayermod.actions.*;
-import com.sigmastrain.aiplayermod.actions.CraftAction;
-import com.sigmastrain.aiplayermod.actions.CollectAction;
-import com.sigmastrain.aiplayermod.actions.DropAction;
-import com.sigmastrain.aiplayermod.actions.EquipAction;
-import com.sigmastrain.aiplayermod.actions.FollowAction;
-import com.sigmastrain.aiplayermod.actions.UseItemAction;
 import com.sigmastrain.aiplayermod.bot.BotManager;
 import com.sigmastrain.aiplayermod.bot.BotPlayer;
 import com.sun.net.httpserver.HttpExchange;
@@ -140,9 +134,20 @@ public class HttpApiServer {
                 double y = body.get("y").getAsDouble();
                 double z = body.get("z").getAsDouble();
                 double dist = body.has("distance") ? body.get("distance").getAsDouble() : 2.0;
+                boolean sprint = body.has("sprint") && body.get("sprint").getAsBoolean();
                 BotManager.getServer().execute(() ->
-                        bot.getActionQueue().enqueue(new GoToAction(x, y, z, dist)));
+                        bot.getActionQueue().enqueue(new GoToAction(x, y, z, dist, sprint)));
                 sendJson(exchange, 200, Map.of("status", "moving", "target", Map.of("x", x, "y", y, "z", z)));
+            }
+            case "fly_to" -> {
+                double x = body.get("x").getAsDouble();
+                double y = body.get("y").getAsDouble();
+                double z = body.get("z").getAsDouble();
+                double dist = body.has("distance") ? body.get("distance").getAsDouble() : 2.0;
+                double speed = body.has("speed") ? body.get("speed").getAsDouble() : 0.5;
+                BotManager.getServer().execute(() ->
+                        bot.getActionQueue().enqueue(new FlyToAction(x, y, z, dist, speed)));
+                sendJson(exchange, 200, Map.of("status", "flying", "target", Map.of("x", x, "y", y, "z", z)));
             }
             case "attack" -> {
                 String target = body.get("target").getAsString();
@@ -178,8 +183,19 @@ public class HttpApiServer {
                 double x = body.get("x").getAsDouble();
                 double y = body.get("y").getAsDouble();
                 double z = body.get("z").getAsDouble();
-                BotManager.getServer().execute(() -> bot.teleport(x, y, z));
-                sendJson(exchange, 200, Map.of("status", "teleported"));
+                String dim = body.has("dimension") ? body.get("dimension").getAsString() : null;
+                if (dim != null) {
+                    var dimKey = net.minecraft.resources.ResourceKey.create(
+                            net.minecraft.core.registries.Registries.DIMENSION,
+                            net.minecraft.resources.ResourceLocation.parse(dim));
+                    var future = new java.util.concurrent.CompletableFuture<Boolean>();
+                    BotManager.getServer().execute(() -> future.complete(bot.teleportToDimension(dimKey, x, y, z)));
+                    boolean ok = future.join();
+                    sendJson(exchange, ok ? 200 : 500, Map.of("status", ok ? "teleported" : "failed", "dimension", dim));
+                } else {
+                    BotManager.getServer().execute(() -> bot.teleport(x, y, z));
+                    sendJson(exchange, 200, Map.of("status", "teleported"));
+                }
             }
             case "inventory" -> sendJson(exchange, 200, Map.of("inventory", bot.getCachedInventory()));
             case "entities" -> sendJson(exchange, 200, Map.of("entities", bot.getCachedEntities()));
@@ -223,8 +239,9 @@ public class HttpApiServer {
                 String target = body.get("target").getAsString();
                 double dist = body.has("distance") ? body.get("distance").getAsDouble() : 3.0;
                 double radius = body.has("radius") ? body.get("radius").getAsDouble() : 32.0;
+                boolean fSprint = body.has("sprint") && body.get("sprint").getAsBoolean();
                 BotManager.getServer().execute(() ->
-                        bot.getActionQueue().enqueue(new FollowAction(target, dist, radius)));
+                        bot.getActionQueue().enqueue(new FollowAction(target, dist, radius, fSprint)));
                 sendJson(exchange, 200, Map.of("status", "following", "target", target));
             }
             case "find_blocks" -> {
@@ -250,6 +267,48 @@ public class HttpApiServer {
             }
             case "chat_inbox" -> {
                 sendJson(exchange, 200, Map.of("messages", bot.drainChatInbox()));
+            }
+            case "container" -> {
+                int x = body.get("x").getAsInt();
+                int y = body.get("y").getAsInt();
+                int z = body.get("z").getAsInt();
+                var contFuture = new java.util.concurrent.CompletableFuture<List<Map<String, Object>>>();
+                BotManager.getServer().execute(() -> contFuture.complete(bot.readContainer(x, y, z)));
+                sendJson(exchange, 200, Map.of("items", contFuture.join(), "position", Map.of("x", x, "y", y, "z", z)));
+            }
+            case "container_insert" -> {
+                int x = body.get("x").getAsInt();
+                int y = body.get("y").getAsInt();
+                int z = body.get("z").getAsInt();
+                int slot = body.get("slot").getAsInt();
+                int count = body.has("count") ? body.get("count").getAsInt() : 64;
+                var insFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> insFuture.complete(bot.insertIntoContainer(x, y, z, slot, count)));
+                sendJson(exchange, 200, insFuture.join());
+            }
+            case "container_extract" -> {
+                int x = body.get("x").getAsInt();
+                int y = body.get("y").getAsInt();
+                int z = body.get("z").getAsInt();
+                int slot = body.get("slot").getAsInt();
+                int count = body.has("count") ? body.get("count").getAsInt() : 64;
+                var extFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> extFuture.complete(bot.extractFromContainer(x, y, z, slot, count)));
+                sendJson(exchange, 200, extFuture.join());
+            }
+            case "list_recipes" -> {
+                String filter = body.has("filter") ? body.get("filter").getAsString() : "";
+                boolean craftableOnly = body.has("craftable_only") && body.get("craftable_only").getAsBoolean();
+                var recFuture = new java.util.concurrent.CompletableFuture<List<Map<String, Object>>>();
+                BotManager.getServer().execute(() -> recFuture.complete(bot.listRecipes(filter, craftableOnly)));
+                sendJson(exchange, 200, Map.of("recipes", recFuture.join()));
+            }
+            case "craft_chain" -> {
+                String item = body.get("item").getAsString();
+                int count = body.has("count") ? body.get("count").getAsInt() : 1;
+                BotManager.getServer().execute(() ->
+                        bot.getActionQueue().enqueue(new CraftChainAction(item, count)));
+                sendJson(exchange, 200, Map.of("status", "crafting_chain", "item", item, "count", count));
             }
             case "stop" -> {
                 BotManager.getServer().execute(() -> bot.getActionQueue().clear());
