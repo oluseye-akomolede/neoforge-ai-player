@@ -33,7 +33,9 @@ public class CraftChainAction implements BotAction {
 
         if (!resolved) {
             resolved = true;
-            Item target = BuiltInRegistries.ITEM.get(ResourceLocation.parse(targetItemId));
+            Item target;
+            try { target = BuiltInRegistries.ITEM.get(ResourceLocation.parse(targetItemId)); }
+            catch (Exception e) { return true; }
             if (target == null) return true;
             if (!resolveChain(target, targetCount, player, new HashSet<>())) return true;
         }
@@ -102,7 +104,9 @@ public class CraftChainAction implements BotAction {
     private boolean executeCraft(ServerPlayer player, String itemId, int batches) {
         var server = player.getServer();
         var recipeManager = server.getRecipeManager();
-        Item targetItem = BuiltInRegistries.ITEM.get(ResourceLocation.parse(itemId));
+        Item targetItem;
+        try { targetItem = BuiltInRegistries.ITEM.get(ResourceLocation.parse(itemId)); }
+        catch (Exception e) { return false; }
         if (targetItem == null) return false;
 
         var allRecipes = recipeManager.getAllRecipesFor(RecipeType.CRAFTING);

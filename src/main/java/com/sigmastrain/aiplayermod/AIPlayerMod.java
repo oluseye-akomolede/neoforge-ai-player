@@ -10,9 +10,14 @@ import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 import net.neoforged.neoforge.event.ServerChatEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
+import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
 import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
+import com.sigmastrain.aiplayermod.bot.BotInventoryMenu;
+import com.sigmastrain.aiplayermod.bot.BotPlayer;
+import net.minecraft.world.SimpleMenuProvider;
+import net.minecraft.network.chat.Component;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -67,6 +72,24 @@ public class AIPlayerMod {
         if (event.getEntity() instanceof net.minecraft.server.level.ServerPlayer joiner) {
             for (var bot : BotManager.getAllBots().values()) {
                 bot.sendSpawnPackets(joiner);
+            }
+        }
+    }
+
+    @SubscribeEvent
+    public void onRightClickItem(PlayerInteractEvent.RightClickItem event) {
+        if (!(event.getEntity() instanceof net.minecraft.server.level.ServerPlayer clicker)) return;
+        if (clicker.isShiftKeyDown()) {
+            for (var bot : BotManager.getAllBots().values()) {
+                if (bot.isLookingAt(clicker, 5.0)) {
+                    String botName = bot.getPlayer().getName().getString();
+                    clicker.openMenu(new SimpleMenuProvider(
+                            (id, inv, p) -> new BotInventoryMenu(id, inv, bot.getPlayer().getInventory()),
+                            Component.literal(botName + "'s Inventory")
+                    ));
+                    event.setCanceled(true);
+                    return;
+                }
             }
         }
     }

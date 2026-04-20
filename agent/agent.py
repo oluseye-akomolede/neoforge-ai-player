@@ -15,11 +15,18 @@ import brain
 import memory as mem_module
 import prompts
 import semantic_memory as sem
+import planner
+import sessions
+import taskboard
 from config import (
     TICK_DELAY, BUSY_POLL_DELAY,
     OBSERVE_ENTITY_RADIUS, OBSERVE_BLOCK_RADIUS,
     MAX_CHAT_HISTORY, MAX_CONVERSATION, OLLAMA_URL, PG_DSN,
 )
+
+# Shared state across all bot runners (set in run())
+_task_board = None
+_all_runners = {}  # name -> BotRunner
 
 CHAT_POLL_INTERVAL = 0.25
 
@@ -31,15 +38,22 @@ class BotRunner:
         self.profile = profile
         self.name = profile["name"]
         self.model = profile.get("model", "llama3.1:8b")
+        self.specializations = profile.get("specializations", ["general"])
         self.chat_history = []
         self.conversation_history = []
         self.memory_entries = []
         self.system_prompt = ""
         self.semantic_mem = None
+        self._last_action_results = []
+        self._new_messages = []
         self._thread = None
         self._chat_thread = None
         self._stop_event = threading.Event()
         self._chat_event = threading.Event()
+        self._plan_steps = []
+        self._plan_step_idx = 0
+        self._plan_instruction = ""
+        self._current_task_id = None
         self._lock = threading.Lock()
         self._memory_file = os.path.join(
             os.path.dirname(__file__), f"memory_{self.name.lower()}.json"
@@ -97,22 +111,262 @@ class BotRunner:
                             self.chat_history.append(entry)
                             if len(self.chat_history) > MAX_CHAT_HISTORY:
                                 self.chat_history.pop(0)
+                            self._new_messages.append(entry)
                     self._chat_event.set()
             except Exception:
                 pass
             self._stop_event.wait(CHAT_POLL_INTERVAL)
 
+    def _maybe_plan(self, new_messages):
+        """If new messages contain a player instruction, run the planner."""
+        if not new_messages:
+            return
+        for msg in reversed(new_messages):
+            parts = msg.split(": ", 1)
+            if len(parts) < 2:
+                continue
+            sender, text = parts
+            if sender == self.name:
+                continue
+            text_lower = text.lower().strip()
+            if len(text_lower) < 10:
+                continue
+            skip_words = ["hello", "hi ", "hey", "thanks", "thank you", "yes", "no", "ok"]
+            if any(text_lower.startswith(w) for w in skip_words):
+                continue
+
+            # Recall relevant memories to give the planner context
+            memory_context = ""
+            if self.semantic_mem:
+                try:
+                    memory_context = self.semantic_mem.recall_for_prompt(text, limit=6)
+                except Exception as e:
+                    print(f"[{self.name}/planner] memory recall error: {e}")
+
+            if self._plan_steps and self._plan_step_idx < len(self._plan_steps):
+                self._store_plan_outcome(
+                    success=False,
+                    failure_reason=f"Interrupted by new instruction: \"{text[:60]}\""
+                )
+
+            # Use orchestrator if multiple bots are available
+            if len(_all_runners) > 1 and _task_board:
+                print(f"[{self.name}/orchestrator] Decomposing with delegation: {text[:80]}")
+                profiles = [r.profile for r in _all_runners.values()]
+                orch_steps = planner.orchestrate(self.model, text, profiles, memory_context)
+
+                my_steps = []
+                for s in orch_steps:
+                    assigned = s.get("assign", "any")
+                    step_desc = s["step"]
+                    spec = s.get("specialization", "any")
+
+                    if assigned == self.name or assigned == "any" or assigned not in _all_runners:
+                        my_steps.append(step_desc)
+                    else:
+                        task_id = _task_board.post(
+                            description=step_desc,
+                            created_by=self.name,
+                            specialization=spec,
+                        )
+                        BotRunner.send_bot_message(
+                            self.name, assigned,
+                            f"Task #{task_id} for you: {step_desc}"
+                        )
+                        print(f"[{self.name}/orchestrator] Delegated to {assigned}: {step_desc[:60]}")
+
+                if my_steps:
+                    self._plan_steps = my_steps
+                    self._plan_step_idx = 0
+                    self._plan_instruction = text
+                    self.conversation_history.clear()
+                    step_list = "\n".join(f"  {i+1}. {s}" for i, s in enumerate(my_steps))
+                    print(f"[{self.name}/orchestrator] My steps ({len(my_steps)}):\n{step_list}")
+                else:
+                    print(f"[{self.name}/orchestrator] All steps delegated to other bots")
+            else:
+                print(f"[{self.name}/planner] Decomposing: {text[:80]}")
+                if memory_context and memory_context != "No relevant memories.":
+                    print(f"[{self.name}/planner] Using {memory_context.count(chr(10))+1} memories as context")
+                steps = planner.decompose(self.model, text, memory_context)
+                self._plan_steps = steps
+                self._plan_step_idx = 0
+                self._plan_instruction = text
+                self.conversation_history.clear()
+                step_list = "\n".join(f"  {i+1}. {s}" for i, s in enumerate(steps))
+                print(f"[{self.name}/planner] Plan ({len(steps)} steps):\n{step_list}")
+            return
+
+    def _plan_context(self):
+        """Build the plan section for the observation prompt."""
+        if not self._plan_steps:
+            return ""
+        lines = []
+        total = len(self._plan_steps)
+        idx = self._plan_step_idx
+        lines.append(f"## Active plan (from: \"{self._plan_instruction[:60]}\")")
+        for i, step in enumerate(self._plan_steps):
+            if i < idx:
+                marker = "[DONE]"
+            elif i == idx:
+                marker = "[CURRENT <-- FOCUS ON THIS]"
+            else:
+                marker = "[TODO]"
+            lines.append(f"  {i+1}. {marker} {step}")
+        lines.append(f"\nYou are on step {idx+1} of {total}. Complete ONLY the current step.")
+        lines.append('When the current step is COMPLETE, include "step_done": true in your response to advance to the next step.')
+        return "\n".join(lines)
+
+    def _advance_plan(self, response):
+        """Check if the LLM signaled step completion."""
+        if not self._plan_steps:
+            return
+        if response.get("step_done"):
+            old_step = self._plan_steps[self._plan_step_idx]
+            self._plan_step_idx += 1
+            if self._plan_step_idx >= len(self._plan_steps):
+                print(f"[{self.name}/planner] Plan COMPLETE! All {len(self._plan_steps)} steps done.")
+                self._store_plan_outcome(success=True)
+                self._complete_task_board_task()
+                self._plan_steps = []
+                self._plan_step_idx = 0
+                self._plan_instruction = ""
+            else:
+                new_step = self._plan_steps[self._plan_step_idx]
+                print(f"[{self.name}/planner] Step done: \"{old_step}\" -> now: \"{new_step}\" ({self._plan_step_idx+1}/{len(self._plan_steps)})")
+                self.conversation_history.clear()
+
+    def _store_plan_outcome(self, success, failure_reason=""):
+        """Store plan outcome in semantic memory for future planning."""
+        if not self.semantic_mem or not self._plan_instruction:
+            return
+        try:
+            steps_str = " -> ".join(self._plan_steps)
+            if success:
+                content = (
+                    f"[knowledge] Plan succeeded: \"{self._plan_instruction[:80]}\". "
+                    f"Steps that worked: {steps_str}"
+                )
+            else:
+                completed = self._plan_steps[:self._plan_step_idx]
+                failed_step = self._plan_steps[self._plan_step_idx] if self._plan_step_idx < len(self._plan_steps) else "unknown"
+                content = (
+                    f"[knowledge] Plan failed at step {self._plan_step_idx+1}: \"{failed_step}\". "
+                    f"Original task: \"{self._plan_instruction[:80]}\". "
+                    f"Reason: {failure_reason or 'unknown'}. "
+                    f"Completed steps: {' -> '.join(completed) if completed else 'none'}"
+                )
+            mid = self.semantic_mem.store(content, category="knowledge")
+            print(f"[{self.name}/planner] Stored plan outcome (id={mid})")
+        except Exception as e:
+            print(f"[{self.name}/planner] Failed to store outcome: {e}")
+
+    def _check_task_board(self):
+        """If idle (no plan), check the shared task board for pending tasks."""
+        if self._plan_steps or not _task_board:
+            return
+        try:
+            task = _task_board.claim(self.name, self.specializations + ["any"])
+            if task:
+                self._current_task_id = task["id"]
+                desc = task["description"]
+                _task_board.start(task["id"])
+                print(f"[{self.name}/taskboard] Claimed task #{task['id']}: {desc[:60]}")
+
+                if task.get("plan_steps"):
+                    self._plan_steps = task["plan_steps"]
+                    self._plan_step_idx = 0
+                    self._plan_instruction = desc
+                    self.conversation_history.clear()
+                    step_list = "\n".join(f"  {i+1}. {s}" for i, s in enumerate(self._plan_steps))
+                    print(f"[{self.name}/taskboard] Pre-planned ({len(self._plan_steps)} steps):\n{step_list}")
+                else:
+                    memory_context = ""
+                    if self.semantic_mem:
+                        try:
+                            memory_context = self.semantic_mem.recall_all_for_prompt(desc, limit=6)
+                        except Exception:
+                            pass
+                    print(f"[{self.name}/planner] Decomposing task board task: {desc[:80]}")
+                    steps = planner.decompose(self.model, desc, memory_context)
+                    self._plan_steps = steps
+                    self._plan_step_idx = 0
+                    self._plan_instruction = desc
+                    self.conversation_history.clear()
+                    step_list = "\n".join(f"  {i+1}. {s}" for i, s in enumerate(steps))
+                    print(f"[{self.name}/planner] Plan ({len(steps)} steps):\n{step_list}")
+        except Exception as e:
+            print(f"[{self.name}/taskboard] Error checking board: {e}")
+
+    def _complete_task_board_task(self):
+        """Mark the current task board task as done."""
+        if self._current_task_id and _task_board:
+            try:
+                _task_board.complete(self._current_task_id, "Plan completed successfully")
+                print(f"[{self.name}/taskboard] Task #{self._current_task_id} completed")
+            except Exception as e:
+                print(f"[{self.name}/taskboard] Error completing task: {e}")
+            self._current_task_id = None
+
+    def _fail_task_board_task(self, reason=""):
+        """Mark the current task board task as failed."""
+        if self._current_task_id and _task_board:
+            try:
+                _task_board.fail(self._current_task_id, reason)
+                print(f"[{self.name}/taskboard] Task #{self._current_task_id} failed: {reason}")
+            except Exception as e:
+                print(f"[{self.name}/taskboard] Error failing task: {e}")
+            self._current_task_id = None
+
+    @staticmethod
+    def send_bot_message(from_bot, to_bot, message):
+        """Send a message from one bot to another via inject_chat."""
+        if to_bot in _all_runners:
+            target = _all_runners[to_bot]
+            with target._lock:
+                entry = f"{from_bot}: {message}"
+                target.chat_history.append(entry)
+                if len(target.chat_history) > MAX_CHAT_HISTORY:
+                    target.chat_history.pop(0)
+                target._new_messages.append(entry)
+            target._chat_event.set()
+            print(f"[{from_bot} -> {to_bot}] {message}")
+            return True
+        return False
+
+    def _share_discovery(self, content, category):
+        """Auto-share location and knowledge discoveries to shared memory."""
+        if not self.semantic_mem:
+            return
+        shareable = category in ("location", "knowledge")
+        if not shareable:
+            return
+        try:
+            shared_content = f"[{category}] (from {self.name}) {content}"
+            self.semantic_mem.store_shared(shared_content, category=category)
+        except Exception:
+            pass
+
     def _loop(self):
         while not self._stop_event.is_set():
             try:
                 self._wait_for_idle_or_chat(timeout=10)
-                obs = self._observe()
+                obs, new_msgs = self._observe()
 
-                # Recall relevant semantic memories for this observation
+                self._maybe_plan(new_msgs)
+
+                if not self._plan_steps:
+                    self._check_task_board()
+
+                plan_section = self._plan_context()
+                if plan_section:
+                    obs = plan_section + "\n\n" + obs
+
+                # Recall from both personal and shared memory
                 sem_context = ""
                 if self.semantic_mem:
                     try:
-                        sem_context = self.semantic_mem.recall_for_prompt(obs[:500], limit=6)
+                        sem_context = self.semantic_mem.recall_all_for_prompt(obs[:500], limit=6)
                     except Exception as e:
                         print(f"[{self.name}/sem] recall error: {e}")
 
@@ -135,17 +389,16 @@ class BotRunner:
                     print(f"[{self.name}/chat] {chat_msg}")
 
                 if remember:
-                    # Store in flat file (legacy)
                     self.memory_entries = mem_module.add_to(
                         self.memory_entries, remember, self._memory_file
                     )
-                    # Store in semantic memory
                     if self.semantic_mem:
                         try:
                             category = _parse_memory_category(remember)
                             clean = _strip_category_prefix(remember)
                             mid = self.semantic_mem.store(clean, category=category)
                             print(f"[{self.name}/sem] stored [{category}] id={mid}")
+                            self._share_discovery(clean, category)
                         except Exception as e:
                             print(f"[{self.name}/sem] store error: {e}")
 
@@ -159,6 +412,8 @@ class BotRunner:
 
                 if actions:
                     self._execute_actions(actions)
+
+                self._advance_plan(response)
 
                 self._stop_event.wait(TICK_DELAY)
 
@@ -190,28 +445,154 @@ class BotRunner:
 
         with self._lock:
             chat_snapshot = list(self.chat_history)
-            new_messages = [m for m in chat_snapshot if not m.startswith(f"{self.name}:")]
-            new_messages = new_messages[-5:]
+            new_messages = list(self._new_messages[-5:])
+            self._new_messages.clear()
+            action_results = list(self._last_action_results)
+            self._last_action_results = []
 
-        return prompts.build_observation(
-            status, inv, ents, blks, action_state, chat_snapshot, new_messages
+        obs = prompts.build_observation(
+            status, inv, ents, blks, action_state, chat_snapshot, new_messages, action_results
         )
+        return obs, new_messages
 
     def _execute_actions(self, actions):
+        results = []
         for act in actions:
+            if not isinstance(act, dict):
+                print(f"  [{self.name}] -> skipping malformed action: {act!r}")
+                results.append(f"SKIPPED malformed action (expected dict, got {type(act).__name__})")
+                continue
             name = act.get("action", "")
-            params = act.get("params", {})
+            if not name:
+                print(f"  [{self.name}] -> skipping empty action name")
+                results.append("SKIPPED empty action name")
+                continue
+            params = act.get("params") or {}
+            if not isinstance(params, dict):
+                print(f"  [{self.name}] -> skipping action {name}: params is not a dict")
+                results.append(f"SKIPPED {name}: params must be a dict")
+                continue
+
+            if name in ("open_container", "take", "deposit"):
+                session_results = self._run_container_session(params)
+                results.extend(session_results)
+                continue
+
+            if name == "craft_session":
+                session_results = self._run_craft_session(params)
+                results.extend(session_results)
+                continue
+
             try:
-                self._execute_one(name, params)
-                print(f"  [{self.name}] -> {name}: ok")
+                resp = self._execute_one(name, params)
+                error = None
+                if isinstance(resp, dict):
+                    error = resp.get("error")
+                if error:
+                    results.append(f"FAILED {name}({params}): {error}")
+                    print(f"  [{self.name}] -> {name}: FAILED {error}")
+                    self._learn_from_error(name, params, error)
+                else:
+                    results.append(f"OK {name}")
+                    print(f"  [{self.name}] -> {name}: ok")
             except Exception as e:
-                print(f"  [{self.name}] -> {name}: ERROR {e}")
+                error_msg = str(e)
+                results.append(f"ERROR {name}({params}): {error_msg}")
+                print(f"  [{self.name}] -> {name}: ERROR {error_msg}")
+                self._learn_from_error(name, params, error_msg)
+
+        with self._lock:
+            self._last_action_results = results
+
+    def _find_nonempty_container(self):
+        container_types = ["chest", "barrel", "trapped_chest", "shulker_box"]
+        for ctype in container_types:
+            found = api.find_blocks(self.name, ctype, 16, 5)
+            for blk in found.get("blocks", []):
+                pos = blk["position"]
+                bx, by, bz = int(pos["x"]), int(pos["y"]), int(pos["z"])
+                contents = api.container(self.name, bx, by, bz)
+                if contents.get("items"):
+                    return bx, by, bz, len(contents["items"])
+        return None
+
+    def _run_container_session(self, params):
+        x, y, z = params.get("x", 0), params.get("y", 0), params.get("z", 0)
+
+        needs_search = (x == 0 and y == 0 and z == 0)
+        if not needs_search:
+            contents = api.container(self.name, x, y, z)
+            if not contents.get("items"):
+                print(f"  [{self.name}] Container at ({x}, {y}, {z}) is empty, searching for non-empty one")
+                needs_search = True
+
+        if needs_search:
+            best = self._find_nonempty_container()
+            if best:
+                x, y, z = best[0], best[1], best[2]
+                print(f"  [{self.name}] Auto-detected non-empty container at ({x}, {y}, {z}) with {best[3]} items")
+            else:
+                print(f"  [{self.name}] No non-empty container found nearby")
+                return ["FAILED open_container: no non-empty container found nearby"]
+        with self._lock:
+            recent_chat = [m for m in self.chat_history if not m.startswith(f"{self.name}:")]
+            instruction = recent_chat[-1] if recent_chat else ""
+        print(f"  [{self.name}] Entering container session at ({x}, {y}, {z})")
+        session = sessions.ContainerSession(self.name, self.model, x, y, z, instruction=instruction)
+        try:
+            results = session.run()
+        except Exception as e:
+            results = [f"ERROR container session: {e}"]
+            print(f"  [{self.name}] Container session error: {e}")
+        print(f"  [{self.name}] Container session ended: {len(results)} result(s)")
+        return results
+
+    def _run_craft_session(self, params):
+        goal = params.get("goal", "")
+        print(f"  [{self.name}] Entering craft session: {goal}")
+        session = sessions.CraftSession(self.name, self.model, goal)
+        try:
+            results = session.run()
+        except Exception as e:
+            results = [f"ERROR craft session: {e}"]
+            print(f"  [{self.name}] Craft session error: {e}")
+        print(f"  [{self.name}] Craft session ended: {len(results)} result(s)")
+        return results
+
+    def _goto_player(self, p):
+        target = p.get("target", "")
+        if not target:
+            return {"error": "goto_player requires a target param (player name)"}
+        ents = api.entities(self.name, 64.0)
+        for ent in ents.get("entities", []):
+            if ent.get("name", "").lower() == target.lower():
+                pos = ent.get("position", {})
+                x, y, z = pos.get("x", 0), pos.get("y", 0), pos.get("z", 0)
+                print(f"  [{self.name}] goto_player: found {target} at ({x}, {y}, {z})")
+                return api.goto(self.name, x, y, z, p.get("distance", 2.0), p.get("sprint", True))
+        return api.follow(self.name, target, p.get("distance", 3.0), 64.0)
+
+    def _learn_from_error(self, action, params, error):
+        """Store action errors in semantic memory so the bot doesn't repeat mistakes."""
+        if not self.semantic_mem:
+            return
+        try:
+            lesson = f"Action '{action}' with params {params} failed: {error}"
+            self.semantic_mem.store(lesson, category="knowledge",
+                                   metadata={"type": "error", "action": action})
+            print(f"  [{self.name}/sem] learned from error")
+        except Exception:
+            pass
 
     def _execute_one(self, name, p):
         bot = self.name
         match name:
+            case "goto" if "target" in p:
+                return self._goto_player(p)
             case "goto":
                 return api.goto(bot, p["x"], p["y"], p["z"], p.get("distance", 2.0), p.get("sprint", True))
+            case "goto_player":
+                return self._goto_player(p)
             case "fly_to":
                 return api.fly_to(bot, p["x"], p["y"], p["z"], p.get("distance", 2.0), p.get("speed", 0.5))
             case "look":
@@ -222,6 +603,8 @@ class BotRunner:
                 return api.follow(bot, p["target"], p.get("distance", 3.0), p.get("radius", 32.0))
             case "attack":
                 return api.attack(bot, p["target"], p.get("radius", 16.0))
+            case "combat_mode":
+                return api.combat_mode(bot, p.get("radius", 24.0), p.get("hostile_only", True), p.get("target"))
             case "mine":
                 return api.mine(bot, p["x"], p["y"], p["z"])
             case "place":
@@ -247,7 +630,7 @@ class BotRunner:
             case "container_insert":
                 return api.container_insert(bot, p["x"], p["y"], p["z"], p["slot"], p.get("count", 64))
             case "container_extract":
-                return api.container_extract(bot, p["x"], p["y"], p["z"], p["slot"], p.get("count", 64))
+                return api.container_extract(bot, p["x"], p["y"], p["z"], slot=p.get("slot"), item=p.get("item"), count=p.get("count", 64))
             case "list_recipes":
                 return api.list_recipes(bot, p.get("filter", ""), p.get("craftable_only", False))
             case "craft_chain":
@@ -261,6 +644,37 @@ class BotRunner:
                 return api.chat(bot, msg)
             case "stop":
                 return api.stop(bot)
+            case "bot_message":
+                to_bot = p.get("target", "")
+                msg = p.get("message", "")
+                if not to_bot or not msg:
+                    return {"error": "bot_message requires target and message"}
+                ok = BotRunner.send_bot_message(self.name, to_bot, msg)
+                return {"status": "sent"} if ok else {"error": f"Bot '{to_bot}' not found"}
+            case "delegate":
+                desc = p.get("task", "")
+                spec = p.get("specialization", "any")
+                target_bot = p.get("target")
+                if not desc:
+                    return {"error": "delegate requires a task description"}
+                if not _task_board:
+                    return {"error": "Task board not available"}
+                steps = None
+                if target_bot and target_bot in _all_runners:
+                    spec = None
+                task_id = _task_board.post(
+                    description=desc,
+                    created_by=self.name,
+                    specialization=spec if not target_bot else None,
+                    priority=1,
+                )
+                if target_bot and target_bot in _all_runners:
+                    BotRunner.send_bot_message(
+                        self.name, target_bot,
+                        f"I've posted task #{task_id} for you: {desc}"
+                    )
+                print(f"[{self.name}/delegate] Posted task #{task_id}: {desc[:60]} (spec={spec}, target={target_bot})")
+                return {"status": "delegated", "task_id": task_id}
             case _:
                 return {"error": f"Unknown action: {name}"}
 
@@ -324,12 +738,26 @@ def run():
     except Exception:
         pass
 
+    # Initialize shared task board
+    global _task_board, _all_runners
+    try:
+        _task_board = taskboard.TaskBoard(PG_DSN)
+        _task_board.connect()
+        stale = _task_board.cleanup_stale()
+        if stale:
+            print(f"[agent] Cleaned up {stale} stale task(s)")
+        print(f"[agent] Task board: connected ({_task_board.pending_count()} pending tasks)")
+    except Exception as e:
+        print(f"[agent] Task board unavailable: {e}")
+        _task_board = None
+
     profiles = load_profiles()
     print(f"[agent] Found {len(profiles)} bot profile(s): {[p['name'] for p in profiles]}")
 
     runners = []
     for profile in profiles:
         runner = BotRunner(profile)
+        _all_runners[runner.name] = runner
         runner.start()
         runners.append(runner)
 
@@ -343,6 +771,8 @@ def run():
         print("\n[agent] Shutting down all bots...")
         for runner in runners:
             runner.stop()
+        if _task_board:
+            _task_board.close()
 
 
 if __name__ == "__main__":

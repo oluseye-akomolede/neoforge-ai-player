@@ -77,6 +77,12 @@ def fly_to(bot, x, y, z, distance=2.0, speed=0.5):
 def attack(bot, target, radius=16.0):
     return _post(f"/bot/{bot}/attack", {"target": target, "radius": radius})
 
+def combat_mode(bot, radius=24.0, hostile_only=True, target=None):
+    data = {"radius": radius, "hostile_only": hostile_only}
+    if target:
+        data["target"] = target
+    return _post(f"/bot/{bot}/combat_mode", data)
+
 def mine(bot, x, y, z):
     return _post(f"/bot/{bot}/mine", {"x": x, "y": y, "z": z})
 
@@ -119,8 +125,13 @@ def container(bot, x, y, z):
 def container_insert(bot, x, y, z, slot, count=64):
     return _post(f"/bot/{bot}/container_insert", {"x": x, "y": y, "z": z, "slot": slot, "count": count})
 
-def container_extract(bot, x, y, z, slot, count=64):
-    return _post(f"/bot/{bot}/container_extract", {"x": x, "y": y, "z": z, "slot": slot, "count": count})
+def container_extract(bot, x, y, z, slot=None, item=None, count=64):
+    data = {"x": x, "y": y, "z": z, "count": count}
+    if item:
+        data["item"] = item
+    elif slot is not None:
+        data["slot"] = slot
+    return _post(f"/bot/{bot}/container_extract", data)
 
 def list_recipes(bot, filter_str="", craftable_only=False):
     return _post(f"/bot/{bot}/list_recipes", {"filter": filter_str, "craftable_only": craftable_only})

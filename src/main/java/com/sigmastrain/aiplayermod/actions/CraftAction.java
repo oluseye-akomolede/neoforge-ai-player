@@ -29,7 +29,10 @@ public class CraftAction implements BotAction {
         var server = player.getServer();
         var recipeManager = server.getRecipeManager();
 
-        Item targetItem = BuiltInRegistries.ITEM.get(ResourceLocation.parse(itemId));
+        Item targetItem;
+        try {
+            targetItem = BuiltInRegistries.ITEM.get(ResourceLocation.parse(itemId));
+        } catch (Exception e) { return true; }
         if (targetItem == null) return true;
 
         var allRecipes = recipeManager.getAllRecipesFor(RecipeType.CRAFTING);

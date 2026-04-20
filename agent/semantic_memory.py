@@ -216,6 +216,93 @@ class SemanticMemory:
             lines.append(f"- [{m['category']}] {m['content']} (relevance: {sim_pct}%)")
         return "\n".join(lines)
 
+    # ── Shared memory (cross-bot) ──
+
+    def store_shared(self, content, category="knowledge", metadata=None):
+        """Store a memory visible to ALL bots (bot_name='shared')."""
+        if not content or not content.strip():
+            return None
+        embedding = self._embed(content)
+
+        with self._conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, 1 - (embedding <=> %s::vector) as similarity
+                FROM memories
+                WHERE bot_name = 'shared' AND embedding IS NOT NULL
+                ORDER BY embedding <=> %s::vector
+                LIMIT 1
+            """, (_numpy_to_pg(embedding), _numpy_to_pg(embedding)))
+            row = cur.fetchone()
+            if row and row[1] > SIMILARITY_THRESHOLD:
+                self._update_access(row[0])
+                return row[0]
+
+        meta = json.dumps(metadata or {})
+        with self._conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO memories (bot_name, category, content, embedding, metadata)
+                VALUES ('shared', %s, %s, %s::vector, %s::jsonb)
+                RETURNING id
+            """, (category, content.strip(), _numpy_to_pg(embedding), meta))
+            new_id = cur.fetchone()[0]
+        return new_id
+
+    def recall_shared(self, query, category=None, limit=6):
+        """Recall memories from the shared pool."""
+        query_emb = self._embed(query)
+        with self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if category:
+                cur.execute("""
+                    SELECT id, content, category, metadata,
+                           1 - (embedding <=> %s::vector) as similarity
+                    FROM memories
+                    WHERE bot_name = 'shared' AND category = %s AND embedding IS NOT NULL
+                    ORDER BY embedding <=> %s::vector
+                    LIMIT %s
+                """, (_numpy_to_pg(query_emb), category, _numpy_to_pg(query_emb), limit))
+            else:
+                cur.execute("""
+                    SELECT id, content, category, metadata,
+                           1 - (embedding <=> %s::vector) as similarity
+                    FROM memories
+                    WHERE bot_name = 'shared' AND embedding IS NOT NULL
+                    ORDER BY embedding <=> %s::vector
+                    LIMIT %s
+                """, (_numpy_to_pg(query_emb), _numpy_to_pg(query_emb), limit))
+            rows = cur.fetchall()
+
+        results = []
+        for row in rows:
+            meta = row["metadata"] if isinstance(row["metadata"], dict) else {}
+            results.append({
+                "id": row["id"], "content": row["content"],
+                "category": row["category"], "similarity": float(row["similarity"]),
+                "metadata": meta, "source": "shared",
+            })
+        return results
+
+    def recall_all_for_prompt(self, query, limit=8):
+        """Recall from BOTH personal and shared memory, merged and ranked."""
+        personal = self.recall(query, limit=limit)
+        shared = self.recall_shared(query, limit=limit)
+
+        seen_ids = set()
+        merged = []
+        for m in personal + shared:
+            if m["id"] not in seen_ids:
+                seen_ids.add(m["id"])
+                merged.append(m)
+        merged.sort(key=lambda x: x["similarity"], reverse=True)
+
+        if not merged:
+            return "No relevant memories."
+        lines = []
+        for m in merged[:limit]:
+            sim_pct = int(m["similarity"] * 100)
+            src = " [shared]" if m.get("source") == "shared" else ""
+            lines.append(f"- [{m['category']}]{src} {m['content']} (relevance: {sim_pct}%)")
+        return "\n".join(lines)
+
     def forget(self, memory_id):
         """Delete a memory by ID."""
         with self._conn.cursor() as cur:

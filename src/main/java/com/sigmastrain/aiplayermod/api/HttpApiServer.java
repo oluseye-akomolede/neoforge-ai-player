@@ -122,6 +122,7 @@ public class HttpApiServer {
 
         JsonObject body = "GET".equals(exchange.getRequestMethod()) ? new JsonObject() : readBody(exchange);
 
+        try {
         switch (action) {
             case "status" -> sendJson(exchange, 200, bot.getCachedStatus());
             case "chat" -> {
@@ -189,7 +190,10 @@ public class HttpApiServer {
                             net.minecraft.core.registries.Registries.DIMENSION,
                             net.minecraft.resources.ResourceLocation.parse(dim));
                     var future = new java.util.concurrent.CompletableFuture<Boolean>();
-                    BotManager.getServer().execute(() -> future.complete(bot.teleportToDimension(dimKey, x, y, z)));
+                    BotManager.getServer().execute(() -> {
+                        try { future.complete(bot.teleportToDimension(dimKey, x, y, z)); }
+                        catch (Exception e) { future.complete(false); AIPlayerMod.LOGGER.error("teleportDimension error", e); }
+                    });
                     boolean ok = future.join();
                     sendJson(exchange, ok ? 200 : 500, Map.of("status", ok ? "teleported" : "failed", "dimension", dim));
                 } else {
@@ -213,9 +217,17 @@ public class HttpApiServer {
             }
             case "equip" -> {
                 int slot = body.get("slot").getAsInt();
-                BotManager.getServer().execute(() ->
-                        bot.getActionQueue().enqueue(new EquipAction(slot)));
-                sendJson(exchange, 200, Map.of("status", "equipped", "slot", slot));
+                var equipFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    new EquipAction(slot).tick(bot);
+                    var equip = bot.getEquipment();
+                    equipFuture.complete(Map.of("status", "equipped", "slot", slot, "equipment", equip));
+                });
+                try {
+                    sendJson(exchange, 200, equipFuture.get(5, java.util.concurrent.TimeUnit.SECONDS));
+                } catch (Exception e) {
+                    sendJson(exchange, 200, Map.of("status", "equipped", "slot", slot));
+                }
             }
             case "use" -> {
                 BotManager.getServer().execute(() ->
@@ -249,14 +261,20 @@ public class HttpApiServer {
                 int radius = body.has("radius") ? body.get("radius").getAsInt() : 32;
                 int max = body.has("max") ? body.get("max").getAsInt() : 10;
                 var blockFuture = new java.util.concurrent.CompletableFuture<List<Map<String, Object>>>();
-                BotManager.getServer().execute(() -> blockFuture.complete(bot.findBlocks(block, radius, max)));
+                BotManager.getServer().execute(() -> {
+                    try { blockFuture.complete(bot.findBlocks(block, radius, max)); }
+                    catch (Exception e) { blockFuture.complete(List.of()); AIPlayerMod.LOGGER.error("findBlocks error", e); }
+                });
                 sendJson(exchange, 200, Map.of("blocks", blockFuture.join()));
             }
             case "find_entities" -> {
                 String target = body.get("target").getAsString();
                 double radius = body.has("radius") ? body.get("radius").getAsDouble() : 32.0;
                 var entityFuture = new java.util.concurrent.CompletableFuture<List<Map<String, Object>>>();
-                BotManager.getServer().execute(() -> entityFuture.complete(bot.findEntities(target, radius)));
+                BotManager.getServer().execute(() -> {
+                    try { entityFuture.complete(bot.findEntities(target, radius)); }
+                    catch (Exception e) { entityFuture.complete(List.of()); AIPlayerMod.LOGGER.error("findEntities error", e); }
+                });
                 sendJson(exchange, 200, Map.of("entities", entityFuture.join()));
             }
             case "swap" -> {
@@ -268,12 +286,21 @@ public class HttpApiServer {
             case "chat_inbox" -> {
                 sendJson(exchange, 200, Map.of("messages", bot.drainChatInbox()));
             }
+            case "inject_chat" -> {
+                String sender = body.get("sender").getAsString();
+                String message = body.get("message").getAsString();
+                bot.addChatMessage(sender, message);
+                sendJson(exchange, 200, Map.of("status", "injected", "sender", sender, "message", message));
+            }
             case "container" -> {
                 int x = body.get("x").getAsInt();
                 int y = body.get("y").getAsInt();
                 int z = body.get("z").getAsInt();
                 var contFuture = new java.util.concurrent.CompletableFuture<List<Map<String, Object>>>();
-                BotManager.getServer().execute(() -> contFuture.complete(bot.readContainer(x, y, z)));
+                BotManager.getServer().execute(() -> {
+                    try { contFuture.complete(bot.readContainer(x, y, z)); }
+                    catch (Exception e) { contFuture.complete(List.of()); AIPlayerMod.LOGGER.error("readContainer error", e); }
+                });
                 sendJson(exchange, 200, Map.of("items", contFuture.join(), "position", Map.of("x", x, "y", y, "z", z)));
             }
             case "container_insert" -> {
@@ -283,24 +310,41 @@ public class HttpApiServer {
                 int slot = body.get("slot").getAsInt();
                 int count = body.has("count") ? body.get("count").getAsInt() : 64;
                 var insFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
-                BotManager.getServer().execute(() -> insFuture.complete(bot.insertIntoContainer(x, y, z, slot, count)));
+                BotManager.getServer().execute(() -> {
+                    try { insFuture.complete(bot.insertIntoContainer(x, y, z, slot, count)); }
+                    catch (Exception e) { insFuture.complete(Map.of("error", e.getMessage())); AIPlayerMod.LOGGER.error("insertContainer error", e); }
+                });
                 sendJson(exchange, 200, insFuture.join());
             }
             case "container_extract" -> {
                 int x = body.get("x").getAsInt();
                 int y = body.get("y").getAsInt();
                 int z = body.get("z").getAsInt();
-                int slot = body.get("slot").getAsInt();
                 int count = body.has("count") ? body.get("count").getAsInt() : 64;
                 var extFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
-                BotManager.getServer().execute(() -> extFuture.complete(bot.extractFromContainer(x, y, z, slot, count)));
+                if (body.has("item")) {
+                    String item = body.get("item").getAsString();
+                    BotManager.getServer().execute(() -> {
+                        try { extFuture.complete(bot.extractFromContainerByItem(x, y, z, item, count)); }
+                        catch (Exception e) { extFuture.complete(Map.of("error", e.getMessage())); AIPlayerMod.LOGGER.error("extractContainer error", e); }
+                    });
+                } else {
+                    int slot = body.get("slot").getAsInt();
+                    BotManager.getServer().execute(() -> {
+                        try { extFuture.complete(bot.extractFromContainer(x, y, z, slot, count)); }
+                        catch (Exception e) { extFuture.complete(Map.of("error", e.getMessage())); AIPlayerMod.LOGGER.error("extractContainer error", e); }
+                    });
+                }
                 sendJson(exchange, 200, extFuture.join());
             }
             case "list_recipes" -> {
                 String filter = body.has("filter") ? body.get("filter").getAsString() : "";
                 boolean craftableOnly = body.has("craftable_only") && body.get("craftable_only").getAsBoolean();
                 var recFuture = new java.util.concurrent.CompletableFuture<List<Map<String, Object>>>();
-                BotManager.getServer().execute(() -> recFuture.complete(bot.listRecipes(filter, craftableOnly)));
+                BotManager.getServer().execute(() -> {
+                    try { recFuture.complete(bot.listRecipes(filter, craftableOnly)); }
+                    catch (Exception e) { recFuture.complete(List.of()); AIPlayerMod.LOGGER.error("listRecipes error", e); }
+                });
                 sendJson(exchange, 200, Map.of("recipes", recFuture.join()));
             }
             case "craft_chain" -> {
@@ -310,11 +354,44 @@ public class HttpApiServer {
                         bot.getActionQueue().enqueue(new CraftChainAction(item, count)));
                 sendJson(exchange, 200, Map.of("status", "crafting_chain", "item", item, "count", count));
             }
+            case "equipment" -> {
+                var eqFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    try { eqFuture.complete(bot.getEquipment()); }
+                    catch (Exception e) { eqFuture.complete(Map.of("error", e.getMessage())); }
+                });
+                sendJson(exchange, 200, eqFuture.join());
+            }
+            case "extended_inventory" -> {
+                var extInvFuture = new java.util.concurrent.CompletableFuture<List<Map<String, Object>>>();
+                BotManager.getServer().execute(() -> {
+                    try { extInvFuture.complete(bot.getExtendedInventoryItems()); }
+                    catch (Exception e) { extInvFuture.complete(List.of()); }
+                });
+                sendJson(exchange, 200, Map.of("items", extInvFuture.join()));
+            }
+            case "combat_mode" -> {
+                double radius = body.has("radius") ? body.get("radius").getAsDouble() : 24.0;
+                boolean hostileOnly = !body.has("hostile_only") || body.get("hostile_only").getAsBoolean();
+                String target = body.has("target") ? body.get("target").getAsString() : null;
+                BotManager.getServer().execute(() -> {
+                    bot.getActionQueue().clear();
+                    bot.getActionQueue().enqueue(new CombatModeAction(radius, hostileOnly, target));
+                });
+                sendJson(exchange, 200, Map.of("status", "combat_mode", "radius", radius,
+                        "hostile_only", hostileOnly, "target", target != null ? target : "any hostile"));
+            }
             case "stop" -> {
                 BotManager.getServer().execute(() -> bot.getActionQueue().clear());
                 sendJson(exchange, 200, Map.of("status", "stopped"));
             }
             default -> sendJson(exchange, 400, Map.of("error", "Unknown action: " + action));
+        }
+        } catch (Exception e) {
+            AIPlayerMod.LOGGER.error("API error in /bot/{}/{}: {}", botName, action, e.getMessage(), e);
+            try {
+                sendJson(exchange, 500, Map.of("error", e.getMessage() != null ? e.getMessage() : e.getClass().getName()));
+            } catch (Exception ignored) {}
         }
     }
 

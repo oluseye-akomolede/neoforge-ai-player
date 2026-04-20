@@ -26,6 +26,9 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.core.registries.BuiltInRegistries;
 
+import net.minecraft.world.SimpleContainer;
+import net.minecraft.world.entity.EquipmentSlot;
+
 import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
@@ -34,10 +37,12 @@ public class BotPlayer {
     private final ActionQueue actionQueue;
     private boolean alive = true;
 
+    private final SimpleContainer extendedInventory = new SimpleContainer(54);
     private final ConcurrentLinkedQueue<Map<String, String>> chatInbox = new ConcurrentLinkedQueue<>();
     private static final int MAX_INBOX_SIZE = 50;
-    private static final int FORCE_CHUNK_RADIUS = 2;
+    private static final int FORCE_CHUNK_RADIUS = 1;
     private final Set<Long> forcedChunks = new HashSet<>();
+    private ChunkPos lastChunkPos = null;
 
     private volatile Map<String, Object> cachedStatus = new LinkedHashMap<>();
     private volatile List<Map<String, Object>> cachedInventory = new ArrayList<>();
@@ -70,6 +75,8 @@ public class BotPlayer {
         BotPlayer bot = new BotPlayer(botPlayer);
         bot.broadcastSpawn();
 
+        server.execute(() -> PmmoCompat.setupBotSkills(botPlayer));
+
         return bot;
     }
 
@@ -92,6 +99,53 @@ public class BotPlayer {
         List<SynchedEntityData.DataValue<?>> entityData = player.getEntityData().getNonDefaultValues();
         if (entityData != null && !entityData.isEmpty()) {
             target.connection.send(new ClientboundSetEntityDataPacket(player.getId(), entityData));
+        }
+        sendEquipmentPackets(target);
+    }
+
+    private void sendEquipmentPackets(ServerPlayer target) {
+        List<com.mojang.datafixers.util.Pair<EquipmentSlot, ItemStack>> equipment = new ArrayList<>();
+        for (EquipmentSlot slot : EquipmentSlot.values()) {
+            ItemStack stack = getEquippedItem(slot);
+            if (!stack.isEmpty()) {
+                equipment.add(com.mojang.datafixers.util.Pair.of(slot, stack.copy()));
+            }
+        }
+        if (!equipment.isEmpty()) {
+            target.connection.send(new ClientboundSetEquipmentPacket(player.getId(), equipment));
+        }
+    }
+
+    private ItemStack getEquippedItem(EquipmentSlot slot) {
+        return switch (slot) {
+            case HEAD -> player.getInventory().getItem(39);
+            case CHEST -> player.getInventory().getItem(38);
+            case LEGS -> player.getInventory().getItem(37);
+            case FEET -> player.getInventory().getItem(36);
+            case OFFHAND -> player.getInventory().getItem(40);
+            case MAINHAND -> player.getInventory().getItem(player.getInventory().selected);
+            default -> ItemStack.EMPTY;
+        };
+    }
+
+    private void broadcastAllEquipment() {
+        List<com.mojang.datafixers.util.Pair<EquipmentSlot, ItemStack>> equipment = new ArrayList<>();
+        for (EquipmentSlot slot : EquipmentSlot.values()) {
+            equipment.add(com.mojang.datafixers.util.Pair.of(slot, getEquippedItem(slot).copy()));
+        }
+        ClientboundSetEquipmentPacket packet = new ClientboundSetEquipmentPacket(player.getId(), equipment);
+        for (ServerPlayer online : player.getServer().getPlayerList().getPlayers()) {
+            online.connection.send(packet);
+        }
+    }
+
+    public void broadcastEquipmentChange(EquipmentSlot slot, ItemStack stack) {
+        ClientboundSetEquipmentPacket packet = new ClientboundSetEquipmentPacket(
+                player.getId(),
+                List.of(com.mojang.datafixers.util.Pair.of(slot, stack.copy()))
+        );
+        for (ServerPlayer online : player.getServer().getPlayerList().getPlayers()) {
+            online.connection.send(packet);
         }
     }
 
@@ -135,11 +189,15 @@ public class BotPlayer {
             if (e.getMessage() != null && e.getMessage().contains("may not be sent to the client")) {
                 AIPlayerMod.LOGGER.debug("Suppressed mod packet error for bot {}: {}", player.getName().getString(), e.getMessage());
             } else {
-                throw e;
+                AIPlayerMod.LOGGER.error("Action error for bot {}: {}", player.getName().getString(), e.getMessage());
             }
+        } catch (Exception e) {
+            AIPlayerMod.LOGGER.error("Action error for bot {}: {}", player.getName().getString(), e.getMessage(), e);
+            actionQueue.clear();
         }
         updateForcedChunks();
         broadcastPosition();
+        broadcastAllEquipment();
         refreshCache();
     }
 
@@ -148,6 +206,8 @@ public class BotPlayer {
     private void updateForcedChunks() {
         ServerLevel level = (ServerLevel) player.level();
         ChunkPos center = new ChunkPos(player.blockPosition());
+        if (center.equals(lastChunkPos)) return;
+        lastChunkPos = center;
         Set<Long> needed = new HashSet<>();
         for (int dx = -FORCE_CHUNK_RADIUS; dx <= FORCE_CHUNK_RADIUS; dx++) {
             for (int dz = -FORCE_CHUNK_RADIUS; dz <= FORCE_CHUNK_RADIUS; dz++) {
@@ -227,6 +287,10 @@ public class BotPlayer {
         while (chatInbox.size() > MAX_INBOX_SIZE) {
             chatInbox.poll();
         }
+    }
+
+    public boolean hasPendingChat() {
+        return !chatInbox.isEmpty();
     }
 
     public List<Map<String, String>> drainChatInbox() {
@@ -430,6 +494,48 @@ public class BotPlayer {
         return result;
     }
 
+    public Map<String, Object> extractFromContainerByItem(int x, int y, int z, String itemId, int count) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        BlockPos pos = new BlockPos(x, y, z);
+        var blockEntity = player.level().getBlockEntity(pos);
+        if (!(blockEntity instanceof net.minecraft.world.Container container)) {
+            result.put("error", "No container at position");
+            return result;
+        }
+        net.minecraft.world.item.Item targetItem;
+        try {
+            targetItem = BuiltInRegistries.ITEM.get(net.minecraft.resources.ResourceLocation.parse(itemId));
+        } catch (Exception e) {
+            result.put("error", "Invalid item ID: " + itemId);
+            return result;
+        }
+        int totalExtracted = 0;
+        for (int slot = 0; slot < container.getContainerSize() && totalExtracted < count; slot++) {
+            ItemStack source = container.getItem(slot);
+            if (source.isEmpty() || source.getItem() != targetItem) continue;
+            int toExtract = Math.min(count - totalExtracted, source.getCount());
+            ItemStack extracted = source.split(toExtract);
+            if (!player.getInventory().add(extracted)) {
+                source.grow(extracted.getCount());
+                if (totalExtracted == 0) {
+                    result.put("error", "Bot inventory full");
+                    return result;
+                }
+                break;
+            }
+            totalExtracted += toExtract;
+        }
+        if (totalExtracted == 0) {
+            result.put("error", "Item not found in container: " + itemId);
+            return result;
+        }
+        container.setChanged();
+        result.put("status", "extracted");
+        result.put("item", itemId);
+        result.put("count", totalExtracted);
+        return result;
+    }
+
     // ── Recipe queries ──
 
     public List<Map<String, Object>> listRecipes(String filter, boolean craftableOnly) {
@@ -549,6 +655,59 @@ public class BotPlayer {
         player.getInventory().setItem(from, b);
         player.getInventory().setItem(to, a);
         return true;
+    }
+
+    // ── Equipment queries ──
+
+    public SimpleContainer getExtendedInventory() {
+        return extendedInventory;
+    }
+
+    public Map<String, Object> getEquipment() {
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (EquipmentSlot slot : EquipmentSlot.values()) {
+            ItemStack stack = getEquippedItem(slot);
+            if (!stack.isEmpty()) {
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("item", BuiltInRegistries.ITEM.getKey(stack.getItem()).toString());
+                item.put("name", stack.getHoverName().getString());
+                item.put("count", stack.getCount());
+                result.put(slot.getName(), item);
+            }
+        }
+        return result;
+    }
+
+    public List<Map<String, Object>> getExtendedInventoryItems() {
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (int i = 0; i < extendedInventory.getContainerSize(); i++) {
+            ItemStack stack = extendedInventory.getItem(i);
+            if (!stack.isEmpty()) {
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("slot", i);
+                item.put("item", BuiltInRegistries.ITEM.getKey(stack.getItem()).toString());
+                item.put("name", stack.getHoverName().getString());
+                item.put("count", stack.getCount());
+                result.add(item);
+            }
+        }
+        return result;
+    }
+
+    // ── Interaction ──
+
+    public boolean isLookingAt(ServerPlayer viewer, double maxDistance) {
+        Vec3 eye = viewer.getEyePosition();
+        Vec3 look = viewer.getLookAngle();
+        Vec3 botPos = player.position().add(0, 0.9, 0);
+
+        for (double d = 0.5; d <= maxDistance; d += 0.25) {
+            Vec3 point = eye.add(look.scale(d));
+            if (point.distanceTo(botPos) < 1.2) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private Map<String, Integer> formatBlockPos(BlockPos pos) {

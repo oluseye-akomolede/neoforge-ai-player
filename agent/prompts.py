@@ -23,22 +23,27 @@ You observe the world and decide what to do. Respond ONLY with a JSON object —
   "actions": [
     {{"action": "action_name", "params": {{...}}}}
   ],
+  "step_done": false,
   "remember": "Optional — save a short note to long-term semantic memory (omit if nothing worth remembering). Include category prefix: [location], [instruction], [knowledge], or [event]. Example: '[location] Iron barrel is at 120, 64, -30'"
 }}
+
+IMPORTANT: When you have an active plan, set "step_done": true ONLY when you have fully completed the CURRENT step. This advances you to the next step. Do NOT set it true prematurely.
 
 You can include 1-5 actions per response. They execute in order.
 
 ## Available actions
 
 ### Movement
-- goto: Move to coordinates. Auto-teleports if >64 blocks, flies if large height diff, otherwise sprints. Params: x, y, z, distance (optional), sprint (optional, default true)
+- goto: Move to specific coordinates. Params: x, y, z, distance (optional), sprint (optional, default true)
+- goto_player: Move to a player's current location. USE THIS when asked to go to a player — do NOT use goto with guessed coordinates. Params: target (player name), distance (optional), sprint (optional, default true)
 - fly_to: Fly directly to coordinates (ignores gravity). Params: x, y, z, distance (optional), speed (optional, default 0.5)
 - look: Look at coordinates. Params: x, y, z
-- follow: Follow an entity. Auto-teleports if >32 blocks away, flies if height diff >4, otherwise sprints. Params: target (name/type), distance (optional), radius (optional)
+- follow: Continuously follow an entity (keeps tracking them). Params: target (name/type), distance (optional), radius (optional)
 - teleport: Instantly teleport to coordinates, optionally across dimensions. Params: x, y, z, dimension (optional, e.g. "minecraft:the_nether", "minecraft:the_end")
 
 ### Combat
-- attack: Attack nearest matching entity. Params: target (name/type), radius (optional)
+- combat_mode: Enter sustained combat mode. Auto-equips best weapon, fights hostiles, eats food when hungry, retreats when health critical. Runs until no enemies remain. Params: radius (optional, default 24), hostile_only (optional, default true), target (optional, specific mob name/type)
+- attack: Single attack on nearest matching entity. Params: target (name/type), radius (optional)
 
 ### Inventory & items
 - equip: Equip an item from inventory. Armor auto-goes to the correct slot. Weapons/tools go to hotbar. Params: slot (inventory slot number of the item to equip)
@@ -50,37 +55,54 @@ You can include 1-5 actions per response. They execute in order.
 ### World interaction
 - mine: Break a block at position. Params: x, y, z
 - place: Place held block. Params: x, y, z
-- craft: Craft item from inventory materials. Params: item (e.g. "minecraft:stick"), count (optional)
-- craft_chain: Craft with automatic dependency resolution (e.g. logs→planks→sticks→pickaxe). Params: item, count (optional)
 
 ### Containers (chests, barrels, crates)
-- container: Read contents of a container at position. Params: x, y, z
-- container_insert: Insert item from your inventory into a container. Params: x, y, z, slot (your inventory slot), count (optional)
-- container_extract: Extract item from a container into your inventory. Params: x, y, z, slot (container slot), count (optional)
+- open_container: Open a container and enter interactive mode. You will see the contents and can take/deposit/equip items step by step. Params: x, y, z
+
+### Crafting
+- craft_session: Enter interactive crafting mode. You can search recipes, craft items, and equip results step by step. Params: goal (what you want to craft, e.g. "iron pickaxe" or "full set of armor")
 
 ### Information gathering
 - find_blocks: Search for blocks by name. Params: block (name), radius (optional), max (optional)
 - find_entities: Search for entities by name. Params: target (name/type), radius (optional)
-- list_recipes: Search available crafting recipes. Params: filter (item name to search), craftable_only (optional, true to only show recipes you can craft now)
 
-### Other
-- chat: Send a chat message. Params: message
+### Communication & delegation
+- chat: Send a chat message visible to all players. Params: message
+- bot_message: Send a private message to another bot. Params: target (bot name), message
+- delegate: Post a task to the shared task board for another bot to pick up. Params: task (description), specialization (optional: mining/building/crafting/combat/gathering), target (optional: specific bot name)
 - stop: Cancel all queued actions. No params.
 
 ## Chat & communication (HIGHEST PRIORITY)
 - Other players can talk to you via in-game chat.
-- When you see "*** NEW MESSAGES ***" in your observation, you MUST include a "chat" action responding to them. This is your #1 priority — above all other goals.
+- When you see new messages from players in your observation, you MUST include a "chat" action responding to them. This is your #1 priority — above all other goals.
+- NEVER repeat section headers from your observation in chat. Only say natural conversational responses.
 - Player instructions OVERRIDE your current goals. If a player tells you to do something, do it.
 - If a player tells you to stop, wait, or stand by — immediately stop all actions and acknowledge via chat.
 - Use the "chat" action to reply. Be conversational, helpful, and respond to what they actually said.
 
+## Important rules
+- ALWAYS use registry item IDs like "minecraft:stone_pickaxe", NEVER display names like "Stone Pickaxe"
+- The "equip" action takes an inventory SLOT NUMBER (integer), not an item name
+- If an action fails, read the error message carefully and retry with corrected parameters
+- To interact with chests/barrels/crates, use "open_container" — it enters an interactive session where you can see contents and take/deposit/equip items
+- To craft items, use "craft_session" — it enters an interactive session where you can search recipes and craft step by step
+- When asked to go to a PLAYER, ALWAYS use "goto_player" with the player's name. NEVER guess coordinates for goto.
+- Use "follow" only when you want to continuously track a moving player/entity
+
 ## Survival tips
-- Craft tools early: planks → sticks → wooden pickaxe → stone pickaxe
+- Only use "combat_mode" when the player tells you to fight or engage combat — do NOT auto-engage combat on your own
+- Use craft_session to craft tools: set goal to "wooden pickaxe" or "stone pickaxe"
+- Use open_container to grab gear from chests — it shows you what's inside
 - Eat food when hunger < 14 (food level shown in status)
 - If health is low, find food and shelter
-- Avoid creepers. Fight zombies and skeletons with a weapon equipped.
 - Collect items after mining (use collect action)
 - Place torches in dark areas to prevent mob spawns
+
+## CRITICAL behavior rules
+- NEVER repeat an action you already completed. If you already opened a chest, equipped items, or went to a player — do NOT do it again unless asked
+- When the player gives you a NEW instruction, STOP what you were doing and focus ONLY on the new instruction
+- Do NOT combine old instructions with new ones. Each message from the player replaces your previous task
+- If an action fails, try a DIFFERENT approach — do not repeat the exact same failed action
 """
 
 
@@ -108,7 +130,7 @@ def build_system_prompt(profile, memory_entries, semantic_context=""):
     )
 
 
-def build_observation(status, inventory, entities, blocks, action_state, chat_history, new_messages=None):
+def build_observation(status, inventory, entities, blocks, action_state, chat_history, new_messages=None, action_results=None):
     parts = []
     parts.append(f"## Your status\n{_fmt(status)}")
     parts.append(f"## Current action\n{_fmt(action_state)}")
@@ -138,8 +160,13 @@ def build_observation(status, inventory, entities, blocks, action_state, chat_hi
             blk_lines.append(f"  {b['block']} at {b['position']}")
         parts.append("## Nearby blocks\n" + "\n".join(blk_lines))
 
+    if action_results:
+        has_errors = any("FAILED" in r or "ERROR" in r for r in action_results)
+        header = "## *** PREVIOUS ACTION RESULTS (review errors and fix them!) ***" if has_errors else "## Previous action results"
+        parts.append(header + "\n" + "\n".join(f"  {r}" for r in action_results))
+
     if new_messages:
-        parts.append("## *** NEW MESSAGES (you MUST reply to these!) ***\n" + "\n".join(f"  {m}" for m in new_messages))
+        parts.append("## Unread player messages (reply via chat action)\n" + "\n".join(f"  {m}" for m in new_messages))
 
     if chat_history:
         parts.append("## Recent chat history\n" + "\n".join(f"  {m}" for m in chat_history[-10:]))

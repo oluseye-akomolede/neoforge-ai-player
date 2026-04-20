@@ -5,10 +5,10 @@ import com.mojang.datafixers.util.Pair;
 import net.minecraft.network.protocol.game.ClientboundSetEquipmentPacket;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.EquipmentSlot;
-import net.minecraft.world.item.ArmorItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.ShieldItem;
 
+import com.sigmastrain.aiplayermod.AIPlayerMod;
 import java.util.List;
 
 public class EquipAction implements BotAction {
@@ -30,21 +30,25 @@ public class EquipAction implements BotAction {
             return true;
         }
 
-        if (stack.getItem() instanceof ArmorItem armor) {
-            EquipmentSlot equipSlot = armor.getEquipmentSlot();
-            int armorInvSlot = armorSlotToInventorySlot(equipSlot);
+        String itemId = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+        EquipmentSlot targetSlot = stack.getEquipmentSlot();
+        if (targetSlot == null || targetSlot.getType() != EquipmentSlot.Type.HUMANOID_ARMOR) {
+            targetSlot = guessArmorSlotFromId(stack);
+        }
+        if (targetSlot != null && targetSlot.getType() == EquipmentSlot.Type.HUMANOID_ARMOR) {
+            int armorInvSlot = armorSlotToInventorySlot(targetSlot);
             ItemStack existing = player.getInventory().getItem(armorInvSlot);
             player.getInventory().setItem(armorInvSlot, stack.copy());
             player.getInventory().setItem(slot, existing);
-            broadcastEquipment(player, equipSlot, stack);
+            bot.broadcastEquipmentChange(targetSlot, stack);
         } else if (stack.getItem() instanceof ShieldItem) {
             ItemStack existing = player.getInventory().getItem(40);
             player.getInventory().setItem(40, stack.copy());
             player.getInventory().setItem(slot, existing);
-            broadcastEquipment(player, EquipmentSlot.OFFHAND, stack);
+            bot.broadcastEquipmentChange(EquipmentSlot.OFFHAND, stack);
         } else if (slot >= 0 && slot < 9) {
             player.getInventory().selected = slot;
-            broadcastEquipment(player, EquipmentSlot.MAINHAND, stack);
+            bot.broadcastEquipmentChange(EquipmentSlot.MAINHAND, stack);
         } else {
             int targetHotbar = findEmptyHotbarSlot(player);
             if (targetHotbar == -1) targetHotbar = 0;
@@ -52,20 +56,10 @@ public class EquipAction implements BotAction {
             player.getInventory().setItem(targetHotbar, stack.copy());
             player.getInventory().setItem(slot, existing);
             player.getInventory().selected = targetHotbar;
-            broadcastEquipment(player, EquipmentSlot.MAINHAND, stack);
+            bot.broadcastEquipmentChange(EquipmentSlot.MAINHAND, stack);
         }
 
         return true;
-    }
-
-    private void broadcastEquipment(ServerPlayer player, EquipmentSlot equipSlot, ItemStack stack) {
-        ClientboundSetEquipmentPacket packet = new ClientboundSetEquipmentPacket(
-                player.getId(),
-                List.of(Pair.of(equipSlot, stack.copy()))
-        );
-        for (ServerPlayer online : player.getServer().getPlayerList().getPlayers()) {
-            online.connection.send(packet);
-        }
     }
 
     private int armorSlotToInventorySlot(EquipmentSlot slot) {
@@ -76,6 +70,15 @@ public class EquipAction implements BotAction {
             case HEAD -> 39;
             default -> 36;
         };
+    }
+
+    private EquipmentSlot guessArmorSlotFromId(ItemStack stack) {
+        String id = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(stack.getItem()).getPath();
+        if (id.contains("helmet") || id.contains("_hat") || id.contains("_cap")) return EquipmentSlot.HEAD;
+        if (id.contains("chestplate") || id.contains("_tunic") || id.contains("_jacket")) return EquipmentSlot.CHEST;
+        if (id.contains("leggings") || id.contains("_pants") || id.contains("_trousers")) return EquipmentSlot.LEGS;
+        if (id.contains("boots") || id.contains("_shoes") || id.contains("_greaves")) return EquipmentSlot.FEET;
+        return null;
     }
 
     private int findEmptyHotbarSlot(ServerPlayer player) {
