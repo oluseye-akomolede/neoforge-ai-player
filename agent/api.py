@@ -180,3 +180,6 @@ def xp_status(bot):
 
 def xp_give(bot, levels=0, points=0):
     return _post(f"/bot/{bot}/xp", {"levels": levels, "points": points})
+
+def meditate(bot, levels=10):
+    return _post(f"/bot/{bot}/meditate", {"levels": levels})

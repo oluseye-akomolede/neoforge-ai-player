@@ -17,6 +17,7 @@ public class SmithingAction implements BotAction {
     private final int templateSlot;
     private final int baseSlot;
     private final int additionSlot;
+    private String result = null;
 
     public SmithingAction(int templateSlot, int baseSlot, int additionSlot) {
         this.templateSlot = templateSlot;
@@ -33,36 +34,40 @@ public class SmithingAction implements BotAction {
         ItemStack base = inv.getItem(baseSlot).copy();
         ItemStack addition = inv.getItem(additionSlot).copy();
 
-        if (base.isEmpty()) return true;
+        if (base.isEmpty()) { result = "FAILED: No base item in slot " + baseSlot; return true; }
+        if (template.isEmpty()) { result = "FAILED: No template in slot " + templateSlot; return true; }
+        if (addition.isEmpty()) { result = "FAILED: No addition material in slot " + additionSlot; return true; }
 
         BlockPos tablePos = findNearbyBlock(player, "smithing_table", 6);
-        ContainerLevelAccess access = tablePos != null
-                ? ContainerLevelAccess.create(player.level(), tablePos)
-                : ContainerLevelAccess.NULL;
+        if (tablePos == null) { result = "FAILED: No smithing table within 6 blocks"; return true; }
 
+        ContainerLevelAccess access = ContainerLevelAccess.create(player.level(), tablePos);
         SmithingMenu menu = new SmithingMenu(player.containerMenu.containerId + 1, inv, access);
 
-        // Place items in smithing slots
         menu.getSlot(0).set(template.copy());
         menu.getSlot(1).set(base.copy());
         menu.getSlot(2).set(addition.copy());
 
-        // Trigger result calculation
         menu.createResult();
 
-        ItemStack result = menu.getSlot(3).getItem();
-        if (result.isEmpty()) return true;
+        ItemStack resultItem = menu.getSlot(3).getItem();
+        if (resultItem.isEmpty()) {
+            result = "FAILED: Smithing produced no result (invalid template/base/addition combo)";
+            return true;
+        }
 
-        // Consume inputs from real inventory
         inv.getItem(templateSlot).shrink(1);
         inv.getItem(baseSlot).shrink(1);
         inv.getItem(additionSlot).shrink(1);
 
-        // Give result
-        inv.add(result.copy());
+        inv.add(resultItem.copy());
+        result = "Smithing success: " + resultItem.getHoverName().getString();
 
         return true;
     }
+
+    @Override
+    public String getResult() { return result; }
 
     private BlockPos findNearbyBlock(ServerPlayer player, String blockName, int radius) {
         BlockPos center = player.blockPosition();

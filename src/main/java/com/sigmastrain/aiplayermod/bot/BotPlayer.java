@@ -75,6 +75,9 @@ public class BotPlayer {
         BotPlayer bot = new BotPlayer(botPlayer);
         bot.broadcastSpawn();
 
+        // Grant starting XP pool (10,000 points ≈ 53 levels)
+        botPlayer.giveExperiencePoints(10000);
+
         server.execute(() -> PmmoCompat.setupBotSkills(botPlayer));
 
         return bot;

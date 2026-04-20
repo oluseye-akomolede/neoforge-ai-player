@@ -21,7 +21,8 @@ public class BrewAction implements BotAction {
     private boolean loaded = false;
     private BlockPos brewingPos;
     private int waitTicks = 0;
-    private static final int MAX_WAIT = 500; // 25 seconds (brewing takes 20s)
+    private String result = null;
+    private static final int MAX_WAIT = 500;
 
     public BrewAction(int ingredientSlot, int[] bottleSlots, int fuelSlot) {
         this.ingredientSlot = ingredientSlot;
@@ -59,9 +60,10 @@ public class BrewAction implements BotAction {
         Inventory inv = player.getInventory();
 
         brewingPos = findNearbyBlock(player, "brewing_stand", 6);
-        if (brewingPos == null) return true; // No brewing stand found
+        if (brewingPos == null) { result = "FAILED: No brewing stand within 6 blocks"; return true; }
 
         if (!(player.level().getBlockEntity(brewingPos) instanceof BrewingStandBlockEntity stand)) {
+            result = "FAILED: Block entity at brewing stand position is not valid";
             return true;
         }
 
@@ -98,20 +100,26 @@ public class BrewAction implements BotAction {
 
     private void collectResults(ServerPlayer player) {
         if (!(player.level().getBlockEntity(brewingPos) instanceof BrewingStandBlockEntity stand)) {
+            result = "FAILED: Brewing stand disappeared";
             return;
         }
 
         Inventory inv = player.getInventory();
-        // Collect brewed potions from slots 0-2
+        int collected = 0;
         for (int i = 0; i < 3; i++) {
-            ItemStack result = stand.getItem(i);
-            if (!result.isEmpty()) {
-                inv.add(result.copy());
+            ItemStack item = stand.getItem(i);
+            if (!item.isEmpty()) {
+                inv.add(item.copy());
                 stand.setItem(i, ItemStack.EMPTY);
+                collected++;
             }
         }
         stand.setChanged();
+        result = "Brewing complete: collected " + collected + " potion(s)";
     }
+
+    @Override
+    public String getResult() { return result; }
 
     private BlockPos findNearbyBlock(ServerPlayer player, String blockName, int radius) {
         BlockPos center = player.blockPosition();

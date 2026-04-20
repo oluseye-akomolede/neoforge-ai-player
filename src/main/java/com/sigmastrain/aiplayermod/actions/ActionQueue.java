@@ -9,6 +9,7 @@ public class ActionQueue {
     private final BotPlayer bot;
     private final Deque<BotAction> queue = new ArrayDeque<>();
     private BotAction current = null;
+    private String lastResult = null;
 
     public ActionQueue(BotPlayer bot) {
         this.bot = bot;
@@ -30,6 +31,7 @@ public class ActionQueue {
         if (current != null) {
             boolean done = current.tick(bot);
             if (done) {
+                lastResult = current.getResult();
                 current = null;
             }
         }
@@ -42,5 +44,15 @@ public class ActionQueue {
 
     public int queueSize() {
         return queue.size() + (current != null ? 1 : 0);
+    }
+
+    public String getLastResult() {
+        return lastResult;
+    }
+
+    public String consumeLastResult() {
+        String r = lastResult;
+        lastResult = null;
+        return r;
     }
 }

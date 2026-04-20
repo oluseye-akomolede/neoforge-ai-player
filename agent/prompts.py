@@ -65,8 +65,9 @@ You can include 1-5 actions per response. They execute in order.
 ### Magic & enchanting
 - anvil: Use a nearby anvil to combine items, apply enchanted books, or rename items. Params: input_slot (inventory slot of item), material_slot (optional, slot of book or repair material), name (optional, new name for the item)
 - smithing: Use a nearby smithing table to upgrade items (e.g. netherite upgrades). Params: template_slot (slot with smithing template), base_slot (slot with item to upgrade), addition_slot (slot with upgrade material)
-- enchant: Use a nearby enchanting table. Params: item_slot (slot of item to enchant), lapis_slot (slot with lapis lazuli), option (0=cheapest, 1=middle, 2=best enchantment)
+- enchant: Use a nearby enchanting table. PREREQUISITES: (1) check xp_status to confirm you have enough levels, (2) ensure you have lapis lazuli in inventory, (3) be within 6 blocks of an enchanting table. If XP is too low, use meditate first. Params: item_slot (slot of item to enchant), lapis_slot (slot with lapis lazuli), option (0=cheapest/1 level min, 1=middle/2 levels min, 2=best/3 levels min)
 - brew: Use a nearby brewing stand. Params: ingredient_slot (slot with brewing ingredient), bottle_slots (list of slots with potion bottles, up to 3), fuel_slot (optional, slot with blaze powder)
+- meditate: Focus and earn XP over time (1 level per 2 seconds). Use this when you need XP for enchanting or anvil work. Params: levels (how many levels to gain, default 10, max 100)
 - xp_status: Check your current XP level and progress. No params.
 
 ### Information gathering

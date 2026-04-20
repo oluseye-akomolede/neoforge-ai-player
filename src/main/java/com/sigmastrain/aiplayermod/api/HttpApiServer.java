@@ -204,10 +204,14 @@ public class HttpApiServer {
             case "inventory" -> sendJson(exchange, 200, Map.of("inventory", bot.getCachedInventory()));
             case "entities" -> sendJson(exchange, 200, Map.of("entities", bot.getCachedEntities()));
             case "blocks" -> sendJson(exchange, 200, Map.of("blocks", bot.getCachedBlocks()));
-            case "actions" -> sendJson(exchange, 200, Map.of(
-                    "current", bot.getActionQueue().currentAction(),
-                    "queued", bot.getActionQueue().queueSize()
-            ));
+            case "actions" -> {
+                String lastResult = bot.getActionQueue().consumeLastResult();
+                var actionMap = new LinkedHashMap<String, Object>();
+                actionMap.put("current", bot.getActionQueue().currentAction());
+                actionMap.put("queued", bot.getActionQueue().queueSize());
+                if (lastResult != null) actionMap.put("last_result", lastResult);
+                sendJson(exchange, 200, actionMap);
+            }
             case "craft" -> {
                 String item = body.get("item").getAsString();
                 int count = body.has("count") ? body.get("count").getAsInt() : 1;
@@ -442,6 +446,12 @@ public class HttpApiServer {
                     sendJson(exchange, 200, Map.of("status", "xp_updated",
                             "levels_added", amount, "points_added", points));
                 }
+            }
+            case "meditate" -> {
+                int levels = body.has("levels") ? body.get("levels").getAsInt() : 10;
+                BotManager.getServer().execute(() ->
+                        bot.getActionQueue().enqueue(new MeditateAction(levels)));
+                sendJson(exchange, 200, Map.of("status", "meditating", "target_levels", levels));
             }
             default -> sendJson(exchange, 400, Map.of("error", "Unknown action: " + action));
         }

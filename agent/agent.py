@@ -356,7 +356,14 @@ class BotRunner:
             if self._plan_step_idx >= len(self._plan_steps):
                 print(f"[{self.name}/planner] Plan COMPLETE! All {len(self._plan_steps)} steps done.")
                 self._store_plan_outcome(success=True)
-                self._complete_task_board_task()
+                if self._current_task_id:
+                    self._complete_task_board_task()
+                else:
+                    # Smaller XP reward for non-task-board plan completion
+                    try:
+                        api.xp_give(self.name, levels=2)
+                    except Exception:
+                        pass
                 self._plan_steps = []
                 self._plan_step_idx = 0
                 self._plan_instruction = ""
@@ -428,11 +435,17 @@ class BotRunner:
             print(f"[{self.name}/taskboard] Error checking board: {e}")
 
     def _complete_task_board_task(self):
-        """Mark the current task board task as done."""
+        """Mark the current task board task as done and reward XP."""
         if self._current_task_id and _task_board:
             try:
                 _task_board.complete(self._current_task_id, "Plan completed successfully")
                 print(f"[{self.name}/taskboard] Task #{self._current_task_id} completed")
+                # Reward XP for completing a task
+                try:
+                    api.xp_give(self.name, levels=5)
+                    print(f"[{self.name}] +5 XP levels (task completion reward)")
+                except Exception:
+                    pass
             except Exception as e:
                 print(f"[{self.name}/taskboard] Error completing task: {e}")
             self._current_task_id = None
@@ -818,6 +831,8 @@ class BotRunner:
                 return api.enchant(bot, p["item_slot"], p["lapis_slot"], p.get("option", 2))
             case "xp_status":
                 return api.xp_status(bot)
+            case "meditate":
+                return api.meditate(bot, p.get("levels", 10))
             case _:
                 return {"error": f"Unknown action: {name}"}
 

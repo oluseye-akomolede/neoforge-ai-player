@@ -8,4 +8,7 @@ public interface BotAction {
 
     /** Human-readable description for status reporting. */
     String describe();
+
+    /** Result/error message after completion. Null means success with no detail. */
+    default String getResult() { return null; }
 }

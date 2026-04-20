@@ -25,6 +25,7 @@ public class AnvilAction implements BotAction {
     private final int inputSlot;
     private final int materialSlot;
     private final String newName;
+    private String result = null;
 
     public AnvilAction(int inputSlot, int materialSlot, String newName) {
         this.inputSlot = inputSlot;
@@ -38,57 +39,57 @@ public class AnvilAction implements BotAction {
         Inventory inv = player.getInventory();
 
         ItemStack inputItem = inv.getItem(inputSlot).copy();
-        if (inputItem.isEmpty()) return true;
+        if (inputItem.isEmpty()) { result = "FAILED: No item in input slot " + inputSlot; return true; }
 
         ItemStack materialItem = materialSlot >= 0 ? inv.getItem(materialSlot).copy() : ItemStack.EMPTY;
 
-        // Find nearby anvil or create virtual access
         BlockPos anvilPos = findNearbyBlock(player, "anvil", 6);
+        if (anvilPos == null) { result = "FAILED: No anvil within 6 blocks"; return true; }
 
-        ContainerLevelAccess access = anvilPos != null
-                ? ContainerLevelAccess.create(player.level(), anvilPos)
-                : ContainerLevelAccess.NULL;
+        ContainerLevelAccess access = ContainerLevelAccess.create(player.level(), anvilPos);
 
         AnvilMenu anvil = new AnvilMenu(player.containerMenu.containerId + 1, inv, access);
 
-        // Place items
         anvil.getSlot(0).set(inputItem);
         if (!materialItem.isEmpty()) {
             anvil.getSlot(1).set(materialItem);
         }
 
-        // Rename if requested
         if (newName != null && !newName.isEmpty()) {
             anvil.setItemName(newName);
         }
 
-        // Trigger result calculation
         anvil.createResult();
 
-        ItemStack result = anvil.getSlot(2).getItem();
-        if (result.isEmpty()) return true;
-
-        int cost = anvil.getCost();
-        if (player.experienceLevel < cost && !player.getAbilities().instabuild) {
+        ItemStack resultItem = anvil.getSlot(2).getItem();
+        if (resultItem.isEmpty()) {
+            result = "FAILED: Anvil produced no result (items may not be combinable)";
             return true;
         }
 
-        // Consume inputs from real inventory
+        int cost = anvil.getCost();
+        if (player.experienceLevel < cost && !player.getAbilities().instabuild) {
+            result = "FAILED: Need " + cost + " XP levels but only have " + player.experienceLevel + ". Use meditate to earn more XP first.";
+            return true;
+        }
+
         inv.getItem(inputSlot).shrink(inputItem.getCount());
         if (materialSlot >= 0 && !materialItem.isEmpty()) {
             inv.getItem(materialSlot).shrink(materialItem.getCount());
         }
 
-        // Deduct XP
         if (!player.getAbilities().instabuild) {
             player.giveExperienceLevels(-cost);
         }
 
-        // Give result
-        inv.add(result.copy());
+        inv.add(resultItem.copy());
+        result = "Anvil success (cost " + cost + " levels)";
 
         return true;
     }
+
+    @Override
+    public String getResult() { return result; }
 
     private BlockPos findNearbyBlock(ServerPlayer player, String blockName, int radius) {
         BlockPos center = player.blockPosition();
