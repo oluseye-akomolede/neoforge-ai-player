@@ -9,6 +9,7 @@ one at a time.
 import json
 import requests
 from config import OLLAMA_URL
+import brain
 
 PLANNER_PROMPT = """You are a Minecraft task planner. Break the player's instruction into simple, sequential steps that a bot can execute one at a time.
 
@@ -30,6 +31,9 @@ IF the player gives a vague or high-level goal (e.g. "get me iron gear" or "set 
 - Do NOT include "equip" as a separate step — the bot auto-equips after crafting
 - "collect" after mining is automatic — don't add separate collect steps
 - If the instruction is already a single action, output just one step
+- NEVER say "go to Y=N" — the bot cannot teleport to a Y level. Say "dig a staircase down to Y=N" instead
+- For underground tasks, always say "dig down" or "mine downward" — the bot must physically dig, not use goto
+- Do NOT re-delegate or assign work to other bots — just describe what YOU need to do
 
 ## Minecraft knowledge
 - Diamonds are found below Y=16, require minecraft:iron_pickaxe or better to mine
@@ -69,23 +73,24 @@ def decompose(model, instruction, memory_context=""):
 
     prompt = PLANNER_PROMPT.format(memory_section=memory_section)
 
-    resp = requests.post(
-        f"{OLLAMA_URL}/api/chat",
-        json={
-            "model": model,
-            "messages": [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": instruction},
-            ],
-            "stream": False,
-            "format": "json",
-            "options": {
-                "temperature": 0.3,
-                "num_predict": 256,
+    with brain.ollama_lock:
+        resp = requests.post(
+            f"{OLLAMA_URL}/api/chat",
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": instruction},
+                ],
+                "stream": False,
+                "format": "json",
+                "options": {
+                    "temperature": 0.3,
+                    "num_predict": 256,
+                },
             },
-        },
-        timeout=60,
-    )
+            timeout=60,
+        )
     resp.raise_for_status()
     content = resp.json()["message"]["content"]
 
@@ -122,6 +127,8 @@ ORCHESTRATOR_PROMPT = """You are a Minecraft task orchestrator. Break the player
 - If no bot is a great fit, use "any"
 - Steps assigned to different bots can potentially run in parallel
 - Steps for the SAME bot run sequentially
+- NEVER say "go to Y=N" — say "dig a staircase down to Y=N" instead (bots must physically dig)
+- Each step must be self-contained — the assigned bot will execute it alone without help
 
 ## Minecraft knowledge
 - Diamonds are found below Y=16, require minecraft:iron_pickaxe or better
@@ -159,23 +166,24 @@ def orchestrate(model, instruction, bot_profiles, memory_context=""):
         memory_section=memory_section,
     )
 
-    resp = requests.post(
-        f"{OLLAMA_URL}/api/chat",
-        json={
-            "model": model,
-            "messages": [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": instruction},
-            ],
-            "stream": False,
-            "format": "json",
-            "options": {
-                "temperature": 0.3,
-                "num_predict": 512,
+    with brain.ollama_lock:
+        resp = requests.post(
+            f"{OLLAMA_URL}/api/chat",
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": instruction},
+                ],
+                "stream": False,
+                "format": "json",
+                "options": {
+                    "temperature": 0.3,
+                    "num_predict": 512,
+                },
             },
-        },
-        timeout=60,
-    )
+            timeout=60,
+        )
     resp.raise_for_status()
     content = resp.json()["message"]["content"]
 

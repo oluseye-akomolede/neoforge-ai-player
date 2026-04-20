@@ -66,12 +66,14 @@ class SemanticMemory:
                     ))
 
     def _embed(self, text):
-        """Generate embedding via ollama."""
-        resp = requests.post(
-            f"{self.ollama_url}/api/embeddings",
-            json={"model": EMBED_MODEL, "prompt": text},
-            timeout=10,
-        )
+        """Generate embedding via ollama (serialized via brain.ollama_lock)."""
+        import brain
+        with brain.ollama_lock:
+            resp = requests.post(
+                f"{self.ollama_url}/api/embeddings",
+                json={"model": EMBED_MODEL, "prompt": text},
+                timeout=30,
+            )
         resp.raise_for_status()
         vec = resp.json()["embedding"]
         return np.array(vec, dtype=np.float32)

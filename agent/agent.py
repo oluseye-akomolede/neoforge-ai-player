@@ -28,6 +28,7 @@ from config import (
 _task_board = None
 _all_runners = {}  # name -> BotRunner
 
+
 CHAT_POLL_INTERVAL = 0.25
 
 
@@ -135,6 +136,13 @@ class BotRunner:
             if any(text_lower.startswith(w) for w in skip_words):
                 continue
 
+            # Determine if this came from another bot (not a real player)
+            from_bot = sender in _all_runners
+
+            # If a bot sent us a task board notification, extract the actual task
+            if from_bot and "Task #" in text and "for you:" in text:
+                text = text.split("for you:", 1)[1].strip()
+
             # Recall relevant memories to give the planner context
             memory_context = ""
             if self.semantic_mem:
@@ -149,8 +157,9 @@ class BotRunner:
                     failure_reason=f"Interrupted by new instruction: \"{text[:60]}\""
                 )
 
-            # Use orchestrator if multiple bots are available
-            if len(_all_runners) > 1 and _task_board:
+            # Bot-to-bot messages: NEVER orchestrate (prevents delegation loops).
+            # Only use orchestrator for real player instructions when multiple bots available.
+            if not from_bot and len(_all_runners) > 1 and _task_board:
                 print(f"[{self.name}/orchestrator] Decomposing with delegation: {text[:80]}")
                 profiles = [r.profile for r in _all_runners.values()]
                 orch_steps = planner.orchestrate(self.model, text, profiles, memory_context)
@@ -659,6 +668,9 @@ class BotRunner:
                     return {"error": "delegate requires a task description"}
                 if not _task_board:
                     return {"error": "Task board not available"}
+                # Prevent re-delegation loops: if bot is working on a task board task, don't delegate
+                if self._current_task_id:
+                    return {"error": "You are working on a delegated task — complete it yourself, do not re-delegate"}
                 steps = None
                 if target_bot and target_bot in _all_runners:
                     spec = None

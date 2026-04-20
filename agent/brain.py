@@ -1,6 +1,11 @@
 import json
+import threading
 import requests
 from config import OLLAMA_URL
+
+# Serialize all ollama requests — single GPU can only serve one at a time.
+# Exported so planner and semantic_memory can use the same lock.
+ollama_lock = threading.Lock()
 
 
 def think(model, system_prompt, observation, history):
@@ -8,20 +13,21 @@ def think(model, system_prompt, observation, history):
     messages.extend(history)
     messages.append({"role": "user", "content": observation})
 
-    resp = requests.post(
-        f"{OLLAMA_URL}/api/chat",
-        json={
-            "model": model,
-            "messages": messages,
-            "stream": False,
-            "format": "json",
-            "options": {
-                "temperature": 0.7,
-                "num_predict": 512,
+    with ollama_lock:
+        resp = requests.post(
+            f"{OLLAMA_URL}/api/chat",
+            json={
+                "model": model,
+                "messages": messages,
+                "stream": False,
+                "format": "json",
+                "options": {
+                    "temperature": 0.7,
+                    "num_predict": 512,
+                },
             },
-        },
-        timeout=120,
-    )
+            timeout=120,
+        )
     resp.raise_for_status()
     content = resp.json()["message"]["content"]
 
