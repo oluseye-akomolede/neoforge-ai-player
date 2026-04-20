@@ -1,11 +1,16 @@
 package com.sigmastrain.aiplayermod.actions;
 
 import com.sigmastrain.aiplayermod.bot.BotPlayer;
+import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.Map;
 
@@ -153,11 +158,31 @@ public class ConjureAction implements BotAction {
             }
         }
 
-        // Channel...
+        // Channel — emit particles and sounds
+        ServerLevel level = (ServerLevel) player.level();
+        Vec3 pos = player.position();
+
+        // Portal particles spiraling inward every 3 ticks
+        if (ticksRemaining % 3 == 0) {
+            level.sendParticles(ParticleTypes.PORTAL,
+                    pos.x, pos.y + 1.0, pos.z,
+                    2, 0.8, 0.5, 0.8, 0.2);
+            level.sendParticles(ParticleTypes.END_ROD,
+                    pos.x, pos.y + 1.5, pos.z,
+                    1, 0.3, 0.3, 0.3, 0.02);
+        }
+
+        // Start sound on first channel tick
+        if (ticksRemaining == Math.max(20, xpCost * TICKS_PER_LEVEL) - 1) {
+            level.playSound(null, player.blockPosition(),
+                    SoundEvents.BEACON_ACTIVATE, SoundSource.PLAYERS,
+                    0.6f, 1.5f);
+        }
+
         ticksRemaining--;
         if (ticksRemaining > 0) return false;
 
-        // Complete the ritual
+        // Complete the ritual — big particle burst + sound
         Item item = BuiltInRegistries.ITEM.get(ResourceLocation.parse(itemId));
         ItemStack stack = new ItemStack(item, count);
 
@@ -166,6 +191,17 @@ public class ConjureAction implements BotAction {
         }
 
         player.getInventory().add(stack);
+
+        level.sendParticles(ParticleTypes.END_ROD,
+                pos.x, pos.y + 1.0, pos.z,
+                15, 0.5, 0.8, 0.5, 0.1);
+        level.sendParticles(ParticleTypes.WITCH,
+                pos.x, pos.y + 1.0, pos.z,
+                10, 0.4, 0.4, 0.4, 0.05);
+        level.playSound(null, player.blockPosition(),
+                SoundEvents.ENDERMAN_TELEPORT, SoundSource.PLAYERS,
+                0.7f, 1.2f);
+
         result = "Conjured " + count + "x " + itemId + " (cost " + xpCost + " levels)";
         return true;
     }
