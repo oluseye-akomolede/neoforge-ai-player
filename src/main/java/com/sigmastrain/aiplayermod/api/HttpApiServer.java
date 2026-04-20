@@ -8,6 +8,7 @@ import com.sigmastrain.aiplayermod.AIPlayerMod;
 import com.sigmastrain.aiplayermod.actions.*;
 import com.sigmastrain.aiplayermod.bot.BotManager;
 import com.sigmastrain.aiplayermod.bot.BotPlayer;
+import com.sigmastrain.aiplayermod.shop.BotShop;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
@@ -36,6 +37,7 @@ public class HttpApiServer {
             server.createContext("/health", this::handleHealth);
             server.createContext("/bots", this::handleBots);
             server.createContext("/bot/", this::handleBotAction);
+            server.createContext("/shop", this::handleShop);
 
             server.start();
         } catch (IOException e) {
@@ -483,6 +485,24 @@ public class HttpApiServer {
                 sendJson(exchange, 200, Map.of("status", "trading",
                         "trade_index", tradeIndex, "times", times));
             }
+            case "shop_list" -> {
+                sendJson(exchange, 200, Map.of("items", BotShop.listAll()));
+            }
+            case "shop_buy" -> {
+                String item = body.get("item").getAsString();
+                int count = body.has("count") ? body.get("count").getAsInt() : 1;
+                BotManager.getServer().execute(() ->
+                        bot.getActionQueue().enqueue(new ShopBuyAction(item, count)));
+                sendJson(exchange, 200, Map.of("status", "purchasing", "item", item, "count", count));
+            }
+            case "send_item" -> {
+                int slot = body.get("slot").getAsInt();
+                String target = body.get("target").getAsString();
+                int count = body.has("count") ? body.get("count").getAsInt() : 64;
+                BotManager.getServer().execute(() ->
+                        bot.getActionQueue().enqueue(new SendItemAction(slot, target, count)));
+                sendJson(exchange, 200, Map.of("status", "sending", "slot", slot, "target", target));
+            }
             default -> sendJson(exchange, 400, Map.of("error", "Unknown action: " + action));
         }
         } catch (Exception e) {
@@ -490,6 +510,33 @@ public class HttpApiServer {
             try {
                 sendJson(exchange, 500, Map.of("error", e.getMessage() != null ? e.getMessage() : e.getClass().getName()));
             } catch (Exception ignored) {}
+        }
+    }
+
+    // ── /shop ── (GET = list, POST = add, DELETE = remove)
+
+    private void handleShop(HttpExchange exchange) throws IOException {
+        if (!checkAuth(exchange)) return;
+
+        String method = exchange.getRequestMethod();
+        switch (method) {
+            case "GET" -> sendJson(exchange, 200, Map.of("items", BotShop.listAll(), "count", BotShop.size()));
+            case "POST" -> {
+                JsonObject body = readBody(exchange);
+                String item = body.get("item").getAsString();
+                int price = body.get("price").getAsInt();
+                int maxPer = body.has("max_per_purchase") ? body.get("max_per_purchase").getAsInt() : 64;
+                String category = body.has("category") ? body.get("category").getAsString() : "general";
+                BotShop.add(item, price, maxPer, category);
+                sendJson(exchange, 200, Map.of("status", "added", "item", item, "price", price));
+            }
+            case "DELETE" -> {
+                JsonObject body = readBody(exchange);
+                String item = body.get("item").getAsString();
+                boolean removed = BotShop.remove(item);
+                sendJson(exchange, 200, Map.of("status", removed ? "removed" : "not_found", "item", item));
+            }
+            default -> sendJson(exchange, 405, Map.of("error", "Method not allowed"));
         }
     }
 

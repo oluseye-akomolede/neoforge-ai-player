@@ -195,3 +195,26 @@ def smelt(bot, input_slot, fuel_slot, count=1):
 
 def trade(bot, trade_index=-1, times=1):
     return _post(f"/bot/{bot}/trade", {"trade_index": trade_index, "times": times})
+
+
+# ── Shop ──
+
+def shop_list(bot=None):
+    if bot:
+        return _get(f"/bot/{bot}/shop_list")
+    return _get("/shop")
+
+def shop_buy(bot, item, count=1):
+    return _post(f"/bot/{bot}/shop_buy", {"item": item, "count": count})
+
+def shop_add(item, price, max_per_purchase=64, category="general"):
+    return _post("/shop", {"item": item, "price": price, "max_per_purchase": max_per_purchase, "category": category})
+
+def shop_remove(item):
+    return _delete("/shop", {"item": item})
+
+
+# ── Item transfer ──
+
+def send_item(bot, slot, target, count=64):
+    return _post(f"/bot/{bot}/send_item", {"slot": slot, "target": target, "count": count})

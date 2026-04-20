@@ -1,0 +1,52 @@
+{
+  "items": [
+    {"item": "minecraft:iron_sword", "price": 8, "max_per_purchase": 4, "category": "weapons"},
+    {"item": "minecraft:iron_axe", "price": 10, "max_per_purchase": 4, "category": "weapons"},
+    {"item": "minecraft:bow", "price": 12, "max_per_purchase": 2, "category": "weapons"},
+    {"item": "minecraft:crossbow", "price": 15, "max_per_purchase": 2, "category": "weapons"},
+    {"item": "minecraft:shield", "price": 10, "max_per_purchase": 2, "category": "weapons"},
+    {"item": "minecraft:arrow", "price": 1, "max_per_purchase": 64, "category": "ammo"},
+    {"item": "minecraft:spectral_arrow", "price": 3, "max_per_purchase": 32, "category": "ammo"},
+
+    {"item": "minecraft:iron_pickaxe", "price": 10, "max_per_purchase": 4, "category": "tools"},
+    {"item": "minecraft:iron_shovel", "price": 6, "max_per_purchase": 4, "category": "tools"},
+    {"item": "minecraft:diamond_pickaxe", "price": 50, "max_per_purchase": 2, "category": "tools"},
+    {"item": "minecraft:diamond_axe", "price": 50, "max_per_purchase": 2, "category": "tools"},
+    {"item": "minecraft:diamond_sword", "price": 55, "max_per_purchase": 2, "category": "tools"},
+    {"item": "minecraft:shears", "price": 6, "max_per_purchase": 4, "category": "tools"},
+    {"item": "minecraft:fishing_rod", "price": 8, "max_per_purchase": 2, "category": "tools"},
+
+    {"item": "minecraft:iron_helmet", "price": 15, "max_per_purchase": 2, "category": "armor"},
+    {"item": "minecraft:iron_chestplate", "price": 24, "max_per_purchase": 2, "category": "armor"},
+    {"item": "minecraft:iron_leggings", "price": 21, "max_per_purchase": 2, "category": "armor"},
+    {"item": "minecraft:iron_boots", "price": 12, "max_per_purchase": 2, "category": "armor"},
+    {"item": "minecraft:diamond_helmet", "price": 60, "max_per_purchase": 1, "category": "armor"},
+    {"item": "minecraft:diamond_chestplate", "price": 96, "max_per_purchase": 1, "category": "armor"},
+    {"item": "minecraft:diamond_leggings", "price": 84, "max_per_purchase": 1, "category": "armor"},
+    {"item": "minecraft:diamond_boots", "price": 48, "max_per_purchase": 1, "category": "armor"},
+
+    {"item": "minecraft:torch", "price": 1, "max_per_purchase": 64, "category": "utility"},
+    {"item": "minecraft:lantern", "price": 3, "max_per_purchase": 16, "category": "utility"},
+    {"item": "minecraft:bucket", "price": 5, "max_per_purchase": 4, "category": "utility"},
+    {"item": "minecraft:compass", "price": 8, "max_per_purchase": 2, "category": "utility"},
+    {"item": "minecraft:spyglass", "price": 10, "max_per_purchase": 1, "category": "utility"},
+    {"item": "minecraft:lead", "price": 4, "max_per_purchase": 8, "category": "utility"},
+    {"item": "minecraft:name_tag", "price": 15, "max_per_purchase": 4, "category": "utility"},
+
+    {"item": "minecraft:cooked_beef", "price": 1, "max_per_purchase": 64, "category": "food"},
+    {"item": "minecraft:golden_apple", "price": 20, "max_per_purchase": 4, "category": "food"},
+    {"item": "minecraft:bread", "price": 1, "max_per_purchase": 64, "category": "food"},
+
+    {"item": "minecraft:cobblestone", "price": 1, "max_per_purchase": 64, "category": "blocks"},
+    {"item": "minecraft:oak_planks", "price": 1, "max_per_purchase": 64, "category": "blocks"},
+    {"item": "minecraft:glass", "price": 2, "max_per_purchase": 64, "category": "blocks"},
+    {"item": "minecraft:bookshelf", "price": 8, "max_per_purchase": 16, "category": "blocks"},
+    {"item": "minecraft:crafting_table", "price": 2, "max_per_purchase": 4, "category": "blocks"},
+    {"item": "minecraft:furnace", "price": 3, "max_per_purchase": 4, "category": "blocks"},
+    {"item": "minecraft:chest", "price": 3, "max_per_purchase": 8, "category": "blocks"},
+    {"item": "minecraft:enchanting_table", "price": 40, "max_per_purchase": 1, "category": "blocks"},
+    {"item": "minecraft:anvil", "price": 35, "max_per_purchase": 1, "category": "blocks"},
+    {"item": "minecraft:brewing_stand", "price": 15, "max_per_purchase": 1, "category": "blocks"},
+    {"item": "minecraft:smithing_table", "price": 12, "max_per_purchase": 1, "category": "blocks"}
+  ]
+}

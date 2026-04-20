@@ -19,6 +19,7 @@ import semantic_memory as sem
 import planner
 import sessions
 import taskboard
+import waypoints
 from config import (
     TICK_DELAY, BUSY_POLL_DELAY,
     OBSERVE_ENTITY_RADIUS, OBSERVE_BLOCK_RADIUS,
@@ -637,7 +638,7 @@ class BotRunner:
                     self._learn_from_error(name, params, error)
                 else:
                     # For query actions, include response data so the bot can see it
-                    if name in ("xp_status", "find_blocks", "find_entities") and isinstance(resp, dict):
+                    if name in ("xp_status", "find_blocks", "find_entities", "shop_list", "list_waypoints") and isinstance(resp, dict):
                         import json
                         data_str = json.dumps(resp, default=str)
                         if len(data_str) > 500:
@@ -849,6 +850,34 @@ class BotRunner:
                 return api.smelt(bot, p["input_slot"], p["fuel_slot"], p.get("count", 1))
             case "trade":
                 return api.trade(bot, p.get("trade_index", -1), p.get("times", 1))
+            case "shop_list":
+                return api.shop_list(bot)
+            case "shop_buy":
+                return api.shop_buy(bot, p["item"], p.get("count", 1))
+            case "send_item":
+                return api.send_item(bot, p["slot"], p["target"], p.get("count", 64))
+            case "set_waypoint":
+                wp_name = p["name"]
+                # Get bot's current position from status
+                st = api.status(bot)
+                pos = st.get("position", {})
+                dim = st.get("dimension")
+                waypoints.set_waypoint(wp_name, pos.get("x", 0), pos.get("y", 0), pos.get("z", 0), dim, bot)
+                return {"status": "waypoint_set", "name": wp_name}
+            case "delete_waypoint":
+                ok = waypoints.delete_waypoint(p["name"])
+                return {"status": "deleted" if ok else "not_found"}
+            case "list_waypoints":
+                return {"waypoints": waypoints.list_waypoints()}
+            case "goto_waypoint":
+                wp = waypoints.get_waypoint(p["name"])
+                if not wp:
+                    return {"error": f"Waypoint '{p['name']}' not found. Use list_waypoints to see available waypoints."}
+                if wp.get("dimension"):
+                    api.teleport(bot, wp["x"], wp["y"], wp["z"], wp["dimension"])
+                else:
+                    api.goto(bot, wp["x"], wp["y"], wp["z"], p.get("distance", 2.0), p.get("sprint", True))
+                return {"status": "navigating", "waypoint": wp["name"], "target": {"x": wp["x"], "y": wp["y"], "z": wp["z"]}}
             case _:
                 return {"error": f"Unknown action: {name}"}
 
@@ -924,6 +953,11 @@ def run():
     except Exception as e:
         print(f"[agent] Task board unavailable: {e}")
         _task_board = None
+
+    waypoints.load()
+    wp_count = len(waypoints.list_waypoints())
+    if wp_count:
+        print(f"[agent] Waypoints: {wp_count} loaded for this server")
 
     profiles = load_profiles()
     print(f"[agent] Found {len(profiles)} bot profile(s): {[p['name'] for p in profiles]}")

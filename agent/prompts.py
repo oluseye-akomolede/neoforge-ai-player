@@ -78,6 +78,19 @@ You can include 1-5 actions per response. They execute in order.
 ### Trading
 - trade: Trade with a nearby villager. Use trade_index=-1 to LIST available trades first, then call again with the index to buy. Params: trade_index (-1 to list, 0+ to buy), times (how many times to execute trade, default 1)
 
+### Shop
+- shop_list: View all items available in the bot shop. No params.
+- shop_buy: Purchase an item from the shop using emeralds. Params: item (minecraft:item_id), count (default 1)
+
+### Item transfer
+- send_item: Send items from your inventory to another bot, anywhere in the world (works across dimensions). Params: slot (your inventory slot), target (bot name), count (optional)
+
+### Waypoints
+- set_waypoint: Save your current location as a named waypoint. Params: name
+- delete_waypoint: Remove a saved waypoint. Params: name
+- list_waypoints: Show all saved waypoints. No params.
+- goto_waypoint: Travel to a saved waypoint. Params: name, distance (optional), sprint (optional)
+
 ### Information gathering
 - find_blocks: Search for blocks by name. Params: block (name), radius (optional), max (optional)
 - find_entities: Search for entities by name. Params: target (name/type), radius (optional)

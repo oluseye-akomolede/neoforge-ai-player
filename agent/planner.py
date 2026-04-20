@@ -43,6 +43,10 @@ IF the player gives a vague or high-level goal (e.g. "get me iron gear" or "set 
 - Furnace recipe: 8x minecraft:cobblestone in a ring
 - To smelt, you need fuel (minecraft:coal or minecraft:charcoal) and a placed furnace
 - Tools progression: wood -> stone -> iron -> diamond -> netherite
+- Use "goto_player" to go to a player — NEVER guess coordinates
+- Use "send_item" to transfer items to another bot (works at any distance, across dimensions)
+- Use "shop_buy" to purchase items from the bot shop (costs emeralds)
+- Use "goto_waypoint" to travel to saved locations
 
 ## Examples
 
@@ -132,6 +136,9 @@ ORCHESTRATOR_PROMPT = """You are a Minecraft task orchestrator. Break the player
 - Each step must be self-contained — the assigned bot will execute it alone without help
 - NEVER delegate crafting if the orchestrating bot needs the crafted item in its OWN inventory. Crafted items stay in the crafter's inventory — they cannot be transferred between bots. If YOU need the result, do it yourself.
 - Similarly, do NOT delegate conjure, smelt, or any action where the product must end up in a specific bot's inventory
+- If bot A crafts something that bot B needs, add a "send_item" step: bot A sends the item to bot B (works at any distance, across dimensions)
+- For "come to me" or "go to player" commands, EVERY bot should use goto_player — do NOT decompose navigation into mining/crafting steps
+- Use "goto_waypoint" to send bots to saved locations
 
 ## Minecraft knowledge
 - Diamonds are found below Y=16, require minecraft:iron_pickaxe or better
