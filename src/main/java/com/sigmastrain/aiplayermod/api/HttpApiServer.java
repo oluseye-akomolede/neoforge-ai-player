@@ -385,6 +385,64 @@ public class HttpApiServer {
                 BotManager.getServer().execute(() -> bot.getActionQueue().clear());
                 sendJson(exchange, 200, Map.of("status", "stopped"));
             }
+            case "anvil" -> {
+                int inputSlot = body.get("input_slot").getAsInt();
+                int materialSlot = body.has("material_slot") ? body.get("material_slot").getAsInt() : -1;
+                String newName = body.has("name") ? body.get("name").getAsString() : null;
+                BotManager.getServer().execute(() ->
+                        bot.getActionQueue().enqueue(new AnvilAction(inputSlot, materialSlot, newName)));
+                sendJson(exchange, 200, Map.of("status", "anvil", "input_slot", inputSlot));
+            }
+            case "smithing" -> {
+                int templateSlot = body.get("template_slot").getAsInt();
+                int baseSlot = body.get("base_slot").getAsInt();
+                int additionSlot = body.get("addition_slot").getAsInt();
+                BotManager.getServer().execute(() ->
+                        bot.getActionQueue().enqueue(new SmithingAction(templateSlot, baseSlot, additionSlot)));
+                sendJson(exchange, 200, Map.of("status", "smithing",
+                        "template", templateSlot, "base", baseSlot, "addition", additionSlot));
+            }
+            case "brew" -> {
+                int ingredientSlot = body.get("ingredient_slot").getAsInt();
+                int fuelSlot = body.has("fuel_slot") ? body.get("fuel_slot").getAsInt() : -1;
+                var bottleArr = body.getAsJsonArray("bottle_slots");
+                int[] bottleSlots = new int[bottleArr.size()];
+                for (int i = 0; i < bottleArr.size(); i++) bottleSlots[i] = bottleArr.get(i).getAsInt();
+                BotManager.getServer().execute(() ->
+                        bot.getActionQueue().enqueue(new BrewAction(ingredientSlot, bottleSlots, fuelSlot)));
+                sendJson(exchange, 200, Map.of("status", "brewing",
+                        "ingredient", ingredientSlot, "bottles", bottleSlots.length));
+            }
+            case "enchant" -> {
+                int itemSlot = body.get("item_slot").getAsInt();
+                int lapisSlot = body.get("lapis_slot").getAsInt();
+                int option = body.has("option") ? body.get("option").getAsInt() : 2;
+                BotManager.getServer().execute(() ->
+                        bot.getActionQueue().enqueue(new EnchantAction(itemSlot, lapisSlot, option)));
+                sendJson(exchange, 200, Map.of("status", "enchanting",
+                        "item_slot", itemSlot, "option", option));
+            }
+            case "xp" -> {
+                String method = exchange.getRequestMethod();
+                if ("GET".equals(method)) {
+                    var player = bot.getPlayer();
+                    sendJson(exchange, 200, Map.of(
+                            "level", player.experienceLevel,
+                            "progress", player.experienceProgress,
+                            "total", player.totalExperience,
+                            "next_level_cost", player.getXpNeededForNextLevel()
+                    ));
+                } else {
+                    int amount = body.has("levels") ? body.get("levels").getAsInt() : 0;
+                    int points = body.has("points") ? body.get("points").getAsInt() : 0;
+                    BotManager.getServer().execute(() -> {
+                        if (amount != 0) bot.getPlayer().giveExperienceLevels(amount);
+                        if (points != 0) bot.getPlayer().giveExperiencePoints(points);
+                    });
+                    sendJson(exchange, 200, Map.of("status", "xp_updated",
+                            "levels_added", amount, "points_added", points));
+                }
+            }
             default -> sendJson(exchange, 400, Map.of("error", "Unknown action: " + action));
         }
         } catch (Exception e) {

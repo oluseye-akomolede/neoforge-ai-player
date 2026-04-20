@@ -144,3 +144,39 @@ def stop(bot):
 
 def chat_inbox(bot):
     return _get(f"/bot/{bot}/chat_inbox")
+
+
+# ── Magic / enchanting / brewing ──
+
+def anvil(bot, input_slot, material_slot=-1, name=None):
+    data = {"input_slot": input_slot, "material_slot": material_slot}
+    if name:
+        data["name"] = name
+    return _post(f"/bot/{bot}/anvil", data)
+
+def smithing(bot, template_slot, base_slot, addition_slot):
+    return _post(f"/bot/{bot}/smithing", {
+        "template_slot": template_slot,
+        "base_slot": base_slot,
+        "addition_slot": addition_slot,
+    })
+
+def brew(bot, ingredient_slot, bottle_slots, fuel_slot=-1):
+    return _post(f"/bot/{bot}/brew", {
+        "ingredient_slot": ingredient_slot,
+        "bottle_slots": bottle_slots,
+        "fuel_slot": fuel_slot,
+    })
+
+def enchant(bot, item_slot, lapis_slot, option=2):
+    return _post(f"/bot/{bot}/enchant", {
+        "item_slot": item_slot,
+        "lapis_slot": lapis_slot,
+        "option": option,
+    })
+
+def xp_status(bot):
+    return _get(f"/bot/{bot}/xp")
+
+def xp_give(bot, levels=0, points=0):
+    return _post(f"/bot/{bot}/xp", {"levels": levels, "points": points})

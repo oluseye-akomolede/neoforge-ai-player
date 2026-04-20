@@ -7,6 +7,7 @@ observe → think → act loop running in a separate thread.
 
 import json
 import os
+import re
 import threading
 import time
 import sys
@@ -22,6 +23,17 @@ from config import (
     TICK_DELAY, BUSY_POLL_DELAY,
     OBSERVE_ENTITY_RADIUS, OBSERVE_BLOCK_RADIUS,
     MAX_CHAT_HISTORY, MAX_CONVERSATION, OLLAMA_URL, PG_DSN,
+)
+
+# Chat command patterns (regex, processed before planner)
+_CMD_REMEMBER = re.compile(
+    r"@(all|\w+)\s+remember:\s*(.+)", re.IGNORECASE | re.DOTALL
+)
+_CMD_AREA = re.compile(
+    r"@(all|\w+)\s+area:\s*(.+)", re.IGNORECASE | re.DOTALL
+)
+_CMD_FORGET = re.compile(
+    r"@(all|\w+)\s+forget:\s*(.+)", re.IGNORECASE | re.DOTALL
 )
 
 # Shared state across all bot runners (set in run())
@@ -117,6 +129,114 @@ class BotRunner:
             except Exception:
                 pass
             self._stop_event.wait(CHAT_POLL_INTERVAL)
+
+    def _handle_chat_commands(self, new_messages):
+        """Process special chat commands (remember, area, forget) before the planner.
+
+        Returns a filtered list of messages with consumed commands removed.
+        """
+        if not new_messages:
+            return new_messages
+        remaining = []
+        for msg in new_messages:
+            parts = msg.split(": ", 1)
+            if len(parts) < 2:
+                remaining.append(msg)
+                continue
+            sender, text = parts
+            if sender == self.name or sender in _all_runners:
+                remaining.append(msg)
+                continue
+
+            consumed = False
+
+            # @all remember: <knowledge> or @BotName remember: <knowledge>
+            m = _CMD_REMEMBER.match(text)
+            if m:
+                target, content = m.group(1), m.group(2).strip()
+                if target.lower() == "all" or target.lower() == self.name.lower():
+                    self._inject_knowledge(content, sender)
+                    consumed = True
+
+            # @all area: <description> or @BotName area: <x1,y1,z1 to x2,y2,z2>
+            if not consumed:
+                m = _CMD_AREA.match(text)
+                if m:
+                    target, content = m.group(1), m.group(2).strip()
+                    if target.lower() == "all" or target.lower() == self.name.lower():
+                        self._set_work_area(content, sender)
+                        consumed = True
+
+            # @all forget: <query> or @BotName forget: <query>
+            if not consumed:
+                m = _CMD_FORGET.match(text)
+                if m:
+                    target, content = m.group(1), m.group(2).strip()
+                    if target.lower() == "all" or target.lower() == self.name.lower():
+                        self._forget_knowledge(content, sender)
+                        consumed = True
+
+            if not consumed:
+                remaining.append(msg)
+
+        return remaining
+
+    def _inject_knowledge(self, content, sender):
+        """Store player-provided knowledge in semantic memory."""
+        category = "knowledge"
+        if any(w in content.lower() for w in ["at ", "near ", "location", "coords"]):
+            category = "location"
+        elif any(w in content.lower() for w in ["always ", "never ", "rule", "instruction"]):
+            category = "instruction"
+
+        self.memory_entries = mem_module.add_to(
+            self.memory_entries, content, self._memory_file
+        )
+        if self.semantic_mem:
+            try:
+                mid = self.semantic_mem.store(content, category=category)
+                self.semantic_mem.store_shared(
+                    f"(from player {sender}) {content}", category=category
+                )
+                print(f"[{self.name}/knowledge] Stored [{category}]: {content[:80]} (id={mid})")
+            except Exception as e:
+                print(f"[{self.name}/knowledge] Store error: {e}")
+        api.chat(self.name, f"Got it, I'll remember that.")
+
+    def _set_work_area(self, content, sender):
+        """Parse and store a work area designation."""
+        area_text = f"[instruction] My designated work area: {content}"
+        self.memory_entries = mem_module.add_to(
+            self.memory_entries, area_text, self._memory_file
+        )
+        if self.semantic_mem:
+            try:
+                mid = self.semantic_mem.store(area_text, category="instruction")
+                print(f"[{self.name}/area] Set work area: {content[:80]} (id={mid})")
+            except Exception as e:
+                print(f"[{self.name}/area] Store error: {e}")
+        self.system_prompt = prompts.build_system_prompt(self.profile, self.memory_entries)
+        api.chat(self.name, f"Work area set: {content[:60]}")
+
+    def _forget_knowledge(self, query, sender):
+        """Remove matching knowledge from memory."""
+        removed = 0
+        self.memory_entries = [
+            m for m in self.memory_entries
+            if query.lower() not in m.lower()
+        ]
+        mem_module.save_to(self.memory_entries, self._memory_file)
+        if self.semantic_mem:
+            try:
+                results = self.semantic_mem.recall(query, limit=3)
+                for r in results:
+                    if r.get("similarity", 0) > 0.7:
+                        self.semantic_mem.delete(r["id"])
+                        removed += 1
+            except Exception as e:
+                print(f"[{self.name}/forget] Error: {e}")
+        print(f"[{self.name}/forget] Removed {removed} memories matching: {query[:60]}")
+        api.chat(self.name, f"Forgot {removed} thing(s) about '{query[:40]}'.")
 
     def _maybe_plan(self, new_messages):
         """If new messages contain a player instruction, run the planner."""
@@ -362,6 +482,7 @@ class BotRunner:
                 self._wait_for_idle_or_chat(timeout=10)
                 obs, new_msgs = self._observe()
 
+                new_msgs = self._handle_chat_commands(new_msgs)
                 self._maybe_plan(new_msgs)
 
                 if not self._plan_steps:
@@ -687,6 +808,16 @@ class BotRunner:
                     )
                 print(f"[{self.name}/delegate] Posted task #{task_id}: {desc[:60]} (spec={spec}, target={target_bot})")
                 return {"status": "delegated", "task_id": task_id}
+            case "anvil":
+                return api.anvil(bot, p["input_slot"], p.get("material_slot", -1), p.get("name"))
+            case "smithing":
+                return api.smithing(bot, p["template_slot"], p["base_slot"], p["addition_slot"])
+            case "brew":
+                return api.brew(bot, p["ingredient_slot"], p["bottle_slots"], p.get("fuel_slot", -1))
+            case "enchant":
+                return api.enchant(bot, p["item_slot"], p["lapis_slot"], p.get("option", 2))
+            case "xp_status":
+                return api.xp_status(bot)
             case _:
                 return {"error": f"Unknown action: {name}"}
 

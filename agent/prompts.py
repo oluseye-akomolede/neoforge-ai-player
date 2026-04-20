@@ -62,6 +62,13 @@ You can include 1-5 actions per response. They execute in order.
 ### Crafting
 - craft_session: Enter interactive crafting mode. You can search recipes, craft items, and equip results step by step. Params: goal (what you want to craft, e.g. "iron pickaxe" or "full set of armor")
 
+### Magic & enchanting
+- anvil: Use a nearby anvil to combine items, apply enchanted books, or rename items. Params: input_slot (inventory slot of item), material_slot (optional, slot of book or repair material), name (optional, new name for the item)
+- smithing: Use a nearby smithing table to upgrade items (e.g. netherite upgrades). Params: template_slot (slot with smithing template), base_slot (slot with item to upgrade), addition_slot (slot with upgrade material)
+- enchant: Use a nearby enchanting table. Params: item_slot (slot of item to enchant), lapis_slot (slot with lapis lazuli), option (0=cheapest, 1=middle, 2=best enchantment)
+- brew: Use a nearby brewing stand. Params: ingredient_slot (slot with brewing ingredient), bottle_slots (list of slots with potion bottles, up to 3), fuel_slot (optional, slot with blaze powder)
+- xp_status: Check your current XP level and progress. No params.
+
 ### Information gathering
 - find_blocks: Search for blocks by name. Params: block (name), radius (optional), max (optional)
 - find_entities: Search for entities by name. Params: target (name/type), radius (optional)

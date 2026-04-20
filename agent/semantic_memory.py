@@ -218,6 +218,18 @@ class SemanticMemory:
             lines.append(f"- [{m['category']}] {m['content']} (relevance: {sim_pct}%)")
         return "\n".join(lines)
 
+    def delete(self, memory_id):
+        """Delete a memory by id from both cache and database."""
+        with self._conn.cursor() as cur:
+            cur.execute("DELETE FROM memories WHERE id = %s AND bot_name = %s",
+                        (memory_id, self.bot_name))
+        with self._lock:
+            self._cache = [
+                (mid, c, cat, emb, meta)
+                for mid, c, cat, emb, meta in self._cache
+                if mid != memory_id
+            ]
+
     # ── Shared memory (cross-bot) ──
 
     def store_shared(self, content, category="knowledge", metadata=None):
