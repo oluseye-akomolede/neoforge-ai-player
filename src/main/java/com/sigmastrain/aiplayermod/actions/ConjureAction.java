@@ -202,7 +202,18 @@ public class ConjureAction implements BotAction {
                 SoundEvents.ENDERMAN_TELEPORT, SoundSource.PLAYERS,
                 0.7f, 1.2f);
 
-        result = "Conjured " + count + "x " + itemId + " (cost " + xpCost + " levels)";
+        // Build inventory summary so the bot knows what it has now
+        StringBuilder inv = new StringBuilder();
+        for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+            ItemStack s = player.getInventory().getItem(i);
+            if (!s.isEmpty()) {
+                if (inv.length() > 0) inv.append(", ");
+                inv.append("slot ").append(i).append(": ")
+                   .append(BuiltInRegistries.ITEM.getKey(s.getItem())).append(" x").append(s.getCount());
+            }
+        }
+
+        result = "Conjured " + count + "x " + itemId + " (cost " + xpCost + " levels). Inventory now: [" + inv + "]";
         return true;
     }
 

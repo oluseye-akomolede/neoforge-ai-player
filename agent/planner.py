@@ -34,6 +34,7 @@ IF the player gives a vague or high-level goal (e.g. "get me iron gear" or "set 
 - NEVER say "go to Y=N" — the bot cannot teleport to a Y level. Say "dig a staircase down to Y=N" instead
 - For underground tasks, always say "dig down" or "mine downward" — the bot must physically dig, not use goto
 - Do NOT re-delegate or assign work to other bots — just describe what YOU need to do
+- If YOU need a crafted/conjured item in YOUR inventory, YOU must craft/conjure it yourself — items cannot transfer between bots
 
 ## Minecraft knowledge
 - Diamonds are found below Y=16, require minecraft:iron_pickaxe or better to mine
@@ -129,6 +130,8 @@ ORCHESTRATOR_PROMPT = """You are a Minecraft task orchestrator. Break the player
 - Steps for the SAME bot run sequentially
 - NEVER say "go to Y=N" — say "dig a staircase down to Y=N" instead (bots must physically dig)
 - Each step must be self-contained — the assigned bot will execute it alone without help
+- NEVER delegate crafting if the orchestrating bot needs the crafted item in its OWN inventory. Crafted items stay in the crafter's inventory — they cannot be transferred between bots. If YOU need the result, do it yourself.
+- Similarly, do NOT delegate conjure, smelt, or any action where the product must end up in a specific bot's inventory
 
 ## Minecraft knowledge
 - Diamonds are found below Y=16, require minecraft:iron_pickaxe or better
