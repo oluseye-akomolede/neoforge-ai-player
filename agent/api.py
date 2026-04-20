@@ -68,6 +68,9 @@ def actions(bot):
 def chat(bot, message):
     return _post(f"/bot/{bot}/chat", {"message": message})
 
+def system_chat(bot, message, color="gray"):
+    return _post(f"/bot/{bot}/system_chat", {"message": message, "color": color})
+
 def goto(bot, x, y, z, distance=2.0, sprint=False):
     return _post(f"/bot/{bot}/goto", {"x": x, "y": y, "z": z, "distance": distance, "sprint": sprint})
 

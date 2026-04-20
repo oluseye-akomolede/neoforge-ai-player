@@ -132,6 +132,12 @@ public class HttpApiServer {
                 BotManager.getServer().execute(() -> bot.chat(message));
                 sendJson(exchange, 200, Map.of("status", "sent"));
             }
+            case "system_chat" -> {
+                String message = body.get("message").getAsString();
+                String color = body.has("color") ? body.get("color").getAsString() : "gray";
+                BotManager.getServer().execute(() -> bot.systemChat(message, color));
+                sendJson(exchange, 200, Map.of("status", "sent"));
+            }
             case "goto" -> {
                 double x = body.get("x").getAsDouble();
                 double y = body.get("y").getAsDouble();

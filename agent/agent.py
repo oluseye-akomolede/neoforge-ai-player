@@ -40,7 +40,8 @@ _CMD_FORGET = re.compile(
 # Shared state across all bot runners (set in run())
 _task_board = None
 _all_runners = {}  # name -> BotRunner
-
+_orchestration_lock = threading.Lock()
+_orchestrated_messages = {}  # message_text -> coordinator bot name
 
 CHAT_POLL_INTERVAL = 0.25
 
@@ -251,7 +252,7 @@ class BotRunner:
             if sender == self.name:
                 continue
             text_lower = text.lower().strip()
-            if len(text_lower) < 10:
+            if len(text_lower) < 5:
                 continue
             skip_words = ["hello", "hi ", "hey", "thanks", "thank you", "yes", "no", "ok"]
             if any(text_lower.startswith(w) for w in skip_words):
@@ -263,6 +264,28 @@ class BotRunner:
             # If a bot sent us a task board notification, extract the actual task
             if from_bot and "Task #" in text and "for you:" in text:
                 text = text.split("for you:", 1)[1].strip()
+
+            # Short-circuit: navigation commands → skip planner entirely
+            _follow_phrases = ["follow me", "follow us", "keep following"]
+            _goto_phrases = ["come to me", "come here", "get over here", "come over here",
+                             "get to me", "walk to me", "run to me", "tp to me"]
+            is_follow = not from_bot and any(p in text_lower for p in _follow_phrases)
+            is_goto = not from_bot and any(p in text_lower for p in _goto_phrases)
+            if is_follow or is_goto:
+                if self._plan_steps and self._plan_step_idx < len(self._plan_steps):
+                    self._store_plan_outcome(success=False, failure_reason=f"Interrupted: {text[:60]}")
+                self._plan_steps = []
+                self._plan_step_idx = 0
+                self._plan_instruction = ""
+                if is_follow:
+                    api.follow(self.name, sender, 3.0, 64.0)
+                    api.chat(self.name, f"Following you, {sender}!")
+                    print(f"[{self.name}/nav] Direct follow {sender} (shortcut)")
+                else:
+                    self._goto_player({"target": sender})
+                    api.chat(self.name, f"On my way!")
+                    print(f"[{self.name}/nav] Direct goto_player {sender} (shortcut)")
+                return
 
             # Recall relevant memories to give the planner context
             memory_context = ""
@@ -281,11 +304,32 @@ class BotRunner:
             # Bot-to-bot messages: NEVER orchestrate (prevents delegation loops).
             # Only use orchestrator for real player instructions when multiple bots available.
             if not from_bot and len(_all_runners) > 1 and _task_board:
-                print(f"[{self.name}/orchestrator] Decomposing with delegation: {text[:80]}")
+                # Only ONE bot orchestrates per player message — the rest wait for task board
+                msg_key = text.strip().lower()[:100]
+                with _orchestration_lock:
+                    coordinator = _orchestrated_messages.get(msg_key)
+                    if coordinator is None:
+                        _orchestrated_messages[msg_key] = self.name
+                        is_coordinator = True
+                        # Prune old entries to prevent unbounded growth
+                        if len(_orchestrated_messages) > 50:
+                            oldest = list(_orchestrated_messages.keys())[:25]
+                            for k in oldest:
+                                _orchestrated_messages.pop(k, None)
+                    else:
+                        is_coordinator = False
+
+                if not is_coordinator:
+                    print(f"[{self.name}/orchestrator] Skipping — {coordinator} is coordinating this task")
+                    return
+
+                print(f"[{self.name}/orchestrator] Coordinating: {text[:80]}")
+                api.system_chat(self.name, f"Orchestrating: {text[:60]}...", "gold")
                 profiles = [r.profile for r in _all_runners.values()]
                 orch_steps = planner.orchestrate(self.model, text, profiles, memory_context)
 
                 my_steps = []
+                delegated = []
                 for s in orch_steps:
                     assigned = s.get("assign", "any")
                     step_desc = s["step"]
@@ -303,8 +347,12 @@ class BotRunner:
                             self.name, assigned,
                             f"Task #{task_id} for you: {step_desc}"
                         )
+                        delegated.append((assigned, step_desc))
                         print(f"[{self.name}/orchestrator] Delegated to {assigned}: {step_desc[:60]}")
 
+                # Broadcast orchestration summary to chat
+                for assigned, desc in delegated:
+                    api.system_chat(self.name, f"{assigned} -> {desc[:50]}", "aqua")
                 if my_steps:
                     self._plan_steps = my_steps
                     self._plan_step_idx = 0
@@ -312,6 +360,8 @@ class BotRunner:
                     self.conversation_history.clear()
                     step_list = "\n".join(f"  {i+1}. {s}" for i, s in enumerate(my_steps))
                     print(f"[{self.name}/orchestrator] My steps ({len(my_steps)}):\n{step_list}")
+                    for i, s in enumerate(my_steps):
+                        api.system_chat(self.name, f"#{i+1}: {s[:50]}", "dark_aqua")
                 else:
                     print(f"[{self.name}/orchestrator] All steps delegated to other bots")
             else:
@@ -356,11 +406,14 @@ class BotRunner:
             self._plan_step_idx += 1
             if self._plan_step_idx >= len(self._plan_steps):
                 print(f"[{self.name}/planner] Plan COMPLETE! All {len(self._plan_steps)} steps done.")
+                try:
+                    api.system_chat(self.name, f"Plan complete! ({len(self._plan_steps)} steps done)", "green")
+                except Exception:
+                    pass
                 self._store_plan_outcome(success=True)
                 if self._current_task_id:
                     self._complete_task_board_task()
                 else:
-                    # Smaller XP reward for non-task-board plan completion
                     try:
                         api.xp_give(self.name, levels=2)
                     except Exception:
@@ -371,6 +424,10 @@ class BotRunner:
             else:
                 new_step = self._plan_steps[self._plan_step_idx]
                 print(f"[{self.name}/planner] Step done: \"{old_step}\" -> now: \"{new_step}\" ({self._plan_step_idx+1}/{len(self._plan_steps)})")
+                try:
+                    api.system_chat(self.name, f"Step {self._plan_step_idx}/{len(self._plan_steps)}: {new_step[:50]}", "dark_aqua")
+                except Exception:
+                    pass
                 self.conversation_history.clear()
 
     def _store_plan_outcome(self, success, failure_reason=""):
@@ -409,6 +466,10 @@ class BotRunner:
                 desc = task["description"]
                 _task_board.start(task["id"])
                 print(f"[{self.name}/taskboard] Claimed task #{task['id']}: {desc[:60]}")
+                try:
+                    api.system_chat(self.name, f"Claimed task: {desc[:50]}", "yellow")
+                except Exception:
+                    pass
 
                 if task.get("plan_steps"):
                     self._plan_steps = task["plan_steps"]

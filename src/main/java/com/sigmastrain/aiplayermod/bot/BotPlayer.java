@@ -4,7 +4,10 @@ import com.sigmastrain.aiplayermod.AIPlayerMod;
 import com.sigmastrain.aiplayermod.actions.ActionQueue;
 import com.mojang.authlib.GameProfile;
 import net.minecraft.core.BlockPos;
+import net.minecraft.ChatFormatting;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
+import net.minecraft.network.chat.Style;
 import net.minecraft.network.protocol.game.*;
 import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.resources.ResourceKey;
@@ -311,6 +314,29 @@ public class BotPlayer {
         if (!isAlive()) return;
         player.getServer().getPlayerList().broadcastSystemMessage(
                 Component.literal("<" + player.getName().getString() + "> " + message), false);
+    }
+
+    public void systemChat(String message, String color) {
+        if (!isAlive()) return;
+        ChatFormatting fmt = switch (color.toLowerCase()) {
+            case "gold" -> ChatFormatting.GOLD;
+            case "aqua" -> ChatFormatting.AQUA;
+            case "green" -> ChatFormatting.GREEN;
+            case "red" -> ChatFormatting.RED;
+            case "yellow" -> ChatFormatting.YELLOW;
+            case "light_purple" -> ChatFormatting.LIGHT_PURPLE;
+            case "gray" -> ChatFormatting.GRAY;
+            case "dark_aqua" -> ChatFormatting.DARK_AQUA;
+            case "dark_green" -> ChatFormatting.DARK_GREEN;
+            case "dark_purple" -> ChatFormatting.DARK_PURPLE;
+            default -> ChatFormatting.GRAY;
+        };
+        MutableComponent prefix = Component.literal("[" + player.getName().getString() + "] ")
+                .withStyle(Style.EMPTY.withColor(fmt).withBold(true));
+        MutableComponent body = Component.literal(message)
+                .withStyle(Style.EMPTY.withColor(fmt));
+        player.getServer().getPlayerList().broadcastSystemMessage(
+                prefix.append(body), false);
     }
 
     // ── Movement ──
