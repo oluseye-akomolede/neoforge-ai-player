@@ -183,3 +183,15 @@ def xp_give(bot, levels=0, points=0):
 
 def meditate(bot, levels=10):
     return _post(f"/bot/{bot}/meditate", {"levels": levels})
+
+def conjure(bot, item, count=1):
+    return _post(f"/bot/{bot}/conjure", {"item": item, "count": count})
+
+def repair(bot, slot):
+    return _post(f"/bot/{bot}/repair", {"slot": slot})
+
+def smelt(bot, input_slot, fuel_slot, count=1):
+    return _post(f"/bot/{bot}/smelt", {"input_slot": input_slot, "fuel_slot": fuel_slot, "count": count})
+
+def trade(bot, trade_index=-1, times=1):
+    return _post(f"/bot/{bot}/trade", {"trade_index": trade_index, "times": times})

@@ -67,8 +67,16 @@ You can include 1-5 actions per response. They execute in order.
 - smithing: Use a nearby smithing table to upgrade items (e.g. netherite upgrades). Params: template_slot (slot with smithing template), base_slot (slot with item to upgrade), addition_slot (slot with upgrade material)
 - enchant: Use a nearby enchanting table. PREREQUISITES: (1) check xp_status to confirm you have enough levels, (2) ensure you have lapis lazuli in inventory, (3) be within 6 blocks of an enchanting table. If XP is too low, use meditate first. Params: item_slot (slot of item to enchant), lapis_slot (slot with lapis lazuli), option (0=cheapest/1 level min, 1=middle/2 levels min, 2=best/3 levels min)
 - brew: Use a nearby brewing stand. Params: ingredient_slot (slot with brewing ingredient), bottle_slots (list of slots with potion bottles, up to 3), fuel_slot (optional, slot with blaze powder)
-- meditate: Focus and earn XP over time (1 level per 2 seconds). Use this when you need XP for enchanting or anvil work. Params: levels (how many levels to gain, default 10, max 100)
+- meditate: Focus and earn XP over time (1 level per 2 seconds). Use this when you need XP for enchanting, conjuring, or anvil work. Params: levels (how many levels to gain, default 10, max 100)
+- conjure: Channel XP to materialize raw materials from nothing. Cost varies by rarity (coal=2, iron=3, emerald=5, diamond=15). Only raw materials — never finished items. Params: item (minecraft:item_id), count (default 1, max 64)
+- repair: Restore a damaged tool/weapon/armor to full durability. Costs 1-4 XP levels based on damage. Params: slot (inventory slot of item to repair)
 - xp_status: Check your current XP level and progress. No params.
+
+### Smelting & processing
+- smelt: Use a nearby furnace/blast furnace/smoker. Loads input + fuel, waits for smelting, collects output. Params: input_slot (slot with items to smelt), fuel_slot (slot with fuel like coal), count (how many to smelt, default 1)
+
+### Trading
+- trade: Trade with a nearby villager. Use trade_index=-1 to LIST available trades first, then call again with the index to buy. Params: trade_index (-1 to list, 0+ to buy), times (how many times to execute trade, default 1)
 
 ### Information gathering
 - find_blocks: Search for blocks by name. Params: block (name), radius (optional), max (optional)

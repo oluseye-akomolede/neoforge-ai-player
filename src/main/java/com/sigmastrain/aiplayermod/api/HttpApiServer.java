@@ -453,6 +453,36 @@ public class HttpApiServer {
                         bot.getActionQueue().enqueue(new MeditateAction(levels)));
                 sendJson(exchange, 200, Map.of("status", "meditating", "target_levels", levels));
             }
+            case "conjure" -> {
+                String item = body.get("item").getAsString();
+                int count = body.has("count") ? body.get("count").getAsInt() : 1;
+                BotManager.getServer().execute(() ->
+                        bot.getActionQueue().enqueue(new ConjureAction(item, count)));
+                sendJson(exchange, 200, Map.of("status", "conjuring", "item", item, "count", count));
+            }
+            case "repair" -> {
+                int slot = body.get("slot").getAsInt();
+                BotManager.getServer().execute(() ->
+                        bot.getActionQueue().enqueue(new RepairAction(slot)));
+                sendJson(exchange, 200, Map.of("status", "repairing", "slot", slot));
+            }
+            case "smelt" -> {
+                int inputSlot = body.get("input_slot").getAsInt();
+                int fuelSlot = body.get("fuel_slot").getAsInt();
+                int count = body.has("count") ? body.get("count").getAsInt() : 1;
+                BotManager.getServer().execute(() ->
+                        bot.getActionQueue().enqueue(new SmeltAction(inputSlot, fuelSlot, count)));
+                sendJson(exchange, 200, Map.of("status", "smelting",
+                        "input_slot", inputSlot, "fuel_slot", fuelSlot, "count", count));
+            }
+            case "trade" -> {
+                int tradeIndex = body.has("trade_index") ? body.get("trade_index").getAsInt() : -1;
+                int times = body.has("times") ? body.get("times").getAsInt() : 1;
+                BotManager.getServer().execute(() ->
+                        bot.getActionQueue().enqueue(new TradeAction(tradeIndex, times)));
+                sendJson(exchange, 200, Map.of("status", "trading",
+                        "trade_index", tradeIndex, "times", times));
+            }
             default -> sendJson(exchange, 400, Map.of("error", "Unknown action: " + action));
         }
         } catch (Exception e) {

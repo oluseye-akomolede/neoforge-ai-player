@@ -636,7 +636,15 @@ class BotRunner:
                     print(f"  [{self.name}] -> {name}: FAILED {error}")
                     self._learn_from_error(name, params, error)
                 else:
-                    results.append(f"OK {name}")
+                    # For query actions, include response data so the bot can see it
+                    if name in ("xp_status", "find_blocks", "find_entities") and isinstance(resp, dict):
+                        import json
+                        data_str = json.dumps(resp, default=str)
+                        if len(data_str) > 500:
+                            data_str = data_str[:500] + "..."
+                        results.append(f"OK {name}: {data_str}")
+                    else:
+                        results.append(f"OK {name}")
                     print(f"  [{self.name}] -> {name}: ok")
             except Exception as e:
                 error_msg = str(e)
@@ -833,6 +841,14 @@ class BotRunner:
                 return api.xp_status(bot)
             case "meditate":
                 return api.meditate(bot, p.get("levels", 10))
+            case "conjure":
+                return api.conjure(bot, p["item"], p.get("count", 1))
+            case "repair":
+                return api.repair(bot, p["slot"])
+            case "smelt":
+                return api.smelt(bot, p["input_slot"], p["fuel_slot"], p.get("count", 1))
+            case "trade":
+                return api.trade(bot, p.get("trade_index", -1), p.get("times", 1))
             case _:
                 return {"error": f"Unknown action: {name}"}
 
