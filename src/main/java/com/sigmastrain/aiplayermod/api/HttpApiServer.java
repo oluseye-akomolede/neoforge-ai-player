@@ -509,6 +509,34 @@ public class HttpApiServer {
                         bot.getActionQueue().enqueue(new SendItemAction(slot, target, count)));
                 sendJson(exchange, 200, Map.of("status", "sending", "slot", slot, "target", target));
             }
+            case "directive" -> {
+                if ("DELETE".equals(exchange.getRequestMethod())) {
+                    BotManager.getServer().execute(() -> bot.getBrain().cancelDirective());
+                    sendJson(exchange, 200, Map.of("status", "cancelled"));
+                } else if ("GET".equals(exchange.getRequestMethod())) {
+                    sendJson(exchange, 200, bot.getBrain().toMap());
+                } else {
+                    String type = body.get("type").getAsString().toUpperCase();
+                    var builder = com.sigmastrain.aiplayermod.brain.Directive.builder(
+                            com.sigmastrain.aiplayermod.brain.DirectiveType.valueOf(type));
+                    if (body.has("target")) builder.target(body.get("target").getAsString());
+                    if (body.has("radius")) builder.radius(body.get("radius").getAsInt());
+                    if (body.has("count")) builder.count(body.get("count").getAsInt());
+                    if (body.has("x") && body.has("y") && body.has("z")) {
+                        builder.location(body.get("x").getAsDouble(), body.get("y").getAsDouble(), body.get("z").getAsDouble());
+                    }
+                    if (body.has("extra")) {
+                        var extraObj = body.getAsJsonObject("extra");
+                        for (var entry : extraObj.entrySet()) {
+                            builder.extra(entry.getKey(), entry.getValue().getAsString());
+                        }
+                    }
+                    var directive = builder.build();
+                    bot.getBrain().setDirective(directive);
+                    sendJson(exchange, 200, Map.of("status", "accepted", "directive", directive.toMap()));
+                }
+            }
+            case "brain" -> sendJson(exchange, 200, bot.getBrain().toMap());
             default -> sendJson(exchange, 400, Map.of("error", "Unknown action: " + action));
         }
         } catch (Exception e) {

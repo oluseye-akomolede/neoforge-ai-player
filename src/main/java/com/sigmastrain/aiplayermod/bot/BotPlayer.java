@@ -2,6 +2,7 @@ package com.sigmastrain.aiplayermod.bot;
 
 import com.sigmastrain.aiplayermod.AIPlayerMod;
 import com.sigmastrain.aiplayermod.actions.ActionQueue;
+import com.sigmastrain.aiplayermod.brain.BotBrain;
 import com.mojang.authlib.GameProfile;
 import net.minecraft.core.BlockPos;
 import net.minecraft.ChatFormatting;
@@ -38,6 +39,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 public class BotPlayer {
     private final ServerPlayer player;
     private final ActionQueue actionQueue;
+    private final BotBrain brain;
     private boolean alive = true;
 
     private final SimpleContainer extendedInventory = new SimpleContainer(54);
@@ -55,6 +57,7 @@ public class BotPlayer {
     private BotPlayer(ServerPlayer player) {
         this.player = player;
         this.actionQueue = new ActionQueue(this);
+        this.brain = new BotBrain(this);
     }
 
     public static BotPlayer create(MinecraftServer server, String name) {
@@ -187,10 +190,17 @@ public class BotPlayer {
         return actionQueue;
     }
 
+    public BotBrain getBrain() {
+        return brain;
+    }
+
     public void tickActions() {
         if (!isAlive()) return;
         try {
-            actionQueue.tick();
+            brain.tick();
+            if (!brain.hasActiveDirective()) {
+                actionQueue.tick();
+            }
         } catch (UnsupportedOperationException e) {
             if (e.getMessage() != null && e.getMessage().contains("may not be sent to the client")) {
                 AIPlayerMod.LOGGER.debug("Suppressed mod packet error for bot {}: {}", player.getName().getString(), e.getMessage());

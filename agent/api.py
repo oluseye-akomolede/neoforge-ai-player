@@ -221,3 +221,28 @@ def shop_remove(item):
 
 def send_item(bot, slot, target, count=64):
     return _post(f"/bot/{bot}/send_item", {"slot": slot, "target": target, "count": count})
+
+
+# ── Brain / Directives (L1) ──
+
+def set_directive(bot, directive_type, target=None, count=None, radius=None, x=None, y=None, z=None, extra=None):
+    data = {"type": directive_type}
+    if target is not None:
+        data["target"] = target
+    if count is not None:
+        data["count"] = count
+    if radius is not None:
+        data["radius"] = radius
+    if x is not None and y is not None and z is not None:
+        data["x"] = x
+        data["y"] = y
+        data["z"] = z
+    if extra:
+        data["extra"] = extra
+    return _post(f"/bot/{bot}/directive", data)
+
+def get_brain(bot):
+    return _get(f"/bot/{bot}/brain")
+
+def cancel_directive(bot):
+    return _delete(f"/bot/{bot}/directive")

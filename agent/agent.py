@@ -610,6 +610,167 @@ class BotRunner:
         except Exception:
             pass
 
+    # ── Step classifier: maps plan step text → L1 directive or None (LLM path) ──
+
+    _MINE_PATTERNS = re.compile(
+        r"(?:find\s+(?:and\s+)?)?mine\s+(?:(?:nearby|some|more)\s+)?"
+        r"(?:minecraft:)?(\S+?)(?:\s+(?:\(.*?(\d+).*?\)|x\s*(\d+)|at\s+least\s+(\d+)))?(?:\s+\(.*\))?$",
+        re.IGNORECASE,
+    )
+    _CRAFT_PATTERNS = re.compile(
+        r"craft\s+(?:(?:and\s+\w+\s+)?)?(?:minecraft:)?(\S+?)(?:\s+x\s*(\d+))?$",
+        re.IGNORECASE,
+    )
+    _SMELT_PATTERNS = re.compile(
+        r"smelt\s+(?:minecraft:)?(\S+?)(?:\s+(?:into|to)\s+.+)?(?:\s+x\s*(\d+))?$",
+        re.IGNORECASE,
+    )
+    _GOTO_PATTERNS = re.compile(
+        r"(?:go\s+to|goto|travel\s+to|walk\s+to|navigate\s+to)\s+(.+)",
+        re.IGNORECASE,
+    )
+    _ENCHANT_PATTERNS = re.compile(
+        r"enchant\s+(?:(?:the|my|a)\s+)?(?:minecraft:)?(\S+?)(?:\s+(?:with|using|at|option)\s+.*)?$",
+        re.IGNORECASE,
+    )
+    _BREW_PATTERNS = re.compile(
+        r"(?:brew|make|create)\s+(?:(?:a\s+|some\s+)?(?:potion\s+of\s+|potions?\s+of\s+)?)?"
+        r"(?:minecraft:)?(\S+?)(?:\s+(?:potion|potions))?(?:\s+x\s*(\d+))?$",
+        re.IGNORECASE,
+    )
+
+    DIRECTIVE_POLL_INTERVAL = 10.0
+
+    def _classify_step(self, step_text):
+        """Try to map a plan step to an L1 directive dict. Returns None if LLM path needed."""
+        text = step_text.strip()
+
+        # Mine
+        m = self._MINE_PATTERNS.search(text)
+        if m:
+            target = m.group(1).rstrip(",.")
+            count = None
+            for g in (m.group(2), m.group(3), m.group(4)):
+                if g:
+                    count = int(g)
+                    break
+            return {"type": "MINE", "target": target, "count": count or 10, "radius": 32}
+
+        # Craft (including "craft and place")
+        m = self._CRAFT_PATTERNS.search(text)
+        if m:
+            target = m.group(1).rstrip(",.")
+            if not target.startswith("minecraft:"):
+                target = "minecraft:" + target
+            count = int(m.group(2)) if m.group(2) else 1
+            return {"type": "CRAFT", "target": target, "count": count}
+
+        # Smelt
+        m = self._SMELT_PATTERNS.search(text)
+        if m:
+            target = m.group(1).rstrip(",.")
+            if not target.startswith("minecraft:"):
+                target = "minecraft:" + target
+            count = int(m.group(2)) if m.group(2) else 1
+            return {"type": "SMELT", "target": target, "count": count}
+
+        # Enchant
+        m = self._ENCHANT_PATTERNS.search(text)
+        if m:
+            target = m.group(1).rstrip(",.")
+            if not target.startswith("minecraft:"):
+                target = "minecraft:" + target
+            extra = {}
+            # Check for option level in text
+            opt_match = re.search(r"option\s*(\d)", text)
+            if opt_match:
+                extra["option"] = opt_match.group(1)
+            elif "best" in text.lower() or "max" in text.lower():
+                extra["option"] = "2"
+            elif "cheap" in text.lower() or "basic" in text.lower():
+                extra["option"] = "0"
+            else:
+                extra["option"] = "2"
+            return {"type": "ENCHANT", "target": target, "extra": extra}
+
+        # Brew
+        m = self._BREW_PATTERNS.search(text)
+        if m:
+            target = m.group(1).rstrip(",.")
+            count = int(m.group(2)) if m.group(2) else 3
+            return {"type": "BREW", "target": target, "count": count}
+
+        # Goto coordinates (x, y, z pattern)
+        coord_match = re.search(r"(-?\d+)[,\s]+(-?\d+)[,\s]+(-?\d+)", text)
+        if coord_match and any(w in text.lower() for w in ("go to", "goto", "travel", "navigate", "walk")):
+            return {
+                "type": "GOTO",
+                "x": float(coord_match.group(1)),
+                "y": float(coord_match.group(2)),
+                "z": float(coord_match.group(3)),
+            }
+
+        return None
+
+    def _run_directive(self, directive_params):
+        """Send a directive to the L1 brain and poll until completion or failure."""
+        dtype = directive_params.pop("type")
+        try:
+            resp = api.set_directive(self.name, dtype, **directive_params)
+            print(f"[{self.name}/L1] Directive sent: {dtype} {directive_params} -> {resp.get('status')}")
+            api.system_chat(self.name, f"L1: {dtype} {directive_params.get('target', '')}", "dark_aqua")
+        except Exception as e:
+            print(f"[{self.name}/L1] Failed to send directive: {e}")
+            return {"success": False, "reason": str(e)}
+
+        while not self._stop_event.is_set():
+            # Check for new chat — player commands override directive
+            with self._lock:
+                if self._new_messages:
+                    new_player_msgs = [
+                        m for m in self._new_messages
+                        if ": " in m and m.split(": ", 1)[0] not in _all_runners
+                    ]
+                    if new_player_msgs:
+                        print(f"[{self.name}/L1] Interrupted by chat, cancelling directive")
+                        try:
+                            api.cancel_directive(self.name)
+                        except Exception:
+                            pass
+                        return {"success": False, "reason": "interrupted_by_chat"}
+
+            try:
+                brain_state = api.get_brain(self.name)
+            except Exception as e:
+                print(f"[{self.name}/L1] Poll error: {e}")
+                self._stop_event.wait(self.DIRECTIVE_POLL_INTERVAL)
+                continue
+
+            directive_info = brain_state.get("directive")
+            if not directive_info:
+                return {"success": True}
+
+            status = directive_info.get("status", "")
+            if status == "COMPLETED":
+                progress = brain_state.get("progress", {})
+                print(f"[{self.name}/L1] Directive COMPLETED: {progress.get('counters', {})}")
+                return {"success": True, "progress": progress}
+            elif status in ("FAILED", "CANCELLED"):
+                reason = directive_info.get("failure_reason", status.lower())
+                print(f"[{self.name}/L1] Directive {status}: {reason}")
+                return {"success": False, "reason": reason}
+
+            # Still running — log phase and wait
+            progress = brain_state.get("progress", {})
+            phase = progress.get("phase", "unknown")
+            counters = progress.get("counters", {})
+            state_desc = brain_state.get("state", "")
+            print(f"[{self.name}/L1] {state_desc} (phase={phase}, counters={counters})")
+
+            self._stop_event.wait(self.DIRECTIVE_POLL_INTERVAL)
+
+        return {"success": False, "reason": "agent_stopped"}
+
     def _loop(self):
         while not self._stop_event.is_set():
             try:
@@ -626,11 +787,52 @@ class BotRunner:
                     self._stop_event.wait(TICK_DELAY)
                     continue
 
+                # ── L1 directive path: try to classify current step ──
+                if self._plan_steps and self._plan_step_idx < len(self._plan_steps):
+                    current_step = self._plan_steps[self._plan_step_idx]
+                    directive = self._classify_step(current_step)
+                    if directive is not None:
+                        print(f"[{self.name}/L1] Step \"{current_step}\" -> directive {directive['type']}")
+                        api.system_chat(self.name, f"L1 step: {current_step[:50]}", "dark_aqua")
+                        result = self._run_directive(directive)
+
+                        if result.get("reason") == "interrupted_by_chat":
+                            continue
+
+                        if result["success"]:
+                            old_step = self._plan_steps[self._plan_step_idx]
+                            self._plan_step_idx += 1
+                            if self._plan_step_idx >= len(self._plan_steps):
+                                print(f"[{self.name}/planner] Plan COMPLETE! All {len(self._plan_steps)} steps done.")
+                                api.system_chat(self.name, f"Plan complete! ({len(self._plan_steps)} steps done)", "green")
+                                self._store_plan_outcome(success=True)
+                                if self._current_task_id:
+                                    self._complete_task_board_task()
+                                else:
+                                    try:
+                                        api.xp_give(self.name, levels=2)
+                                    except Exception:
+                                        pass
+                                self._plan_steps = []
+                                self._plan_step_idx = 0
+                                self._plan_instruction = ""
+                            else:
+                                new_step = self._plan_steps[self._plan_step_idx]
+                                print(f"[{self.name}/planner] L1 step done: \"{old_step}\" -> now: \"{new_step}\" ({self._plan_step_idx+1}/{len(self._plan_steps)})")
+                                api.system_chat(self.name, f"Step {self._plan_step_idx}/{len(self._plan_steps)}: {new_step[:50]}", "dark_aqua")
+                                self.conversation_history.clear()
+                        else:
+                            reason = result.get("reason", "unknown")
+                            print(f"[{self.name}/L1] Directive failed: {reason} — falling back to LLM for this step")
+                            api.system_chat(self.name, f"L1 failed: {reason[:40]}, using LLM", "yellow")
+                            # Fall through to LLM path below for this tick
+                        continue
+
+                # ── L2/L3 LLM path: steps that can't be classified as directives ──
                 plan_section = self._plan_context()
                 if plan_section:
                     obs = plan_section + "\n\n" + obs
 
-                # Recall from both personal and shared memory
                 sem_context = ""
                 if self.semantic_mem:
                     try:
