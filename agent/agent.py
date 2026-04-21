@@ -68,6 +68,7 @@ class BotRunner:
         self._plan_steps = []
         self._plan_step_idx = 0
         self._plan_instruction = ""
+        self._awaiting_taskboard = False
         self._current_task_id = None
         self._lock = threading.Lock()
         self._memory_file = os.path.join(
@@ -77,6 +78,10 @@ class BotRunner:
     def start(self):
         api.spawn(self.name)
         time.sleep(0.5)
+        try:
+            api.stop(self.name)
+        except Exception:
+            pass
         self.memory_entries = mem_module.load_from(self._memory_file)
 
         try:
@@ -240,6 +245,14 @@ class BotRunner:
         print(f"[{self.name}/forget] Removed {removed} memories matching: {query[:60]}")
         api.chat(self.name, f"Forgot {removed} thing(s) about '{query[:40]}'.")
 
+    def _consume_message(self, msg):
+        """Remove a processed message from chat_history so the LLM doesn't replay it."""
+        with self._lock:
+            try:
+                self.chat_history.remove(msg)
+            except ValueError:
+                pass
+
     def _maybe_plan(self, new_messages):
         """If new messages contain a player instruction, run the planner."""
         if not new_messages:
@@ -265,26 +278,39 @@ class BotRunner:
             if from_bot and "Task #" in text and "for you:" in text:
                 text = text.split("for you:", 1)[1].strip()
 
-            # Short-circuit: navigation commands → skip planner entirely
+            # Short-circuit: navigation and control commands → skip planner entirely
             _follow_phrases = ["follow me", "follow us", "keep following"]
             _goto_phrases = ["come to me", "come here", "get over here", "come over here",
                              "get to me", "walk to me", "run to me", "tp to me"]
+            _stop_phrases = ["stop following", "go idle", "stand still", "stay here", "stay put",
+                             "halt", "wait here", "stop what you"]
+            _stop_exact = ["stop"]
             is_follow = not from_bot and any(p in text_lower for p in _follow_phrases)
             is_goto = not from_bot and any(p in text_lower for p in _goto_phrases)
-            if is_follow or is_goto:
+            is_stop = not from_bot and (
+                any(p in text_lower for p in _stop_phrases)
+                or any(text_lower.strip() == p for p in _stop_exact)
+            )
+            if is_follow or is_goto or is_stop:
                 if self._plan_steps and self._plan_step_idx < len(self._plan_steps):
                     self._store_plan_outcome(success=False, failure_reason=f"Interrupted: {text[:60]}")
                 self._plan_steps = []
                 self._plan_step_idx = 0
                 self._plan_instruction = ""
+                self._awaiting_taskboard = False
+                api.stop(self.name)
+                self._consume_message(msg)
                 if is_follow:
                     api.follow(self.name, sender, 3.0, 64.0)
                     api.chat(self.name, f"Following you, {sender}!")
                     print(f"[{self.name}/nav] Direct follow {sender} (shortcut)")
-                else:
+                elif is_goto:
                     self._goto_player({"target": sender})
                     api.chat(self.name, f"On my way!")
                     print(f"[{self.name}/nav] Direct goto_player {sender} (shortcut)")
+                else:
+                    api.chat(self.name, f"Standing by.")
+                    print(f"[{self.name}/nav] Direct stop (shortcut)")
                 return
 
             # Recall relevant memories to give the planner context
@@ -321,6 +347,19 @@ class BotRunner:
 
                 if not is_coordinator:
                     print(f"[{self.name}/orchestrator] Skipping — {coordinator} is coordinating this task")
+                    try:
+                        api.stop(self.name)
+                        api.system_chat(self.name, f"Waiting for tasks from {coordinator}...", "gray")
+                    except Exception:
+                        pass
+                    if self._plan_steps and self._plan_step_idx < len(self._plan_steps):
+                        self._store_plan_outcome(success=False, failure_reason=f"Interrupted: {text[:60]}")
+                    self._plan_steps = []
+                    self._plan_step_idx = 0
+                    self._plan_instruction = ""
+                    self._awaiting_taskboard = True
+                    self._consume_message(msg)
+                    self.conversation_history.clear()
                     return
 
                 print(f"[{self.name}/orchestrator] Coordinating: {text[:80]}")
@@ -364,6 +403,7 @@ class BotRunner:
                         api.system_chat(self.name, f"#{i+1}: {s[:50]}", "dark_aqua")
                 else:
                     print(f"[{self.name}/orchestrator] All steps delegated to other bots")
+                self._consume_message(msg)
             else:
                 print(f"[{self.name}/planner] Decomposing: {text[:80]}")
                 if memory_context and memory_context != "No relevant memories.":
@@ -375,6 +415,7 @@ class BotRunner:
                 self.conversation_history.clear()
                 step_list = "\n".join(f"  {i+1}. {s}" for i, s in enumerate(steps))
                 print(f"[{self.name}/planner] Plan ({len(steps)} steps):\n{step_list}")
+                self._consume_message(msg)
             return
 
     def _plan_context(self):
@@ -397,11 +438,28 @@ class BotRunner:
         lines.append('When the current step is COMPLETE, include "step_done": true in your response to advance to the next step.')
         return "\n".join(lines)
 
-    def _advance_plan(self, response):
+    def _advance_plan(self, response, tick_results=None):
         """Check if the LLM signaled step completion."""
         if not self._plan_steps:
             return
         if response.get("step_done"):
+            # Block advancement if all actions failed or no actions were taken
+            if tick_results is not None:
+                ok_count = sum(1 for r in tick_results if r.startswith("OK "))
+                fail_count = sum(1 for r in tick_results if r.startswith(("FAILED ", "ERROR ", "SKIPPED ")))
+                if ok_count == 0 and fail_count > 0:
+                    step = self._plan_steps[self._plan_step_idx]
+                    print(f"[{self.name}/planner] Blocked step_done — all actions failed (step: \"{step}\")")
+                    try:
+                        api.system_chat(self.name, f"Step blocked: actions failed", "red")
+                    except Exception:
+                        pass
+                    return
+                actions = response.get("actions", [])
+                if not actions and not tick_results:
+                    step = self._plan_steps[self._plan_step_idx]
+                    print(f"[{self.name}/planner] Blocked step_done — no actions taken (step: \"{step}\")")
+                    return
             old_step = self._plan_steps[self._plan_step_idx]
             self._plan_step_idx += 1
             if self._plan_step_idx >= len(self._plan_steps):
@@ -463,6 +521,7 @@ class BotRunner:
             task = _task_board.claim(self.name, self.specializations + ["any"])
             if task:
                 self._current_task_id = task["id"]
+                self._awaiting_taskboard = False
                 desc = task["description"]
                 _task_board.start(task["id"])
                 print(f"[{self.name}/taskboard] Claimed task #{task['id']}: {desc[:60]}")
@@ -563,6 +622,10 @@ class BotRunner:
                 if not self._plan_steps:
                     self._check_task_board()
 
+                if self._awaiting_taskboard and not self._plan_steps:
+                    self._stop_event.wait(TICK_DELAY)
+                    continue
+
                 plan_section = self._plan_context()
                 if plan_section:
                     obs = plan_section + "\n\n" + obs
@@ -582,6 +645,14 @@ class BotRunner:
                 actions = response.get("actions", [])
                 chat_msg = response.get("chat")
                 remember = response.get("remember")
+
+                # Hard guardrail: no movement actions when idle (no plan)
+                if not self._plan_steps and actions:
+                    _move_actions = {"goto", "goto_player", "follow", "fly_to", "teleport"}
+                    blocked = [a for a in actions if isinstance(a, dict) and a.get("action") in _move_actions]
+                    if blocked:
+                        actions = [a for a in actions if not (isinstance(a, dict) and a.get("action") in _move_actions)]
+                        print(f"[{self.name}/guardrail] Blocked {len(blocked)} movement action(s) — no active plan")
 
                 print(f"\n[{self.name}/think] {thoughts}")
 
@@ -618,7 +689,9 @@ class BotRunner:
                 if actions:
                     self._execute_actions(actions)
 
-                self._advance_plan(response)
+                with self._lock:
+                    tick_results = list(self._last_action_results)
+                self._advance_plan(response, tick_results)
 
                 self._stop_event.wait(TICK_DELAY)
 
