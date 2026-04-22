@@ -299,15 +299,26 @@ class BotRunner:
                 except Exception:
                     pass
 
-            # If a bot sent us a task board notification, claim the task so
-            # completion marks it done (prevents double-execution).
+            # If a bot sent us a task board notification, claim the task and
+            # use pre-planned steps if available (skips re-decomposition).
             if from_bot and "Task #" in text and "for you:" in text:
                 try:
                     task_id_str = text.split("Task #")[1].split()[0].rstrip(":")
                     tb_task_id = int(task_id_str)
                     if _task_board:
+                        task_data = _task_board.get(tb_task_id)
                         _task_board.start(tb_task_id)
                         self._current_task_id = tb_task_id
+                        if task_data and task_data.get("plan_steps"):
+                            self._plan_steps = task_data["plan_steps"]
+                            self._plan_step_idx = 0
+                            self._plan_instruction = task_data.get("description", text)
+                            self.conversation_history.clear()
+                            step_list = "\n".join(f"  {i+1}. {s}" for i, s in enumerate(self._plan_steps))
+                            print(f"[{self.name}/taskboard] Claimed task #{tb_task_id} with pre-planned steps:\n{step_list}")
+                            api.system_chat(self.name, f"Task #{tb_task_id}: {len(self._plan_steps)} steps", "yellow")
+                            self._consume_message(msg)
+                            return
                 except (ValueError, IndexError):
                     pass
                 text = text.split("for you:", 1)[1].strip()
