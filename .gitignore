@@ -30,5 +30,10 @@ __pycache__/
 venv/
 agent/bot_memory.json
 
-# Env
+# Env / secrets
 .env
+deploy/agent.env
+agent/memory_*.json
+
+# MinIO mount
+myminio/

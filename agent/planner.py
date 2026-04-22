@@ -10,6 +10,7 @@ import json
 import requests
 from config import OLLAMA_URL
 import brain
+import openai_brain
 
 PLANNER_PROMPT = """You are a Minecraft task planner. Break the player's instruction into simple, sequential steps that a bot can execute one at a time.
 
@@ -131,6 +132,15 @@ def decompose(model, instruction, memory_context="", transmute_context="", inven
 
     steps = parsed.get("steps", [])
     if not steps or not isinstance(steps, list):
+        # L4 fallback: try OpenAI if local LLM produced nothing useful
+        if openai_brain.is_available():
+            try:
+                l4_steps = openai_brain.decompose(instruction, prompt)
+                if l4_steps and isinstance(l4_steps, list):
+                    print(f"[planner/L4] OpenAI produced {len(l4_steps)} steps")
+                    return [str(s) for s in l4_steps[:8]]
+            except Exception as e:
+                print(f"[planner/L4] OpenAI fallback failed: {e}")
         return [instruction]
 
     return [str(s) for s in steps[:8]]

@@ -21,6 +21,7 @@ import sessions
 import taskboard
 import transmute_db
 import container_db
+import openai_brain
 import waypoints
 import mc_items
 from config import (
@@ -719,6 +720,10 @@ class BotRunner:
         r"send(?:_item)?\s+(?:(\d+)x?\s+)?(\S+?)\s+(?:to\s+)?(\w+)(?:\s+x\s*(\d+))?\s*$",
         re.IGNORECASE,
     )
+    _SEND_ITEM_ARROW = re.compile(
+        r"SEND_ITEM\s+(?:(\d+)x?\s+)?(\S+?)>(\w+)\s*$",
+        re.IGNORECASE,
+    )
     _BUILD_PATTERNS = re.compile(
         r"(?:build|construct|create|make)\s+(?:a\s+)?(\w+)(?:\s+(?:with|using|from)\s+(?:minecraft:)?(\S+))?",
         re.IGNORECASE,
@@ -809,13 +814,15 @@ class BotRunner:
             if _transmute and _transmute.is_known(target):
                 return {"type": "CHANNEL", "target": target, "count": count}
 
-        # Send item to another bot
+        # Send item to another bot (natural language: "send 10 iron_ingot to Forge")
         m = self._SEND_ITEM_PATTERNS.search(text)
+        if not m:
+            m = self._SEND_ITEM_ARROW.search(text)
         if m:
             count_pre = int(m.group(1)) if m.group(1) else None
             item = m.group(2).rstrip(",.")
             target_bot = m.group(3)
-            count_post = int(m.group(4)) if m.group(4) else None
+            count_post = int(m.group(4)) if m.lastindex >= 4 and m.group(4) else None
             count = count_pre or count_post or 1
             if not item.startswith("minecraft:") and ":" not in item:
                 item = "minecraft:" + item
@@ -1212,25 +1219,8 @@ class BotRunner:
             valid.append(step)
         return valid if valid else None
 
-    def _l3_regenerate(self, failed_step, observation):
-        """L3: Ask LLM to generate replacement L1 primitives for a failed step."""
-        # Gather context
-        sem_context = ""
-        if self.semantic_mem:
-            try:
-                sem_context = self.semantic_mem.recall_for_prompt(failed_step, limit=4)
-            except Exception:
-                pass
-
-        inv = ""
-        try:
-            inv_data = api.inventory(self.name)
-            items = inv_data.get("inventory", [])
-            inv = ", ".join(f"{it['item']} x{it['count']}" for it in items if it.get("item")) if items else "empty"
-        except Exception:
-            inv = "unknown"
-
-        prompt = f"""A Minecraft bot's plan step failed. Break it into smaller primitives.
+    def _build_l3_prompt(self, failed_step, inv):
+        return f"""A Minecraft bot's plan step failed. Break it into smaller primitives.
 
 PRIMITIVES you can use:
 - {{"type": "MINE", "target": "<block>", "count": <n>}} — mine blocks
@@ -1257,6 +1247,18 @@ Think about what sub-steps are needed. For example:
 
 Respond with ONLY a JSON array. Example:
 [{{"type": "MINE", "target": "cobblestone", "count": 8}}, {{"type": "MINE", "target": "oak_log", "count": 2}}, {{"type": "CRAFT", "target": "minecraft:furnace", "count": 1}}]"""
+
+    def _l3_regenerate(self, failed_step, observation):
+        """L3: Ask LLM to generate replacement L1 primitives for a failed step."""
+        inv = ""
+        try:
+            inv_data = api.inventory(self.name)
+            items = inv_data.get("inventory", [])
+            inv = ", ".join(f"{it['item']} x{it['count']}" for it in items if it.get("item")) if items else "empty"
+        except Exception:
+            inv = "unknown"
+
+        prompt = self._build_l3_prompt(failed_step, inv)
 
         try:
             response = brain.raw_generate(self.model, prompt)
@@ -1294,6 +1296,61 @@ Respond with ONLY a JSON array. Example:
             return None
         except Exception as e:
             print(f"[{self.name}/L3] LLM call failed: {e}")
+            return None
+
+    def _l4_regenerate(self, failed_step, observation):
+        """L4: Escalate to OpenAI API for primitive generation."""
+        if not openai_brain.is_available():
+            return None
+
+        inv = ""
+        try:
+            inv_data = api.inventory(self.name)
+            items = inv_data.get("inventory", [])
+            inv = ", ".join(f"{it['item']} x{it['count']}" for it in items if it.get("item")) if items else "empty"
+        except Exception:
+            inv = "unknown"
+
+        prompt = self._build_l3_prompt(failed_step, inv)
+
+        try:
+            response = openai_brain.generate_primitives(prompt)
+            if not response:
+                return None
+            text = response.strip()
+            start = text.find("[")
+            end = text.rfind("]") + 1
+            if start >= 0 and end > start:
+                primitives = json.loads(text[start:end])
+                if isinstance(primitives, list) and len(primitives) > 0:
+                    valid, rejected = mc_items.validate_primitives(primitives)
+                    if rejected:
+                        reasons = ", ".join(r for _, r in rejected[:3])
+                        print(f"[{self.name}/L4] Rejected {len(rejected)} primitives: {reasons}")
+                    if not valid:
+                        print(f"[{self.name}/L4] All primitives rejected")
+                        return None
+                    print(f"[{self.name}/L4] Got {len(valid)} valid primitives")
+                    steps = []
+                    for p in valid:
+                        ptype = p.get("type", "").upper()
+                        target = p.get("target", "")
+                        count = p.get("count", 1)
+                        if ptype == "MINE":
+                            steps.append(f"Find and mine {target} (at least {count})")
+                        elif ptype == "CRAFT":
+                            steps.append(f"Craft {target}")
+                        elif ptype == "SMELT":
+                            steps.append(f"Smelt {target} into ingots")
+                        elif ptype == "GOTO":
+                            steps.append(f"Go to coordinates ({p.get('x',0)}, {p.get('y',0)}, {p.get('z',0)})")
+                        else:
+                            steps.append(f"{ptype} {target}")
+                    return steps
+            print(f"[{self.name}/L4] Could not parse response: {text[:100]}")
+            return None
+        except Exception as e:
+            print(f"[{self.name}/L4] OpenAI call failed: {e}")
             return None
 
     def _loop(self):
@@ -1399,16 +1456,31 @@ Respond with ONLY a JSON array. Example:
                 current_step = self._plan_steps[self._plan_step_idx]
 
                 if self._l3_retries >= MAX_L3_RETRIES:
-                    print(f"[{self.name}/L3] Max retries ({MAX_L3_RETRIES}) for step, skipping: \"{current_step[:60]}\"")
-                    api.system_chat(self.name, f"Giving up on: {current_step[:40]}", "red")
-                    self._plan_step_idx += 1
-                    self._l3_retries = 0
-                    self._l1_failed_steps = set()
-                    if self._plan_step_idx >= len(self._plan_steps):
-                        self._store_plan_outcome(success=False, failure_reason=f"L3 max retries on: {current_step}")
-                        self._plan_steps = []
-                        self._plan_step_idx = 0
-                        self._plan_instruction = ""
+                    # L4 escalation: try OpenAI before giving up
+                    l4_resolved = False
+                    if openai_brain.is_available():
+                        print(f"[{self.name}/L4] Escalating to OpenAI: \"{current_step[:60]}\"")
+                        api.system_chat(self.name, f"L4 escalation: {current_step[:40]}", "light_purple")
+                        l4_prims = self._l4_regenerate(current_step, obs)
+                        if l4_prims:
+                            remaining = self._plan_steps[self._plan_step_idx + 1:]
+                            self._plan_steps = l4_prims + remaining
+                            self._plan_step_idx = 0
+                            self._l3_retries = 0
+                            self._l1_failed_steps = set()
+                            api.system_chat(self.name, f"L4: {len(l4_prims)} new steps", "light_purple")
+                            l4_resolved = True
+                    if not l4_resolved:
+                        print(f"[{self.name}] All tiers exhausted, skipping: \"{current_step[:60]}\"")
+                        api.system_chat(self.name, f"Giving up on: {current_step[:40]}", "red")
+                        self._plan_step_idx += 1
+                        self._l3_retries = 0
+                        self._l1_failed_steps = set()
+                        if self._plan_step_idx >= len(self._plan_steps):
+                            self._store_plan_outcome(success=False, failure_reason=f"All tiers failed on: {current_step}")
+                            self._plan_steps = []
+                            self._plan_step_idx = 0
+                            self._plan_instruction = ""
                     self._stop_event.wait(TICK_DELAY)
                     continue
 
@@ -1860,6 +1932,16 @@ def run():
     except Exception as e:
         print(f"[agent] Container DB unavailable: {e}")
         _container_db = None
+
+    # Initialize L4 (OpenAI) escalation layer
+    try:
+        openai_brain.init()
+        if openai_brain.is_available():
+            print(f"[agent] L4 (OpenAI) available: model={os.getenv('OPENAI_MODEL', 'gpt-4o-mini')}")
+        else:
+            print("[agent] L4 (OpenAI) disabled or no API key")
+    except Exception as e:
+        print(f"[agent] L4 (OpenAI) init failed: {e}")
 
     waypoints.load()
     wp_count = len(waypoints.list_waypoints())

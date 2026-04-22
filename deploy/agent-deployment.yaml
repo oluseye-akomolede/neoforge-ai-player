@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aibot-agent
+  labels:
+    app: aibot-agent
+    app.kubernetes.io/part-of: aiplayermod
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aibot-agent
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: aibot-agent
+    spec:
+      containers:
+        - name: agent
+          image: harbor.arcadia-ecs.local/aiplayermod/agent:latest
+          envFrom:
+            - secretRef:
+                name: agent-config
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          volumeMounts:
+            - name: agent-data
+              mountPath: /opt/aibot-agent/data
+      imagePullSecrets:
+        - name: harbor-creds
+      volumes:
+        - name: agent-data
+          persistentVolumeClaim:
+            claimName: mindcraft-data

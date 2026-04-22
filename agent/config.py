@@ -6,6 +6,11 @@ MOD_API_KEY = os.getenv("MOD_API_KEY", "")
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 
+# L4 escalation (OpenAI)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+L4_ENABLED = os.getenv("L4_ENABLED", "true").lower() in ("true", "1", "yes")
+
 PROFILE_PATH = os.getenv("PROFILE_PATH", os.path.join(os.path.dirname(__file__), "profiles", "default.json"))
 
 TICK_DELAY = float(os.getenv("TICK_DELAY", "2.0"))
