@@ -10,6 +10,7 @@ public enum DirectiveType {
     SMELT,
     ENCHANT,
     BREW,
+    CHANNEL,
     IDLE,
     PATROL
 }

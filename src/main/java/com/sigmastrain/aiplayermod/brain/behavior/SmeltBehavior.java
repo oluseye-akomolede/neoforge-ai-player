@@ -4,67 +4,101 @@ import com.sigmastrain.aiplayermod.bot.BotPlayer;
 import com.sigmastrain.aiplayermod.brain.BehaviorResult;
 import com.sigmastrain.aiplayermod.brain.Directive;
 import com.sigmastrain.aiplayermod.brain.ProgressReport;
-import net.minecraft.core.BlockPos;
+import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.level.block.entity.AbstractFurnaceBlockEntity;
-import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.phys.Vec3;
+
+import java.util.Map;
 
 /**
- * Composite smelting behavior. Handles the full chain:
- * 1. Find input items and fuel in inventory
- * 2. Find or craft+place a furnace
- * 3. Navigate to the furnace
- * 4. Load input + fuel
- * 5. Wait for smelting to complete
- * 6. Collect output
- * 7. Repeat if count > furnace capacity
+ * Internal smelting — bots convert items directly in inventory using XP.
+ * No furnace blocks needed. Phases: VALIDATE → CHANNEL → SMELTING → DONE.
  */
 public class SmeltBehavior implements Behavior {
-    private enum Phase {
-        VALIDATE, FIND_FURNACE, CRAFT_FURNACE, PLACE_FURNACE, NAVIGATE, LOAD, WAITING, COLLECT
-    }
+    private enum Phase { VALIDATE, CHANNEL, SMELTING }
+
+    private static final int SMELT_TICKS = 40; // 2 seconds per batch
+    private static final int TICKS_PER_PARTICLE = 5;
+
+    private static final Map<String, String> SMELTING_RECIPES = Map.ofEntries(
+        Map.entry("minecraft:raw_iron", "minecraft:iron_ingot"),
+        Map.entry("minecraft:raw_gold", "minecraft:gold_ingot"),
+        Map.entry("minecraft:raw_copper", "minecraft:copper_ingot"),
+        Map.entry("minecraft:iron_ore", "minecraft:iron_ingot"),
+        Map.entry("minecraft:gold_ore", "minecraft:gold_ingot"),
+        Map.entry("minecraft:copper_ore", "minecraft:copper_ingot"),
+        Map.entry("minecraft:deepslate_iron_ore", "minecraft:iron_ingot"),
+        Map.entry("minecraft:deepslate_gold_ore", "minecraft:gold_ingot"),
+        Map.entry("minecraft:deepslate_copper_ore", "minecraft:copper_ingot"),
+        Map.entry("minecraft:cobblestone", "minecraft:stone"),
+        Map.entry("minecraft:stone", "minecraft:smooth_stone"),
+        Map.entry("minecraft:sand", "minecraft:glass"),
+        Map.entry("minecraft:red_sand", "minecraft:glass"),
+        Map.entry("minecraft:clay_ball", "minecraft:brick"),
+        Map.entry("minecraft:clay", "minecraft:terracotta"),
+        Map.entry("minecraft:netherrack", "minecraft:nether_brick"),
+        Map.entry("minecraft:ancient_debris", "minecraft:netherite_scrap"),
+        Map.entry("minecraft:wet_sponge", "minecraft:sponge"),
+        Map.entry("minecraft:kelp", "minecraft:dried_kelp"),
+        Map.entry("minecraft:cactus", "minecraft:green_dye"),
+        Map.entry("minecraft:sea_pickle", "minecraft:lime_dye"),
+        Map.entry("minecraft:log", "minecraft:charcoal"),
+        Map.entry("minecraft:oak_log", "minecraft:charcoal"),
+        Map.entry("minecraft:birch_log", "minecraft:charcoal"),
+        Map.entry("minecraft:spruce_log", "minecraft:charcoal"),
+        Map.entry("minecraft:jungle_log", "minecraft:charcoal"),
+        Map.entry("minecraft:acacia_log", "minecraft:charcoal"),
+        Map.entry("minecraft:dark_oak_log", "minecraft:charcoal"),
+        Map.entry("minecraft:mangrove_log", "minecraft:charcoal"),
+        Map.entry("minecraft:cherry_log", "minecraft:charcoal"),
+        Map.entry("minecraft:nether_gold_ore", "minecraft:gold_ingot"),
+        Map.entry("minecraft:quartz_ore", "minecraft:quartz"),
+        Map.entry("minecraft:nether_quartz_ore", "minecraft:quartz"),
+        Map.entry("minecraft:lapis_ore", "minecraft:lapis_lazuli"),
+        Map.entry("minecraft:deepslate_lapis_ore", "minecraft:lapis_lazuli"),
+        Map.entry("minecraft:redstone_ore", "minecraft:redstone"),
+        Map.entry("minecraft:deepslate_redstone_ore", "minecraft:redstone"),
+        Map.entry("minecraft:diamond_ore", "minecraft:diamond"),
+        Map.entry("minecraft:deepslate_diamond_ore", "minecraft:diamond"),
+        Map.entry("minecraft:emerald_ore", "minecraft:emerald"),
+        Map.entry("minecraft:deepslate_emerald_ore", "minecraft:emerald"),
+        Map.entry("minecraft:coal_ore", "minecraft:coal"),
+        Map.entry("minecraft:deepslate_coal_ore", "minecraft:coal"),
+        // Food
+        Map.entry("minecraft:beef", "minecraft:cooked_beef"),
+        Map.entry("minecraft:porkchop", "minecraft:cooked_porkchop"),
+        Map.entry("minecraft:chicken", "minecraft:cooked_chicken"),
+        Map.entry("minecraft:mutton", "minecraft:cooked_mutton"),
+        Map.entry("minecraft:rabbit", "minecraft:cooked_rabbit"),
+        Map.entry("minecraft:cod", "minecraft:cooked_cod"),
+        Map.entry("minecraft:salmon", "minecraft:cooked_salmon"),
+        Map.entry("minecraft:potato", "minecraft:baked_potato")
+    );
 
     private final ProgressReport progress = new ProgressReport();
     private Phase phase;
 
     private String inputItemId;
-    private int inputSlot = -1;
-    private int fuelSlot = -1;
+    private String outputItemId;
     private int totalToSmelt;
     private int totalSmelted;
-    private int batchSize;
-    private BlockPos furnacePos;
-
-    private int waitTicks;
-
-    // Navigation
-    private double yVelocity;
-    private int ticksStuck;
-    private Vec3 lastPos;
-
-    // For crafting a furnace if needed
-    private CraftBehavior craftFurnaceBehavior;
-
-    private static final double REACH = 4.5;
-    private static final int FURNACE_SEARCH_RADIUS = 16;
-    private static final int MAX_WAIT_TICKS = 600;
+    private int smeltTicks;
+    private int xpCostPerItem;
 
     @Override
     public void start(BotPlayer bot, Directive directive) {
         progress.reset();
         this.inputItemId = directive.getTarget();
+        if (!inputItemId.contains(":")) inputItemId = "minecraft:" + inputItemId;
         this.totalToSmelt = directive.getCount() > 0 ? directive.getCount() : 1;
         this.totalSmelted = 0;
-        this.yVelocity = 0;
-        this.ticksStuck = 0;
-        this.lastPos = null;
-        this.craftFurnaceBehavior = null;
+        this.smeltTicks = 0;
         enterPhase(Phase.VALIDATE);
     }
 
@@ -72,333 +106,136 @@ public class SmeltBehavior implements Behavior {
     public BehaviorResult tick(BotPlayer bot) {
         return switch (phase) {
             case VALIDATE -> tickValidate(bot);
-            case FIND_FURNACE -> tickFindFurnace(bot);
-            case CRAFT_FURNACE -> tickCraftFurnace(bot);
-            case PLACE_FURNACE -> tickPlaceFurnace(bot);
-            case NAVIGATE -> tickNavigate(bot);
-            case LOAD -> tickLoad(bot);
-            case WAITING -> tickWaiting(bot);
-            case COLLECT -> tickCollect(bot);
+            case CHANNEL -> tickChannel(bot);
+            case SMELTING -> tickSmelting(bot);
         };
     }
 
     private BehaviorResult tickValidate(BotPlayer bot) {
-        ServerPlayer player = bot.getPlayer();
-
-        // Find input items in inventory
-        inputSlot = findItemSlot(player, inputItemId);
-        if (inputSlot < 0) {
-            progress.setFailureReason("No " + inputItemId + " in inventory");
+        outputItemId = SMELTING_RECIPES.get(inputItemId);
+        if (outputItemId == null) {
+            progress.setFailureReason("No smelting recipe for " + inputItemId);
             return BehaviorResult.FAILED;
         }
 
-        // Find fuel in inventory (coal, charcoal, wood, etc.)
-        fuelSlot = findFuelSlot(player);
-        if (fuelSlot < 0) {
-            progress.setFailureReason("No fuel in inventory");
-            return BehaviorResult.FAILED;
-        }
-
-        int available = player.getInventory().getItem(inputSlot).getCount();
-        batchSize = Math.min(totalToSmelt - totalSmelted, Math.min(available, 64));
-        progress.logEvent("Will smelt " + batchSize + "x " + inputItemId);
-        enterPhase(Phase.FIND_FURNACE);
-        return BehaviorResult.RUNNING;
-    }
-
-    private BehaviorResult tickFindFurnace(BotPlayer bot) {
-        ServerPlayer player = bot.getPlayer();
-        furnacePos = findNearbyFurnace(player, FURNACE_SEARCH_RADIUS);
-
-        if (furnacePos != null) {
-            progress.logEvent("Found furnace at " + furnacePos.toShortString());
-            enterPhase(Phase.NAVIGATE);
-            return BehaviorResult.RUNNING;
-        }
-
-        // Check inventory for a furnace
-        Item furnaceItem = BuiltInRegistries.ITEM.get(ResourceLocation.parse("minecraft:furnace"));
-        if (countItem(player, furnaceItem) > 0) {
-            enterPhase(Phase.PLACE_FURNACE);
-            return BehaviorResult.RUNNING;
-        }
-
-        // Need to craft a furnace (8 cobblestone)
-        Item cobble = BuiltInRegistries.ITEM.get(ResourceLocation.parse("minecraft:cobblestone"));
-        if (countItem(player, cobble) < 8) {
-            progress.setFailureReason("No furnace nearby and not enough cobblestone to craft one (need 8, have " + countItem(player, cobble) + ")");
-            return BehaviorResult.FAILED;
-        }
-
-        progress.logEvent("Crafting furnace from cobblestone");
-        craftFurnaceBehavior = new CraftBehavior();
-        Directive craftDirective = Directive.builder(com.sigmastrain.aiplayermod.brain.DirectiveType.CRAFT)
-                .target("minecraft:furnace").count(1).build();
-        craftFurnaceBehavior.start(bot, craftDirective);
-        enterPhase(Phase.CRAFT_FURNACE);
-        return BehaviorResult.RUNNING;
-    }
-
-    private BehaviorResult tickCraftFurnace(BotPlayer bot) {
-        if (craftFurnaceBehavior == null) {
-            enterPhase(Phase.FIND_FURNACE);
-            return BehaviorResult.RUNNING;
-        }
-        BehaviorResult result = craftFurnaceBehavior.tick(bot);
-        if (result == BehaviorResult.SUCCESS) {
-            craftFurnaceBehavior = null;
-            enterPhase(Phase.PLACE_FURNACE);
-        } else if (result == BehaviorResult.FAILED) {
-            progress.setFailureReason("Failed to craft furnace");
-            return BehaviorResult.FAILED;
-        }
-        return BehaviorResult.RUNNING;
-    }
-
-    private BehaviorResult tickPlaceFurnace(BotPlayer bot) {
-        ServerPlayer player = bot.getPlayer();
-        BlockPos placePos = player.blockPosition().relative(player.getDirection());
-        BlockState existing = player.level().getBlockState(placePos);
-        if (!existing.isAir() && !existing.canBeReplaced()) {
-            for (var dir : net.minecraft.core.Direction.Plane.HORIZONTAL) {
-                placePos = player.blockPosition().relative(dir);
-                existing = player.level().getBlockState(placePos);
-                if (existing.isAir() || existing.canBeReplaced()) break;
-            }
-        }
-
-        Item furnaceItem = BuiltInRegistries.ITEM.get(ResourceLocation.parse("minecraft:furnace"));
-        for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
-            ItemStack stack = player.getInventory().getItem(i);
-            if (stack.getItem() == furnaceItem) {
-                stack.shrink(1);
-                break;
-            }
-        }
-
-        player.level().setBlock(placePos, Blocks.FURNACE.defaultBlockState(), 3);
-        furnacePos = placePos;
-        progress.logEvent("Placed furnace at " + placePos.toShortString());
-        enterPhase(Phase.NAVIGATE);
-        return BehaviorResult.RUNNING;
-    }
-
-    private BehaviorResult tickNavigate(BotPlayer bot) {
-        if (furnacePos == null) {
-            enterPhase(Phase.FIND_FURNACE);
-            return BehaviorResult.RUNNING;
-        }
+        xpCostPerItem = getSmeltXpCost(inputItemId);
+        progress.logEvent("Internal smelt: " + totalToSmelt + "x " + inputItemId + " → " + outputItemId);
 
         ServerPlayer player = bot.getPlayer();
-        Vec3 target = Vec3.atCenterOf(furnacePos);
-        double dist = player.position().distanceTo(target);
-
-        if (dist <= REACH) {
-            enterPhase(Phase.LOAD);
-            return BehaviorResult.RUNNING;
-        }
-
-        moveToward(bot, player, target, dist);
-        return BehaviorResult.RUNNING;
-    }
-
-    private BehaviorResult tickLoad(BotPlayer bot) {
-        ServerPlayer player = bot.getPlayer();
-
-        if (!(player.level().getBlockEntity(furnacePos) instanceof AbstractFurnaceBlockEntity furnace)) {
-            progress.setFailureReason("Furnace block entity missing");
-            return BehaviorResult.FAILED;
-        }
-
-        // Re-find slots in case inventory shifted
-        inputSlot = findItemSlot(player, inputItemId);
-        fuelSlot = findFuelSlot(player);
-        if (inputSlot < 0 || fuelSlot < 0) {
-            progress.setFailureReason("Lost input or fuel items");
-            return BehaviorResult.FAILED;
-        }
-
-        ItemStack input = player.getInventory().getItem(inputSlot);
-        ItemStack fuel = player.getInventory().getItem(fuelSlot);
-
-        int toLoad = Math.min(batchSize, input.getCount());
-        ItemStack inputToLoad = input.split(toLoad);
-        furnace.setItem(0, inputToLoad);
-
-        int fuelNeeded = Math.max(1, (toLoad + 7) / 8);
-        int fuelToLoad = Math.min(fuelNeeded, fuel.getCount());
-        ItemStack fuelStack = fuel.split(fuelToLoad);
-        furnace.setItem(1, fuelStack);
-
-        furnace.setChanged();
-        waitTicks = 0;
-        progress.logEvent("Loaded " + toLoad + " items into furnace");
-        enterPhase(Phase.WAITING);
-        return BehaviorResult.RUNNING;
-    }
-
-    private BehaviorResult tickWaiting(BotPlayer bot) {
-        ServerPlayer player = bot.getPlayer();
-        waitTicks++;
-
-        if (waitTicks > MAX_WAIT_TICKS) {
-            enterPhase(Phase.COLLECT);
-            return BehaviorResult.RUNNING;
-        }
-
-        if (player.level().getBlockEntity(furnacePos) instanceof AbstractFurnaceBlockEntity furnace) {
-            if (furnace.getItem(0).isEmpty() && waitTicks > 40) {
-                enterPhase(Phase.COLLECT);
-            }
+        int haveCount = countItemById(player, inputItemId);
+        if (haveCount >= totalToSmelt) {
+            enterPhase(Phase.SMELTING);
         } else {
-            progress.setFailureReason("Furnace disappeared while smelting");
-            return BehaviorResult.FAILED;
+            enterPhase(Phase.CHANNEL);
         }
-
         return BehaviorResult.RUNNING;
     }
 
-    private BehaviorResult tickCollect(BotPlayer bot) {
+    private BehaviorResult tickChannel(BotPlayer bot) {
         ServerPlayer player = bot.getPlayer();
+        int haveCount = countItemById(player, inputItemId);
+        int needed = totalToSmelt - haveCount;
+        if (needed <= 0) {
+            enterPhase(Phase.SMELTING);
+            return BehaviorResult.RUNNING;
+        }
 
-        if (!(player.level().getBlockEntity(furnacePos) instanceof AbstractFurnaceBlockEntity furnace)) {
-            progress.setFailureReason("Furnace disappeared");
+        int channelCost = getChannelCost(inputItemId) * needed;
+        if (player.experienceLevel < channelCost) {
+            player.giveExperienceLevels(channelCost - player.experienceLevel);
+        }
+
+        Item item = BuiltInRegistries.ITEM.get(ResourceLocation.parse(inputItemId));
+        player.getInventory().add(new ItemStack(item, needed));
+        player.giveExperienceLevels(-channelCost);
+        progress.increment("items_channeled", needed);
+        bot.systemChat("Channeled " + needed + "x " + inputItemId, "light_purple");
+        enterPhase(Phase.SMELTING);
+        return BehaviorResult.RUNNING;
+    }
+
+    private BehaviorResult tickSmelting(BotPlayer bot) {
+        ServerPlayer player = bot.getPlayer();
+        smeltTicks++;
+
+        // Particles every few ticks for visual feedback
+        if (smeltTicks % TICKS_PER_PARTICLE == 0 && player.level() instanceof ServerLevel serverLevel) {
+            serverLevel.sendParticles(ParticleTypes.FLAME,
+                player.getX(), player.getY() + 1.0, player.getZ(),
+                3, 0.3, 0.3, 0.3, 0.01);
+            serverLevel.sendParticles(ParticleTypes.SMOKE,
+                player.getX(), player.getY() + 1.2, player.getZ(),
+                2, 0.2, 0.2, 0.2, 0.02);
+        }
+
+        if (smeltTicks < SMELT_TICKS) {
+            return BehaviorResult.RUNNING;
+        }
+
+        // Smelting complete — consume input, produce output
+        int toProcess = Math.min(totalToSmelt - totalSmelted, 64);
+        int consumed = removeItems(player, inputItemId, toProcess);
+        if (consumed == 0) {
+            progress.setFailureReason("No input items in inventory");
             return BehaviorResult.FAILED;
         }
 
-        // Collect output
-        ItemStack output = furnace.getItem(2);
-        if (!output.isEmpty()) {
-            int collected = output.getCount();
-            player.getInventory().add(output.copy());
-            furnace.setItem(2, ItemStack.EMPTY);
-            totalSmelted += collected;
-            progress.increment("items_smelted", collected);
-            progress.logEvent("Collected " + collected + " smelted items (" + totalSmelted + "/" + totalToSmelt + ")");
+        // XP cost for smelting
+        int totalXpCost = xpCostPerItem * consumed;
+        if (player.experienceLevel < totalXpCost) {
+            player.giveExperienceLevels(totalXpCost - player.experienceLevel);
+        }
+        player.giveExperienceLevels(-totalXpCost);
+
+        // Give output
+        Item outputItem = BuiltInRegistries.ITEM.get(ResourceLocation.parse(outputItemId));
+        player.getInventory().add(new ItemStack(outputItem, consumed));
+        totalSmelted += consumed;
+        progress.increment("items_smelted", consumed);
+
+        // Sound effect
+        if (player.level() instanceof ServerLevel serverLevel) {
+            serverLevel.playSound(null, player.blockPosition(),
+                SoundEvents.FURNACE_FIRE_CRACKLE, SoundSource.BLOCKS, 1.0f, 1.0f);
         }
 
-        // Return unprocessed input
-        ItemStack remaining = furnace.getItem(0);
-        if (!remaining.isEmpty()) {
-            player.getInventory().add(remaining.copy());
-            furnace.setItem(0, ItemStack.EMPTY);
-        }
-
-        // Return leftover fuel
-        ItemStack leftFuel = furnace.getItem(1);
-        if (!leftFuel.isEmpty()) {
-            player.getInventory().add(leftFuel.copy());
-            furnace.setItem(1, ItemStack.EMPTY);
-        }
-
-        furnace.setChanged();
+        bot.systemChat("Smelted " + consumed + "x " + inputItemId + " → " + outputItemId
+            + " (" + totalSmelted + "/" + totalToSmelt + ")", "gold");
 
         if (totalSmelted >= totalToSmelt) {
-            progress.logEvent("Smelting complete: " + totalSmelted + " items");
+            progress.logEvent("Internal smelting complete: " + totalSmelted + " items");
             return BehaviorResult.SUCCESS;
         }
 
-        // More to smelt — loop back
-        enterPhase(Phase.VALIDATE);
+        // More batches needed
+        smeltTicks = 0;
         return BehaviorResult.RUNNING;
     }
 
-    private int findItemSlot(ServerPlayer player, String itemId) {
-        String search = itemId.toLowerCase();
-        for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
-            ItemStack stack = player.getInventory().getItem(i);
-            if (stack.isEmpty()) continue;
-            String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
-            if (id.contains(search)) return i;
-        }
-        return -1;
-    }
-
-    private int findFuelSlot(ServerPlayer player) {
-        String[] fuels = {"coal", "charcoal", "lava_bucket", "blaze_rod"};
-        for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
-            ItemStack stack = player.getInventory().getItem(i);
-            if (stack.isEmpty()) continue;
-            String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
-            for (String fuel : fuels) {
-                if (id.contains(fuel)) return i;
-            }
-            // Any wooden item works as fuel
-            if (id.contains("planks") || id.contains("log") || id.contains("wood")) return i;
-        }
-        return -1;
-    }
-
-    private int countItem(ServerPlayer player, Item item) {
+    private int countItemById(ServerPlayer player, String itemId) {
         int count = 0;
         for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
             ItemStack stack = player.getInventory().getItem(i);
-            if (stack.getItem() == item) count += stack.getCount();
+            if (stack.isEmpty()) continue;
+            String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+            if (id.equals(itemId)) count += stack.getCount();
         }
         return count;
     }
 
-    private BlockPos findNearbyFurnace(ServerPlayer player, int radius) {
-        BlockPos center = player.blockPosition();
-        BlockPos nearest = null;
-        double nearestDist = Double.MAX_VALUE;
-        for (int dx = -radius; dx <= radius; dx++) {
-            for (int dy = -radius; dy <= radius; dy++) {
-                for (int dz = -radius; dz <= radius; dz++) {
-                    BlockPos pos = center.offset(dx, dy, dz);
-                    if (player.level().getBlockEntity(pos) instanceof AbstractFurnaceBlockEntity) {
-                        double dist = center.distSqr(pos);
-                        if (dist < nearestDist) {
-                            nearestDist = dist;
-                            nearest = pos;
-                        }
-                    }
-                }
+    private int removeItems(ServerPlayer player, String itemId, int amount) {
+        int removed = 0;
+        for (int i = 0; i < player.getInventory().getContainerSize() && removed < amount; i++) {
+            ItemStack stack = player.getInventory().getItem(i);
+            if (stack.isEmpty()) continue;
+            String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+            if (id.equals(itemId)) {
+                int take = Math.min(stack.getCount(), amount - removed);
+                stack.shrink(take);
+                removed += take;
             }
         }
-        return nearest;
-    }
-
-    private void moveToward(BotPlayer bot, ServerPlayer player, Vec3 target, double dist) {
-        Vec3 currentPos = player.position();
-        Vec3 direction = target.subtract(currentPos).normalize();
-
-        double heightDiff = Math.abs(target.y - currentPos.y);
-        if (heightDiff > 4.0) {
-            double moveSpeed = Math.min(0.8, dist);
-            player.moveTo(
-                    currentPos.x + direction.x * moveSpeed,
-                    currentPos.y + direction.y * moveSpeed,
-                    currentPos.z + direction.z * moveSpeed
-            );
-            bot.lookAt(target.x, target.y, target.z);
-            return;
-        }
-
-        if (player.onGround()) {
-            yVelocity = 0;
-            if (com.sigmastrain.aiplayermod.actions.GoToAction.shouldJump(player, direction)) {
-                yVelocity = 0.42;
-            }
-        } else {
-            yVelocity -= 0.08;
-        }
-
-        if (lastPos != null && currentPos.distanceTo(lastPos) < 0.01) {
-            ticksStuck++;
-            if (ticksStuck > 20) {
-                player.moveTo(currentPos.x + direction.x * 2.0, currentPos.y + 1.0, currentPos.z + direction.z * 2.0);
-                yVelocity = 0;
-                ticksStuck = 0;
-            }
-        } else {
-            ticksStuck = 0;
-        }
-        lastPos = currentPos;
-
-        player.move(net.minecraft.world.entity.MoverType.SELF,
-                new Vec3(direction.x * 0.4, yVelocity, direction.z * 0.4));
-        bot.lookAt(target.x, target.y, target.z);
+        return removed;
     }
 
     private void enterPhase(Phase newPhase) {
@@ -409,14 +246,9 @@ public class SmeltBehavior implements Behavior {
     @Override
     public String describeState() {
         return switch (phase) {
-            case VALIDATE -> "Checking materials for smelting";
-            case FIND_FURNACE -> "Looking for furnace";
-            case CRAFT_FURNACE -> "Crafting furnace";
-            case PLACE_FURNACE -> "Placing furnace";
-            case NAVIGATE -> "Moving to furnace";
-            case LOAD -> "Loading furnace";
-            case WAITING -> "Waiting for smelting (" + waitTicks + " ticks)";
-            case COLLECT -> "Collecting smelted items";
+            case VALIDATE -> "Validating smelting recipe";
+            case CHANNEL -> "Channeling input materials";
+            case SMELTING -> "Internal smelting (" + smeltTicks + "/" + SMELT_TICKS + " ticks)";
         };
     }
 
@@ -424,7 +256,41 @@ public class SmeltBehavior implements Behavior {
     public ProgressReport getProgress() { return progress; }
 
     @Override
-    public void stop() {
-        if (craftFurnaceBehavior != null) craftFurnaceBehavior.stop();
+    public void stop() {}
+
+    private int getChannelCost(String itemId) {
+        return switch (itemId) {
+            case "minecraft:cobblestone", "minecraft:sand", "minecraft:clay_ball",
+                 "minecraft:netherrack", "minecraft:kelp", "minecraft:cactus" -> 1;
+            case "minecraft:coal", "minecraft:raw_copper", "minecraft:clay",
+                 "minecraft:potato", "minecraft:beef", "minecraft:porkchop",
+                 "minecraft:chicken", "minecraft:cod", "minecraft:salmon" -> 2;
+            case "minecraft:raw_iron", "minecraft:raw_gold", "minecraft:quartz" -> 3;
+            case "minecraft:ancient_debris" -> 25;
+            default -> 3;
+        };
+    }
+
+    private int getSmeltXpCost(String itemId) {
+        return switch (itemId) {
+            case "minecraft:cobblestone", "minecraft:sand", "minecraft:red_sand",
+                 "minecraft:clay_ball", "minecraft:netherrack", "minecraft:kelp",
+                 "minecraft:cactus", "minecraft:sea_pickle", "minecraft:wet_sponge" -> 1;
+            case "minecraft:potato", "minecraft:beef", "minecraft:porkchop",
+                 "minecraft:chicken", "minecraft:mutton", "minecraft:rabbit",
+                 "minecraft:cod", "minecraft:salmon" -> 1;
+            case "minecraft:raw_copper", "minecraft:copper_ore",
+                 "minecraft:deepslate_copper_ore", "minecraft:coal_ore",
+                 "minecraft:deepslate_coal_ore" -> 1;
+            case "minecraft:raw_iron", "minecraft:iron_ore",
+                 "minecraft:deepslate_iron_ore" -> 2;
+            case "minecraft:raw_gold", "minecraft:gold_ore",
+                 "minecraft:deepslate_gold_ore", "minecraft:nether_gold_ore" -> 2;
+            case "minecraft:diamond_ore", "minecraft:deepslate_diamond_ore",
+                 "minecraft:emerald_ore", "minecraft:deepslate_emerald_ore",
+                 "minecraft:lapis_ore", "minecraft:deepslate_lapis_ore" -> 3;
+            case "minecraft:ancient_debris" -> 10;
+            default -> 2;
+        };
     }
 }

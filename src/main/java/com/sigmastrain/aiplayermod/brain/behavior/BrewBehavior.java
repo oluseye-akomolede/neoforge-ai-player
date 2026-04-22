@@ -5,9 +5,13 @@ import com.sigmastrain.aiplayermod.brain.BehaviorResult;
 import com.sigmastrain.aiplayermod.brain.Directive;
 import com.sigmastrain.aiplayermod.brain.ProgressReport;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -17,16 +21,16 @@ import net.minecraft.world.phys.Vec3;
 import java.util.*;
 
 /**
- * Composite brewing behavior. Handles:
- * 1. Find brewing stand (won't auto-craft — needs blaze rods)
- * 2. Navigate to it
- * 3. Resolve the brewing recipe chain (water bottle → awkward → effect → modifier)
- * 4. Execute each brewing stage: load, wait, collect
- * 5. Repeat for multi-stage recipes
+ * L1 Brew behavior with self-healing:
+ * 1. Resolve recipe chain
+ * 2. Channel any missing ingredients, water bottles, blaze powder
+ * 3. Find brewing stand (escalating search)
+ * 4. Navigate, fuel, load, brew, collect
  */
 public class BrewBehavior implements Behavior {
     private enum Phase {
-        RESOLVE, FIND_STAND, NAVIGATE, CHECK_FUEL, LOAD_STAGE, WAITING, COLLECT_STAGE
+        RESOLVE, CHANNEL_MATERIALS, FIND_STAND, NAVIGATE, CHECK_FUEL,
+        CHANNEL_FUEL, LOAD_STAGE, WAITING, COLLECT_STAGE
     }
 
     private final ProgressReport progress = new ProgressReport();
@@ -40,24 +44,29 @@ public class BrewBehavior implements Behavior {
     private int currentStage;
     private int waitTicks;
 
+    // Channeling state
+    private List<ChannelRequest> channelQueue;
+    private int channelIndex;
+    private int channelTicks;
+    private int channelXpCost;
+
     // Navigation
     private double yVelocity;
     private int ticksStuck;
     private Vec3 lastPos;
 
-    private static final double REACH = 4.5;
-    private static final int STAND_SEARCH_RADIUS = 24;
-    private static final int MAX_WAIT_TICKS = 500;
+    // Stand search escalation
+    private static final int[] STAND_SEARCH_RADII = {32, 64, 128, 256};
+    private int standRadiusIndex;
 
-    // ── Potion recipe table ──
-    // Maps potion effect name → list of brewing stages (ingredient item IDs in order)
-    // Stage 0 always uses nether_wart on water bottles to make awkward potion
+    private static final double REACH = 4.5;
+    private static final int MAX_WAIT_TICKS = 500;
+    private static final int CHANNEL_TICKS_PER_LEVEL = 20;
+
     private static final Map<String, List<String>> POTION_RECIPES = new LinkedHashMap<>();
-    // Modifier potions (applied to existing effect potions)
     private static final Map<String, String> MODIFIERS = new LinkedHashMap<>();
 
     static {
-        // Base potions: nether_wart → awkward, then ingredient → effect
         POTION_RECIPES.put("healing",        List.of("minecraft:nether_wart", "minecraft:glistering_melon_slice"));
         POTION_RECIPES.put("regeneration",   List.of("minecraft:nether_wart", "minecraft:ghast_tear"));
         POTION_RECIPES.put("strength",       List.of("minecraft:nether_wart", "minecraft:blaze_powder"));
@@ -69,16 +78,15 @@ public class BrewBehavior implements Behavior {
         POTION_RECIPES.put("leaping",        List.of("minecraft:nether_wart", "minecraft:rabbit_foot"));
         POTION_RECIPES.put("slow_falling",   List.of("minecraft:nether_wart", "minecraft:phantom_membrane"));
         POTION_RECIPES.put("poison",         List.of("minecraft:nether_wart", "minecraft:spider_eye"));
-        POTION_RECIPES.put("weakness",       List.of("minecraft:fermented_spider_eye")); // No awkward base needed
+        POTION_RECIPES.put("weakness",       List.of("minecraft:fermented_spider_eye"));
         POTION_RECIPES.put("slowness",       List.of("minecraft:nether_wart", "minecraft:sugar", "minecraft:fermented_spider_eye"));
         POTION_RECIPES.put("harming",        List.of("minecraft:nether_wart", "minecraft:glistering_melon_slice", "minecraft:fermented_spider_eye"));
         POTION_RECIPES.put("turtle_master",  List.of("minecraft:nether_wart", "minecraft:turtle_helmet"));
 
-        // Modifiers: applied as an extra stage on top of any effect potion
-        MODIFIERS.put("long",     "minecraft:redstone");      // Extended duration
-        MODIFIERS.put("strong",   "minecraft:glowstone_dust"); // Increased potency
-        MODIFIERS.put("splash",   "minecraft:gunpowder");     // Splash variant
-        MODIFIERS.put("lingering","minecraft:dragon_breath");  // Lingering variant
+        MODIFIERS.put("long",     "minecraft:redstone");
+        MODIFIERS.put("strong",   "minecraft:glowstone_dust");
+        MODIFIERS.put("splash",   "minecraft:gunpowder");
+        MODIFIERS.put("lingering","minecraft:dragon_breath");
     }
 
     @Override
@@ -88,6 +96,9 @@ public class BrewBehavior implements Behavior {
         this.targetCount = directive.getCount() > 0 ? Math.min(directive.getCount(), 3) : 3;
         this.stages = new ArrayList<>();
         this.currentStage = 0;
+        this.channelQueue = new ArrayList<>();
+        this.channelIndex = 0;
+        this.standRadiusIndex = 0;
         this.yVelocity = 0;
         this.ticksStuck = 0;
         this.lastPos = null;
@@ -98,9 +109,11 @@ public class BrewBehavior implements Behavior {
     public BehaviorResult tick(BotPlayer bot) {
         return switch (phase) {
             case RESOLVE -> tickResolve(bot);
+            case CHANNEL_MATERIALS -> tickChanneling(bot);
             case FIND_STAND -> tickFindStand(bot);
             case NAVIGATE -> tickNavigate(bot);
             case CHECK_FUEL -> tickCheckFuel(bot);
+            case CHANNEL_FUEL -> tickChannelFuel(bot);
             case LOAD_STAGE -> tickLoadStage(bot);
             case WAITING -> tickWaiting(bot);
             case COLLECT_STAGE -> tickCollectStage(bot);
@@ -108,7 +121,6 @@ public class BrewBehavior implements Behavior {
     }
 
     private BehaviorResult tickResolve(BotPlayer bot) {
-        // Parse potion name: "healing", "long_strength", "splash_healing", "strong_regeneration"
         String potionName = targetPotion.toLowerCase()
                 .replace("minecraft:", "")
                 .replace("potion_of_", "")
@@ -117,7 +129,6 @@ public class BrewBehavior implements Behavior {
                 .replace(" potion", "")
                 .trim();
 
-        // Check for modifiers
         String modifier = null;
         for (String mod : MODIFIERS.keySet()) {
             if (potionName.startsWith(mod + "_")) {
@@ -129,7 +140,6 @@ public class BrewBehavior implements Behavior {
 
         List<String> recipe = POTION_RECIPES.get(potionName);
         if (recipe == null) {
-            // Try fuzzy match
             for (var entry : POTION_RECIPES.entrySet()) {
                 if (potionName.contains(entry.getKey()) || entry.getKey().contains(potionName)) {
                     recipe = entry.getValue();
@@ -156,36 +166,111 @@ public class BrewBehavior implements Behavior {
                 + (modifier != null ? " + " + modifier : ""));
         currentStage = 0;
 
-        // Check we have all ingredients
+        // Identify all missing materials and queue channeling
         ServerPlayer player = bot.getPlayer();
+        channelQueue.clear();
+
         for (BrewStage stage : stages) {
             if (findItemSlot(player, stage.ingredientId) < 0) {
-                progress.setFailureReason("Missing ingredient: " + stage.ingredientId);
-                return BehaviorResult.FAILED;
+                channelQueue.add(new ChannelRequest(stage.ingredientId, 1));
             }
         }
 
-        // Check for water bottles (need targetCount)
-        int bottleCount = countBottles(player);
+        int bottleCount = countWaterBottles(player);
         if (bottleCount < targetCount) {
-            progress.setFailureReason("Need " + targetCount + " water bottles but only have " + bottleCount);
-            return BehaviorResult.FAILED;
+            int needed = targetCount - bottleCount;
+            channelQueue.add(new ChannelRequest("minecraft:potion", needed));
         }
 
+        // Check blaze powder (need at least 1 for fuel)
+        if (findItemSlot(player, "minecraft:blaze_powder") < 0) {
+            channelQueue.add(new ChannelRequest("minecraft:blaze_powder", 1));
+        }
+
+        if (!channelQueue.isEmpty()) {
+            channelIndex = 0;
+            startNextChannel(player);
+            bot.systemChat("Channeling " + channelQueue.size() + " missing brewing material(s)...", "light_purple");
+            enterPhase(Phase.CHANNEL_MATERIALS);
+            return BehaviorResult.RUNNING;
+        }
+
+        standRadiusIndex = 0;
+        enterPhase(Phase.FIND_STAND);
+        return BehaviorResult.RUNNING;
+    }
+
+    private BehaviorResult tickChanneling(BotPlayer bot) {
+        ServerPlayer player = bot.getPlayer();
+        ServerLevel level = player.serverLevel();
+        Vec3 pos = player.position();
+
+        if (channelTicks % 3 == 0) {
+            level.sendParticles(ParticleTypes.PORTAL,
+                    pos.x, pos.y + 1.0, pos.z, 2, 0.8, 0.5, 0.8, 0.2);
+        }
+
+        channelTicks--;
+        if (channelTicks > 0) return BehaviorResult.RUNNING;
+
+        ChannelRequest req = channelQueue.get(channelIndex);
+
+        if (req.itemId.equals("minecraft:potion")) {
+            // Channel water bottles
+            for (int i = 0; i < req.count; i++) {
+                ItemStack waterBottle = new ItemStack(Items.POTION, 1);
+                waterBottle.set(net.minecraft.core.component.DataComponents.POTION_CONTENTS,
+                        new net.minecraft.world.item.alchemy.PotionContents(net.minecraft.world.item.alchemy.Potions.WATER));
+                player.getInventory().add(waterBottle);
+            }
+        } else {
+            Item item = BuiltInRegistries.ITEM.get(ResourceLocation.parse(req.itemId));
+            if (item == Items.AIR) {
+                progress.setFailureReason("Channel failed: unknown item " + req.itemId);
+                return BehaviorResult.FAILED;
+            }
+            player.getInventory().add(new ItemStack(item, req.count));
+        }
+
+        player.giveExperienceLevels(-channelXpCost);
+        progress.increment("items_channeled", req.count);
+        progress.logEvent("Channeled " + req.count + "x " + req.itemId);
+
+        level.sendParticles(ParticleTypes.END_ROD,
+                pos.x, pos.y + 1.0, pos.z, 10, 0.5, 0.8, 0.5, 0.1);
+        level.playSound(null, player.blockPosition(),
+                SoundEvents.ENDERMAN_TELEPORT, SoundSource.PLAYERS, 0.5f, 1.2f);
+
+        channelIndex++;
+        if (channelIndex < channelQueue.size()) {
+            startNextChannel(player);
+            return BehaviorResult.RUNNING;
+        }
+
+        standRadiusIndex = 0;
         enterPhase(Phase.FIND_STAND);
         return BehaviorResult.RUNNING;
     }
 
     private BehaviorResult tickFindStand(BotPlayer bot) {
         ServerPlayer player = bot.getPlayer();
-        standPos = findNearbyBlock(player, "brewing_stand", STAND_SEARCH_RADIUS);
-        if (standPos == null) {
-            progress.setFailureReason("No brewing stand within " + STAND_SEARCH_RADIUS + " blocks");
-            return BehaviorResult.FAILED;
+        int radius = STAND_SEARCH_RADII[Math.min(standRadiusIndex, STAND_SEARCH_RADII.length - 1)];
+        standPos = findNearbyBlock(player, "brewing_stand", radius);
+
+        if (standPos != null) {
+            progress.logEvent("Found brewing stand at " + standPos.toShortString());
+            enterPhase(Phase.NAVIGATE);
+            return BehaviorResult.RUNNING;
         }
-        progress.logEvent("Found brewing stand at " + standPos.toShortString());
-        enterPhase(Phase.NAVIGATE);
-        return BehaviorResult.RUNNING;
+
+        standRadiusIndex++;
+        if (standRadiusIndex < STAND_SEARCH_RADII.length) {
+            progress.logEvent("Expanding stand search to " + STAND_SEARCH_RADII[standRadiusIndex] + " blocks");
+            return BehaviorResult.RUNNING;
+        }
+
+        progress.setFailureReason("No brewing stand within " + STAND_SEARCH_RADII[STAND_SEARCH_RADII.length - 1] + " blocks");
+        return BehaviorResult.FAILED;
     }
 
     private BehaviorResult tickNavigate(BotPlayer bot) {
@@ -210,7 +295,6 @@ public class BrewBehavior implements Behavior {
             return BehaviorResult.FAILED;
         }
 
-        // Check if stand needs fuel (blaze powder, slot 4)
         ItemStack existingFuel = stand.getItem(4);
         if (existingFuel.isEmpty()) {
             int blazeSlot = findItemSlot(player, "minecraft:blaze_powder");
@@ -220,12 +304,45 @@ public class BrewBehavior implements Behavior {
                 stand.setChanged();
                 progress.logEvent("Loaded blaze powder as fuel");
             } else {
-                progress.setFailureReason("Brewing stand needs blaze powder fuel but none in inventory");
-                return BehaviorResult.FAILED;
+                // Channel blaze powder
+                channelQueue.clear();
+                channelQueue.add(new ChannelRequest("minecraft:blaze_powder", 1));
+                channelIndex = 0;
+                startNextChannel(player);
+                bot.systemChat("Channeling blaze powder for fuel...", "light_purple");
+                enterPhase(Phase.CHANNEL_FUEL);
+                return BehaviorResult.RUNNING;
             }
         }
 
         enterPhase(Phase.LOAD_STAGE);
+        return BehaviorResult.RUNNING;
+    }
+
+    private BehaviorResult tickChannelFuel(BotPlayer bot) {
+        ServerPlayer player = bot.getPlayer();
+        ServerLevel level = player.serverLevel();
+        Vec3 pos = player.position();
+
+        if (channelTicks % 3 == 0) {
+            level.sendParticles(ParticleTypes.PORTAL,
+                    pos.x, pos.y + 1.0, pos.z, 2, 0.8, 0.5, 0.8, 0.2);
+        }
+
+        channelTicks--;
+        if (channelTicks > 0) return BehaviorResult.RUNNING;
+
+        player.giveExperienceLevels(-channelXpCost);
+        player.getInventory().add(new ItemStack(Items.BLAZE_POWDER, 1));
+        progress.increment("items_channeled");
+        progress.logEvent("Channeled blaze powder");
+
+        level.sendParticles(ParticleTypes.END_ROD,
+                pos.x, pos.y + 1.0, pos.z, 10, 0.5, 0.8, 0.5, 0.1);
+        level.playSound(null, player.blockPosition(),
+                SoundEvents.ENDERMAN_TELEPORT, SoundSource.PLAYERS, 0.5f, 1.2f);
+
+        enterPhase(Phase.CHECK_FUEL);
         return BehaviorResult.RUNNING;
     }
 
@@ -244,9 +361,7 @@ public class BrewBehavior implements Behavior {
 
         BrewStage stage = stages.get(currentStage);
 
-        // Load bottles into slots 0-2
         if (currentStage == 0) {
-            // First stage: load water bottles from inventory
             int loaded = 0;
             for (int slot = 0; slot < 3 && loaded < targetCount; slot++) {
                 int bottleIdx = findWaterBottleSlot(player);
@@ -262,13 +377,17 @@ public class BrewBehavior implements Behavior {
             }
             progress.logEvent("Loaded " + loaded + " water bottle(s)");
         }
-        // Subsequent stages: bottles are already in the stand from previous collection/reload
 
-        // Load ingredient into slot 3
         int ingredientSlot = findItemSlot(player, stage.ingredientId);
         if (ingredientSlot < 0) {
-            progress.setFailureReason("Missing ingredient: " + stage.ingredientId);
-            return BehaviorResult.FAILED;
+            // Channel the missing ingredient on the fly
+            channelQueue.clear();
+            channelQueue.add(new ChannelRequest(stage.ingredientId, 1));
+            channelIndex = 0;
+            startNextChannel(player);
+            bot.systemChat("Channeling " + stage.ingredientId + "...", "light_purple");
+            enterPhase(Phase.CHANNEL_MATERIALS);
+            return BehaviorResult.RUNNING;
         }
         ItemStack ingredient = player.getInventory().getItem(ingredientSlot);
         stand.setItem(3, ingredient.split(1));
@@ -290,7 +409,6 @@ public class BrewBehavior implements Behavior {
         }
 
         if (player.level().getBlockEntity(standPos) instanceof BrewingStandBlockEntity stand) {
-            // Ingredient consumed = stage done
             if (stand.getItem(3).isEmpty() && waitTicks > 20) {
                 enterPhase(Phase.COLLECT_STAGE);
             }
@@ -307,7 +425,6 @@ public class BrewBehavior implements Behavior {
         currentStage++;
 
         if (currentStage >= stages.size()) {
-            // Final stage done — collect finished potions
             if (player.level().getBlockEntity(standPos) instanceof BrewingStandBlockEntity stand) {
                 int collected = 0;
                 for (int i = 0; i < 3; i++) {
@@ -325,11 +442,41 @@ public class BrewBehavior implements Behavior {
             return BehaviorResult.SUCCESS;
         }
 
-        // More stages — potions stay in the stand, load next ingredient
         progress.logEvent("Stage " + currentStage + " done, preparing next");
         enterPhase(Phase.LOAD_STAGE);
         return BehaviorResult.RUNNING;
     }
+
+    // ── Channeling helpers ──
+
+    private void startNextChannel(ServerPlayer player) {
+        ChannelRequest req = channelQueue.get(channelIndex);
+        channelXpCost = getConjureCost(req.itemId) * req.count;
+        if (player.experienceLevel < channelXpCost) {
+            int needed = channelXpCost - player.experienceLevel;
+            player.giveExperienceLevels(needed);
+            progress.logEvent("Meditated for " + needed + " XP levels");
+        }
+        channelTicks = Math.max(20, channelXpCost * CHANNEL_TICKS_PER_LEVEL);
+        progress.logEvent("Channeling " + req.count + "x " + req.itemId + " (" + channelXpCost + " levels)");
+    }
+
+    private int getConjureCost(String itemId) {
+        return switch (itemId) {
+            case "minecraft:nether_wart", "minecraft:sugar", "minecraft:spider_eye",
+                 "minecraft:gunpowder", "minecraft:redstone", "minecraft:glowstone_dust",
+                 "minecraft:potion" -> 2;
+            case "minecraft:golden_carrot", "minecraft:glistering_melon_slice",
+                 "minecraft:fermented_spider_eye", "minecraft:magma_cream",
+                 "minecraft:rabbit_foot", "minecraft:pufferfish" -> 4;
+            case "minecraft:ghast_tear", "minecraft:blaze_powder",
+                 "minecraft:phantom_membrane", "minecraft:turtle_helmet" -> 6;
+            case "minecraft:dragon_breath" -> 10;
+            default -> 5;
+        };
+    }
+
+    // ── Inventory helpers ──
 
     private int findItemSlot(ServerPlayer player, String itemId) {
         String search = itemId.toLowerCase().replace("minecraft:", "");
@@ -347,7 +494,6 @@ public class BrewBehavior implements Behavior {
             ItemStack stack = player.getInventory().getItem(i);
             if (stack.isEmpty()) continue;
             if (stack.getItem() == Items.POTION) {
-                // Check if it's a water bottle (no effects)
                 var potionContents = stack.get(net.minecraft.core.component.DataComponents.POTION_CONTENTS);
                 if (potionContents != null && potionContents.potion().isPresent()) {
                     var potion = potionContents.potion().get();
@@ -360,7 +506,7 @@ public class BrewBehavior implements Behavior {
         return -1;
     }
 
-    private int countBottles(ServerPlayer player) {
+    private int countWaterBottles(ServerPlayer player) {
         int count = 0;
         for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
             ItemStack stack = player.getInventory().getItem(i);
@@ -450,9 +596,11 @@ public class BrewBehavior implements Behavior {
     public String describeState() {
         return switch (phase) {
             case RESOLVE -> "Resolving potion recipe for " + targetPotion;
+            case CHANNEL_MATERIALS -> "Channeling brewing ingredients";
             case FIND_STAND -> "Looking for brewing stand";
             case NAVIGATE -> "Moving to brewing stand";
             case CHECK_FUEL -> "Checking fuel";
+            case CHANNEL_FUEL -> "Channeling blaze powder";
             case LOAD_STAGE -> "Loading stage " + (currentStage + 1) + "/" + (stages != null ? stages.size() : 0);
             case WAITING -> "Brewing stage " + (currentStage + 1) + " (" + waitTicks + " ticks)";
             case COLLECT_STAGE -> "Collecting stage " + currentStage;
@@ -466,4 +614,5 @@ public class BrewBehavior implements Behavior {
     public void stop() {}
 
     private record BrewStage(String ingredientId) {}
+    private record ChannelRequest(String itemId, int count) {}
 }

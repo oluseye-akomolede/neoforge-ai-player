@@ -3,6 +3,7 @@ package com.sigmastrain.aiplayermod;
 import com.sigmastrain.aiplayermod.api.HttpApiServer;
 import com.sigmastrain.aiplayermod.bot.BotManager;
 import com.sigmastrain.aiplayermod.shop.BotShop;
+import com.sigmastrain.aiplayermod.shop.TransmuteRegistry;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.ModContainer;
@@ -40,6 +41,7 @@ public class AIPlayerMod {
     public void onServerStarted(ServerStartedEvent event) {
         BotManager.init(event.getServer());
         BotShop.init(event.getServer().getServerDirectory());
+        TransmuteRegistry.init(event.getServer().getServerDirectory());
 
         int port = Integer.parseInt(System.getProperty("aiplayermod.api.port",
                 System.getenv().getOrDefault("AIPLAYER_API_PORT", String.valueOf(DEFAULT_API_PORT))));
@@ -56,12 +58,14 @@ public class AIPlayerMod {
         if (apiServer != null) {
             apiServer.stop();
         }
+        TransmuteRegistry.saveConfig();
         BotManager.shutdown();
     }
 
     @SubscribeEvent
     public void onServerTick(ServerTickEvent.Post event) {
         BotManager.tick();
+        TransmuteRegistry.tickSave(event.getServer().getTickCount());
     }
 
     @SubscribeEvent

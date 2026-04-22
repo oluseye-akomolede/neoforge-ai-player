@@ -48,6 +48,39 @@ public class ModCommands {
                             }
                             return 1;
                         }))
+                .then(Commands.literal("reset")
+                        .executes(ctx -> {
+                            var bots = BotManager.getAllBots();
+                            int count = 0;
+                            for (var entry : bots.entrySet()) {
+                                BotPlayer bot = entry.getValue();
+                                bot.getBrain().cancelDirective();
+                                bot.getActionQueue().clear();
+                                bot.systemChat("RESET: All tasks cleared", "red");
+                                count++;
+                            }
+                            int finalCount = count;
+                            ctx.getSource().sendSuccess(() ->
+                                    Component.literal("Reset " + finalCount + " bot(s) — all directives and actions cleared"), true);
+                            return 1;
+                        }))
+                .then(Commands.literal("status")
+                        .executes(ctx -> {
+                            var bots = BotManager.getAllBots();
+                            if (bots.isEmpty()) {
+                                ctx.getSource().sendSuccess(() ->
+                                        Component.literal("No AI bots active"), false);
+                            } else {
+                                bots.forEach((name, bot) -> {
+                                    var brain = bot.getBrain().toMap();
+                                    ctx.getSource().sendSuccess(() ->
+                                            Component.literal(String.format("[%s] %s | %s",
+                                                    name, brain.get("state"),
+                                                    brain.containsKey("directive") ? brain.get("directive") : "idle")), false);
+                                });
+                            }
+                            return 1;
+                        }))
         );
     }
 }

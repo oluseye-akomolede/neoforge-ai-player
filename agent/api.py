@@ -246,3 +246,18 @@ def get_brain(bot):
 
 def cancel_directive(bot):
     return _delete(f"/bot/{bot}/directive")
+
+
+# ── Transmute registry ──
+
+def transmute_list():
+    return _get("/transmute")
+
+def transmute_get(item_id):
+    return _get(f"/transmute?item={item_id}")
+
+def transmute_register(item_id, xp_cost, source="agent"):
+    return _post("/transmute", {"item": item_id, "xp_cost": xp_cost, "source": source})
+
+def transmute_remove(item_id):
+    return _delete("/transmute", {"item": item_id})

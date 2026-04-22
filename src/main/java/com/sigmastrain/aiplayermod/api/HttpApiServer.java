@@ -9,6 +9,7 @@ import com.sigmastrain.aiplayermod.actions.*;
 import com.sigmastrain.aiplayermod.bot.BotManager;
 import com.sigmastrain.aiplayermod.bot.BotPlayer;
 import com.sigmastrain.aiplayermod.shop.BotShop;
+import com.sigmastrain.aiplayermod.shop.TransmuteRegistry;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
@@ -38,6 +39,7 @@ public class HttpApiServer {
             server.createContext("/bots", this::handleBots);
             server.createContext("/bot/", this::handleBotAction);
             server.createContext("/shop", this::handleShop);
+            server.createContext("/transmute", this::handleTransmute);
 
             server.start();
         } catch (IOException e) {
@@ -568,6 +570,52 @@ public class HttpApiServer {
                 JsonObject body = readBody(exchange);
                 String item = body.get("item").getAsString();
                 boolean removed = BotShop.remove(item);
+                sendJson(exchange, 200, Map.of("status", removed ? "removed" : "not_found", "item", item));
+            }
+            default -> sendJson(exchange, 405, Map.of("error", "Method not allowed"));
+        }
+    }
+
+    // ── /transmute ── (GET = list/lookup, POST = register/update, DELETE = remove)
+
+    private void handleTransmute(HttpExchange exchange) throws IOException {
+        if (!checkAuth(exchange)) return;
+
+        String method = exchange.getRequestMethod();
+        String query = exchange.getRequestURI().getQuery();
+
+        switch (method) {
+            case "GET" -> {
+                if (query != null && query.contains("item=")) {
+                    String itemId = query.split("item=")[1].split("&")[0];
+                    var entry = TransmuteRegistry.get(itemId);
+                    if (entry != null) {
+                        sendJson(exchange, 200, Map.of(
+                                "item", entry.itemId(),
+                                "xp_cost", entry.xpCost(),
+                                "source", entry.source(),
+                                "discovered_tick", entry.discoveredTick()));
+                    } else {
+                        sendJson(exchange, 404, Map.of("error", "Item not in transmute registry: " + itemId));
+                    }
+                } else {
+                    sendJson(exchange, 200, Map.of(
+                            "items", TransmuteRegistry.listAll(),
+                            "count", TransmuteRegistry.size()));
+                }
+            }
+            case "POST" -> {
+                JsonObject body = readBody(exchange);
+                String item = body.get("item").getAsString();
+                int cost = body.get("xp_cost").getAsInt();
+                String source = body.has("source") ? body.get("source").getAsString() : "api";
+                TransmuteRegistry.register(item, cost, source, 0);
+                sendJson(exchange, 200, Map.of("status", "registered", "item", item, "xp_cost", cost));
+            }
+            case "DELETE" -> {
+                JsonObject body = readBody(exchange);
+                String item = body.get("item").getAsString();
+                boolean removed = TransmuteRegistry.remove(item);
                 sendJson(exchange, 200, Map.of("status", removed ? "removed" : "not_found", "item", item));
             }
             default -> sendJson(exchange, 405, Map.of("error", "Method not allowed"));

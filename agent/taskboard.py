@@ -78,10 +78,12 @@ class TaskBoard:
             self._cache = [dict(r) for r in rows]
             self._cache_ts = time.time()
 
-    def _cache_has_pending(self, specializations=None):
-        """Fast check: are there any pending tasks matching these specs?"""
+    def _cache_has_claimable(self, bot_name, specializations=None):
+        """Fast check: tasks pre-assigned to this bot, or pending tasks matching specs."""
         with self._lock:
             for t in self._cache:
+                if t["status"] == "assigned" and t.get("assigned_to") == bot_name:
+                    return True
                 if t["status"] != "pending":
                     continue
                 if specializations:
@@ -107,63 +109,83 @@ class TaskBoard:
     # ── Public API ──
 
     def post(self, description, created_by, specialization=None, priority=0,
-             parent_id=None, plan_steps=None):
-        """Post a new task to the board. Returns task id."""
+             parent_id=None, plan_steps=None, assigned_to=None):
+        """Post a new task to the board. Returns task id.
+        If assigned_to is set, task is pre-assigned (status='assigned') so only that bot picks it up."""
+        status = "assigned" if assigned_to else "pending"
         with self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
                 INSERT INTO task_board
-                    (description, created_by, specialization, priority, parent_id, plan_steps)
-                VALUES (%s, %s, %s, %s, %s, %s::jsonb)
+                    (description, created_by, specialization, priority, parent_id, plan_steps,
+                     status, assigned_to)
+                VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s)
                 RETURNING *
             """, (description, created_by, specialization, priority,
-                  parent_id, json.dumps(plan_steps) if plan_steps else None))
+                  parent_id, json.dumps(plan_steps) if plan_steps else None,
+                  status, assigned_to))
             row = dict(cur.fetchone())
         with self._lock:
             self._cache.append(row)
         return row["id"]
 
     def claim(self, bot_name, specializations=None):
-        """Claim the highest-priority pending task matching bot's specializations.
+        """Claim a task: pre-assigned to this bot first, then highest-priority pending.
 
-        Fast path: check cache first. If nothing pending, skip postgres entirely.
+        Fast path: check cache first. If nothing claimable, skip postgres entirely.
         Slow path: atomic claim via postgres FOR UPDATE SKIP LOCKED.
         Returns task dict or None.
         """
-        if not self._cache_has_pending(specializations):
+        if not self._cache_has_claimable(bot_name, specializations):
             return None
 
-        # Atomic claim in postgres
         with self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            if specializations:
-                placeholders = ",".join(["%s"] * len(specializations))
-                cur.execute(f"""
-                    UPDATE task_board
-                    SET status = 'assigned', assigned_to = %s, updated_at = NOW()
-                    WHERE id = (
-                        SELECT id FROM task_board
-                        WHERE status = 'pending'
-                          AND (specialization IS NULL OR specialization IN ({placeholders}))
-                        ORDER BY priority DESC, created_at ASC
-                        LIMIT 1
-                        FOR UPDATE SKIP LOCKED
-                    )
-                    RETURNING *
-                """, [bot_name] + list(specializations))
-            else:
-                cur.execute("""
-                    UPDATE task_board
-                    SET status = 'assigned', assigned_to = %s, updated_at = NOW()
-                    WHERE id = (
-                        SELECT id FROM task_board
-                        WHERE status = 'pending'
-                          AND specialization IS NULL
-                        ORDER BY priority DESC, created_at ASC
-                        LIMIT 1
-                        FOR UPDATE SKIP LOCKED
-                    )
-                    RETURNING *
-                """, (bot_name,))
+            # First: pick up tasks pre-assigned to this bot
+            cur.execute("""
+                UPDATE task_board
+                SET status = 'assigned', updated_at = NOW()
+                WHERE id = (
+                    SELECT id FROM task_board
+                    WHERE status = 'assigned' AND assigned_to = %s
+                    ORDER BY priority DESC, created_at ASC
+                    LIMIT 1
+                    FOR UPDATE SKIP LOCKED
+                )
+                RETURNING *
+            """, (bot_name,))
             row = cur.fetchone()
+
+            # Then: fall back to pending tasks
+            if not row:
+                if specializations:
+                    placeholders = ",".join(["%s"] * len(specializations))
+                    cur.execute(f"""
+                        UPDATE task_board
+                        SET status = 'assigned', assigned_to = %s, updated_at = NOW()
+                        WHERE id = (
+                            SELECT id FROM task_board
+                            WHERE status = 'pending'
+                              AND (specialization IS NULL OR specialization IN ({placeholders}))
+                            ORDER BY priority DESC, created_at ASC
+                            LIMIT 1
+                            FOR UPDATE SKIP LOCKED
+                        )
+                        RETURNING *
+                    """, [bot_name] + list(specializations))
+                else:
+                    cur.execute("""
+                        UPDATE task_board
+                        SET status = 'assigned', assigned_to = %s, updated_at = NOW()
+                        WHERE id = (
+                            SELECT id FROM task_board
+                            WHERE status = 'pending'
+                              AND specialization IS NULL
+                            ORDER BY priority DESC, created_at ASC
+                            LIMIT 1
+                            FOR UPDATE SKIP LOCKED
+                        )
+                        RETURNING *
+                    """, (bot_name,))
+                row = cur.fetchone()
 
         if row:
             task = dict(row)
@@ -207,6 +229,13 @@ class TaskBoard:
                 WHERE id = %s
             """, (task_id,))
         self._update_cache_entry(task_id, status="pending", assigned_to=None)
+
+    def clear_all(self):
+        """Delete all tasks from the board."""
+        with self._conn.cursor() as cur:
+            cur.execute("DELETE FROM task_board")
+        with self._lock:
+            self._cache.clear()
 
     def pending_count(self, specialization=None):
         """Count pending tasks from cache (no postgres hit)."""

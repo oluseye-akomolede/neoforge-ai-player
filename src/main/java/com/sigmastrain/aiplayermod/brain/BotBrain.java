@@ -13,6 +13,7 @@ public class BotBrain {
 
     private volatile Directive pendingDirective;
     private Directive activeDirective;
+    private Directive lastDirective; // Retains completed/failed directive for agent polling
     private Behavior activeBehavior;
 
     private final IdleBehavior idleBehavior = new IdleBehavior();
@@ -34,6 +35,7 @@ public class BotBrain {
             activeBehavior.stop();
         }
         activeDirective = null;
+        lastDirective = null;
         activeBehavior = idleBehavior;
         pendingDirective = null;
     }
@@ -63,6 +65,7 @@ public class BotBrain {
                     AIPlayerMod.LOGGER.info("[{}] Directive {} completed",
                             bot.getPlayer().getName().getString(), activeDirective.getType());
                     bot.systemChat("Directive complete: " + activeDirective.getType(), "green");
+                    lastDirective = activeDirective;
                 }
                 activeBehavior = idleBehavior;
                 activeDirective = null;
@@ -74,6 +77,7 @@ public class BotBrain {
                     AIPlayerMod.LOGGER.warn("[{}] Directive {} failed: {}",
                             bot.getPlayer().getName().getString(), activeDirective.getType(), reason);
                     bot.systemChat("Directive failed: " + reason, "red");
+                    lastDirective = activeDirective;
                 }
                 activeBehavior = idleBehavior;
                 activeDirective = null;
@@ -109,6 +113,8 @@ public class BotBrain {
             case SMELT -> new SmeltBehavior();
             case ENCHANT -> new EnchantBehavior();
             case BREW -> new BrewBehavior();
+            case COMBAT -> new CombatBehavior();
+            case CHANNEL -> new ChannelBehavior();
             case IDLE -> idleBehavior;
             default -> idleBehavior;
         };
@@ -120,10 +126,16 @@ public class BotBrain {
         map.put("self_preservation", selfPreservation.isFleeing() ? "fleeing" : "ok");
         if (activeDirective != null) {
             map.put("directive", activeDirective.toMap());
+        } else if (lastDirective != null) {
+            map.put("directive", lastDirective.toMap());
         }
         if (activeBehavior != null) {
             map.put("progress", activeBehavior.getProgress().toMap());
         }
         return map;
+    }
+
+    public void clearLastDirective() {
+        this.lastDirective = null;
     }
 }

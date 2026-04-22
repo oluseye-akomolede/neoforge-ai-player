@@ -3,6 +3,7 @@ package com.sigmastrain.aiplayermod.bot;
 import com.sigmastrain.aiplayermod.AIPlayerMod;
 import com.sigmastrain.aiplayermod.actions.ActionQueue;
 import com.sigmastrain.aiplayermod.brain.BotBrain;
+import com.sigmastrain.aiplayermod.shop.TransmuteRegistry;
 import com.mojang.authlib.GameProfile;
 import net.minecraft.core.BlockPos;
 import net.minecraft.ChatFormatting;
@@ -211,6 +212,7 @@ public class BotPlayer {
             AIPlayerMod.LOGGER.error("Action error for bot {}: {}", player.getName().getString(), e.getMessage(), e);
             actionQueue.clear();
         }
+        scanInventoryForTransmutables();
         updateForcedChunks();
         broadcastPosition();
         broadcastAllEquipment();
@@ -432,7 +434,7 @@ public class BotPlayer {
             if (!stack.isEmpty()) {
                 Map<String, Object> item = new LinkedHashMap<>();
                 item.put("slot", i);
-                item.put("item", stack.getItem().toString());
+                item.put("item", BuiltInRegistries.ITEM.getKey(stack.getItem()).toString());
                 item.put("count", stack.getCount());
                 result.add(item);
             }
@@ -747,6 +749,25 @@ public class BotPlayer {
             }
         }
         return false;
+    }
+
+    private int transmuteScanSlot = 0;
+    private static final int TRANSMUTE_SCAN_SLOTS_PER_TICK = 4;
+
+    private void scanInventoryForTransmutables() {
+        long tick = player.server.getTickCount();
+        int totalSlots = player.getInventory().getContainerSize();
+        for (int i = 0; i < TRANSMUTE_SCAN_SLOTS_PER_TICK; i++) {
+            if (transmuteScanSlot >= totalSlots) {
+                transmuteScanSlot = 0;
+                return;
+            }
+            ItemStack stack = player.getInventory().getItem(transmuteScanSlot);
+            if (!stack.isEmpty()) {
+                TransmuteRegistry.discover(stack, player.getName().getString(), tick);
+            }
+            transmuteScanSlot++;
+        }
     }
 
     private Map<String, Integer> formatBlockPos(BlockPos pos) {

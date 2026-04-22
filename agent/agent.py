@@ -19,7 +19,9 @@ import semantic_memory as sem
 import planner
 import sessions
 import taskboard
+import transmute_db
 import waypoints
+import mc_items
 from config import (
     TICK_DELAY, BUSY_POLL_DELAY,
     OBSERVE_ENTITY_RADIUS, OBSERVE_BLOCK_RADIUS,
@@ -39,6 +41,7 @@ _CMD_FORGET = re.compile(
 
 # Shared state across all bot runners (set in run())
 _task_board = None
+_transmute = None  # TransmuteDB instance
 _all_runners = {}  # name -> BotRunner
 _orchestration_lock = threading.Lock()
 _orchestrated_messages = {}  # message_text -> coordinator bot name
@@ -68,6 +71,7 @@ class BotRunner:
         self._plan_steps = []
         self._plan_step_idx = 0
         self._plan_instruction = ""
+        self._l1_failed_steps = set()
         self._awaiting_taskboard = False
         self._current_task_id = None
         self._lock = threading.Lock()
@@ -274,14 +278,44 @@ class BotRunner:
             # Determine if this came from another bot (not a real player)
             from_bot = sender in _all_runners
 
-            # If a bot sent us a task board notification, extract the actual task
+            # Player commands always override current work
+            if not from_bot:
+                if self._plan_steps and self._plan_step_idx < len(self._plan_steps):
+                    self._store_plan_outcome(success=False, failure_reason=f"Overridden by player: {text[:60]}")
+                self._plan_steps = []
+                self._plan_step_idx = 0
+                self._plan_instruction = ""
+                self._l1_failed_steps = set()
+                if self._current_task_id and _task_board:
+                    try:
+                        _task_board.release(self._current_task_id)
+                    except Exception:
+                        pass
+                    self._current_task_id = None
+                self._awaiting_taskboard = False
+                try:
+                    api.cancel_directive(self.name)
+                except Exception:
+                    pass
+
+            # If a bot sent us a task board notification, claim the task so
+            # completion marks it done (prevents double-execution).
             if from_bot and "Task #" in text and "for you:" in text:
+                try:
+                    task_id_str = text.split("Task #")[1].split()[0].rstrip(":")
+                    tb_task_id = int(task_id_str)
+                    if _task_board:
+                        _task_board.start(tb_task_id)
+                        self._current_task_id = tb_task_id
+                except (ValueError, IndexError):
+                    pass
                 text = text.split("for you:", 1)[1].strip()
 
             # Short-circuit: navigation and control commands → skip planner entirely
             _follow_phrases = ["follow me", "follow us", "keep following"]
             _goto_phrases = ["come to me", "come here", "get over here", "come over here",
-                             "get to me", "walk to me", "run to me", "tp to me"]
+                             "get to me", "walk to me", "run to me", "tp to me",
+                             "to my location", "to me", "come to my"]
             _stop_phrases = ["stop following", "go idle", "stand still", "stay here", "stay put",
                              "halt", "wait here", "stop what you"]
             _stop_exact = ["stop"]
@@ -292,12 +326,6 @@ class BotRunner:
                 or any(text_lower.strip() == p for p in _stop_exact)
             )
             if is_follow or is_goto or is_stop:
-                if self._plan_steps and self._plan_step_idx < len(self._plan_steps):
-                    self._store_plan_outcome(success=False, failure_reason=f"Interrupted: {text[:60]}")
-                self._plan_steps = []
-                self._plan_step_idx = 0
-                self._plan_instruction = ""
-                self._awaiting_taskboard = False
                 api.stop(self.name)
                 self._consume_message(msg)
                 if is_follow:
@@ -321,29 +349,35 @@ class BotRunner:
                 except Exception as e:
                     print(f"[{self.name}/planner] memory recall error: {e}")
 
-            if self._plan_steps and self._plan_step_idx < len(self._plan_steps):
-                self._store_plan_outcome(
-                    success=False,
-                    failure_reason=f"Interrupted by new instruction: \"{text[:60]}\""
-                )
-
             # Bot-to-bot messages: NEVER orchestrate (prevents delegation loops).
             # Only use orchestrator for real player instructions when multiple bots available.
             if not from_bot and len(_all_runners) > 1 and _task_board:
-                # Only ONE bot orchestrates per player message — the rest wait for task board
+                # Only ONE bot orchestrates per player message — the rest wait for task board.
+                # If the message addresses a bot by name, that bot MUST be coordinator.
                 msg_key = text.strip().lower()[:100]
+                addressed_bot = None
+                for name in _all_runners:
+                    if name.lower() in msg_key:
+                        addressed_bot = name
+                        break
+
                 with _orchestration_lock:
                     coordinator = _orchestrated_messages.get(msg_key)
                     if coordinator is None:
-                        _orchestrated_messages[msg_key] = self.name
-                        is_coordinator = True
-                        # Prune old entries to prevent unbounded growth
+                        if addressed_bot and addressed_bot != self.name:
+                            # Another bot is addressed — defer to them
+                            _orchestrated_messages[msg_key] = addressed_bot
+                            is_coordinator = False
+                            coordinator = addressed_bot
+                        else:
+                            _orchestrated_messages[msg_key] = self.name
+                            is_coordinator = True
                         if len(_orchestrated_messages) > 50:
                             oldest = list(_orchestrated_messages.keys())[:25]
                             for k in oldest:
                                 _orchestrated_messages.pop(k, None)
                     else:
-                        is_coordinator = False
+                        is_coordinator = (coordinator == self.name)
 
                 if not is_coordinator:
                     print(f"[{self.name}/orchestrator] Skipping — {coordinator} is coordinating this task")
@@ -365,29 +399,49 @@ class BotRunner:
                 print(f"[{self.name}/orchestrator] Coordinating: {text[:80]}")
                 api.system_chat(self.name, f"Orchestrating: {text[:60]}...", "gold")
                 profiles = [r.profile for r in _all_runners.values()]
-                orch_steps = planner.orchestrate(self.model, text, profiles, memory_context)
+                tc = _transmute.get_context_string() if _transmute else ""
+                orch_steps = planner.orchestrate(self.model, text, profiles, memory_context, tc)
+
+                # If the user addressed this bot by name, keep all "any" steps
+                text_lower = text.lower()
+                user_addressed_me = self.name.lower() in text_lower
 
                 my_steps = []
-                delegated = []
+                # Group steps by assigned bot for batch delegation
+                bot_steps = {}  # bot_name -> [(step_desc, spec), ...]
                 for s in orch_steps:
                     assigned = s.get("assign", "any")
                     step_desc = s["step"]
                     spec = s.get("specialization", "any")
 
-                    if assigned == self.name or assigned == "any" or assigned not in _all_runners:
+                    keep = (assigned == self.name
+                            or assigned not in _all_runners
+                            or (assigned == "any" and user_addressed_me))
+                    if keep:
                         my_steps.append(step_desc)
                     else:
-                        task_id = _task_board.post(
-                            description=step_desc,
-                            created_by=self.name,
-                            specialization=spec,
-                        )
-                        BotRunner.send_bot_message(
-                            self.name, assigned,
-                            f"Task #{task_id} for you: {step_desc}"
-                        )
-                        delegated.append((assigned, step_desc))
-                        print(f"[{self.name}/orchestrator] Delegated to {assigned}: {step_desc[:60]}")
+                        bot_steps.setdefault(assigned, []).append((step_desc, spec))
+
+                # Post one task per bot with pre-planned steps (skips decompose)
+                delegated = []
+                for assigned, steps_specs in bot_steps.items():
+                    step_descs = [s[0] for s in steps_specs]
+                    spec = steps_specs[0][1]  # use first step's specialization
+                    summary = f"{text[:60]} ({len(step_descs)} steps)"
+                    task_id = _task_board.post(
+                        description=summary,
+                        created_by=self.name,
+                        specialization=spec,
+                        assigned_to=assigned if assigned != "any" else None,
+                        plan_steps=step_descs,
+                    )
+                    BotRunner.send_bot_message(
+                        self.name, assigned,
+                        f"Task #{task_id} for you: {summary}"
+                    )
+                    delegated.append((assigned, summary))
+                    step_list = ", ".join(s[:40] for s in step_descs)
+                    print(f"[{self.name}/orchestrator] Delegated to {assigned} (task #{task_id}, {len(step_descs)} steps): {step_list}")
 
                 # Broadcast orchestration summary to chat
                 for assigned, desc in delegated:
@@ -408,7 +462,8 @@ class BotRunner:
                 print(f"[{self.name}/planner] Decomposing: {text[:80]}")
                 if memory_context and memory_context != "No relevant memories.":
                     print(f"[{self.name}/planner] Using {memory_context.count(chr(10))+1} memories as context")
-                steps = planner.decompose(self.model, text, memory_context)
+                tc = _transmute.get_context_string() if _transmute else ""
+                steps = planner.decompose(self.model, text, memory_context, tc)
                 self._plan_steps = steps
                 self._plan_step_idx = 0
                 self._plan_instruction = text
@@ -545,7 +600,8 @@ class BotRunner:
                         except Exception:
                             pass
                     print(f"[{self.name}/planner] Decomposing task board task: {desc[:80]}")
-                    steps = planner.decompose(self.model, desc, memory_context)
+                    tc = _transmute.get_context_string() if _transmute else ""
+                    steps = planner.decompose(self.model, desc, memory_context, tc)
                     self._plan_steps = steps
                     self._plan_step_idx = 0
                     self._plan_instruction = desc
@@ -638,8 +694,12 @@ class BotRunner:
         r"(?:minecraft:)?(\S+?)(?:\s+(?:potion|potions))?(?:\s+x\s*(\d+))?$",
         re.IGNORECASE,
     )
+    _CHANNEL_PATTERNS = re.compile(
+        r"(?:channel|conjure|summon|transmute)\s+(?:(\d+)x?\s+)?(\S+?)(?:\s+x\s*(\d+))?\s*$",
+        re.IGNORECASE,
+    )
 
-    DIRECTIVE_POLL_INTERVAL = 10.0
+    DIRECTIVE_POLL_INTERVAL = 2.0
 
     def _classify_step(self, step_text):
         """Try to map a plan step to an L1 directive dict. Returns None if LLM path needed."""
@@ -654,7 +714,7 @@ class BotRunner:
                 if g:
                     count = int(g)
                     break
-            return {"type": "MINE", "target": target, "count": count or 10, "radius": 32}
+            return {"type": "MINE", "target": target, "count": count or 10, "radius": 128}
 
         # Craft (including "craft and place")
         m = self._CRAFT_PATTERNS.search(text)
@@ -700,6 +760,41 @@ class BotRunner:
             count = int(m.group(2)) if m.group(2) else 3
             return {"type": "BREW", "target": target, "count": count}
 
+        # Channel from transmute registry (modded/discovered items)
+        m = self._CHANNEL_PATTERNS.search(text)
+        if m:
+            count_pre = int(m.group(1)) if m.group(1) else None
+            target = m.group(2).rstrip(",.")
+            count_post = int(m.group(3)) if m.group(3) else None
+            count = count_pre or count_post or 1
+            if _transmute and _transmute.is_known(target):
+                return {"type": "CHANNEL", "target": target, "count": count}
+
+        # Combat mode
+        combat_match = re.search(
+            r"(?:engage|enter|start|activate)\s+combat\s+(?:mode)?(?:\s+(\d+)s)?",
+            text, re.IGNORECASE)
+        if combat_match or re.search(r"combat\s+mode", text, re.IGNORECASE):
+            duration = int(combat_match.group(1)) if combat_match and combat_match.group(1) else 30
+            return {"type": "COMBAT", "count": duration, "radius": 24}
+
+        # Attack specific target
+        attack_match = re.search(
+            r"(?:attack|fight|kill)\s+(?:all\s+)?(?:nearby\s+)?(?:minecraft:)?(\S+?)(?:\s+(\d+)s)?$",
+            text, re.IGNORECASE)
+        if attack_match:
+            target = attack_match.group(1).rstrip(",.")
+            duration = int(attack_match.group(2)) if attack_match.group(2) else 30
+            return {"type": "COMBAT", "target": target, "count": duration, "radius": 24}
+
+        # Follow player
+        follow_match = re.search(
+            r"(?:follow|come\s+to|goto_player|go\s+to\s+player)\s+(\S+)",
+            text, re.IGNORECASE)
+        if follow_match:
+            target = follow_match.group(1).rstrip(",.")
+            return {"type": "FOLLOW", "target": target}
+
         # Goto coordinates (x, y, z pattern)
         coord_match = re.search(r"(-?\d+)[,\s]+(-?\d+)[,\s]+(-?\d+)", text)
         if coord_match and any(w in text.lower() for w in ("go to", "goto", "travel", "navigate", "walk")):
@@ -712,19 +807,56 @@ class BotRunner:
 
         return None
 
-    def _run_directive(self, directive_params):
-        """Send a directive to the L1 brain and poll until completion or failure."""
-        dtype = directive_params.pop("type")
-        try:
-            resp = api.set_directive(self.name, dtype, **directive_params)
-            print(f"[{self.name}/L1] Directive sent: {dtype} {directive_params} -> {resp.get('status')}")
-            api.system_chat(self.name, f"L1: {dtype} {directive_params.get('target', '')}", "dark_aqua")
-        except Exception as e:
-            print(f"[{self.name}/L1] Failed to send directive: {e}")
-            return {"success": False, "reason": str(e)}
+    L2_MAX_RETRIES = 3
 
+    def _run_directive(self, directive_params):
+        """L2 layer: send directive to L1 brain, poll, retry with adjustments on failure."""
+        original_params = dict(directive_params)
+        retries = 0
+
+        while retries <= self.L2_MAX_RETRIES and not self._stop_event.is_set():
+            params = dict(directive_params)
+            dtype = params.pop("type")
+
+            try:
+                resp = api.set_directive(self.name, dtype, **params)
+                status_msg = resp.get('status', 'unknown')
+                print(f"[{self.name}/L1] Directive sent: {dtype} {params} -> {status_msg}")
+                if retries == 0:
+                    api.system_chat(self.name, f"L1: {dtype} {params.get('target', '')}", "dark_aqua")
+            except Exception as e:
+                print(f"[{self.name}/L1] Failed to send directive: {e}")
+                return {"success": False, "reason": str(e)}
+
+            result = self._poll_directive()
+            if result.get("reason") == "interrupted_by_chat":
+                return result
+            if result["success"]:
+                # Store location memory on success
+                self._store_success_memory(dtype, params, result.get("progress", {}))
+                return result
+
+            # L1 failed — L2 analyzes and retries
+            reason = result.get("reason", "unknown")
+            retries += 1
+            if retries > self.L2_MAX_RETRIES:
+                break
+
+            adjusted = self._l2_adjust(dtype, params, reason)
+            if adjusted is None:
+                print(f"[{self.name}/L2] No adjustment possible for: {reason}")
+                break
+
+            directive_params = adjusted
+            print(f"[{self.name}/L2] Retry {retries}/{self.L2_MAX_RETRIES}: {adjusted}")
+            api.system_chat(self.name, f"L2 retry {retries}: {reason[:30]}", "yellow")
+
+        return {"success": False, "reason": result.get("reason", "unknown")}
+
+    def _poll_directive(self):
+        """Poll the brain until directive completes, fails, or is interrupted."""
+        self._directive_missing_count = 0
         while not self._stop_event.is_set():
-            # Check for new chat — player commands override directive
             with self._lock:
                 if self._new_messages:
                     new_player_msgs = [
@@ -748,28 +880,253 @@ class BotRunner:
 
             directive_info = brain_state.get("directive")
             if not directive_info:
-                return {"success": True}
+                # Directive vanished — it completed and was cleared between polls
+                if not hasattr(self, '_directive_missing_count'):
+                    self._directive_missing_count = 0
+                self._directive_missing_count += 1
+                if self._directive_missing_count >= 3:
+                    self._directive_missing_count = 0
+                    print(f"[{self.name}/L1] Directive cleared (assumed completed)")
+                    return {"success": True, "progress": brain_state.get("progress", {})}
+                self._stop_event.wait(1.0)
+                continue
+            else:
+                self._directive_missing_count = 0
 
             status = directive_info.get("status", "")
             if status == "COMPLETED":
                 progress = brain_state.get("progress", {})
                 print(f"[{self.name}/L1] Directive COMPLETED: {progress.get('counters', {})}")
+                try:
+                    api.cancel_directive(self.name)
+                except Exception:
+                    pass
                 return {"success": True, "progress": progress}
             elif status in ("FAILED", "CANCELLED"):
                 reason = directive_info.get("failure_reason", status.lower())
                 print(f"[{self.name}/L1] Directive {status}: {reason}")
+                try:
+                    api.cancel_directive(self.name)
+                except Exception:
+                    pass
                 return {"success": False, "reason": reason}
 
-            # Still running — log phase and wait
             progress = brain_state.get("progress", {})
             phase = progress.get("phase", "unknown")
             counters = progress.get("counters", {})
             state_desc = brain_state.get("state", "")
             print(f"[{self.name}/L1] {state_desc} (phase={phase}, counters={counters})")
-
             self._stop_event.wait(self.DIRECTIVE_POLL_INTERVAL)
 
         return {"success": False, "reason": "agent_stopped"}
+
+    def _l2_adjust(self, dtype, params, reason):
+        """L2 error analysis: adjust directive parameters based on failure reason."""
+        reason_lower = reason.lower()
+
+        # Mining: expand radius or try alternative block names
+        if dtype == "MINE":
+            if "could not find" in reason_lower:
+                target = params.get("target", "")
+                # Try alternative names
+                alternatives = {
+                    "log": ["oak_log", "birch_log", "spruce_log", "dark_oak_log"],
+                    "oak_log": ["birch_log", "spruce_log", "jungle_log"],
+                    "iron_ore": ["deepslate_iron_ore"],
+                    "gold_ore": ["deepslate_gold_ore"],
+                    "diamond_ore": ["deepslate_diamond_ore"],
+                    "copper_ore": ["deepslate_copper_ore"],
+                    "coal_ore": ["deepslate_coal_ore"],
+                }
+                if target in alternatives:
+                    alt = alternatives[target]
+                    # Pick next alternative we haven't tried
+                    new_target = alt[0] if alt else None
+                    if new_target:
+                        return {"type": "MINE", "target": new_target,
+                                "count": params.get("count", 1), "radius": 1024}
+                # Just increase radius on retry
+                current_radius = params.get("radius", 128)
+                if current_radius < 1024:
+                    return {"type": "MINE", "target": target,
+                            "count": params.get("count", 1), "radius": 1024}
+
+        # Crafting: most failures will be handled by L1 channeling now
+        # But if recipe truly doesn't exist, no point retrying
+        if dtype == "CRAFT":
+            if "invalid item" in reason_lower or "no recipe" in reason_lower:
+                return None  # Unrecoverable
+
+        # Smelting: if furnace issues, L1 handles. Nothing to adjust here.
+        if dtype == "SMELT":
+            return None
+
+        # Enchanting: L1 handles lapis channeling + meditation.
+        # If table not found after full escalation, unrecoverable.
+        if dtype == "ENCHANT":
+            if "no enchantable item" in reason_lower:
+                return None  # Nothing to enchant
+            return None
+
+        # Brewing: L1 handles ingredient channeling.
+        # Unknown potion is unrecoverable.
+        if dtype == "BREW":
+            if "unknown potion" in reason_lower:
+                return None
+            return None
+
+        # Channel: item not in registry is unrecoverable at L2.
+        if dtype == "CHANNEL":
+            if "not in transmute registry" in reason_lower:
+                return None
+            if "unknown item" in reason_lower:
+                return None
+            return None
+
+        return None
+
+    def _store_success_memory(self, dtype, params, progress):
+        """Store a brief memory on L1 success (location/event)."""
+        if not self.semantic_mem:
+            return
+        try:
+            if dtype == "MINE":
+                target = params.get("target", "unknown")
+                count = progress.get("counters", {}).get("blocks_mined", 0)
+                if count > 0:
+                    # Get bot position for location context
+                    status = api.status(self.name)
+                    pos = status.get("position", {})
+                    text = f"Mined {count}x {target} near ({pos.get('x',0):.0f}, {pos.get('y',0):.0f}, {pos.get('z',0):.0f})"
+                    self.semantic_mem.store(text, category="location")
+            elif dtype == "CRAFT":
+                target = params.get("target", "unknown")
+                self.semantic_mem.store(f"Successfully crafted {target}", category="event")
+        except Exception as e:
+            print(f"[{self.name}/mem] store error after success: {e}")
+
+    # Known vanilla Minecraft items for primitive validation
+    _VALID_MINE_TARGETS = {
+        "oak_log", "birch_log", "spruce_log", "jungle_log", "acacia_log", "dark_oak_log",
+        "cherry_log", "mangrove_log", "stone", "cobblestone", "deepslate", "cobbled_deepslate",
+        "iron_ore", "deepslate_iron_ore", "gold_ore", "deepslate_gold_ore",
+        "diamond_ore", "deepslate_diamond_ore", "coal_ore", "deepslate_coal_ore",
+        "copper_ore", "deepslate_copper_ore", "lapis_ore", "deepslate_lapis_ore",
+        "redstone_ore", "deepslate_redstone_ore", "emerald_ore", "deepslate_emerald_ore",
+        "sand", "gravel", "dirt", "clay", "obsidian", "netherrack", "quartz_ore",
+        "ancient_debris", "log", "logs", "ore",
+    }
+
+    def _validate_primitives(self, steps):
+        """Filter out nonsensical L3 output — invalid items, bad coordinates, etc."""
+        valid = []
+        for step in steps:
+            step_lower = step.lower()
+            # Reject modded items
+            if "mysticalagriculture" in step_lower or "essence" in step_lower:
+                print(f"[{self.name}/L3-val] Rejected modded item: {step[:60]}")
+                continue
+            # Reject nonsense GOTO to origin/negative-y
+            if "go to" in step_lower and "coordinates" in step_lower:
+                import re
+                coords = re.findall(r'[-\d.]+', step)
+                if len(coords) >= 3:
+                    x, y, z = float(coords[0]), float(coords[1]), float(coords[2])
+                    if abs(x) + abs(y) + abs(z) < 5:
+                        print(f"[{self.name}/L3-val] Rejected near-origin GOTO: {step[:60]}")
+                        continue
+                    if y < -64:
+                        print(f"[{self.name}/L3-val] Rejected below-void GOTO: {step[:60]}")
+                        continue
+            # Reject items that don't exist (cobblestone_pickaxe etc.)
+            if "craft" in step_lower:
+                item = step_lower.split("craft")[-1].strip().replace("minecraft:", "")
+                _NONEXISTENT = {"cobblestone_pickaxe", "cobblestone_sword", "cobblestone_axe",
+                                "cobblestone_shovel", "cobblestone_hoe"}
+                if any(bad in item for bad in _NONEXISTENT):
+                    print(f"[{self.name}/L3-val] Rejected nonexistent item: {step[:60]}")
+                    continue
+            valid.append(step)
+        return valid if valid else None
+
+    def _l3_regenerate(self, failed_step, observation):
+        """L3: Ask LLM to generate replacement L1 primitives for a failed step."""
+        # Gather context
+        sem_context = ""
+        if self.semantic_mem:
+            try:
+                sem_context = self.semantic_mem.recall_for_prompt(failed_step, limit=4)
+            except Exception:
+                pass
+
+        inv = ""
+        try:
+            inv_data = api.inventory(self.name)
+            items = inv_data.get("inventory", [])
+            inv = ", ".join(f"{it['item']} x{it['count']}" for it in items if it.get("item")) if items else "empty"
+        except Exception:
+            inv = "unknown"
+
+        prompt = f"""A Minecraft bot's plan step failed. Break it into smaller primitives.
+
+PRIMITIVES you can use:
+- {{"type": "MINE", "target": "<block>", "count": <n>}} — mine blocks
+- {{"type": "CRAFT", "target": "minecraft:<item>", "count": <n>}} — craft items
+- {{"type": "SMELT", "target": "<item>", "count": <n>}} — smelt in furnace
+- {{"type": "GOTO", "x": <x>, "y": <y>, "z": <z>}} — walk to coordinates
+
+VALID MINE targets: cobblestone, stone, oak_log, birch_log, spruce_log, iron_ore, coal_ore, copper_ore, gold_ore, diamond_ore, sand, gravel, clay, dirt, deepslate_iron_ore, deepslate_gold_ore, deepslate_diamond_ore, obsidian, netherrack, ancient_debris, sugar_cane, bamboo, kelp, cactus
+VALID CRAFT targets: stick, oak_planks, crafting_table, furnace, chest, wooden_pickaxe, wooden_axe, wooden_sword, wooden_shovel, stone_pickaxe, stone_axe, stone_sword, stone_shovel, iron_pickaxe, iron_axe, iron_sword, iron_shovel, diamond_pickaxe, diamond_sword, bucket, torch, ladder, iron_ingot, gold_ingot, copper_ingot, bread, bowl, paper, book, shears, bow, arrow, shield, bed, iron_helmet, iron_chestplate, iron_leggings, iron_boots, diamond_helmet, diamond_chestplate, diamond_leggings, diamond_boots, blast_furnace, smoker, anvil, brewing_stand, enchanting_table, bookshelf, rail, powered_rail, hopper, piston, golden_apple, golden_carrot
+VALID SMELT targets: raw_iron, raw_gold, raw_copper, iron_ore, gold_ore, copper_ore, cobblestone, sand, clay_ball, oak_log, ancient_debris, potato, beef, porkchop, chicken, cod, salmon
+
+FAILED STEP: "{failed_step}"
+CURRENT INVENTORY: [{inv}]
+
+Think about what sub-steps are needed. For example:
+- To craft a stone_pickaxe: mine cobblestone, mine oak_log, then craft
+- To smelt iron: mine iron_ore, craft a furnace, then smelt
+- To mine underground: go to a cave entrance (y=40-60), then mine
+
+Respond with ONLY a JSON array. Example:
+[{{"type": "MINE", "target": "cobblestone", "count": 8}}, {{"type": "MINE", "target": "oak_log", "count": 2}}, {{"type": "CRAFT", "target": "minecraft:furnace", "count": 1}}]"""
+
+        try:
+            response = brain.raw_generate(self.model, prompt)
+            text = response.strip()
+            start = text.find("[")
+            end = text.rfind("]") + 1
+            if start >= 0 and end > start:
+                primitives = json.loads(text[start:end])
+                if isinstance(primitives, list) and len(primitives) > 0:
+                    valid, rejected = mc_items.validate_primitives(primitives)
+                    if rejected:
+                        reasons = ", ".join(r for _, r in rejected[:3])
+                        print(f"[{self.name}/L3] Rejected {len(rejected)} primitives: {reasons}")
+                    if not valid:
+                        print(f"[{self.name}/L3] All primitives rejected")
+                        return None
+                    print(f"[{self.name}/L3] Got {len(valid)} valid primitives")
+                    steps = []
+                    for p in valid:
+                        ptype = p.get("type", "").upper()
+                        target = p.get("target", "")
+                        count = p.get("count", 1)
+                        if ptype == "MINE":
+                            steps.append(f"Find and mine {target} (at least {count})")
+                        elif ptype == "CRAFT":
+                            steps.append(f"Craft {target}")
+                        elif ptype == "SMELT":
+                            steps.append(f"Smelt {target} into ingots")
+                        elif ptype == "GOTO":
+                            steps.append(f"Go to coordinates ({p.get('x',0)}, {p.get('y',0)}, {p.get('z',0)})")
+                        else:
+                            steps.append(f"{ptype} {target}")
+                    return steps
+            print(f"[{self.name}/L3] Could not parse response: {text[:100]}")
+            return None
+        except Exception as e:
+            print(f"[{self.name}/L3] LLM call failed: {e}")
+            return None
 
     def _loop(self):
         while not self._stop_event.is_set():
@@ -778,6 +1135,25 @@ class BotRunner:
                 obs, new_msgs = self._observe()
 
                 new_msgs = self._handle_chat_commands(new_msgs)
+
+                # Check for system reset signal
+                if any("RESET: All tasks cleared" in m for m in new_msgs):
+                    print(f"[{self.name}/reset] Received reset signal — clearing all state")
+                    self._plan_steps = []
+                    self._plan_step_idx = 0
+                    self._plan_instruction = ""
+                    self._l1_failed_steps = set()
+                    self._current_task_id = None
+                    self._awaiting_taskboard = False
+                    self.conversation_history.clear()
+                    if _task_board:
+                        try:
+                            _task_board.clear_all()
+                        except Exception:
+                            pass
+                    new_msgs = [m for m in new_msgs if "RESET:" not in m]
+                    continue
+
                 self._maybe_plan(new_msgs)
 
                 if not self._plan_steps:
@@ -788,112 +1164,114 @@ class BotRunner:
                     continue
 
                 # ── L1 directive path: try to classify current step ──
+                l1_handled = False
                 if self._plan_steps and self._plan_step_idx < len(self._plan_steps):
                     current_step = self._plan_steps[self._plan_step_idx]
-                    directive = self._classify_step(current_step)
-                    if directive is not None:
-                        print(f"[{self.name}/L1] Step \"{current_step}\" -> directive {directive['type']}")
-                        api.system_chat(self.name, f"L1 step: {current_step[:50]}", "dark_aqua")
-                        result = self._run_directive(directive)
+                    # Skip L1 if this step already failed L1 (avoid infinite retry)
+                    if current_step not in getattr(self, '_l1_failed_steps', set()):
+                        directive = self._classify_step(current_step)
+                        if directive is not None:
+                            print(f"[{self.name}/L1] Step \"{current_step}\" -> directive {directive['type']}")
+                            api.system_chat(self.name, f"L1 step: {current_step[:50]}", "dark_aqua")
+                            result = self._run_directive(directive)
 
-                        if result.get("reason") == "interrupted_by_chat":
-                            continue
+                            if result.get("reason") == "interrupted_by_chat":
+                                continue
 
-                        if result["success"]:
-                            old_step = self._plan_steps[self._plan_step_idx]
-                            self._plan_step_idx += 1
-                            if self._plan_step_idx >= len(self._plan_steps):
-                                print(f"[{self.name}/planner] Plan COMPLETE! All {len(self._plan_steps)} steps done.")
-                                api.system_chat(self.name, f"Plan complete! ({len(self._plan_steps)} steps done)", "green")
-                                self._store_plan_outcome(success=True)
-                                if self._current_task_id:
-                                    self._complete_task_board_task()
+                            if result["success"]:
+                                l1_handled = True
+                                old_step = self._plan_steps[self._plan_step_idx]
+                                self._plan_step_idx += 1
+                                # Clear failed steps set on success (new step context)
+                                if hasattr(self, '_l1_failed_steps'):
+                                    self._l1_failed_steps.discard(old_step)
+                                self._l3_retries = 0
+                                if self._plan_step_idx >= len(self._plan_steps):
+                                    print(f"[{self.name}/planner] Plan COMPLETE! All {len(self._plan_steps)} steps done.")
+                                    api.system_chat(self.name, f"Plan complete! ({len(self._plan_steps)} steps done)", "green")
+                                    self._store_plan_outcome(success=True)
+                                    if self._current_task_id:
+                                        self._complete_task_board_task()
+                                    else:
+                                        try:
+                                            api.xp_give(self.name, levels=2)
+                                        except Exception:
+                                            pass
+                                    self._plan_steps = []
+                                    self._plan_step_idx = 0
+                                    self._plan_instruction = ""
+                                    self._l1_failed_steps = set()
                                 else:
-                                    try:
-                                        api.xp_give(self.name, levels=2)
-                                    except Exception:
-                                        pass
-                                self._plan_steps = []
-                                self._plan_step_idx = 0
-                                self._plan_instruction = ""
+                                    new_step = self._plan_steps[self._plan_step_idx]
+                                    print(f"[{self.name}/planner] L1 step done: \"{old_step}\" -> now: \"{new_step}\" ({self._plan_step_idx+1}/{len(self._plan_steps)})")
+                                    api.system_chat(self.name, f"Step {self._plan_step_idx}/{len(self._plan_steps)}: {new_step[:50]}", "dark_aqua")
+                                    self.conversation_history.clear()
                             else:
-                                new_step = self._plan_steps[self._plan_step_idx]
-                                print(f"[{self.name}/planner] L1 step done: \"{old_step}\" -> now: \"{new_step}\" ({self._plan_step_idx+1}/{len(self._plan_steps)})")
-                                api.system_chat(self.name, f"Step {self._plan_step_idx}/{len(self._plan_steps)}: {new_step[:50]}", "dark_aqua")
-                                self.conversation_history.clear()
-                        else:
-                            reason = result.get("reason", "unknown")
-                            print(f"[{self.name}/L1] Directive failed: {reason} — falling back to LLM for this step")
-                            api.system_chat(self.name, f"L1 failed: {reason[:40]}, using LLM", "yellow")
-                            # Fall through to LLM path below for this tick
-                        continue
+                                reason = result.get("reason", "unknown")
+                                print(f"[{self.name}/L1] Directive failed: {reason} — falling back to LLM for this step")
+                                api.system_chat(self.name, f"L1 failed: {reason[:40]}, using LLM", "yellow")
+                                # Mark step as L1-failed so we don't retry it
+                                if not hasattr(self, '_l1_failed_steps'):
+                                    self._l1_failed_steps = set()
+                                self._l1_failed_steps.add(current_step)
 
-                # ── L2/L3 LLM path: steps that can't be classified as directives ──
-                plan_section = self._plan_context()
-                if plan_section:
-                    obs = plan_section + "\n\n" + obs
+                if l1_handled:
+                    continue
 
-                sem_context = ""
-                if self.semantic_mem:
-                    try:
-                        sem_context = self.semantic_mem.recall_all_for_prompt(obs[:500], limit=6)
-                    except Exception as e:
-                        print(f"[{self.name}/sem] recall error: {e}")
+                # ── If no plan, don't burn LLM cycles — just wait for work ──
+                if not self._plan_steps:
+                    self._stop_event.wait(TICK_DELAY)
+                    continue
 
-                prompt = prompts.build_system_prompt(self.profile, self.memory_entries, sem_context)
-                response = brain.think(self.model, prompt, obs, self.conversation_history)
+                # ── L3: LLM primitive regeneration (only when L1+L2 both failed) ──
+                if not hasattr(self, '_l3_retries'):
+                    self._l3_retries = 0
+                MAX_L3_RETRIES = 3
 
-                thoughts = response.get("thoughts", "")
-                actions = response.get("actions", [])
-                chat_msg = response.get("chat")
-                remember = response.get("remember")
+                current_step = self._plan_steps[self._plan_step_idx]
 
-                # Hard guardrail: no movement actions when idle (no plan)
-                if not self._plan_steps and actions:
-                    _move_actions = {"goto", "goto_player", "follow", "fly_to", "teleport"}
-                    blocked = [a for a in actions if isinstance(a, dict) and a.get("action") in _move_actions]
-                    if blocked:
-                        actions = [a for a in actions if not (isinstance(a, dict) and a.get("action") in _move_actions)]
-                        print(f"[{self.name}/guardrail] Blocked {len(blocked)} movement action(s) — no active plan")
+                if self._l3_retries >= MAX_L3_RETRIES:
+                    print(f"[{self.name}/L3] Max retries ({MAX_L3_RETRIES}) for step, skipping: \"{current_step[:60]}\"")
+                    api.system_chat(self.name, f"Giving up on: {current_step[:40]}", "red")
+                    self._plan_step_idx += 1
+                    self._l3_retries = 0
+                    self._l1_failed_steps = set()
+                    if self._plan_step_idx >= len(self._plan_steps):
+                        self._store_plan_outcome(success=False, failure_reason=f"L3 max retries on: {current_step}")
+                        self._plan_steps = []
+                        self._plan_step_idx = 0
+                        self._plan_instruction = ""
+                    self._stop_event.wait(TICK_DELAY)
+                    continue
 
-                print(f"\n[{self.name}/think] {thoughts}")
+                self._l3_retries += 1
+                print(f"[{self.name}/L3] Attempt {self._l3_retries}/{MAX_L3_RETRIES} for: \"{current_step[:60]}\"")
+                api.system_chat(self.name, f"L3 ({self._l3_retries}/{MAX_L3_RETRIES}): {current_step[:40]}", "gold")
 
-                if chat_msg:
-                    with self._lock:
-                        self.chat_history.append(f"{self.name}: {chat_msg}")
-                        if len(self.chat_history) > MAX_CHAT_HISTORY:
-                            self.chat_history.pop(0)
-                    api.chat(self.name, chat_msg)
-                    print(f"[{self.name}/chat] {chat_msg}")
+                new_primitives = self._l3_regenerate(current_step, obs)
 
-                if remember:
-                    self.memory_entries = mem_module.add_to(
-                        self.memory_entries, remember, self._memory_file
-                    )
-                    if self.semantic_mem:
-                        try:
-                            category = _parse_memory_category(remember)
-                            clean = _strip_category_prefix(remember)
-                            mid = self.semantic_mem.store(clean, category=category)
-                            print(f"[{self.name}/sem] stored [{category}] id={mid}")
-                            self._share_discovery(clean, category)
-                        except Exception as e:
-                            print(f"[{self.name}/sem] store error: {e}")
+                if new_primitives:
+                    # Validate primitives before accepting
+                    new_primitives = self._validate_primitives(new_primitives)
 
-                    print(f"[{self.name}/memory] {remember}")
-
-                self.conversation_history.append({"role": "user", "content": obs})
-                self.conversation_history.append({"role": "assistant", "content": json.dumps(response)})
-                while len(self.conversation_history) > MAX_CONVERSATION * 2:
-                    self.conversation_history.pop(0)
-                    self.conversation_history.pop(0)
-
-                if actions:
-                    self._execute_actions(actions)
-
-                with self._lock:
-                    tick_results = list(self._last_action_results)
-                self._advance_plan(response, tick_results)
+                if new_primitives:
+                    print(f"[{self.name}/L3] Got {len(new_primitives)} valid primitives")
+                    remaining = self._plan_steps[self._plan_step_idx + 1:]
+                    self._plan_steps = new_primitives + remaining
+                    self._plan_step_idx = 0
+                    self._l1_failed_steps = set()
+                    api.system_chat(self.name, f"L3: {len(new_primitives)} new steps", "gold")
+                else:
+                    print(f"[{self.name}/L3] No valid primitives, skipping step")
+                    api.system_chat(self.name, f"Skipping failed step: {current_step[:40]}", "red")
+                    self._plan_step_idx += 1
+                    self._l3_retries = 0
+                    self._l1_failed_steps = set()
+                    if self._plan_step_idx >= len(self._plan_steps):
+                        self._store_plan_outcome(success=False, failure_reason=f"L3 failed on: {current_step}")
+                        self._plan_steps = []
+                        self._plan_step_idx = 0
+                        self._plan_instruction = ""
 
                 self._stop_event.wait(TICK_DELAY)
 
@@ -1290,6 +1668,17 @@ def run():
         print(f"[agent] Task board unavailable: {e}")
         _task_board = None
 
+    # Initialize transmute registry
+    global _transmute
+    try:
+        _transmute = transmute_db.TransmuteDB(PG_DSN)
+        _transmute.connect()
+        synced = _transmute.sync_from_mod()
+        print(f"[agent] Transmute registry: {len(_transmute.get_all())} items ({synced} new from mod)")
+    except Exception as e:
+        print(f"[agent] Transmute DB unavailable: {e}")
+        _transmute = None
+
     waypoints.load()
     wp_count = len(waypoints.list_waypoints())
     if wp_count:
@@ -1308,9 +1697,14 @@ def run():
     print(f"[agent] All bots started (tick={TICK_DELAY}s)")
     print("=" * 50)
 
+    transmute_sync_counter = 0
     try:
         while True:
             time.sleep(1)
+            transmute_sync_counter += 1
+            if _transmute and transmute_sync_counter >= 60:
+                transmute_sync_counter = 0
+                _transmute.sync_from_mod()
     except KeyboardInterrupt:
         print("\n[agent] Shutting down all bots...")
         for runner in runners:

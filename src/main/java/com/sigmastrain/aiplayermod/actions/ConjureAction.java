@@ -12,6 +12,8 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.Vec3;
 
+import com.sigmastrain.aiplayermod.shop.TransmuteRegistry;
+
 import java.util.Map;
 
 /**
@@ -218,7 +220,11 @@ public class ConjureAction implements BotAction {
     }
 
     private static int getCostForItem(String itemId) {
-        return COST_TABLE.getOrDefault(itemId, DEFAULT_COST);
+        Integer cost = COST_TABLE.get(itemId);
+        if (cost != null) return cost;
+        int registryCost = TransmuteRegistry.getCost(itemId);
+        if (registryCost > 0) return registryCost;
+        return DEFAULT_COST;
     }
 
     @Override

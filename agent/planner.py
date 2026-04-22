@@ -24,8 +24,12 @@ IF the player gives a vague or high-level goal (e.g. "get me iron gear" or "set 
 - Think about prerequisites: what materials are needed? What tools are required first?
 
 ## Rules
-- Each step = ONE concrete action: mine, craft, find, go to, place, build, collect, smelt, etc.
+- Each step = ONE concrete action: mine, craft, find, go to, place, build, collect, smelt, combat, follow, channel, etc.
 - Use Minecraft registry IDs where possible (e.g. "minecraft:stone_pickaxe" not "stone pickaxe")
+- For combat: "Engage combat mode 30s" (fights hostiles for N seconds) or "Attack zombie 30s"
+- For following: "Follow PlayerName" or "goto_player PlayerName"
+- For channeling: "Channel modid:item_name" or "Channel 3x modid:item_name" — only for items listed in the transmute registry below
+- PRIORITY: always prefer craft > mine > smelt over channel. Channel is a last resort for modded items that have no known recipe or cannot be gathered normally
 - Keep steps short (under 15 words each)
 - 1-8 steps maximum
 - Do NOT include "equip" as a separate step — the bot auto-equips after crafting
@@ -64,19 +68,24 @@ Output: {{"steps": ["Craft minecraft:stone_pickaxe", "Find and mine minecraft:ir
 
 {memory_section}
 
+{transmute_section}
+
 Respond ONLY with a JSON object:
 {{
   "steps": ["step 1", "step 2", ...]
 }}"""
 
 
-def decompose(model, instruction, memory_context=""):
+def decompose(model, instruction, memory_context="", transmute_context=""):
     """Break an instruction into a list of step strings."""
     memory_section = ""
     if memory_context and memory_context != "No relevant memories.":
         memory_section = f"## Relevant memories from past experience\n{memory_context}\n\nUse these memories to make better plans. Avoid repeating past mistakes."
+    transmute_section = ""
+    if transmute_context:
+        transmute_section = f"## Discovered transmutable items (can be conjured with XP)\n{transmute_context}"
 
-    prompt = PLANNER_PROMPT.format(memory_section=memory_section)
+    prompt = PLANNER_PROMPT.format(memory_section=memory_section, transmute_section=transmute_section)
 
     with brain.ollama_lock:
         resp = requests.post(
@@ -118,45 +127,65 @@ def decompose(model, instruction, memory_context=""):
 
 # ── Orchestrator: specialization-aware decomposition ──
 
-ORCHESTRATOR_PROMPT = """You are a Minecraft task orchestrator. Break the player's instruction into steps AND assign each step to the best-suited bot based on their specializations.
+ORCHESTRATOR_PROMPT = """You are a Minecraft task orchestrator. Break the player's instruction into L1-ready primitive steps AND assign each to the best bot.
 
 ## Available bots
 {bot_list}
 
+## Step format — CRITICAL
+Each step MUST be a single primitive that the bot can execute directly. Use these exact patterns:
+- Mine: "Mine minecraft:iron_ore (24)" or "Find and mine minecraft:oak_log"
+- Craft: "Craft minecraft:iron_pickaxe" or "Craft 4x minecraft:stick"
+- Smelt: "Smelt minecraft:raw_iron" or "Smelt 8x minecraft:raw_iron"
+- Channel: "Channel modid:item_name" or "Channel 3x modid:item_name" (conjure discovered items for XP)
+- Combat: "Engage combat mode 30s" (fights hostile mobs for N seconds)
+- Attack: "Attack zombie 30s" or "Kill creeper" (fights specific mob type)
+- Follow: "Follow PlayerName" or "goto_player PlayerName" (come to a player)
+- Goto: "goto_player PlayerName" or "goto_waypoint base"
+- Send: "send_item minecraft:iron_ingot 10 to Scout"
+- Dig: "Dig down to Y=16"
+
+PRIORITY: always prefer Craft > Mine > Smelt over Channel. Channel is a last resort for modded items that have no known recipe or cannot be gathered normally. Only use Channel for items listed in the transmute registry section below.
+
+For "engage combat", "fight enemies", "defend me", or similar — use "Engage combat mode 30s" for EVERY bot.
+For "come to me" or "come here" — use "Follow PlayerName" for EVERY bot.
+
+ALWAYS use registry IDs (modid:item_name). Include counts where relevant.
+
 ## Rules
-- Each step = ONE concrete action: mine, craft, find, go to, place, build, collect, smelt, etc.
-- Use Minecraft registry IDs where possible (e.g. "minecraft:stone_pickaxe")
-- Keep steps short (under 15 words each)
-- 1-8 steps maximum
+- 1-12 steps maximum
 - Assign each step to the bot whose specialization best matches
-- If no bot is a great fit, use "any"
-- Steps assigned to different bots can potentially run in parallel
-- Steps for the SAME bot run sequentially
-- NEVER say "go to Y=N" — say "dig a staircase down to Y=N" instead (bots must physically dig)
-- Each step must be self-contained — the assigned bot will execute it alone without help
-- NEVER delegate crafting if the orchestrating bot needs the crafted item in its OWN inventory. Crafted items stay in the crafter's inventory — they cannot be transferred between bots. If YOU need the result, do it yourself.
-- Similarly, do NOT delegate conjure, smelt, or any action where the product must end up in a specific bot's inventory
-- If bot A crafts something that bot B needs, add a "send_item" step: bot A sends the item to bot B (works at any distance, across dimensions)
-- For "come to me" or "go to player" commands, EVERY bot should use goto_player — do NOT decompose navigation into mining/crafting steps
-- Use "goto_waypoint" to send bots to saved locations
+- If no bot fits, use "any"
+- Steps for different bots run in parallel
+- Steps for the SAME bot run sequentially (order matters!)
+- Think about prerequisites: tools before mining, materials before crafting
+- Each bot's steps must be self-contained — items stay in the crafter's inventory
+- If bot A makes something bot B needs, add a send_item step
+- For "come to me" commands, ALL bots use goto_player
+- Do NOT combine actions: "Craft and place minecraft:furnace" is TWO steps
 
 ## Minecraft knowledge
-- Diamonds are found below Y=16, require minecraft:iron_pickaxe or better
-- Iron ore requires minecraft:stone_pickaxe or better. Smelt in furnace for ingots
-- Furnace recipe: 8x minecraft:cobblestone in a ring
-- Tools progression: wood -> stone -> iron -> diamond -> netherite
+- Diamonds below Y=16, need minecraft:iron_pickaxe+
+- Iron ore needs minecraft:stone_pickaxe+. Smelt minecraft:raw_iron for ingots
+- Furnace: 8x minecraft:cobblestone
+- Tools: wood -> stone -> iron -> diamond -> netherite
+- Torches: 1 minecraft:coal + 1 minecraft:stick = 4 torches
+- Sticks: 2 minecraft:oak_planks = 4 sticks
+- Planks: 1 minecraft:oak_log = 4 planks
 
 {memory_section}
 
-Respond ONLY with a JSON object:
+{transmute_section}
+
+Respond ONLY with JSON:
 {{
   "steps": [
-    {{"step": "description", "assign": "bot_name_or_any", "specialization": "mining/building/crafting/combat/gathering/any"}}
+    {{"step": "primitive action string", "assign": "bot_name_or_any", "specialization": "mining/building/crafting/combat/gathering/any"}}
   ]
 }}"""
 
 
-def orchestrate(model, instruction, bot_profiles, memory_context=""):
+def orchestrate(model, instruction, bot_profiles, memory_context="", transmute_context=""):
     """Decompose a task with bot specialization assignments.
 
     Returns list of dicts: [{"step": str, "assign": str, "specialization": str}, ...]
@@ -171,9 +200,14 @@ def orchestrate(model, instruction, bot_profiles, memory_context=""):
     if memory_context and memory_context != "No relevant memories.":
         memory_section = f"## Relevant memories\n{memory_context}"
 
+    transmute_section = ""
+    if transmute_context:
+        transmute_section = f"## Discovered transmutable items (can be conjured with XP)\n{transmute_context}"
+
     prompt = ORCHESTRATOR_PROMPT.format(
         bot_list=bot_list,
         memory_section=memory_section,
+        transmute_section=transmute_section,
     )
 
     with brain.ollama_lock:
