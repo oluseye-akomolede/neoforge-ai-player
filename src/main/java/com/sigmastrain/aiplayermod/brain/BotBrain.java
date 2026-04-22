@@ -115,6 +115,8 @@ public class BotBrain {
             case BREW -> new BrewBehavior();
             case COMBAT -> new CombatBehavior();
             case CHANNEL -> new ChannelBehavior();
+            case SEND_ITEM -> new SendItemBehavior();
+            case BUILD -> new BuildBehavior();
             case IDLE -> idleBehavior;
             default -> idleBehavior;
         };

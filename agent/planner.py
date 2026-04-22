@@ -24,11 +24,13 @@ IF the player gives a vague or high-level goal (e.g. "get me iron gear" or "set 
 - Think about prerequisites: what materials are needed? What tools are required first?
 
 ## Rules
-- Each step = ONE concrete action: mine, craft, find, go to, place, build, collect, smelt, combat, follow, channel, etc.
+- Each step = ONE concrete action: mine, craft, find, go to, place, build, collect, smelt, combat, follow, channel, send_item, etc.
 - Use Minecraft registry IDs where possible (e.g. "minecraft:stone_pickaxe" not "stone pickaxe")
 - For combat: "Engage combat mode 30s" (fights hostiles for N seconds) or "Attack zombie 30s"
 - For following: "Follow PlayerName" or "goto_player PlayerName"
 - For channeling: "Channel modid:item_name" or "Channel 3x modid:item_name" — only for items listed in the transmute registry below
+- For sending items: "Send 10 minecraft:iron_ingot to Scout" (transfers items between bots instantly)
+- For building: "Build shelter" or "Build wall with minecraft:stone_bricks" (available: shelter, wall, farm, tower, platform)
 - PRIORITY: always prefer craft > mine > smelt over channel. Channel is a last resort for modded items that have no known recipe or cannot be gathered normally
 - Keep steps short (under 15 words each)
 - 1-8 steps maximum
@@ -39,6 +41,7 @@ IF the player gives a vague or high-level goal (e.g. "get me iron gear" or "set 
 - For underground tasks, always say "dig down" or "mine downward" — the bot must physically dig, not use goto
 - Do NOT re-delegate or assign work to other bots — just describe what YOU need to do
 - If YOU need a crafted/conjured item in YOUR inventory, YOU must craft/conjure it yourself — items cannot transfer between bots
+- CHECK the bot's inventory before planning. If the bot already has required materials, SKIP the gathering step
 
 ## Minecraft knowledge
 - Diamonds are found below Y=16, require minecraft:iron_pickaxe or better to mine
@@ -70,13 +73,15 @@ Output: {{"steps": ["Craft minecraft:stone_pickaxe", "Find and mine minecraft:ir
 
 {transmute_section}
 
+{inventory_section}
+
 Respond ONLY with a JSON object:
 {{
   "steps": ["step 1", "step 2", ...]
 }}"""
 
 
-def decompose(model, instruction, memory_context="", transmute_context=""):
+def decompose(model, instruction, memory_context="", transmute_context="", inventory_context=""):
     """Break an instruction into a list of step strings."""
     memory_section = ""
     if memory_context and memory_context != "No relevant memories.":
@@ -85,7 +90,11 @@ def decompose(model, instruction, memory_context="", transmute_context=""):
     if transmute_context:
         transmute_section = f"## Discovered transmutable items (can be conjured with XP)\n{transmute_context}"
 
-    prompt = PLANNER_PROMPT.format(memory_section=memory_section, transmute_section=transmute_section)
+    inventory_section = ""
+    if inventory_context:
+        inventory_section = f"## Bot's current inventory (skip gathering steps for items already owned)\n{inventory_context}"
+
+    prompt = PLANNER_PROMPT.format(memory_section=memory_section, transmute_section=transmute_section, inventory_section=inventory_section)
 
     with brain.ollama_lock:
         resp = requests.post(
@@ -142,10 +151,12 @@ Each step MUST be a single primitive that the bot can execute directly. Use thes
 - Attack: "Attack zombie 30s" or "Kill creeper" (fights specific mob type)
 - Follow: "Follow PlayerName" or "goto_player PlayerName" (come to a player)
 - Goto: "goto_player PlayerName" or "goto_waypoint base"
-- Send: "send_item minecraft:iron_ingot 10 to Scout"
+- Send: "Send 10 minecraft:iron_ingot to Scout" (instant item transfer between bots)
+- Build: "Build shelter" or "Build wall with minecraft:stone_bricks" (shelter, wall, farm, tower, platform)
 - Dig: "Dig down to Y=16"
 
 PRIORITY: always prefer Craft > Mine > Smelt over Channel. Channel is a last resort for modded items that have no known recipe or cannot be gathered normally. Only use Channel for items listed in the transmute registry section below.
+CHECK bot inventories below before planning. If a bot already has required materials, SKIP the gathering step for that bot. Use send_item to transfer materials between bots when it saves time.
 
 For "engage combat", "fight enemies", "defend me", or similar — use "Engage combat mode 30s" for EVERY bot.
 For "come to me" or "come here" — use "Follow PlayerName" for EVERY bot.
@@ -177,6 +188,8 @@ ALWAYS use registry IDs (modid:item_name). Include counts where relevant.
 
 {transmute_section}
 
+{inventory_section}
+
 Respond ONLY with JSON:
 {{
   "steps": [
@@ -185,7 +198,7 @@ Respond ONLY with JSON:
 }}"""
 
 
-def orchestrate(model, instruction, bot_profiles, memory_context="", transmute_context=""):
+def orchestrate(model, instruction, bot_profiles, memory_context="", transmute_context="", inventory_context=""):
     """Decompose a task with bot specialization assignments.
 
     Returns list of dicts: [{"step": str, "assign": str, "specialization": str}, ...]
@@ -204,10 +217,15 @@ def orchestrate(model, instruction, bot_profiles, memory_context="", transmute_c
     if transmute_context:
         transmute_section = f"## Discovered transmutable items (can be conjured with XP)\n{transmute_context}"
 
+    inventory_section = ""
+    if inventory_context:
+        inventory_section = f"## Current bot inventories (skip gathering for items already owned, use send_item to share)\n{inventory_context}"
+
     prompt = ORCHESTRATOR_PROMPT.format(
         bot_list=bot_list,
         memory_section=memory_section,
         transmute_section=transmute_section,
+        inventory_section=inventory_section,
     )
 
     with brain.ollama_lock:
@@ -246,7 +264,7 @@ def orchestrate(model, instruction, bot_profiles, memory_context="", transmute_c
         return [{"step": instruction, "assign": "any", "specialization": "any"}]
 
     result = []
-    for s in steps[:8]:
+    for s in steps[:12]:
         if isinstance(s, dict):
             result.append({
                 "step": str(s.get("step", "")),

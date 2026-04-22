@@ -74,6 +74,7 @@ class BotRunner:
         self._l1_failed_steps = set()
         self._awaiting_taskboard = False
         self._current_task_id = None
+        self._cached_inventory = []  # updated on each observe tick
         self._lock = threading.Lock()
         self._memory_file = os.path.join(
             os.path.dirname(__file__), f"memory_{self.name.lower()}.json"
@@ -400,7 +401,8 @@ class BotRunner:
                 api.system_chat(self.name, f"Orchestrating: {text[:60]}...", "gold")
                 profiles = [r.profile for r in _all_runners.values()]
                 tc = _transmute.get_context_string() if _transmute else ""
-                orch_steps = planner.orchestrate(self.model, text, profiles, memory_context, tc)
+                inv_context = self._gather_all_inventories()
+                orch_steps = planner.orchestrate(self.model, text, profiles, memory_context, tc, inv_context)
 
                 # If the user addressed this bot by name, keep all "any" steps
                 text_lower = text.lower()
@@ -463,7 +465,8 @@ class BotRunner:
                 if memory_context and memory_context != "No relevant memories.":
                     print(f"[{self.name}/planner] Using {memory_context.count(chr(10))+1} memories as context")
                 tc = _transmute.get_context_string() if _transmute else ""
-                steps = planner.decompose(self.model, text, memory_context, tc)
+                inv_context = self._get_my_inventory_summary()
+                steps = planner.decompose(self.model, text, memory_context, tc, inv_context)
                 self._plan_steps = steps
                 self._plan_step_idx = 0
                 self._plan_instruction = text
@@ -601,7 +604,8 @@ class BotRunner:
                             pass
                     print(f"[{self.name}/planner] Decomposing task board task: {desc[:80]}")
                     tc = _transmute.get_context_string() if _transmute else ""
-                    steps = planner.decompose(self.model, desc, memory_context, tc)
+                    inv_context = self._get_my_inventory_summary()
+                    steps = planner.decompose(self.model, desc, memory_context, tc, inv_context)
                     self._plan_steps = steps
                     self._plan_step_idx = 0
                     self._plan_instruction = desc
@@ -698,6 +702,15 @@ class BotRunner:
         r"(?:channel|conjure|summon|transmute)\s+(?:(\d+)x?\s+)?(\S+?)(?:\s+x\s*(\d+))?\s*$",
         re.IGNORECASE,
     )
+    _SEND_ITEM_PATTERNS = re.compile(
+        r"send(?:_item)?\s+(?:(\d+)x?\s+)?(\S+?)\s+(?:to\s+)?(\w+)(?:\s+x\s*(\d+))?\s*$",
+        re.IGNORECASE,
+    )
+    _BUILD_PATTERNS = re.compile(
+        r"(?:build|construct|create|make)\s+(?:a\s+)?(\w+)(?:\s+(?:with|using|from)\s+(?:minecraft:)?(\S+))?",
+        re.IGNORECASE,
+    )
+    _VALID_BLUEPRINTS = {"shelter", "wall", "farm", "tower", "platform"}
 
     DIRECTIVE_POLL_INTERVAL = 2.0
 
@@ -770,6 +783,31 @@ class BotRunner:
             if _transmute and _transmute.is_known(target):
                 return {"type": "CHANNEL", "target": target, "count": count}
 
+        # Send item to another bot
+        m = self._SEND_ITEM_PATTERNS.search(text)
+        if m:
+            count_pre = int(m.group(1)) if m.group(1) else None
+            item = m.group(2).rstrip(",.")
+            target_bot = m.group(3)
+            count_post = int(m.group(4)) if m.group(4) else None
+            count = count_pre or count_post or 1
+            if not item.startswith("minecraft:") and ":" not in item:
+                item = "minecraft:" + item
+            return {"type": "SEND_ITEM", "target": f"{item}>{target_bot}", "count": count}
+
+        # Build a structure
+        m = self._BUILD_PATTERNS.search(text)
+        if m:
+            blueprint = m.group(1).lower()
+            if blueprint in self._VALID_BLUEPRINTS:
+                material = m.group(2) if m.group(2) else None
+                extra = {}
+                if material:
+                    if ":" not in material:
+                        material = "minecraft:" + material
+                    extra["material"] = material
+                return {"type": "BUILD", "target": blueprint, "extra": extra}
+
         # Combat mode
         combat_match = re.search(
             r"(?:engage|enter|start|activate)\s+combat\s+(?:mode)?(?:\s+(\d+)s)?",
@@ -806,6 +844,37 @@ class BotRunner:
             }
 
         return None
+
+    def _get_my_inventory_summary(self):
+        """Format this bot's cached inventory for the planner."""
+        items = self._cached_inventory
+        if not items:
+            return ""
+        lines = []
+        for it in items:
+            if it.get("item"):
+                lines.append(f"{it['item']} x{it['count']}")
+        if not lines:
+            return ""
+        return f"{self.name}: {', '.join(lines[:20])}"
+
+    def _gather_all_inventories(self):
+        """Gather inventory summaries from all bot runners (uses cached snapshots)."""
+        summaries = []
+        for name, runner in _all_runners.items():
+            items = runner._cached_inventory
+            if not items:
+                summaries.append(f"- {name}: empty")
+                continue
+            lines = []
+            for it in items[:15]:
+                if it.get("item"):
+                    lines.append(f"{it['item']} x{it['count']}")
+            if lines:
+                summaries.append(f"- {name}: {', '.join(lines)}")
+            else:
+                summaries.append(f"- {name}: empty")
+        return "\n".join(summaries) if summaries else ""
 
     L2_MAX_RETRIES = 3
 
@@ -983,6 +1052,15 @@ class BotRunner:
                 return None
             return None
 
+        # Send item: if bot not found or item missing, unrecoverable.
+        if dtype == "SEND_ITEM":
+            return None
+
+        # Build: out of materials might be recoverable if we mine more,
+        # but that's a plan-level concern, not L2.
+        if dtype == "BUILD":
+            return None
+
         return None
 
     def _store_success_memory(self, dtype, params, progress):
@@ -1074,6 +1152,8 @@ PRIMITIVES you can use:
 - {{"type": "CRAFT", "target": "minecraft:<item>", "count": <n>}} — craft items
 - {{"type": "SMELT", "target": "<item>", "count": <n>}} — smelt in furnace
 - {{"type": "GOTO", "x": <x>, "y": <y>, "z": <z>}} — walk to coordinates
+- {{"type": "SEND_ITEM", "target": "<item_id>><bot_name>", "count": <n>}} — send items to another bot
+- {{"type": "BUILD", "target": "<blueprint>"}} — build a structure (shelter/wall/farm/tower/platform)
 
 VALID MINE targets: cobblestone, stone, oak_log, birch_log, spruce_log, iron_ore, coal_ore, copper_ore, gold_ore, diamond_ore, sand, gravel, clay, dirt, deepslate_iron_ore, deepslate_gold_ore, deepslate_diamond_ore, obsidian, netherrack, ancient_debris, sugar_cane, bamboo, kelp, cactus
 VALID CRAFT targets: stick, oak_planks, crafting_table, furnace, chest, wooden_pickaxe, wooden_axe, wooden_sword, wooden_shovel, stone_pickaxe, stone_axe, stone_sword, stone_shovel, iron_pickaxe, iron_axe, iron_sword, iron_shovel, diamond_pickaxe, diamond_sword, bucket, torch, ladder, iron_ingot, gold_ingot, copper_ingot, bread, bowl, paper, book, shears, bow, arrow, shield, bed, iron_helmet, iron_chestplate, iron_leggings, iron_boots, diamond_helmet, diamond_chestplate, diamond_leggings, diamond_boots, blast_furnace, smoker, anvil, brewing_stand, enchanting_table, bookshelf, rail, powered_rail, hopper, piston, golden_apple, golden_carrot
@@ -1300,6 +1380,8 @@ Respond with ONLY a JSON array. Example:
         ents = api.entities(self.name, OBSERVE_ENTITY_RADIUS)
         blks = api.blocks(self.name, OBSERVE_BLOCK_RADIUS)
         action_state = api.actions(self.name)
+
+        self._cached_inventory = inv.get("inventory", [])
 
         with self._lock:
             chat_snapshot = list(self.chat_history)

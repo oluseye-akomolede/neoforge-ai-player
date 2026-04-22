@@ -11,6 +11,8 @@ public enum DirectiveType {
     ENCHANT,
     BREW,
     CHANNEL,
+    SEND_ITEM,
+    BUILD,
     IDLE,
     PATROL
 }
