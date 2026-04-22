@@ -163,6 +163,14 @@ def validate_primitive(primitive):
                 return primitive, False, f"GOTO {coord} not a number"
         return primitive, True, ""
 
+    # Types that don't use standard item targets — pass through with basic checks
+    _PASSTHROUGH_TYPES = {
+        "SEND_ITEM", "BUILD", "FARM", "CONTAINER_PLACE", "CONTAINER_SEARCH",
+        "CHANNEL", "COMBAT", "FOLLOW", "ENCHANT", "BREW",
+    }
+    if ptype in _PASSTHROUGH_TYPES:
+        return primitive, True, ""
+
     target = primitive.get("target", "")
     if not target:
         return primitive, False, f"{ptype} missing target"
@@ -179,7 +187,7 @@ def validate_primitive(primitive):
             return primitive, False, f"{clean} is mineable, not craftable"
     elif ptype == "SMELT" and clean not in SMELTABLE_ITEMS:
         return primitive, False, f"{clean} is not smeltable"
-    elif ptype not in ("MINE", "CRAFT", "SMELT", "GOTO"):
+    elif ptype not in ("MINE", "CRAFT", "SMELT"):
         return primitive, False, f"unknown primitive type: {ptype}"
 
     count = primitive.get("count", 1)

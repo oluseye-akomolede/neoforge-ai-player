@@ -20,6 +20,7 @@ import planner
 import sessions
 import taskboard
 import transmute_db
+import container_db
 import waypoints
 import mc_items
 from config import (
@@ -42,6 +43,7 @@ _CMD_FORGET = re.compile(
 # Shared state across all bot runners (set in run())
 _task_board = None
 _transmute = None  # TransmuteDB instance
+_container_db = None  # ContainerDB instance
 _all_runners = {}  # name -> BotRunner
 _orchestration_lock = threading.Lock()
 _orchestrated_messages = {}  # message_text -> coordinator bot name
@@ -721,7 +723,20 @@ class BotRunner:
         r"(?:build|construct|create|make)\s+(?:a\s+)?(\w+)(?:\s+(?:with|using|from)\s+(?:minecraft:)?(\S+))?",
         re.IGNORECASE,
     )
-    _VALID_BLUEPRINTS = {"shelter", "wall", "farm", "tower", "platform"}
+    _VALID_BLUEPRINTS = {"shelter", "wall", "tower", "platform"}
+    _FARM_PATTERNS = re.compile(
+        r"(?:farm|plant|grow)\s+(?:a\s+)?(?:minecraft:)?(\w+)(?:\s+farm)?(?:\s+(?:with|using|from)\s+(?:minecraft:)?(\S+))?\s*$",
+        re.IGNORECASE,
+    )
+    _VALID_CROPS = {"wheat", "carrot", "potato", "beetroot", "carrots", "potatoes", "wheat_seeds", "beetroot_seeds"}
+    _CONTAINER_PLACE_PATTERNS = re.compile(
+        r"(?:place|put|create|conjure|set\s*up)\s+(?:a\s+)?(?:container|chest|storage|box)",
+        re.IGNORECASE,
+    )
+    _CONTAINER_SEARCH_PATTERNS = re.compile(
+        r"(?:search|check|inspect|look\s+(?:in|through)|scan)\s+(?:(?:the\s+)?containers?|chests?|storage)",
+        re.IGNORECASE,
+    )
 
     DIRECTIVE_POLL_INTERVAL = 2.0
 
@@ -818,6 +833,50 @@ class BotRunner:
                         material = "minecraft:" + material
                     extra["material"] = material
                 return {"type": "BUILD", "target": blueprint, "extra": extra}
+
+        # Farm crops
+        m = self._FARM_PATTERNS.search(text)
+        if m:
+            crop = m.group(1).lower()
+            if crop in self._VALID_CROPS or crop == "farm":
+                if crop == "farm":
+                    crop = "wheat"
+                material = m.group(2) if m.group(2) else None
+                extra = {}
+                if material:
+                    if ":" not in material:
+                        material = "minecraft:" + material
+                    extra["material"] = material
+                return {"type": "FARM", "target": crop, "extra": extra}
+
+        # Also catch "build farm" -> FARM directive (not BUILD)
+        if m is None:
+            m = self._BUILD_PATTERNS.search(text)
+            if m and m.group(1).lower() == "farm":
+                material = m.group(2) if m.group(2) else None
+                extra = {}
+                if material:
+                    if ":" not in material:
+                        material = "minecraft:" + material
+                    extra["material"] = material
+                return {"type": "FARM", "target": "wheat", "extra": extra}
+
+        # Container place
+        if self._CONTAINER_PLACE_PATTERNS.search(text):
+            return {"type": "CONTAINER_PLACE"}
+
+        # Container search
+        m = self._CONTAINER_SEARCH_PATTERNS.search(text)
+        if m:
+            # Check if searching for a specific item
+            item_match = re.search(r"(?:for|find)\s+(?:(\d+)x?\s+)?(?:minecraft:)?(\S+)", text, re.IGNORECASE)
+            params = {"type": "CONTAINER_SEARCH", "count": 5}
+            if item_match:
+                item = item_match.group(2).rstrip(",.")
+                if ":" not in item:
+                    item = "minecraft:" + item
+                params["target"] = item
+            return params
 
         # Combat mode
         combat_match = re.search(
@@ -1072,6 +1131,14 @@ class BotRunner:
         if dtype == "BUILD":
             return None
 
+        # Farm: crop/build failures are unrecoverable at L2.
+        if dtype == "FARM":
+            return None
+
+        # Container ops: failures are unrecoverable at L2.
+        if dtype in ("CONTAINER_PLACE", "CONTAINER_SEARCH"):
+            return None
+
         return None
 
     def _store_success_memory(self, dtype, params, progress):
@@ -1093,6 +1160,13 @@ class BotRunner:
                 self.semantic_mem.store(f"Successfully crafted {target}", category="event")
         except Exception as e:
             print(f"[{self.name}/mem] store error after success: {e}")
+
+        # Sync container registry changes to Postgres
+        if dtype in ("CONTAINER_PLACE", "CONTAINER_SEARCH") and _container_db:
+            try:
+                _container_db.sync_from_mod()
+            except Exception as e:
+                print(f"[{self.name}/containers] sync error: {e}")
 
     # Known vanilla Minecraft items for primitive validation
     _VALID_MINE_TARGETS = {
@@ -1164,7 +1238,10 @@ PRIMITIVES you can use:
 - {{"type": "SMELT", "target": "<item>", "count": <n>}} — smelt in furnace
 - {{"type": "GOTO", "x": <x>, "y": <y>, "z": <z>}} — walk to coordinates
 - {{"type": "SEND_ITEM", "target": "<item_id>><bot_name>", "count": <n>}} — send items to another bot
-- {{"type": "BUILD", "target": "<blueprint>"}} — build a structure (shelter/wall/farm/tower/platform)
+- {{"type": "BUILD", "target": "<blueprint>"}} — build a structure (shelter/wall/tower/platform)
+- {{"type": "FARM", "target": "<crop>"}} — build and harvest a crop farm (wheat/carrot/potato/beetroot)
+- {{"type": "CONTAINER_PLACE"}} — conjure and place a storage chest (costs XP)
+- {{"type": "CONTAINER_SEARCH", "target": "<item>", "count": <n>}} — search N containers for an item
 
 VALID MINE targets: cobblestone, stone, oak_log, birch_log, spruce_log, iron_ore, coal_ore, copper_ore, gold_ore, diamond_ore, sand, gravel, clay, dirt, deepslate_iron_ore, deepslate_gold_ore, deepslate_diamond_ore, obsidian, netherrack, ancient_debris, sugar_cane, bamboo, kelp, cactus
 VALID CRAFT targets: stick, oak_planks, crafting_table, furnace, chest, wooden_pickaxe, wooden_axe, wooden_sword, wooden_shovel, stone_pickaxe, stone_axe, stone_sword, stone_shovel, iron_pickaxe, iron_axe, iron_sword, iron_shovel, diamond_pickaxe, diamond_sword, bucket, torch, ladder, iron_ingot, gold_ingot, copper_ingot, bread, bowl, paper, book, shears, bow, arrow, shield, bed, iron_helmet, iron_chestplate, iron_leggings, iron_boots, diamond_helmet, diamond_chestplate, diamond_leggings, diamond_boots, blast_furnace, smoker, anvil, brewing_stand, enchanting_table, bookshelf, rail, powered_rail, hopper, piston, golden_apple, golden_carrot
@@ -1771,6 +1848,18 @@ def run():
     except Exception as e:
         print(f"[agent] Transmute DB unavailable: {e}")
         _transmute = None
+
+    # Initialize container registry
+    global _container_db
+    try:
+        _container_db = container_db.ContainerDB(PG_DSN)
+        _container_db.connect()
+        _container_db.sync_to_mod()
+        containers = _container_db.get_all()
+        print(f"[agent] Container registry: {len(containers)} containers loaded")
+    except Exception as e:
+        print(f"[agent] Container DB unavailable: {e}")
+        _container_db = None
 
     waypoints.load()
     wp_count = len(waypoints.list_waypoints())

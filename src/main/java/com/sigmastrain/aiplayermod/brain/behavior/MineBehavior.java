@@ -58,6 +58,9 @@ public class MineBehavior implements Behavior {
     private int channelXpCost;
     private String channelItemId;
 
+    // Pre-check
+    private boolean preCheckPassed;
+
     // Movement
     private double yVelocity;
     private int ticksStuck;
@@ -84,11 +87,31 @@ public class MineBehavior implements Behavior {
         this.ticksStuck = 0;
         this.lastPos = null;
         progress.reset();
+
+        // Inventory pre-check: skip mining if we already have enough of the drop item
+        String dropId = resolveDropItem(targetBlock);
+        if (dropId != null) {
+            ServerPlayer player = bot.getPlayer();
+            Item dropItem = BuiltInRegistries.ITEM.get(ResourceLocation.parse(dropId));
+            if (dropItem != Items.AIR) {
+                int owned = countInInventory(player, dropItem);
+                if (owned >= targetCount) {
+                    progress.logEvent("Already have " + owned + "x " + dropId + " (need " + targetCount + ")");
+                    bot.systemChat("Already have " + owned + "x " + dropId, "green");
+                    this.preCheckPassed = true;
+                    return;
+                }
+            }
+        }
+
         enterPhase(Phase.SEARCHING);
     }
 
     @Override
     public BehaviorResult tick(BotPlayer bot) {
+        if (preCheckPassed) {
+            return BehaviorResult.SUCCESS;
+        }
         if (totalMined >= targetCount) {
             progress.logEvent("Target count reached: " + totalMined);
             return BehaviorResult.SUCCESS;
@@ -402,6 +425,17 @@ public class MineBehavior implements Behavior {
 
         player.move(MoverType.SELF, new Vec3(direction.x * SPRINT_SPEED, yVelocity, direction.z * SPRINT_SPEED));
         bot.lookAt(target.x, target.y, target.z);
+    }
+
+    private int countInInventory(ServerPlayer player, Item item) {
+        int total = 0;
+        for (int i = 0; i < 36; i++) {
+            ItemStack s = player.getInventory().getItem(i);
+            if (!s.isEmpty() && s.is(item)) {
+                total += s.getCount();
+            }
+        }
+        return total;
     }
 
     /**

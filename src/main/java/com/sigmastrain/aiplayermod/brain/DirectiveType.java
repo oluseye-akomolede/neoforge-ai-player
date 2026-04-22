@@ -13,6 +13,9 @@ public enum DirectiveType {
     CHANNEL,
     SEND_ITEM,
     BUILD,
+    FARM,
+    CONTAINER_PLACE,
+    CONTAINER_SEARCH,
     IDLE,
     PATROL
 }

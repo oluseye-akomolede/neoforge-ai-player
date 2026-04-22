@@ -40,6 +40,7 @@ public class HttpApiServer {
             server.createContext("/bot/", this::handleBotAction);
             server.createContext("/shop", this::handleShop);
             server.createContext("/transmute", this::handleTransmute);
+            server.createContext("/containers", this::handleContainers);
 
             server.start();
         } catch (IOException e) {
@@ -617,6 +618,45 @@ public class HttpApiServer {
                 String item = body.get("item").getAsString();
                 boolean removed = TransmuteRegistry.remove(item);
                 sendJson(exchange, 200, Map.of("status", removed ? "removed" : "not_found", "item", item));
+            }
+            default -> sendJson(exchange, 405, Map.of("error", "Method not allowed"));
+        }
+    }
+
+    private void handleContainers(HttpExchange exchange) throws IOException {
+        if (!checkAuth(exchange)) return;
+
+        var registry = com.sigmastrain.aiplayermod.brain.ContainerRegistry.get();
+        String method = exchange.getRequestMethod();
+
+        switch (method) {
+            case "GET" -> {
+                sendJson(exchange, 200, Map.of(
+                        "containers", registry.toMapList(),
+                        "count", registry.size()));
+            }
+            case "POST" -> {
+                JsonObject body = readBody(exchange);
+                int x = body.get("x").getAsInt();
+                int y = body.get("y").getAsInt();
+                int z = body.get("z").getAsInt();
+                String dimension = body.has("dimension") ? body.get("dimension").getAsString() : "minecraft:overworld";
+                String placedBy = body.has("placed_by") ? body.get("placed_by").getAsString() : "unknown";
+                var pos = new net.minecraft.core.BlockPos(x, y, z);
+                int id;
+                if (body.has("id")) {
+                    id = body.get("id").getAsInt();
+                    registry.registerWithId(id, pos, dimension, placedBy);
+                } else {
+                    id = registry.register(pos, dimension, placedBy);
+                }
+                sendJson(exchange, 200, Map.of("status", "registered", "id", id));
+            }
+            case "DELETE" -> {
+                JsonObject body = readBody(exchange);
+                int id = body.get("id").getAsInt();
+                boolean removed = registry.remove(id);
+                sendJson(exchange, 200, Map.of("status", removed ? "removed" : "not_found", "id", id));
             }
             default -> sendJson(exchange, 405, Map.of("error", "Method not allowed"));
         }

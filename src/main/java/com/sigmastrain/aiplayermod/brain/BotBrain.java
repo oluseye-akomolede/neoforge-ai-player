@@ -117,6 +117,9 @@ public class BotBrain {
             case CHANNEL -> new ChannelBehavior();
             case SEND_ITEM -> new SendItemBehavior();
             case BUILD -> new BuildBehavior();
+            case FARM -> new FarmBehavior();
+            case CONTAINER_PLACE -> new ContainerPlaceBehavior();
+            case CONTAINER_SEARCH -> new ContainerSearchBehavior();
             case IDLE -> idleBehavior;
             default -> idleBehavior;
         };

@@ -24,6 +24,11 @@ def _delete(path, data=None):
     return r.json()
 
 
+raw_get = _get
+raw_post = _post
+raw_delete = _delete
+
+
 # ── Bot lifecycle ──
 
 def health():

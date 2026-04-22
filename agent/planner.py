@@ -24,13 +24,15 @@ IF the player gives a vague or high-level goal (e.g. "get me iron gear" or "set 
 - Think about prerequisites: what materials are needed? What tools are required first?
 
 ## Rules
-- Each step = ONE concrete action: mine, craft, find, go to, place, build, collect, smelt, combat, follow, channel, send_item, etc.
+- Each step = ONE concrete action: mine, craft, find, go to, place, build, farm, collect, smelt, combat, follow, channel, send_item, etc.
 - Use Minecraft registry IDs where possible (e.g. "minecraft:stone_pickaxe" not "stone pickaxe")
 - For combat: "Engage combat mode 30s" (fights hostiles for N seconds) or "Attack zombie 30s"
 - For following: "Follow PlayerName" or "goto_player PlayerName"
 - For channeling: "Channel modid:item_name" or "Channel 3x modid:item_name" — only for items listed in the transmute registry below
 - For sending items: "Send 10 minecraft:iron_ingot to Scout" (transfers items between bots instantly)
-- For building: "Build shelter" or "Build wall with minecraft:stone_bricks" (available: shelter, wall, farm, tower, platform)
+- For building: "Build shelter" or "Build wall with minecraft:stone_bricks" (available: shelter, wall, tower, platform)
+- For farming: "Farm wheat" or "Farm carrot with minecraft:stone_bricks" (available crops: wheat, carrot, potato, beetroot) — builds a bordered farm, plants, grows with XP, and harvests
+- For containers: "Place container" (conjures a chest, costs 3 XP) or "Search containers for minecraft:iron_ingot" (checks random containers for items)
 - PRIORITY: always prefer craft > mine > smelt over channel. Channel is a last resort for modded items that have no known recipe or cannot be gathered normally
 - Keep steps short (under 15 words each)
 - 1-8 steps maximum
@@ -152,7 +154,9 @@ Each step MUST be a single primitive that the bot can execute directly. Use thes
 - Follow: "Follow PlayerName" or "goto_player PlayerName" (come to a player)
 - Goto: "goto_player PlayerName" or "goto_waypoint base"
 - Send: "Send 10 minecraft:iron_ingot to Scout" (instant item transfer between bots)
-- Build: "Build shelter" or "Build wall with minecraft:stone_bricks" (shelter, wall, farm, tower, platform)
+- Build: "Build shelter" or "Build wall with minecraft:stone_bricks" (shelter, wall, tower, platform)
+- Farm: "Farm wheat" or "Farm carrot with minecraft:stone_bricks" (wheat, carrot, potato, beetroot)
+- Container: "Place container" (conjure chest, 3 XP) or "Search containers for minecraft:iron_ingot"
 - Dig: "Dig down to Y=16"
 
 PRIORITY: always prefer Craft > Mine > Smelt over Channel. Channel is a last resort for modded items that have no known recipe or cannot be gathered normally. Only use Channel for items listed in the transmute registry section below.

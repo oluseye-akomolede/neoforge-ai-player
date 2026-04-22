@@ -119,9 +119,18 @@ public class SmeltBehavior implements Behavior {
         }
 
         xpCostPerItem = getSmeltXpCost(inputItemId);
-        progress.logEvent("Internal smelt: " + totalToSmelt + "x " + inputItemId + " → " + outputItemId);
 
         ServerPlayer player = bot.getPlayer();
+
+        int alreadyHaveOutput = countItemById(player, outputItemId);
+        if (alreadyHaveOutput >= totalToSmelt) {
+            progress.logEvent("Already have " + alreadyHaveOutput + "x " + outputItemId);
+            bot.systemChat("Already have " + alreadyHaveOutput + "x " + outputItemId, "green");
+            return BehaviorResult.SUCCESS;
+        }
+
+        progress.logEvent("Internal smelt: " + totalToSmelt + "x " + inputItemId + " → " + outputItemId);
+
         int haveCount = countItemById(player, inputItemId);
         if (haveCount >= totalToSmelt) {
             enterPhase(Phase.SMELTING);
