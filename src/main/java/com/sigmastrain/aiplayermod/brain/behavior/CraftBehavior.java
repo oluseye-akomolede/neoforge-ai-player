@@ -66,7 +66,7 @@ public class CraftBehavior implements Behavior {
     private Vec3 lastPos;
 
     private static final double REACH = 4.5;
-    private static final int TICKS_PER_LEVEL = 20;
+    private static final int TICKS_PER_LEVEL = 5;
 
     @Override
     public void start(BotPlayer bot, Directive directive) {
@@ -510,7 +510,7 @@ public class CraftBehavior implements Behavior {
             player.giveExperienceLevels(needed);
             progress.logEvent("Meditated for " + needed + " XP levels");
         }
-        channelTicks = Math.max(20, channelXpCost * TICKS_PER_LEVEL);
+        channelTicks = Math.max(5, channelXpCost * TICKS_PER_LEVEL);
         progress.logEvent("Channeling " + req.count + "x " + req.itemId + " (" + channelXpCost + " levels)");
     }
 

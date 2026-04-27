@@ -45,7 +45,7 @@ public class EnchantBehavior implements Behavior {
     private int meditateLevelsGained;
 
     private static final int ENCHANT_DURATION = 60; // 3 seconds
-    private static final int TICKS_PER_LEVEL = 40;
+    private static final int TICKS_PER_LEVEL = 5;
 
     @Override
     public void start(BotPlayer bot, Directive directive) {

@@ -16,6 +16,9 @@ public enum DirectiveType {
     FARM,
     CONTAINER_PLACE,
     CONTAINER_SEARCH,
+    CONTAINER_STORE,
+    CONTAINER_WITHDRAW,
+    TELEPORT,
     IDLE,
     PATROL
 }

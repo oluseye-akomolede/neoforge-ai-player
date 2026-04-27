@@ -23,7 +23,7 @@ public class ContainerPlaceBehavior implements Behavior {
     private final ProgressReport progress = new ProgressReport();
 
     private static final int XP_COST = 3;
-    private static final int CHANNEL_TICKS = 40; // 2 second conjure animation
+    private static final int CHANNEL_TICKS = 5;
     private int ticks;
     private BlockPos placePos;
 

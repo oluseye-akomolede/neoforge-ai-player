@@ -61,7 +61,7 @@ public class BrewBehavior implements Behavior {
 
     private static final double REACH = 4.5;
     private static final int MAX_WAIT_TICKS = 500;
-    private static final int CHANNEL_TICKS_PER_LEVEL = 20;
+    private static final int CHANNEL_TICKS_PER_LEVEL = 5;
 
     private static final Map<String, List<String>> POTION_RECIPES = new LinkedHashMap<>();
     private static final Map<String, String> MODIFIERS = new LinkedHashMap<>();
@@ -457,7 +457,7 @@ public class BrewBehavior implements Behavior {
             player.giveExperienceLevels(needed);
             progress.logEvent("Meditated for " + needed + " XP levels");
         }
-        channelTicks = Math.max(20, channelXpCost * CHANNEL_TICKS_PER_LEVEL);
+        channelTicks = Math.max(5, channelXpCost * CHANNEL_TICKS_PER_LEVEL);
         progress.logEvent("Channeling " + req.count + "x " + req.itemId + " (" + channelXpCost + " levels)");
     }
 

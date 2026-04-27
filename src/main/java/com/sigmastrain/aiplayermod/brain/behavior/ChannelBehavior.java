@@ -37,8 +37,8 @@ public class ChannelBehavior implements Behavior {
     private int meditateTicks;
     private int meditateLevelsGained;
 
-    private static final int TICKS_PER_ITEM = 40; // 2 seconds per item
-    private static final int TICKS_PER_LEVEL = 40;
+    private static final int TICKS_PER_ITEM = 5;
+    private static final int TICKS_PER_LEVEL = 5;
 
     @Override
     public void start(BotPlayer bot, Directive directive) {

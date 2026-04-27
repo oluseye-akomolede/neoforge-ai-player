@@ -32,7 +32,7 @@ import java.util.*;
  */
 public class FarmBehavior implements Behavior {
     private enum Phase {
-        BUILDING, TILLING, PLANTING, GROWING, HARVESTING, COLLECTING
+        TILLING, PLANTING, GROWING, HARVESTING, COLLECTING
     }
 
     private final ProgressReport progress = new ProgressReport();
@@ -40,14 +40,12 @@ public class FarmBehavior implements Behavior {
 
     private String cropType;
     private CropInfo cropInfo;
-    private String borderMaterial;
     private BlockPos origin;
 
-    private static final int FARM_SIZE = 7;
+    private static final int FARM_SIZE = 9;
     private static final int TICK_INTERVAL = 3;
     private static final int GROW_DURATION = 100; // 5 seconds
 
-    private List<BlockPos> borderPositions;
     private List<BlockPos> farmlandPositions;
     private BlockPos waterPos;
 
@@ -76,9 +74,6 @@ public class FarmBehavior implements Behavior {
             return;
         }
 
-        borderMaterial = directive.getExtra().getOrDefault("material", "minecraft:cobblestone");
-        if (!borderMaterial.contains(":")) borderMaterial = "minecraft:" + borderMaterial;
-
         ServerPlayer player = bot.getPlayer();
         origin = player.blockPosition().relative(Direction.fromYRot(player.getYRot()), 3);
 
@@ -89,7 +84,7 @@ public class FarmBehavior implements Behavior {
         growTicks = 0;
         growXpSpent = 0;
         cropsHarvested = 0;
-        phase = Phase.BUILDING;
+        phase = Phase.TILLING;
 
         int plots = farmlandPositions.size();
         progress.logEvent("Farm " + cropType + ": " + plots + " plots");
@@ -103,7 +98,6 @@ public class FarmBehavior implements Behavior {
         if (progress.toMap().containsKey("failure_reason")) return BehaviorResult.FAILED;
 
         return switch (phase) {
-            case BUILDING -> tickBuilding(bot);
             case TILLING -> tickTilling(bot);
             case PLANTING -> tickPlanting(bot);
             case GROWING -> tickGrowing(bot);
@@ -112,36 +106,16 @@ public class FarmBehavior implements Behavior {
         };
     }
 
-    private BehaviorResult tickBuilding(BotPlayer bot) {
-        if (cooldown > 0) { cooldown--; return BehaviorResult.RUNNING; }
-        if (stepIndex >= borderPositions.size()) {
-            ServerPlayer player = bot.getPlayer();
-            player.serverLevel().setBlock(waterPos, Blocks.WATER.defaultBlockState(), 3);
-            progress.logEvent("Border + water placed");
-            stepIndex = 0;
-            phase = Phase.TILLING;
-            return BehaviorResult.RUNNING;
-        }
-
-        ServerPlayer player = bot.getPlayer();
-        BlockPos pos = borderPositions.get(stepIndex);
-        Block block = BuiltInRegistries.BLOCK.get(ResourceLocation.parse(borderMaterial));
-        player.serverLevel().setBlock(pos, block.defaultBlockState(), 3);
-        bot.lookAt(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5);
-
-        if (!consumeBlockFromInventory(player, borderMaterial)) {
-            ensureXp(player, 1);
-            player.giveExperienceLevels(-1);
-        }
-
-        stepIndex++;
-        cooldown = TICK_INTERVAL;
-        progress.setPhase("building (" + stepIndex + "/" + borderPositions.size() + ")");
-        return BehaviorResult.RUNNING;
-    }
-
     private BehaviorResult tickTilling(BotPlayer bot) {
         if (cooldown > 0) { cooldown--; return BehaviorResult.RUNNING; }
+
+        // Place water source first tick
+        if (stepIndex == 0) {
+            ServerPlayer player = bot.getPlayer();
+            player.serverLevel().setBlock(waterPos, Blocks.WATER.defaultBlockState(), 3);
+            progress.logEvent("Water placed");
+        }
+
         if (stepIndex >= farmlandPositions.size()) {
             progress.logEvent("Tilling complete");
             stepIndex = 0;
@@ -276,22 +250,12 @@ public class FarmBehavior implements Behavior {
     }
 
     private void computePositions() {
-        borderPositions = new ArrayList<>();
         farmlandPositions = new ArrayList<>();
-
-        for (int x = 0; x < FARM_SIZE; x++) {
-            borderPositions.add(origin.offset(x, 0, 0));
-            borderPositions.add(origin.offset(x, 0, FARM_SIZE - 1));
-        }
-        for (int z = 1; z < FARM_SIZE - 1; z++) {
-            borderPositions.add(origin.offset(0, 0, z));
-            borderPositions.add(origin.offset(FARM_SIZE - 1, 0, z));
-        }
 
         int center = FARM_SIZE / 2;
         waterPos = origin.offset(center, -1, center);
-        for (int x = 1; x < FARM_SIZE - 1; x++) {
-            for (int z = 1; z < FARM_SIZE - 1; z++) {
+        for (int x = 0; x < FARM_SIZE; x++) {
+            for (int z = 0; z < FARM_SIZE; z++) {
                 if (x == center && z == center) continue;
                 farmlandPositions.add(origin.offset(x, -1, z));
             }
@@ -311,11 +275,6 @@ public class FarmBehavior implements Behavior {
             if (CROP_MAP.containsKey(singular)) return singular;
         }
         return t;
-    }
-
-    private boolean consumeBlockFromInventory(ServerPlayer player, String blockId) {
-        Item item = BuiltInRegistries.ITEM.get(ResourceLocation.parse(blockId));
-        return consumeItem(player, item);
     }
 
     private boolean consumeItem(ServerPlayer player, Item item) {

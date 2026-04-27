@@ -72,7 +72,7 @@ public class Directive {
     public static class Builder {
         private final DirectiveType type;
         private String target;
-        private int radius = 128;
+        private int radius = 256;
         private int count = -1;
         private double x, y, z;
         private boolean hasLocation = false;

@@ -12,6 +12,9 @@ import com.sigmastrain.aiplayermod.shop.BotShop;
 import com.sigmastrain.aiplayermod.shop.TransmuteRegistry;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.item.Items;
 
 import java.io.*;
 import java.net.InetSocketAddress;
@@ -39,8 +42,10 @@ public class HttpApiServer {
             server.createContext("/bots", this::handleBots);
             server.createContext("/bot/", this::handleBotAction);
             server.createContext("/shop", this::handleShop);
+            server.createContext("/transmute/names", this::handleTransmuteNames);
             server.createContext("/transmute", this::handleTransmute);
             server.createContext("/containers", this::handleContainers);
+            server.createContext("/server/dimensions", this::handleDimensions);
 
             server.start();
         } catch (IOException e) {
@@ -82,7 +87,7 @@ public class HttpApiServer {
         if ("GET".equals(exchange.getRequestMethod())) {
             List<Map<String, Object>> botList = new ArrayList<>();
             for (var entry : BotManager.getAllBots().entrySet()) {
-                botList.add(entry.getValue().getStatus());
+                botList.add(entry.getValue().getCachedStatus());
             }
             sendJson(exchange, 200, Map.of("bots", botList));
         } else if ("POST".equals(exchange.getRequestMethod())) {
@@ -298,9 +303,7 @@ public class HttpApiServer {
                 BotManager.getServer().execute(() -> bot.swapSlot(from, to));
                 sendJson(exchange, 200, Map.of("status", "swapped", "from", from, "to", to));
             }
-            case "chat_inbox" -> {
-                sendJson(exchange, 200, Map.of("messages", bot.drainChatInbox()));
-            }
+            case "chat_inbox" -> sendJson(exchange, 200, Map.of("messages", bot.drainChatInbox()));
             case "inject_chat" -> {
                 String sender = body.get("sender").getAsString();
                 String message = body.get("message").getAsString();
@@ -440,13 +443,17 @@ public class HttpApiServer {
             case "xp" -> {
                 String method = exchange.getRequestMethod();
                 if ("GET".equals(method)) {
-                    var player = bot.getPlayer();
-                    sendJson(exchange, 200, Map.of(
-                            "level", player.experienceLevel,
-                            "progress", player.experienceProgress,
-                            "total", player.totalExperience,
-                            "next_level_cost", player.getXpNeededForNextLevel()
-                    ));
+                    var xpFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                    BotManager.getServer().execute(() -> {
+                        var player = bot.getPlayer();
+                        xpFuture.complete(Map.of(
+                                "level", player.experienceLevel,
+                                "progress", player.experienceProgress,
+                                "total", player.totalExperience,
+                                "next_level_cost", player.getXpNeededForNextLevel()
+                        ));
+                    });
+                    sendJson(exchange, 200, xpFuture.join());
                 } else {
                     int amount = body.has("levels") ? body.get("levels").getAsInt() : 0;
                     int points = body.has("points") ? body.get("points").getAsInt() : 0;
@@ -517,7 +524,9 @@ public class HttpApiServer {
                     BotManager.getServer().execute(() -> bot.getBrain().cancelDirective());
                     sendJson(exchange, 200, Map.of("status", "cancelled"));
                 } else if ("GET".equals(exchange.getRequestMethod())) {
-                    sendJson(exchange, 200, bot.getBrain().toMap());
+                    var dirFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                    BotManager.getServer().execute(() -> dirFuture.complete(bot.getBrain().toMap()));
+                    sendJson(exchange, 200, dirFuture.join());
                 } else {
                     String type = body.get("type").getAsString().toUpperCase();
                     var builder = com.sigmastrain.aiplayermod.brain.Directive.builder(
@@ -539,7 +548,33 @@ public class HttpApiServer {
                     sendJson(exchange, 200, Map.of("status", "accepted", "directive", directive.toMap()));
                 }
             }
-            case "brain" -> sendJson(exchange, 200, bot.getBrain().toMap());
+            case "brain" -> {
+                var brainFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> brainFuture.complete(bot.getBrain().toMap()));
+                sendJson(exchange, 200, brainFuture.join());
+            }
+            case "surface_scan" -> {
+                int radius = body.has("radius") ? body.get("radius").getAsInt() : 12;
+                var scanFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    int capped = Math.min(radius, 16);
+                    var blocks = bot.surfaceScan(capped);
+                    var dim = bot.getPlayer().level().dimension().location().toString();
+                    scanFuture.complete(Map.of("blocks", blocks, "dimension", dim));
+                });
+                sendJson(exchange, 200, scanFuture.join());
+            }
+            case "nearby_containers" -> {
+                int radius = body.has("radius") ? body.get("radius").getAsInt() : 8;
+                var future = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    int capped = Math.min(radius, 16);
+                    var containers = bot.nearbyContainers(capped);
+                    var dim = bot.getPlayer().level().dimension().location().toString();
+                    future.complete(Map.of("containers", containers, "dimension", dim));
+                });
+                sendJson(exchange, 200, future.join());
+            }
             default -> sendJson(exchange, 400, Map.of("error", "Unknown action: " + action));
         }
         } catch (Exception e) {
@@ -578,6 +613,26 @@ public class HttpApiServer {
     }
 
     // ── /transmute ── (GET = list/lookup, POST = register/update, DELETE = remove)
+
+    private void handleTransmuteNames(HttpExchange exchange) throws IOException {
+        if (!checkAuth(exchange)) return;
+        if (!"GET".equals(exchange.getRequestMethod())) {
+            sendJson(exchange, 405, Map.of("error", "Method not allowed"));
+            return;
+        }
+        Map<String, String> names = new LinkedHashMap<>();
+        for (var entry : TransmuteRegistry.listAll()) {
+            String itemId = (String) entry.get("item");
+            var rl = ResourceLocation.tryParse(itemId);
+            if (rl != null) {
+                var item = BuiltInRegistries.ITEM.get(rl);
+                if (item != null && item != Items.AIR) {
+                    names.put(itemId, item.getDescription().getString());
+                }
+            }
+        }
+        sendJson(exchange, 200, Map.of("names", names, "count", names.size()));
+    }
 
     private void handleTransmute(HttpExchange exchange) throws IOException {
         if (!checkAuth(exchange)) return;
@@ -660,6 +715,23 @@ public class HttpApiServer {
             }
             default -> sendJson(exchange, 405, Map.of("error", "Method not allowed"));
         }
+    }
+
+    // ── /server/dimensions ──
+
+    private void handleDimensions(HttpExchange exchange) throws IOException {
+        if (!checkAuth(exchange)) return;
+        var server = BotManager.getServer();
+        if (server == null) {
+            sendJson(exchange, 503, Map.of("error", "Server not ready"));
+            return;
+        }
+        List<String> dims = new ArrayList<>();
+        for (var key : server.levelKeys()) {
+            dims.add(key.location().toString());
+        }
+        dims.sort(String::compareTo);
+        sendJson(exchange, 200, Map.of("dimensions", dims));
     }
 
     // ── Helpers ──

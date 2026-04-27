@@ -24,7 +24,6 @@ import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
@@ -46,14 +45,16 @@ public class BotPlayer {
     private final SimpleContainer extendedInventory = new SimpleContainer(54);
     private final ConcurrentLinkedQueue<Map<String, String>> chatInbox = new ConcurrentLinkedQueue<>();
     private static final int MAX_INBOX_SIZE = 50;
-    private static final int FORCE_CHUNK_RADIUS = 1;
-    private final Set<Long> forcedChunks = new HashSet<>();
-    private ChunkPos lastChunkPos = null;
 
     private volatile Map<String, Object> cachedStatus = new LinkedHashMap<>();
     private volatile List<Map<String, Object>> cachedInventory = new ArrayList<>();
     private volatile List<Map<String, Object>> cachedEntities = new ArrayList<>();
     private volatile List<Map<String, Object>> cachedBlocks = new ArrayList<>();
+
+    private double lastBroadcastX, lastBroadcastY, lastBroadcastZ;
+    private float lastBroadcastYRot, lastBroadcastXRot;
+    private int lastEquipmentHash;
+    private int tickCounter;
 
     private BotPlayer(ServerPlayer player) {
         this.player = player;
@@ -159,6 +160,23 @@ public class BotPlayer {
         }
     }
 
+    private boolean hasMoved() {
+        return Math.abs(player.getX() - lastBroadcastX) > 0.01
+                || Math.abs(player.getY() - lastBroadcastY) > 0.01
+                || Math.abs(player.getZ() - lastBroadcastZ) > 0.01
+                || Math.abs(player.getYRot() - lastBroadcastYRot) > 0.5f
+                || Math.abs(player.getXRot() - lastBroadcastXRot) > 0.5f;
+    }
+
+    private int computeEquipmentHash() {
+        int hash = 0;
+        for (EquipmentSlot slot : EquipmentSlot.values()) {
+            ItemStack stack = getEquippedItem(slot);
+            hash = 31 * hash + ItemStack.hashItemAndComponents(stack);
+        }
+        return hash;
+    }
+
     private void broadcastPosition() {
         ClientboundTeleportEntityPacket teleport = new ClientboundTeleportEntityPacket(player);
         ClientboundRotateHeadPacket head = new ClientboundRotateHeadPacket(player,
@@ -173,7 +191,6 @@ public class BotPlayer {
         if (!alive) return;
         alive = false;
         actionQueue.clear();
-        releaseForcedChunks();
         PlayerList playerList = player.getServer().getPlayerList();
         playerList.broadcastAll(new ClientboundRemoveEntitiesPacket(player.getId()));
         playerList.broadcastAll(new ClientboundPlayerInfoRemovePacket(List.of(player.getUUID())));
@@ -213,49 +230,27 @@ public class BotPlayer {
             actionQueue.clear();
         }
         scanInventoryForTransmutables();
-        updateForcedChunks();
-        broadcastPosition();
-        broadcastAllEquipment();
-        refreshCache();
-    }
-
-    // ── Chunk forcing ──
-
-    private void updateForcedChunks() {
-        ServerLevel level = (ServerLevel) player.level();
-        ChunkPos center = new ChunkPos(player.blockPosition());
-        if (center.equals(lastChunkPos)) return;
-        lastChunkPos = center;
-        Set<Long> needed = new HashSet<>();
-        for (int dx = -FORCE_CHUNK_RADIUS; dx <= FORCE_CHUNK_RADIUS; dx++) {
-            for (int dz = -FORCE_CHUNK_RADIUS; dz <= FORCE_CHUNK_RADIUS; dz++) {
-                ChunkPos cp = new ChunkPos(center.x + dx, center.z + dz);
-                needed.add(cp.toLong());
-            }
+        tickCounter++;
+        boolean moved = hasMoved();
+        if (moved || tickCounter % 20 == 0) {
+            broadcastPosition();
+            lastBroadcastX = player.getX();
+            lastBroadcastY = player.getY();
+            lastBroadcastZ = player.getZ();
+            lastBroadcastYRot = player.getYRot();
+            lastBroadcastXRot = player.getXRot();
         }
-        for (long key : needed) {
-            if (!forcedChunks.contains(key)) {
-                ChunkPos cp = new ChunkPos(key);
-                level.setChunkForced(cp.x, cp.z, true);
-            }
+        int eqHash = computeEquipmentHash();
+        if (eqHash != lastEquipmentHash) {
+            broadcastAllEquipment();
+            lastEquipmentHash = eqHash;
         }
-        for (long key : forcedChunks) {
-            if (!needed.contains(key)) {
-                ChunkPos cp = new ChunkPos(key);
-                level.setChunkForced(cp.x, cp.z, false);
-            }
+        if (tickCounter % 40 == 0) {
+            refreshCache();
         }
-        forcedChunks.clear();
-        forcedChunks.addAll(needed);
-    }
-
-    private void releaseForcedChunks() {
-        ServerLevel level = (ServerLevel) player.level();
-        for (long key : forcedChunks) {
-            ChunkPos cp = new ChunkPos(key);
-            level.setChunkForced(cp.x, cp.z, false);
+        if (tickCounter % 200 == 0) {
+            broadcastSpawn();
         }
-        forcedChunks.clear();
     }
 
     // ── Dimension travel ──
@@ -265,8 +260,6 @@ public class BotPlayer {
         MinecraftServer server = player.getServer();
         ServerLevel targetLevel = server.getLevel(dimension);
         if (targetLevel == null) return false;
-
-        releaseForcedChunks();
 
         remove();
 
@@ -288,8 +281,8 @@ public class BotPlayer {
     private void refreshCache() {
         cachedStatus = getStatus();
         cachedInventory = getInventory();
-        cachedEntities = getNearbyEntities(24.0);
-        cachedBlocks = getNearbyBlocks(8);
+        cachedEntities = getNearbyEntities(16.0);
+        cachedBlocks = getNearbyBlocks(5);
     }
 
     public Map<String, Object> getCachedStatus() { return cachedStatus; }
@@ -383,6 +376,8 @@ public class BotPlayer {
         status.put("dimension", player.level().dimension().location().toString());
         status.put("gamemode", player.gameMode.getGameModeForPlayer().getName());
         status.put("alive", isAlive());
+        status.put("xp_level", player.experienceLevel);
+        status.put("xp_points", player.totalExperience);
         return status;
     }
 
@@ -420,6 +415,68 @@ public class BotPlayer {
                             info.put("position", formatBlockPos(pos));
                             result.add(info);
                         }
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    public List<Map<String, Object>> surfaceScan(int radius) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        BlockPos center = player.blockPosition();
+        Level level = player.level();
+        int cy = center.getY();
+
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                int wx = center.getX() + dx;
+                int wz = center.getZ() + dz;
+                // Scan downward from bot Y+10, find first non-air
+                BlockPos.MutableBlockPos probe = new BlockPos.MutableBlockPos(wx, Math.min(cy + 10, level.getMaxBuildHeight()), wz);
+                BlockState state = null;
+                int surfaceY = cy;
+                for (int y = probe.getY(); y >= Math.max(cy - 20, level.getMinBuildHeight()); y--) {
+                    probe.setY(y);
+                    BlockState bs = level.getBlockState(probe);
+                    if (!bs.isAir() && !bs.getBlock().defaultBlockState().canBeReplaced()) {
+                        state = bs;
+                        surfaceY = y;
+                        break;
+                    }
+                }
+                if (state != null) {
+                    String blockId = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
+                    Map<String, Object> entry = new LinkedHashMap<>();
+                    entry.put("x", wx);
+                    entry.put("y", surfaceY);
+                    entry.put("z", wz);
+                    entry.put("block", blockId);
+                    result.add(entry);
+                }
+            }
+        }
+        return result;
+    }
+
+    public List<Map<String, Object>> nearbyContainers(int radius) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        BlockPos center = player.blockPosition();
+        Level level = player.level();
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dy = -radius; dy <= radius; dy++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    BlockPos pos = center.offset(dx, dy, dz);
+                    BlockState state = level.getBlockState(pos);
+                    String blockId = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
+                    if (blockId.contains("chest") || blockId.contains("barrel")
+                            || blockId.contains("shulker_box")) {
+                        Map<String, Object> entry = new LinkedHashMap<>();
+                        entry.put("x", pos.getX());
+                        entry.put("y", pos.getY());
+                        entry.put("z", pos.getZ());
+                        entry.put("block", blockId);
+                        result.add(entry);
                     }
                 }
             }

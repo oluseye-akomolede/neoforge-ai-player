@@ -73,7 +73,7 @@ public class MineBehavior implements Behavior {
     private static final double FLY_SPEED = 0.8;
     private static final double GRAVITY = 0.08;
     private static final double JUMP_VELOCITY = 0.42;
-    private static final int TICKS_PER_LEVEL = 20;
+    private static final int TICKS_PER_LEVEL = 5;
 
     @Override
     public void start(BotPlayer bot, Directive directive) {
@@ -167,6 +167,13 @@ public class MineBehavior implements Behavior {
         BlockPos nearest = null;
         double nearestDist = Double.MAX_VALUE;
 
+        // Build variant match terms for ores (e.g. "allthemodium_ore" also matches "allthemodium_slate_ore")
+        String searchBase = search.contains(":") ? search.substring(search.indexOf(':') + 1) : search;
+        String oreBase = null;
+        if (searchBase.endsWith("_ore")) {
+            oreBase = searchBase.substring(0, searchBase.length() - 4);
+        }
+
         for (int r = 1; r <= radius; r += (r < 64 ? 1 : 2)) {
             for (int x = -r; x <= r; x++) {
                 for (int y = -r; y <= r; y++) {
@@ -178,7 +185,7 @@ public class MineBehavior implements Behavior {
                         BlockState state = level.getBlockState(pos);
                         if (state.isAir()) continue;
                         String id = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
-                        if (id.contains(search)) {
+                        if (matchesBlock(id, search, searchBase, oreBase)) {
                             double dist = center.distSqr(pos);
                             if (dist < nearestDist) {
                                 nearestDist = dist;
@@ -191,6 +198,14 @@ public class MineBehavior implements Behavior {
             if (nearest != null) break;
         }
         return nearest;
+    }
+
+    private static boolean matchesBlock(String blockId, String search, String searchBase, String oreBase) {
+        if (blockId.contains(search)) return true;
+        if (blockId.contains(searchBase)) return true;
+        // For ore variants: "iron_ore" matches "deepslate_iron_ore", "allthemodium_ore" matches "allthemodium_slate_ore"
+        if (oreBase != null && blockId.contains(oreBase) && blockId.contains("ore")) return true;
+        return false;
     }
 
     private BehaviorResult startChanneling(BotPlayer bot) {
@@ -215,7 +230,7 @@ public class MineBehavior implements Behavior {
         }
 
         channelTotal = remaining;
-        channelTicks = Math.max(20, channelXpCost * TICKS_PER_LEVEL);
+        channelTicks = Math.max(5, channelXpCost * TICKS_PER_LEVEL);
         enterPhase(Phase.CHANNELING);
         return BehaviorResult.RUNNING;
     }
@@ -343,7 +358,9 @@ public class MineBehavior implements Behavior {
         breakProgress++;
 
         if (breakProgress * progressPerTick >= 1.0f || hardness == 0) {
-            level.destroyBlock(targetPos, true, player);
+            net.minecraft.world.level.block.entity.BlockEntity be = state.hasBlockEntity() ? level.getBlockEntity(targetPos) : null;
+            Block.dropResources(state, level, targetPos, be, player, player.getMainHandItem());
+            level.destroyBlock(targetPos, false, player);
         }
 
         return BehaviorResult.RUNNING;

@@ -23,14 +23,21 @@ import net.minecraft.network.chat.Component;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
+
 @Mod(AIPlayerMod.MOD_ID)
 public class AIPlayerMod {
     public static final String MOD_ID = "aiplayermod";
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
     private static final int DEFAULT_API_PORT = 3100;
+    private static final int SPAWN_PACKET_DELAY_TICKS = 40;
 
     private HttpApiServer apiServer;
+    private final Queue<PendingSpawn> pendingSpawns = new ConcurrentLinkedQueue<>();
+
+    private record PendingSpawn(net.minecraft.server.level.ServerPlayer joiner, long sendAtTick) {}
 
     public AIPlayerMod(IEventBus modEventBus, ModContainer modContainer) {
         NeoForge.EVENT_BUS.register(this);
@@ -66,6 +73,17 @@ public class AIPlayerMod {
     public void onServerTick(ServerTickEvent.Post event) {
         BotManager.tick();
         TransmuteRegistry.tickSave(event.getServer().getTickCount());
+
+        long currentTick = event.getServer().getTickCount();
+        PendingSpawn pending;
+        while ((pending = pendingSpawns.peek()) != null && currentTick >= pending.sendAtTick()) {
+            pendingSpawns.poll();
+            if (pending.joiner().isAlive() && pending.joiner().connection != null) {
+                for (var bot : BotManager.getAllBots().values()) {
+                    bot.sendSpawnPackets(pending.joiner());
+                }
+            }
+        }
     }
 
     @SubscribeEvent
@@ -76,9 +94,16 @@ public class AIPlayerMod {
     @SubscribeEvent
     public void onPlayerLoggedIn(PlayerEvent.PlayerLoggedInEvent event) {
         if (event.getEntity() instanceof net.minecraft.server.level.ServerPlayer joiner) {
-            for (var bot : BotManager.getAllBots().values()) {
-                bot.sendSpawnPackets(joiner);
-            }
+            long sendAt = joiner.getServer().getTickCount() + SPAWN_PACKET_DELAY_TICKS;
+            pendingSpawns.add(new PendingSpawn(joiner, sendAt));
+        }
+    }
+
+    @SubscribeEvent
+    public void onPlayerRespawn(PlayerEvent.PlayerRespawnEvent event) {
+        if (event.getEntity() instanceof net.minecraft.server.level.ServerPlayer respawned) {
+            long sendAt = respawned.getServer().getTickCount() + SPAWN_PACKET_DELAY_TICKS;
+            pendingSpawns.add(new PendingSpawn(respawned, sendAt));
         }
     }
 

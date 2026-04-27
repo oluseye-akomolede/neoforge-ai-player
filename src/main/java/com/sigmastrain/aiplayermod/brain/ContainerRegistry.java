@@ -40,6 +40,13 @@ public class ContainerRegistry {
         return containers.get(id);
     }
 
+    public ContainerEntry getByPos(BlockPos pos) {
+        for (ContainerEntry e : containers.values()) {
+            if (e.pos().equals(pos)) return e;
+        }
+        return null;
+    }
+
     public List<ContainerEntry> getAll() {
         return new ArrayList<>(containers.values());
     }

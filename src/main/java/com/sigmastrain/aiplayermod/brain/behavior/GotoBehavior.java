@@ -4,8 +4,10 @@ import com.sigmastrain.aiplayermod.bot.BotPlayer;
 import com.sigmastrain.aiplayermod.brain.BehaviorResult;
 import com.sigmastrain.aiplayermod.brain.Directive;
 import com.sigmastrain.aiplayermod.brain.ProgressReport;
+import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.MoverType;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 
 public class GotoBehavior implements Behavior {
@@ -31,6 +33,17 @@ public class GotoBehavior implements Behavior {
         this.targetX = directive.getX();
         this.targetY = directive.getY();
         this.targetZ = directive.getZ();
+
+        // Adjust Y upward if target is inside a solid block
+        Level level = bot.getPlayer().level();
+        BlockPos targetBlock = BlockPos.containing(targetX, targetY, targetZ);
+        while (targetY < level.getMaxBuildHeight() - 1
+                && !level.getBlockState(targetBlock).isAir()
+                && !level.getBlockState(targetBlock).canBeReplaced()) {
+            targetY += 1.0;
+            targetBlock = targetBlock.above();
+        }
+
         if (directive.getExtra().containsKey("distance")) {
             this.arriveDistance = Double.parseDouble(directive.getExtra().get("distance"));
         }

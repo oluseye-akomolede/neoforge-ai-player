@@ -120,6 +120,9 @@ public class BotBrain {
             case FARM -> new FarmBehavior();
             case CONTAINER_PLACE -> new ContainerPlaceBehavior();
             case CONTAINER_SEARCH -> new ContainerSearchBehavior();
+            case CONTAINER_STORE -> new ContainerStoreBehavior();
+            case CONTAINER_WITHDRAW -> new ContainerWithdrawBehavior();
+            case TELEPORT -> new TeleportBehavior();
             case IDLE -> idleBehavior;
             default -> idleBehavior;
         };
