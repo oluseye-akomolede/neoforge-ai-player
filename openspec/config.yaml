@@ -1,0 +1,35 @@
+schema: spec-driven
+
+context: |
+  Project: AI Player Mod (NeoForge 1.21.1 / Minecraft 1.21.1 / Java 21)
+  A custom NeoForge mod creating autonomous LLM-controlled bot players.
+
+  Tech stack:
+    - Mod: Java 21, NeoForge 21.1.226
+    - Agent: Python 3.11, FastAPI, Ollama (qwen2.5:14b-instruct)
+    - Dashboard: React, TypeScript, Tailwind CSS, Vite
+    - Persistence: PostgreSQL (pgvector), MinIO, JSON files
+    - Infrastructure: Kubernetes, Longhorn, Tailscale, Harbor
+
+  Architecture: Four-tier AI (L1 mod-side behaviors, L2 agent retry,
+    L3 local LLM planning, L4 OpenAI escalation)
+
+  Key domain concepts:
+    - Bots are fake ServerPlayer instances with full inventories, XP, and memory
+    - XP is a universal currency (meditate to earn, spend to conjure items)
+    - 23 directive types mapped to 18 behavior state machines
+    - Semantic memory with pgvector embeddings (nomic-embed-text)
+    - Multi-bot orchestration via task board with specialization matching
+
+  Conventions:
+    - Specs describe observable bot state and behavior, not implementation
+    - Serialization-relevant state is the primary focus
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+
+rules:
+  proposal:
+    - Always identify serialization impact of changes
+    - Reference affected spec domains
+  tasks:
+    - Break tasks into testable units
+    - Include serialization schema migration steps when applicable
