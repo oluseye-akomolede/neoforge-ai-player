@@ -37,6 +37,11 @@ export default function DirectivePanel({
     const defaults: Record<string, string> = {}
     d.params.forEach((p) => {
       if (p.default !== undefined) defaults[p.name] = String(p.default)
+      if (p.fields) {
+        p.fields.forEach((f) => {
+          if (f.default !== undefined) defaults[`extra.${f.name}`] = String(f.default)
+        })
+      }
     })
     setParams(defaults)
     setStatus('')
@@ -76,6 +81,15 @@ export default function DirectivePanel({
       directive_type: selected.type,
     }
     selected.params.forEach((p) => {
+      if (p.type === 'dict' && p.fields) {
+        const extra: Record<string, string> = {}
+        p.fields.forEach((f) => {
+          const val = params[`extra.${f.name}`]
+          if (val !== undefined && val !== '') extra[f.name] = val
+        })
+        if (Object.keys(extra).length > 0) req.extra = extra
+        return
+      }
       const val = params[p.name]
       if (val === undefined || val === '') return
       if (p.name === 'extra' && p.type === 'dimension') {
@@ -93,6 +107,11 @@ export default function DirectivePanel({
         const defaults: Record<string, string> = {}
         selected.params.forEach((p) => {
           if (p.default !== undefined) defaults[p.name] = String(p.default)
+          if (p.fields) {
+            p.fields.forEach((f) => {
+              if (f.default !== undefined) defaults[`extra.${f.name}`] = String(f.default)
+            })
+          }
         })
         setParams(defaults)
         setContainerContents([])
@@ -213,6 +232,84 @@ export default function DirectivePanel({
       )
     }
 
+    // "Use bot position" helper for coordinate fields
+    if (p.use_bot_pos && botData) {
+      const posKey = p.name === 'x' ? 'x' : p.name === 'y' ? 'y' : 'z'
+      const posVal = botData.status?.position?.[posKey]
+      return (
+        <div>
+          <label className="text-xs text-mc-gray block mb-1">
+            {p.label}
+            {p.required && <span className="text-mc-red ml-1">*</span>}
+          </label>
+          <div className="flex gap-1">
+            <input
+              type="number"
+              step="0.1"
+              value={params[p.name] || ''}
+              onChange={(e) => setParams((prev) => ({ ...prev, [p.name]: e.target.value }))}
+              placeholder={p.label}
+              className="flex-1 bg-mc-dark border border-mc-accent rounded px-2 py-1 text-sm focus:outline-none focus:border-mc-gold"
+            />
+            {posVal !== undefined && (
+              <button
+                onClick={() => setParams((prev) => ({ ...prev, [p.name]: String(Math.round(posVal)) }))}
+                className="text-[10px] px-1.5 bg-mc-accent rounded hover:bg-blue-700 text-mc-aqua whitespace-nowrap"
+                title={`Use bot's current ${posKey.toUpperCase()} (${Math.round(posVal)})`}
+              >
+                Bot: {Math.round(posVal)}
+              </button>
+            )}
+          </div>
+          {p.hint && <p className="text-[10px] text-mc-gray mt-0.5">{p.hint}</p>}
+        </div>
+      )
+    }
+
+    // Dict with nested fields — render each sub-field
+    if (p.type === 'dict' && p.fields) {
+      return (
+        <div className="border border-mc-accent rounded p-2 space-y-2">
+          <label className="text-xs text-mc-gold block font-medium">{p.label}</label>
+          {p.fields.map((f) => {
+            const key = `extra.${f.name}`
+            if (f.options) {
+              return (
+                <div key={f.name}>
+                  <label className="text-[10px] text-mc-gray block mb-0.5">{f.label}</label>
+                  <select
+                    value={params[key] || ''}
+                    onChange={(e) => setParams((prev) => ({ ...prev, [key]: e.target.value }))}
+                    className="w-full bg-mc-dark border border-mc-accent rounded px-2 py-1 text-sm focus:outline-none focus:border-mc-gold"
+                  >
+                    {f.options.map((opt, i) => (
+                      <option key={opt} value={opt}>
+                        {f.option_labels?.[i] || opt}
+                      </option>
+                    ))}
+                  </select>
+                  {f.hint && <p className="text-[10px] text-mc-gray mt-0.5">{f.hint}</p>}
+                </div>
+              )
+            }
+            return (
+              <div key={f.name}>
+                <label className="text-[10px] text-mc-gray block mb-0.5">{f.label}</label>
+                <input
+                  type="text"
+                  value={params[key] || ''}
+                  onChange={(e) => setParams((prev) => ({ ...prev, [key]: e.target.value }))}
+                  placeholder={f.label}
+                  className="w-full bg-mc-dark border border-mc-accent rounded px-2 py-1 text-sm focus:outline-none focus:border-mc-gold"
+                />
+                {f.hint && <p className="text-[10px] text-mc-gray mt-0.5">{f.hint}</p>}
+              </div>
+            )
+          })}
+        </div>
+      )
+    }
+
     // Standard dropdown
     if (p.options) {
       return (
@@ -227,10 +324,11 @@ export default function DirectivePanel({
             className="w-full bg-mc-dark border border-mc-accent rounded px-2 py-1 text-sm focus:outline-none focus:border-mc-gold"
           >
             <option value="">-- select --</option>
-            {p.options.map((opt) => (
-              <option key={opt} value={opt}>{opt.replace('minecraft:', '')}</option>
+            {p.options.map((opt, i) => (
+              <option key={opt} value={opt}>{p.option_labels?.[i] || opt.replace('minecraft:', '')}</option>
             ))}
           </select>
+          {p.hint && <p className="text-[10px] text-mc-gray mt-0.5">{p.hint}</p>}
         </div>
       )
     }
@@ -247,9 +345,10 @@ export default function DirectivePanel({
           step={p.type === 'float' ? '0.1' : undefined}
           value={params[p.name] || ''}
           onChange={(e) => setParams((prev) => ({ ...prev, [p.name]: e.target.value }))}
-          placeholder={p.label}
+          placeholder={p.hint || p.label}
           className="w-full bg-mc-dark border border-mc-accent rounded px-2 py-1 text-sm focus:outline-none focus:border-mc-gold"
         />
+        {p.hint && <p className="text-[10px] text-mc-gray mt-0.5">{p.hint}</p>}
       </div>
     )
   }
@@ -337,6 +436,30 @@ export default function DirectivePanel({
 
           {selected && (
             <div className="space-y-2">
+              {/* Directive description */}
+              {selected.description && (
+                <p className="text-[11px] text-mc-gray leading-snug">{selected.description}</p>
+              )}
+
+              {/* "Use bot position" shortcut for directives with coordinate fields */}
+              {botData && selected.params.some((p) => p.use_bot_pos) && (
+                <button
+                  onClick={() => {
+                    const pos = botData.status?.position
+                    if (!pos) return
+                    setParams((prev) => ({
+                      ...prev,
+                      x: String(Math.round(pos.x)),
+                      y: String(Math.round(pos.y)),
+                      z: String(Math.round(pos.z)),
+                    }))
+                  }}
+                  className="text-[10px] px-2 py-1 bg-mc-accent rounded hover:bg-blue-700 text-mc-aqua"
+                >
+                  Use {selectedBot}'s position ({Math.round(botData.status?.position?.x ?? 0)}, {Math.round(botData.status?.position?.y ?? 0)}, {Math.round(botData.status?.position?.z ?? 0)})
+                </button>
+              )}
+
               {/* Container picker for container directives */}
               {isContainerDirective && (
                 <div>

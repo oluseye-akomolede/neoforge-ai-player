@@ -73,10 +73,15 @@ export interface DirectiveParam {
   required: boolean
   default?: unknown
   options?: string[]
+  option_labels?: string[]
+  hint?: string
+  use_bot_pos?: boolean
+  fields?: DirectiveParam[]
 }
 
 export interface DirectiveDef {
   type: string
   label: string
+  description?: string
   params: DirectiveParam[]
 }
