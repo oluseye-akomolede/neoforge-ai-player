@@ -20,14 +20,16 @@ import java.util.*;
 /**
  * L1 Wide Search behavior — coordinated expanding-cube search across multiple bots.
  *
- * Each bot is assigned a sector of the cube via bot_index/bot_count in the directive extra params.
- * The cube expands in shells from the center until the target is found or max radius is reached.
+ * The cube is divided into a grid of cells (CELL_SIZE x CELL_SIZE in XZ).
+ * Cells are assigned round-robin across bots, creating an interleaved checkerboard pattern.
+ * Each bot paths to its next cell, scans the full Y column, then moves on.
+ * The cube expands in shells until the target is found or max radius is reached.
  *
- * L3 composable: an LLM can issue WIDE_SEARCH to multiple bots with different bot_index values.
+ * L3 composable: an LLM issues WIDE_SEARCH to N bots with bot_index 0..N-1.
  */
 public class WideSearchBehavior implements Behavior {
     private enum Phase {
-        PATHING_TO_SECTOR, SCANNING, FOUND_PATHING, EXPANDING, DONE
+        PATHING_TO_CELL, SCANNING_CELL, FOUND_PATHING, EXPANDING, DONE
     }
 
     private final ProgressReport progress = new ProgressReport();
@@ -41,12 +43,17 @@ public class WideSearchBehavior implements Behavior {
     private int maxRadius;
 
     private static final int[] SHELL_RADII = {32, 64, 128, 256, 512, 1024};
+    private static final int CELL_SIZE = 16;
     private int shellIndex;
 
-    private int sectorMinX, sectorMaxX, sectorMinZ, sectorMaxZ;
-    private int scanY;
-    private int scanX, scanZ;
-    private boolean scanComplete;
+    // Cell grid for current shell
+    private List<int[]> myCells;
+    private int cellIdx;
+
+    // Current cell scan state
+    private int cellOriginX, cellOriginZ;
+    private int scanX, scanZ, scanY;
+    private boolean cellScanDone;
 
     private BlockPos foundPos;
     private String foundId;
@@ -57,7 +64,6 @@ public class WideSearchBehavior implements Behavior {
     private int ticksStuck;
     private Vec3 lastPos;
 
-    private int scanTickBudget;
     private static final int BLOCKS_PER_TICK = 2048;
     private static final double SPRINT_SPEED = 0.4;
     private static final double FLY_SPEED = 0.8;
@@ -97,70 +103,95 @@ public class WideSearchBehavior implements Behavior {
         foundId = null;
 
         progress.logEvent("Wide search: target=" + searchTarget + " type=" + searchType
-                + " center=" + center.toShortString() + " bot " + (botIndex + 1) + "/" + botCount);
+                + " center=" + center.toShortString() + " bot " + (botIndex + 1) + "/" + botCount
+                + " cell_size=" + CELL_SIZE);
         bot.systemChat("Search: " + searchTarget + " [bot " + (botIndex + 1) + "/" + botCount + "]", "aqua");
 
-        computeSectorAndBegin();
+        beginShell();
     }
 
-    private void computeSectorAndBegin() {
+    private void beginShell() {
         int radius = SHELL_RADII[Math.min(shellIndex, SHELL_RADII.length - 1)];
         radius = Math.min(radius, maxRadius);
 
-        int diameterX = radius * 2;
-        int sliceWidth = Math.max(1, diameterX / botCount);
-        sectorMinX = center.getX() - radius + botIndex * sliceWidth;
-        sectorMaxX = (botIndex == botCount - 1)
-                ? center.getX() + radius
-                : sectorMinX + sliceWidth - 1;
-        sectorMinZ = center.getZ() - radius;
-        sectorMaxZ = center.getZ() + radius;
+        int minX = center.getX() - radius;
+        int maxX = center.getX() + radius;
+        int minZ = center.getZ() - radius;
+        int maxZ = center.getZ() + radius;
 
-        scanY = center.getY();
-        scanX = sectorMinX;
-        scanZ = sectorMinZ;
-        scanComplete = false;
-        scanTickBudget = 0;
+        // Build cell grid and assign round-robin
+        List<int[]> allCells = new ArrayList<>();
+        for (int cx = minX; cx <= maxX; cx += CELL_SIZE) {
+            for (int cz = minZ; cz <= maxZ; cz += CELL_SIZE) {
+                allCells.add(new int[]{cx, cz});
+            }
+        }
 
-        Vec3 sectorCenter = new Vec3(
-                (sectorMinX + sectorMaxX) / 2.0, center.getY(), (sectorMinZ + sectorMaxZ) / 2.0);
-        moveTarget = sectorCenter;
-        navTicks = 0;
+        myCells = new ArrayList<>();
+        for (int i = botIndex; i < allCells.size(); i += botCount) {
+            myCells.add(allCells.get(i));
+        }
 
-        progress.setPhase("pathing_to_sector");
+        cellIdx = 0;
         progress.logEvent("Shell " + (shellIndex + 1) + ": radius=" + radius
-                + " sector X=[" + sectorMinX + "," + sectorMaxX + "]");
-        phase = Phase.PATHING_TO_SECTOR;
+                + " total_cells=" + allCells.size() + " my_cells=" + myCells.size());
+
+        if (myCells.isEmpty()) {
+            phase = Phase.EXPANDING;
+            progress.setPhase("expanding");
+            return;
+        }
+
+        startNextCell();
+    }
+
+    private void startNextCell() {
+        if (cellIdx >= myCells.size()) {
+            phase = Phase.EXPANDING;
+            progress.setPhase("expanding");
+            return;
+        }
+
+        int[] cell = myCells.get(cellIdx);
+        cellOriginX = cell[0];
+        cellOriginZ = cell[1];
+        scanX = cellOriginX;
+        scanZ = cellOriginZ;
+        scanY = -9999;
+        cellScanDone = false;
+
+        moveTarget = new Vec3(cellOriginX + CELL_SIZE / 2.0, center.getY(), cellOriginZ + CELL_SIZE / 2.0);
+        navTicks = 0;
+        phase = Phase.PATHING_TO_CELL;
+        progress.setPhase("pathing_to_cell");
     }
 
     @Override
     public BehaviorResult tick(BotPlayer bot) {
         if (phase == Phase.DONE) {
-            if (foundPos != null) {
-                return BehaviorResult.SUCCESS;
-            }
+            if (foundPos != null) return BehaviorResult.SUCCESS;
             return progress.toMap().containsKey("failure_reason")
                     ? BehaviorResult.FAILED : BehaviorResult.SUCCESS;
         }
 
         return switch (phase) {
-            case PATHING_TO_SECTOR -> tickPathing(bot);
-            case SCANNING -> tickScanning(bot);
+            case PATHING_TO_CELL -> tickPathingToCell(bot);
+            case SCANNING_CELL -> tickScanningCell(bot);
             case FOUND_PATHING -> tickFoundPathing(bot);
             case EXPANDING -> tickExpanding(bot);
             default -> BehaviorResult.RUNNING;
         };
     }
 
-    private BehaviorResult tickPathing(BotPlayer bot) {
+    private BehaviorResult tickPathingToCell(BotPlayer bot) {
         ServerPlayer player = bot.getPlayer();
         Vec3 pos = player.position();
         double dist = pos.distanceTo(moveTarget);
         navTicks++;
 
-        if (dist < 8.0 || navTicks > NAV_TIMEOUT) {
-            phase = Phase.SCANNING;
-            progress.setPhase("scanning");
+        if (dist < 12.0 || navTicks > NAV_TIMEOUT) {
+            phase = Phase.SCANNING_CELL;
+            progress.setPhase("scanning_cell");
             return BehaviorResult.RUNNING;
         }
 
@@ -182,7 +213,7 @@ public class WideSearchBehavior implements Behavior {
         return false;
     }
 
-    private BehaviorResult tickScanning(BotPlayer bot) {
+    private BehaviorResult tickScanningCell(BotPlayer bot) {
         ServerPlayer player = bot.getPlayer();
         ServerLevel level = player.serverLevel();
 
@@ -190,26 +221,33 @@ public class WideSearchBehavior implements Behavior {
             return tickEntityScan(bot, player, level);
         }
 
-        int blocksThisTick = 0;
         int minY = level.getMinBuildHeight();
         int maxY = level.getMaxBuildHeight();
 
-        while (blocksThisTick < BLOCKS_PER_TICK && !scanComplete) {
+        if (scanY == -9999) {
+            scanX = cellOriginX;
+            scanZ = cellOriginZ;
+            scanY = minY;
+        }
+
+        int cellEndX = cellOriginX + CELL_SIZE;
+        int cellEndZ = cellOriginZ + CELL_SIZE;
+        int blocksThisTick = 0;
+
+        while (blocksThisTick < BLOCKS_PER_TICK && !cellScanDone) {
             BlockPos pos = new BlockPos(scanX, scanY, scanZ);
 
-            if (scanY >= minY && scanY <= maxY) {
-                if (!level.getBlockState(pos).isAir()) {
-                    String blockId = BuiltInRegistries.BLOCK.getKey(level.getBlockState(pos).getBlock()).toString();
+            if (!level.getBlockState(pos).isAir()) {
+                String blockId = BuiltInRegistries.BLOCK.getKey(level.getBlockState(pos).getBlock()).toString();
 
-                    if (isNotable(blockId)) {
-                        progress.recordBlock(pos.getX(), pos.getY(), pos.getZ(), blockId);
-                        progress.increment("notable_blocks");
-                    }
+                if (isNotable(blockId)) {
+                    progress.recordBlock(pos.getX(), pos.getY(), pos.getZ(), blockId);
+                    progress.increment("notable_blocks");
+                }
 
-                    if (fuzzyMatch(blockId, searchTarget)) {
-                        onFound(bot, pos, blockId);
-                        return BehaviorResult.RUNNING;
-                    }
+                if (fuzzyMatch(blockId, searchTarget)) {
+                    onFound(bot, pos, blockId);
+                    return BehaviorResult.RUNNING;
                 }
             }
 
@@ -217,22 +255,23 @@ public class WideSearchBehavior implements Behavior {
             progress.increment("blocks_scanned");
 
             scanY++;
-            if (scanY > Math.min(center.getY() + currentShellRadius(), maxY)) {
-                scanY = Math.max(center.getY() - currentShellRadius(), minY);
+            if (scanY > maxY) {
+                scanY = minY;
                 scanZ++;
-                if (scanZ > sectorMaxZ) {
-                    scanZ = sectorMinZ;
+                if (scanZ >= cellEndZ) {
+                    scanZ = cellOriginZ;
                     scanX++;
-                    if (scanX > sectorMaxX) {
-                        scanComplete = true;
+                    if (scanX >= cellEndX) {
+                        cellScanDone = true;
                     }
                 }
             }
         }
 
-        if (scanComplete) {
-            phase = Phase.EXPANDING;
-            progress.setPhase("expanding");
+        if (cellScanDone) {
+            cellIdx++;
+            progress.increment("cells_completed");
+            startNextCell();
         }
 
         return BehaviorResult.RUNNING;
@@ -241,8 +280,8 @@ public class WideSearchBehavior implements Behavior {
     private BehaviorResult tickEntityScan(BotPlayer bot, ServerPlayer player, ServerLevel level) {
         double r = currentShellRadius();
         AABB searchBox = new AABB(
-                sectorMinX, center.getY() - r, sectorMinZ,
-                sectorMaxX + 1, center.getY() + r, sectorMaxZ + 1);
+                cellOriginX, center.getY() - r, cellOriginZ,
+                cellOriginX + CELL_SIZE, center.getY() + r, cellOriginZ + CELL_SIZE);
 
         for (Entity entity : level.getEntities(player, searchBox)) {
             if (!(entity instanceof LivingEntity le)) continue;
@@ -260,8 +299,9 @@ public class WideSearchBehavior implements Behavior {
         }
 
         progress.increment("entity_scans");
-        phase = Phase.EXPANDING;
-        progress.setPhase("expanding");
+        cellIdx++;
+        progress.increment("cells_completed");
+        startNextCell();
         return BehaviorResult.RUNNING;
     }
 
@@ -311,7 +351,7 @@ public class WideSearchBehavior implements Behavior {
         }
 
         progress.logEvent("Expanding to shell " + (shellIndex + 1) + " radius=" + nextRadius);
-        computeSectorAndBegin();
+        beginShell();
         return BehaviorResult.RUNNING;
     }
 
@@ -330,17 +370,14 @@ public class WideSearchBehavior implements Behavior {
 
         if (cStripped.equals(qStripped) || cStripped.contains(qStripped)) return true;
 
-        // Ore variant matching: "iron" matches "deepslate_iron_ore"
         if (qStripped.endsWith("_ore")) {
             String oreBase = qStripped.substring(0, qStripped.length() - 4);
             if (cStripped.contains(oreBase) && cStripped.contains("ore")) return true;
         }
 
-        // Word-level fuzzy: "cow" matches "mooshroom_cow", "diamond sword" matches "diamond_sword"
         String qNorm = qStripped.replace(' ', '_');
         if (cStripped.contains(qNorm)) return true;
 
-        // Levenshtein on stripped names for typo tolerance
         if (qStripped.length() >= 4 && levenshtein(cStripped, qStripped) <= Math.max(1, qStripped.length() / 4))
             return true;
 
@@ -417,8 +454,11 @@ public class WideSearchBehavior implements Behavior {
     public String describeState() {
         String base = "Wide search for " + searchTarget;
         return switch (phase) {
-            case PATHING_TO_SECTOR -> base + " — moving to sector [bot " + (botIndex + 1) + "/" + botCount + "]";
-            case SCANNING -> base + " — scanning shell " + (shellIndex + 1) + " (radius " + currentShellRadius() + ")";
+            case PATHING_TO_CELL -> base + " — moving to cell " + (cellIdx + 1)
+                    + "/" + (myCells != null ? myCells.size() : "?")
+                    + " [bot " + (botIndex + 1) + "/" + botCount + "]";
+            case SCANNING_CELL -> base + " — scanning cell " + (cellIdx + 1)
+                    + " (shell " + (shellIndex + 1) + ", radius " + currentShellRadius() + ")";
             case FOUND_PATHING -> base + " — found " + foundId + ", moving to it";
             case EXPANDING -> base + " — expanding search";
             case DONE -> foundPos != null
