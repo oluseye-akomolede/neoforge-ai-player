@@ -166,6 +166,7 @@ def validate_primitive(primitive):
     # Types that don't use standard item targets — pass through with basic checks
     _PASSTHROUGH_TYPES = {
         "SEND_ITEM", "BUILD", "FARM", "CONTAINER_PLACE", "CONTAINER_SEARCH",
+        "CONTAINER_STORE", "CONTAINER_WITHDRAW",
         "CHANNEL", "COMBAT", "FOLLOW", "ENCHANT", "BREW",
     }
     if ptype in _PASSTHROUGH_TYPES:

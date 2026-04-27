@@ -25,6 +25,8 @@ EMBED_MODEL = "nomic-embed-text"
 CACHE_MAX = 200
 SIMILARITY_THRESHOLD = 0.85
 RECALL_LIMIT = 10
+DECAY_RATE = 0.995
+SECONDS_PER_DAY = 86400.0
 
 
 class SemanticMemory:
@@ -32,7 +34,7 @@ class SemanticMemory:
         self.bot_name = bot_name
         self.ollama_url = ollama_url
         self.pg_dsn = pg_dsn
-        self._cache = []  # list of (id, content, category, embedding, metadata)
+        self._cache = []  # list of (id, content, category, embedding, metadata, last_accessed)
         self._lock = threading.Lock()
         self._conn = None
 
@@ -49,7 +51,7 @@ class SemanticMemory:
         """Load most recently accessed memories into L1 cache."""
         with self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
-                SELECT id, content, category, embedding, metadata
+                SELECT id, content, category, embedding, metadata, last_accessed
                 FROM memories
                 WHERE bot_name = %s
                 ORDER BY last_accessed DESC
@@ -61,8 +63,10 @@ class SemanticMemory:
                 for row in rows:
                     emb = _pg_vector_to_numpy(row["embedding"]) if row["embedding"] else None
                     meta = row["metadata"] if isinstance(row["metadata"], dict) else {}
+                    la = row["last_accessed"]
+                    ts = la.timestamp() if la else time.time()
                     self._cache.append((
-                        row["id"], row["content"], row["category"], emb, meta
+                        row["id"], row["content"], row["category"], emb, meta, ts
                     ))
 
     def _embed(self, text):
@@ -87,7 +91,7 @@ class SemanticMemory:
 
         # Check for duplicate in cache first
         with self._lock:
-            for mid, mcontent, mcat, memb, mmeta in self._cache:
+            for mid, mcontent, mcat, memb, mmeta, _mla in self._cache:
                 if memb is not None:
                     sim = _cosine_sim(embedding, memb)
                     if sim > SIMILARITY_THRESHOLD:
@@ -120,7 +124,7 @@ class SemanticMemory:
 
         # Add to L1 cache
         with self._lock:
-            self._cache.insert(0, (new_id, content.strip(), category, embedding, metadata or {}))
+            self._cache.insert(0, (new_id, content.strip(), category, embedding, metadata or {}, time.time()))
             if len(self._cache) > CACHE_MAX:
                 self._cache.pop()
 
@@ -134,17 +138,20 @@ class SemanticMemory:
         limit = limit or RECALL_LIMIT
         query_emb = self._embed(query)
 
-        # L1: check cache first
+        # L1: check cache first (with time-weighted decay)
         results = []
+        now = time.time()
         with self._lock:
-            for mid, content, cat, emb, meta in self._cache:
+            for mid, content, cat, emb, meta, last_acc in self._cache:
                 if category and cat != category:
                     continue
                 if emb is not None:
                     sim = _cosine_sim(query_emb, emb)
+                    days_ago = (now - last_acc) / SECONDS_PER_DAY
+                    decay = DECAY_RATE ** days_ago
                     results.append({
                         "id": mid, "content": content, "category": cat,
-                        "similarity": float(sim), "metadata": meta, "source": "cache",
+                        "similarity": float(sim * decay), "metadata": meta, "source": "cache",
                     })
 
         results.sort(key=lambda x: x["similarity"], reverse=True)
@@ -156,28 +163,29 @@ class SemanticMemory:
                 self._update_access(r["id"])
             return cache_results
 
-        # L2: query pgvector
+        # L2: query pgvector (fetch more than needed, decay reranks)
+        db_fetch_limit = limit * 3
         with self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             if category:
                 cur.execute("""
-                    SELECT id, content, category, metadata,
+                    SELECT id, content, category, metadata, last_accessed,
                            1 - (embedding <=> %s::vector) as similarity
                     FROM memories
                     WHERE bot_name = %s AND category = %s AND embedding IS NOT NULL
                     ORDER BY embedding <=> %s::vector
                     LIMIT %s
                 """, (_numpy_to_pg(query_emb), self.bot_name, category,
-                      _numpy_to_pg(query_emb), limit))
+                      _numpy_to_pg(query_emb), db_fetch_limit))
             else:
                 cur.execute("""
-                    SELECT id, content, category, metadata,
+                    SELECT id, content, category, metadata, last_accessed,
                            1 - (embedding <=> %s::vector) as similarity
                     FROM memories
                     WHERE bot_name = %s AND embedding IS NOT NULL
                     ORDER BY embedding <=> %s::vector
                     LIMIT %s
                 """, (_numpy_to_pg(query_emb), self.bot_name,
-                      _numpy_to_pg(query_emb), limit))
+                      _numpy_to_pg(query_emb), db_fetch_limit))
 
             db_rows = cur.fetchall()
 
@@ -192,9 +200,13 @@ class SemanticMemory:
             if row["id"] not in seen_ids:
                 seen_ids.add(row["id"])
                 meta = row["metadata"] if isinstance(row["metadata"], dict) else {}
+                la = row.get("last_accessed")
+                la_ts = la.timestamp() if la else now
+                days_ago = (now - la_ts) / SECONDS_PER_DAY
+                decay = DECAY_RATE ** days_ago
                 merged.append({
                     "id": row["id"], "content": row["content"],
-                    "category": row["category"], "similarity": float(row["similarity"]),
+                    "category": row["category"], "similarity": float(row["similarity"] * decay),
                     "metadata": meta, "source": "db",
                 })
 
@@ -224,11 +236,7 @@ class SemanticMemory:
             cur.execute("DELETE FROM memories WHERE id = %s AND bot_name = %s",
                         (memory_id, self.bot_name))
         with self._lock:
-            self._cache = [
-                (mid, c, cat, emb, meta)
-                for mid, c, cat, emb, meta in self._cache
-                if mid != memory_id
-            ]
+            self._cache = [e for e in self._cache if e[0] != memory_id]
 
     # ── Shared memory (cross-bot) ──
 
@@ -264,36 +272,43 @@ class SemanticMemory:
     def recall_shared(self, query, category=None, limit=6):
         """Recall memories from the shared pool."""
         query_emb = self._embed(query)
+        db_fetch_limit = limit * 3
         with self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             if category:
                 cur.execute("""
-                    SELECT id, content, category, metadata,
+                    SELECT id, content, category, metadata, last_accessed,
                            1 - (embedding <=> %s::vector) as similarity
                     FROM memories
                     WHERE bot_name = 'shared' AND category = %s AND embedding IS NOT NULL
                     ORDER BY embedding <=> %s::vector
                     LIMIT %s
-                """, (_numpy_to_pg(query_emb), category, _numpy_to_pg(query_emb), limit))
+                """, (_numpy_to_pg(query_emb), category, _numpy_to_pg(query_emb), db_fetch_limit))
             else:
                 cur.execute("""
-                    SELECT id, content, category, metadata,
+                    SELECT id, content, category, metadata, last_accessed,
                            1 - (embedding <=> %s::vector) as similarity
                     FROM memories
                     WHERE bot_name = 'shared' AND embedding IS NOT NULL
                     ORDER BY embedding <=> %s::vector
                     LIMIT %s
-                """, (_numpy_to_pg(query_emb), _numpy_to_pg(query_emb), limit))
+                """, (_numpy_to_pg(query_emb), _numpy_to_pg(query_emb), db_fetch_limit))
             rows = cur.fetchall()
 
+        now = time.time()
         results = []
         for row in rows:
             meta = row["metadata"] if isinstance(row["metadata"], dict) else {}
+            la = row.get("last_accessed")
+            la_ts = la.timestamp() if la else now
+            days_ago = (now - la_ts) / SECONDS_PER_DAY
+            decay = DECAY_RATE ** days_ago
             results.append({
                 "id": row["id"], "content": row["content"],
-                "category": row["category"], "similarity": float(row["similarity"]),
+                "category": row["category"], "similarity": float(row["similarity"] * decay),
                 "metadata": meta, "source": "shared",
             })
-        return results
+        results.sort(key=lambda x: x["similarity"], reverse=True)
+        return results[:limit]
 
     def recall_all_for_prompt(self, query, limit=8):
         """Recall from BOTH personal and shared memory, merged and ranked."""
@@ -325,16 +340,26 @@ class SemanticMemory:
             self._cache = [e for e in self._cache if e[0] != memory_id]
 
     def list_by_category(self, category, limit=20):
-        """List memories in a category."""
+        """List memories in a category with decay scores."""
         with self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
-                SELECT id, content, category, metadata, created_at
+                SELECT id, content, category, metadata, created_at,
+                       last_accessed, access_count
                 FROM memories
                 WHERE bot_name = %s AND category = %s
                 ORDER BY last_accessed DESC
                 LIMIT %s
             """, (self.bot_name, category, limit))
-            return [dict(row) for row in cur.fetchall()]
+            now = time.time()
+            rows = []
+            for row in cur.fetchall():
+                d = dict(row)
+                la = d.get("last_accessed")
+                la_ts = la.timestamp() if la else now
+                days_ago = (now - la_ts) / SECONDS_PER_DAY
+                d["decay_score"] = round(DECAY_RATE ** days_ago, 3)
+                rows.append(d)
+            return rows
 
     def stats(self):
         """Return memory stats for this bot."""
@@ -371,7 +396,7 @@ class SemanticMemory:
             emb = self._embed(result["content"])
             self._cache.insert(0, (
                 result["id"], result["content"], result["category"],
-                emb, result.get("metadata", {})
+                emb, result.get("metadata", {}), time.time()
             ))
             if len(self._cache) > CACHE_MAX:
                 self._cache.pop()

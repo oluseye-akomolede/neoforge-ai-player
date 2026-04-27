@@ -24,11 +24,15 @@ import container_db
 import openai_brain
 import waypoints
 import mc_items
+import terrain_db
 from config import (
     TICK_DELAY, BUSY_POLL_DELAY,
     OBSERVE_ENTITY_RADIUS, OBSERVE_BLOCK_RADIUS,
     MAX_CHAT_HISTORY, MAX_CONVERSATION, OLLAMA_URL, PG_DSN,
+    DASHBOARD_ENABLED, DASHBOARD_PORT,
 )
+from dashboard import start_dashboard
+from dashboard.state import shared_state
 
 # Chat command patterns (regex, processed before planner)
 _CMD_REMEMBER = re.compile(
@@ -44,10 +48,14 @@ _CMD_FORGET = re.compile(
 # Shared state across all bot runners (set in run())
 _task_board = None
 _transmute = None  # TransmuteDB instance
+_transmute_tags = {}  # normalized_alias -> registry_id (built at startup)
 _container_db = None  # ContainerDB instance
 _all_runners = {}  # name -> BotRunner
+_terrain = None  # TerrainDB instance
 _orchestration_lock = threading.Lock()
 _orchestrated_messages = {}  # message_text -> coordinator bot name
+_ALL_BOTS_RE = re.compile(r"\b(all\s+bots?|every\s*one|every\s+bot|everybody)\b", re.IGNORECASE)
+_COUNT_IN_STEP_RE = re.compile(r"(\d+)\s*x\s+|\((\d+)\)|\s(\d+)$")
 
 CHAT_POLL_INTERVAL = 0.25
 
@@ -75,9 +83,14 @@ class BotRunner:
         self._plan_step_idx = 0
         self._plan_instruction = ""
         self._l1_failed_steps = set()
+        self._l3_retries = 0
+        self._l4_escalations = 0
+        self._last_failure_context = ""
         self._awaiting_taskboard = False
         self._current_task_id = None
+        self._following_player = None
         self._cached_inventory = []  # updated on each observe tick
+        self._terrain_tick = 0
         self._lock = threading.Lock()
         self._memory_file = os.path.join(
             os.path.dirname(__file__), f"memory_{self.name.lower()}.json"
@@ -290,6 +303,7 @@ class BotRunner:
                 self._plan_step_idx = 0
                 self._plan_instruction = ""
                 self._l1_failed_steps = set()
+                self._following_player = None
                 if self._current_task_id and _task_board:
                     try:
                         _task_board.release(self._current_task_id)
@@ -310,6 +324,9 @@ class BotRunner:
                     tb_task_id = int(task_id_str)
                     if _task_board:
                         task_data = _task_board.get(tb_task_id)
+                        if task_data and task_data.get("status") in ("done", "in_progress", "failed"):
+                            self._consume_message(msg)
+                            continue
                         _task_board.start(tb_task_id)
                         self._current_task_id = tb_task_id
                         if task_data and task_data.get("plan_steps"):
@@ -343,15 +360,14 @@ class BotRunner:
             if is_follow or is_goto or is_stop:
                 api.stop(self.name)
                 self._consume_message(msg)
-                if is_follow:
-                    api.follow(self.name, sender, 3.0, 64.0)
-                    api.chat(self.name, f"Following you, {sender}!")
-                    print(f"[{self.name}/nav] Direct follow {sender} (shortcut)")
-                elif is_goto:
-                    self._goto_player({"target": sender})
-                    api.chat(self.name, f"On my way!")
-                    print(f"[{self.name}/nav] Direct goto_player {sender} (shortcut)")
+                if is_follow or is_goto:
+                    api.set_directive(self.name, "FOLLOW", target=sender,
+                                     extra={"distance": "3.0"})
+                    self._following_player = sender
+                    api.chat(self.name, f"On my way, {sender}!")
+                    print(f"[{self.name}/nav] FOLLOW directive for {sender} (shortcut)")
                 else:
+                    self._following_player = None
                     api.chat(self.name, f"Standing by.")
                     print(f"[{self.name}/nav] Direct stop (shortcut)")
                 return
@@ -413,14 +429,64 @@ class BotRunner:
 
                 print(f"[{self.name}/orchestrator] Coordinating: {text[:80]}")
                 api.system_chat(self.name, f"Orchestrating: {text[:60]}...", "gold")
+                shared_state.push_event({"bot": self.name, "type": "orchestrate", "message": text[:120]})
                 profiles = [r.profile for r in _all_runners.values()]
                 tc = _transmute.get_context_string() if _transmute else ""
                 inv_context = self._gather_all_inventories()
-                orch_steps = planner.orchestrate(self.model, text, profiles, memory_context, tc, inv_context)
+                orch_steps = planner.orchestrate(self.model, text, profiles, memory_context, tc, inv_context, sender=sender)
 
                 # If the user addressed this bot by name, keep all "any" steps
                 text_lower = text.lower()
                 user_addressed_me = self.name.lower() in text_lower
+
+                # "All bots" enforcement: if the user wants every bot to do the SAME task,
+                # ensure every bot gets a step with evenly-split counts.
+                # Skip if the LLM already assigned diverse roles to many bots (role-based instruction).
+                all_bot_names = list(_all_runners.keys())
+                num_bots = len(all_bot_names)
+                specific_assigns = {s.get("assign") for s in orch_steps if s.get("assign", "any") != "any" and s.get("assign") in _all_runners}
+                unique_steps = {re.sub(r'\d+', '', s.get("step", "")).strip().lower() for s in orch_steps}
+                is_role_based = len(specific_assigns) >= 3 and len(unique_steps) >= 3
+                if _ALL_BOTS_RE.search(text) and num_bots > 1 and not is_role_based:
+
+                    # Extract total count from the user instruction (e.g. "50" from "channel 50 ...")
+                    instr_count_match = re.search(r"\b(\d+)\s*x?\s+", text)
+                    total_from_instruction = int(instr_count_match.group(1)) if instr_count_match else None
+
+                    # Use a template step from the LLM output
+                    template_step = orch_steps[0] if orch_steps else {"step": text, "specialization": "any"}
+                    step_text = template_step["step"]
+
+                    # Calculate per-bot share
+                    per_bot = total_from_instruction // num_bots if total_from_instruction else None
+                    remainder = total_from_instruction % num_bots if total_from_instruction else 0
+
+                    # Inject count into step text — find where to put "Nx " or replace existing count
+                    def _inject_count(step, count):
+                        if count is None:
+                            return step
+                        existing = _COUNT_IN_STEP_RE.search(step)
+                        if existing:
+                            g = existing.group(1) or existing.group(2) or existing.group(3)
+                            return step[:existing.start()] + step[existing.start():existing.end()].replace(g, str(count), 1) + step[existing.end():]
+                        # No count in step — insert "Nx " after the action verb
+                        verb_match = re.match(r"(\w+\s+)", step)
+                        if verb_match:
+                            return step[:verb_match.end()] + f"{count}x " + step[verb_match.end():]
+                        return f"{count}x {step}"
+
+                    new_steps = []
+                    for i, bot_name in enumerate(all_bot_names):
+                        bot_count = per_bot + (1 if i < remainder else 0) if per_bot else None
+                        new_steps.append({
+                            "step": _inject_count(step_text, bot_count),
+                            "assign": bot_name,
+                            "specialization": template_step.get("specialization", "any"),
+                        })
+                    orch_steps = new_steps
+                    print(f"[{self.name}/orchestrator] All-bots redistribution: {num_bots} bots, {per_bot}/ea" +
+                          (f" (+1 for first {remainder})" if remainder else "") +
+                          f": {[(s['assign'], s['step'][:50]) for s in orch_steps]}")
 
                 my_steps = []
                 # Group steps by assigned bot for batch delegation
@@ -458,6 +524,7 @@ class BotRunner:
                     delegated.append((assigned, summary))
                     step_list = ", ".join(s[:40] for s in step_descs)
                     print(f"[{self.name}/orchestrator] Delegated to {assigned} (task #{task_id}, {len(step_descs)} steps): {step_list}")
+                    shared_state.push_event({"bot": self.name, "type": "delegated", "to": assigned, "task_id": task_id, "steps": step_descs[:5]})
 
                 # Broadcast orchestration summary to chat
                 for assigned, desc in delegated:
@@ -466,6 +533,7 @@ class BotRunner:
                     self._plan_steps = my_steps
                     self._plan_step_idx = 0
                     self._plan_instruction = text
+                    self._l4_escalations = 0
                     self.conversation_history.clear()
                     step_list = "\n".join(f"  {i+1}. {s}" for i, s in enumerate(my_steps))
                     print(f"[{self.name}/orchestrator] My steps ({len(my_steps)}):\n{step_list}")
@@ -480,13 +548,15 @@ class BotRunner:
                     print(f"[{self.name}/planner] Using {memory_context.count(chr(10))+1} memories as context")
                 tc = _transmute.get_context_string() if _transmute else ""
                 inv_context = self._get_my_inventory_summary()
-                steps = planner.decompose(self.model, text, memory_context, tc, inv_context)
+                steps = planner.decompose(self.model, text, memory_context, tc, inv_context, sender=sender)
                 self._plan_steps = steps
                 self._plan_step_idx = 0
                 self._plan_instruction = text
+                self._l4_escalations = 0
                 self.conversation_history.clear()
                 step_list = "\n".join(f"  {i+1}. {s}" for i, s in enumerate(steps))
                 print(f"[{self.name}/planner] Plan ({len(steps)} steps):\n{step_list}")
+                shared_state.push_event({"bot": self.name, "type": "plan_created", "instruction": text[:100], "steps": [s[:80] for s in steps]})
                 self._consume_message(msg)
             return
 
@@ -540,6 +610,7 @@ class BotRunner:
                     api.system_chat(self.name, f"Plan complete! ({len(self._plan_steps)} steps done)", "green")
                 except Exception:
                     pass
+                shared_state.push_event({"bot": self.name, "type": "plan_complete", "steps": len(self._plan_steps)})
                 self._store_plan_outcome(success=True)
                 if self._current_task_id:
                     self._complete_task_board_task()
@@ -554,6 +625,7 @@ class BotRunner:
             else:
                 new_step = self._plan_steps[self._plan_step_idx]
                 print(f"[{self.name}/planner] Step done: \"{old_step}\" -> now: \"{new_step}\" ({self._plan_step_idx+1}/{len(self._plan_steps)})")
+                shared_state.push_event({"bot": self.name, "type": "step_done", "completed": old_step[:80], "next": new_step[:80], "progress": f"{self._plan_step_idx}/{len(self._plan_steps)}"})
                 try:
                     api.system_chat(self.name, f"Step {self._plan_step_idx}/{len(self._plan_steps)}: {new_step[:50]}", "dark_aqua")
                 except Exception:
@@ -587,7 +659,7 @@ class BotRunner:
 
     def _check_task_board(self):
         """If idle (no plan), check the shared task board for pending tasks."""
-        if self._plan_steps or not _task_board:
+        if self._plan_steps or not _task_board or self._following_player:
             return
         try:
             task = _task_board.claim(self.name, self.specializations + ["any"])
@@ -597,6 +669,7 @@ class BotRunner:
                 desc = task["description"]
                 _task_board.start(task["id"])
                 print(f"[{self.name}/taskboard] Claimed task #{task['id']}: {desc[:60]}")
+                shared_state.push_event({"bot": self.name, "type": "task_claimed", "task_id": task["id"], "description": desc[:80]})
                 try:
                     api.system_chat(self.name, f"Claimed task: {desc[:50]}", "yellow")
                 except Exception:
@@ -606,6 +679,7 @@ class BotRunner:
                     self._plan_steps = task["plan_steps"]
                     self._plan_step_idx = 0
                     self._plan_instruction = desc
+                    self._l4_escalations = 0
                     self.conversation_history.clear()
                     step_list = "\n".join(f"  {i+1}. {s}" for i, s in enumerate(self._plan_steps))
                     print(f"[{self.name}/taskboard] Pre-planned ({len(self._plan_steps)} steps):\n{step_list}")
@@ -623,6 +697,7 @@ class BotRunner:
                     self._plan_steps = steps
                     self._plan_step_idx = 0
                     self._plan_instruction = desc
+                    self._l4_escalations = 0
                     self.conversation_history.clear()
                     step_list = "\n".join(f"  {i+1}. {s}" for i, s in enumerate(steps))
                     print(f"[{self.name}/planner] Plan ({len(steps)} steps):\n{step_list}")
@@ -688,21 +763,35 @@ class BotRunner:
 
     _MINE_PATTERNS = re.compile(
         r"(?:find\s+(?:and\s+)?)?mine\s+(?:(?:nearby|some|more)\s+)?"
-        r"(?:minecraft:)?(\S+?)(?:\s+(?:\(.*?(\d+).*?\)|x\s*(\d+)|at\s+least\s+(\d+)))?(?:\s+\(.*\))?$",
+        r"(?:(\d+)x?\s+)?(?:minecraft:)?(\S+?)(?:\s+(?:\(.*?(\d+).*?\)|x\s*(\d+)|at\s+least\s+(\d+)))?(?:\s+\(.*\))?$",
         re.IGNORECASE,
     )
     _CRAFT_PATTERNS = re.compile(
-        r"craft\s+(?:(?:and\s+\w+\s+)?)?(?:minecraft:)?(\S+?)(?:\s+x\s*(\d+))?$",
+        r"craft\s+(?:(?:and\s+\w+\s+)?)?(?:(\d+)x?\s+)?(?:minecraft:)?(\S+?)(?:\s+x\s*(\d+)|\s*\((\d+)\))?\s*$",
         re.IGNORECASE,
     )
     _SMELT_PATTERNS = re.compile(
-        r"smelt\s+(?:minecraft:)?(\S+?)(?:\s+(?:into|to)\s+.+)?(?:\s+x\s*(\d+))?$",
+        r"smelt\s+(?:(\d+)x?\s+)?(?:minecraft:)?(\S+?)(?:\s+(?:into|to)\s+.+)?(?:\s+x\s*(\d+)|\s*\((\d+)\))?\s*$",
         re.IGNORECASE,
     )
     _GOTO_PATTERNS = re.compile(
         r"(?:go\s+to|goto|travel\s+to|walk\s+to|navigate\s+to)\s+(.+)",
         re.IGNORECASE,
     )
+    _TELEPORT_PATTERNS = re.compile(
+        r"(?:teleport|tp|warp|dimension.?travel)\s+(?:to\s+)?(?:(?:the\s+)?(nether|end|overworld)|(\S+?))\s*"
+        r"(?:(?:at\s+)?(-?\d+)[,\s]+(-?\d+)[,\s]+(-?\d+))?",
+        re.IGNORECASE,
+    )
+    _DIMENSION_ALIASES = {
+        "nether": "minecraft:the_nether",
+        "the_nether": "minecraft:the_nether",
+        "the nether": "minecraft:the_nether",
+        "end": "minecraft:the_end",
+        "the_end": "minecraft:the_end",
+        "the end": "minecraft:the_end",
+        "overworld": "minecraft:overworld",
+    }
     _ENCHANT_PATTERNS = re.compile(
         r"enchant\s+(?:(?:the|my|a)\s+)?(?:minecraft:)?(\S+?)(?:\s+(?:with|using|at|option)\s+.*)?$",
         re.IGNORECASE,
@@ -713,7 +802,7 @@ class BotRunner:
         re.IGNORECASE,
     )
     _CHANNEL_PATTERNS = re.compile(
-        r"(?:channel|conjure|summon|transmute)\s+(?:(\d+)x?\s+)?(\S+?)(?:\s+x\s*(\d+))?\s*$",
+        r"(?:channel|conjure|summon|transmute)\s+(?:(\d+)x?\s+)?(.+?)(?:\s+x\s*(\d+)|\s*\((\d+)\))?\s*$",
         re.IGNORECASE,
     )
     _SEND_ITEM_PATTERNS = re.compile(
@@ -739,43 +828,131 @@ class BotRunner:
         re.IGNORECASE,
     )
     _CONTAINER_SEARCH_PATTERNS = re.compile(
-        r"(?:search|check|inspect|look\s+(?:in|through)|scan)\s+(?:(?:the\s+)?containers?|chests?|storage)",
+        r"(?:search|check|inspect|look\s+(?:in|through)|scan)\s+(?:(?:the\s+)?containers?|chests?|storage)|CONTAINER_SEARCH\s+\S+",
+        re.IGNORECASE,
+    )
+    _CONTAINER_STORE_PATTERNS = re.compile(
+        r"(?:store|deposit|stash|put)\s+(?:(\d+)x?\s+)?(?:minecraft:)?(\S+)\s+(?:in|into)\s+(?:a\s+)?(?:container|chest|storage)|CONTAINER_STORE\s+(?:(\d+)x?\s+)?(?:minecraft:)?(\S+)",
+        re.IGNORECASE,
+    )
+    _CONTAINER_WITHDRAW_PATTERNS = re.compile(
+        r"(?:withdraw|retrieve|take|grab|get)\s+(?:(\d+)x?\s+)?(?:minecraft:)?(\S+?)\s+(?:from\s+)?(?:container|chest|storage)|CONTAINER_WITHDRAW\s+(?:(\d+)x?\s+)?(?:minecraft:)?(\S+)",
         re.IGNORECASE,
     )
 
     DIRECTIVE_POLL_INTERVAL = 2.0
 
+    @staticmethod
+    def _resolve_transmute_target(raw):
+        """Resolve a natural-language item name to a transmute registry ID.
+        Uses the tag index (display names + generated aliases) for fuzzy matching."""
+        if not _transmute:
+            return None
+        if _transmute.is_known(raw):
+            return raw
+        normalized = raw.lower().replace(" ", "_").rstrip("s")
+        if _transmute_tags:
+            if normalized in _transmute_tags:
+                return _transmute_tags[normalized]
+            raw_lower = raw.lower().replace(" ", "_")
+            if raw_lower in _transmute_tags:
+                return _transmute_tags[raw_lower]
+            raw_nospace = raw.lower()
+            if raw_nospace in _transmute_tags:
+                return _transmute_tags[raw_nospace]
+        all_items = _transmute.get_all()
+        for prefix in ("create:", "minecraft:", "mekanism:", "thermal:", "ae2:"):
+            candidate = prefix + normalized
+            if candidate in all_items:
+                return candidate
+        for key in all_items:
+            bare = key.split(":", 1)[-1] if ":" in key else key
+            if bare == normalized or bare == raw.lower().replace(" ", "_"):
+                return key
+        return None
+
+    _FILLER_WORDS = re.compile(
+        r"\b(harvested|mined|smelted|gathered|collected|obtained|crafted|some|the|a)\s+",
+        re.IGNORECASE,
+    )
+    _TRAILING_COUNT = re.compile(r"(\S)\s+(\d+)\s*$")
+    _CRAFT_AND_PLACE_SUFFIX = re.compile(
+        r"(craft\s+)(?:(?:and\s+\w+\s+)?)((?:minecraft:)?\S+)\s+and\s+place\s+(?:it)?",
+        re.IGNORECASE,
+    )
+
+    def _normalize_step_text(self, text):
+        """Normalize planner output into a format L1 regexes can parse."""
+        # "Craft minecraft:furnace and place it" → "Craft and place minecraft:furnace"
+        m = self._CRAFT_AND_PLACE_SUFFIX.search(text)
+        if m:
+            text = f"{m.group(1)}and place {m.group(2)}"
+
+        # Strip filler adjectives: "harvested wheat" → "wheat"
+        text = self._FILLER_WORDS.sub("", text)
+
+        # Normalize multi-word item names to underscores using known items
+        words = text.split()
+        i = 0
+        while i < len(words) - 1:
+            pair = f"{words[i]} {words[i+1]}".lower()
+            underscore = pair.replace(" ", "_")
+            is_known = (
+                underscore in mc_items.ALL_VALID_ITEMS
+                or (_transmute_tags and pair in _transmute_tags)
+                or (_transmute_tags and underscore in _transmute_tags)
+            )
+            if is_known:
+                words[i] = words[i] + "_" + words[i+1]
+                words.pop(i + 1)
+            else:
+                i += 1
+        text = " ".join(words)
+
+        # Trailing bare count: "Channel item 10" → "Channel item (10)"
+        m = self._TRAILING_COUNT.search(text)
+        if m and m.group(1) not in ("x", ")"):
+            text = text[:m.end(1)] + " (" + m.group(2) + ")"
+
+        return text.strip()
+
     def _classify_step(self, step_text):
         """Try to map a plan step to an L1 directive dict. Returns None if LLM path needed."""
-        text = step_text.strip()
+        text = self._normalize_step_text(step_text.strip())
 
         # Mine
         m = self._MINE_PATTERNS.search(text)
         if m:
-            target = m.group(1).rstrip(",.")
-            count = None
-            for g in (m.group(2), m.group(3), m.group(4)):
+            count_pre = int(m.group(1)) if m.group(1) else None
+            target = m.group(2).rstrip(",.")
+            count_post = None
+            for g in (m.group(3), m.group(4), m.group(5)):
                 if g:
-                    count = int(g)
+                    count_post = int(g)
                     break
-            return {"type": "MINE", "target": target, "count": count or 10, "radius": 128}
+            count = count_pre or count_post or 10
+            return {"type": "MINE", "target": target, "count": count, "radius": 128}
 
         # Craft (including "craft and place")
         m = self._CRAFT_PATTERNS.search(text)
         if m:
-            target = m.group(1).rstrip(",.")
+            count_pre = int(m.group(1)) if m.group(1) else None
+            target = m.group(2).rstrip(",.")
             if not target.startswith("minecraft:"):
                 target = "minecraft:" + target
-            count = int(m.group(2)) if m.group(2) else 1
+            count_post = int(m.group(3)) if m.group(3) else (int(m.group(4)) if m.group(4) else None)
+            count = count_pre or count_post or 1
             return {"type": "CRAFT", "target": target, "count": count}
 
         # Smelt
         m = self._SMELT_PATTERNS.search(text)
         if m:
-            target = m.group(1).rstrip(",.")
+            count_pre = int(m.group(1)) if m.group(1) else None
+            target = m.group(2).rstrip(",.")
             if not target.startswith("minecraft:"):
                 target = "minecraft:" + target
-            count = int(m.group(2)) if m.group(2) else 1
+            count_post = int(m.group(3)) if m.group(3) else (int(m.group(4)) if m.group(4) else None)
+            count = count_pre or count_post or 1
             return {"type": "SMELT", "target": target, "count": count}
 
         # Enchant
@@ -808,10 +985,11 @@ class BotRunner:
         m = self._CHANNEL_PATTERNS.search(text)
         if m:
             count_pre = int(m.group(1)) if m.group(1) else None
-            target = m.group(2).rstrip(",.")
-            count_post = int(m.group(3)) if m.group(3) else None
+            raw_target = m.group(2).rstrip(",. ")
+            count_post = int(m.group(3)) if m.group(3) else (int(m.group(4)) if m.group(4) else None)
             count = count_pre or count_post or 1
-            if _transmute and _transmute.is_known(target):
+            target = self._resolve_transmute_target(raw_target)
+            if target:
                 return {"type": "CHANNEL", "target": target, "count": count}
 
         # Send item to another bot (natural language: "send 10 iron_ingot to Forge")
@@ -875,8 +1053,9 @@ class BotRunner:
         # Container search
         m = self._CONTAINER_SEARCH_PATTERNS.search(text)
         if m:
-            # Check if searching for a specific item
             item_match = re.search(r"(?:for|find)\s+(?:(\d+)x?\s+)?(?:minecraft:)?(\S+)", text, re.IGNORECASE)
+            if not item_match:
+                item_match = re.search(r"CONTAINER_SEARCH\s+(?:(\d+)x?\s+)?(?:minecraft:)?(\S+)", text, re.IGNORECASE)
             params = {"type": "CONTAINER_SEARCH", "count": 5}
             if item_match:
                 item = item_match.group(2).rstrip(",.")
@@ -884,6 +1063,30 @@ class BotRunner:
                     item = "minecraft:" + item
                 params["target"] = item
             return params
+
+        # Container store
+        m = self._CONTAINER_STORE_PATTERNS.search(text)
+        if m:
+            count_str = m.group(1) or m.group(3)
+            item_str = m.group(2) or m.group(4)
+            if item_str:
+                item_str = item_str.rstrip(",.")
+                if ":" not in item_str:
+                    item_str = "minecraft:" + item_str
+                count = int(count_str) if count_str else 64
+                return {"type": "CONTAINER_STORE", "target": item_str, "count": count}
+
+        # Container withdraw
+        m = self._CONTAINER_WITHDRAW_PATTERNS.search(text)
+        if m:
+            count_str = m.group(1) or m.group(3)
+            item_str = m.group(2) or m.group(4)
+            if item_str:
+                item_str = item_str.rstrip(",.")
+                if ":" not in item_str:
+                    item_str = "minecraft:" + item_str
+                count = int(count_str) if count_str else 64
+                return {"type": "CONTAINER_WITHDRAW", "target": item_str, "count": count}
 
         # Combat mode
         combat_match = re.search(
@@ -909,6 +1112,20 @@ class BotRunner:
         if follow_match:
             target = follow_match.group(1).rstrip(",.")
             return {"type": "FOLLOW", "target": target}
+
+        # Teleport to dimension / coordinates
+        m = self._TELEPORT_PATTERNS.search(text)
+        if m:
+            dim_name = (m.group(1) or m.group(2) or "").lower().strip()
+            dimension = self._DIMENSION_ALIASES.get(dim_name, dim_name if ":" in dim_name else None)
+            x = float(m.group(3)) if m.group(3) else 0.0
+            y = float(m.group(4)) if m.group(4) else 70.0
+            z = float(m.group(5)) if m.group(5) else 0.0
+            if dimension:
+                return {
+                    "type": "TELEPORT", "x": x, "y": y, "z": z,
+                    "extra": {"dimension": dimension},
+                }
 
         # Goto coordinates (x, y, z pattern)
         coord_match = re.search(r"(-?\d+)[,\s]+(-?\d+)[,\s]+(-?\d+)", text)
@@ -968,6 +1185,7 @@ class BotRunner:
                 resp = api.set_directive(self.name, dtype, **params)
                 status_msg = resp.get('status', 'unknown')
                 print(f"[{self.name}/L1] Directive sent: {dtype} {params} -> {status_msg}")
+                shared_state.push_event({"bot": self.name, "type": "directive_started", "directive": dtype, "target": params.get("target", ""), "count": params.get("count", ""), "retry": retries})
                 if retries == 0:
                     api.system_chat(self.name, f"L1: {dtype} {params.get('target', '')}", "dark_aqua")
             except Exception as e:
@@ -995,6 +1213,7 @@ class BotRunner:
 
             directive_params = adjusted
             print(f"[{self.name}/L2] Retry {retries}/{self.L2_MAX_RETRIES}: {adjusted}")
+            shared_state.push_event({"bot": self.name, "type": "l2_retry", "retry": retries, "reason": reason[:80]})
             api.system_chat(self.name, f"L2 retry {retries}: {reason[:30]}", "yellow")
 
         return {"success": False, "reason": result.get("reason", "unknown")}
@@ -1002,6 +1221,8 @@ class BotRunner:
     def _poll_directive(self):
         """Poll the brain until directive completes, fails, or is interrupted."""
         self._directive_missing_count = 0
+        _last_poll_error_time = 0
+        _ever_saw_directive = False
         while not self._stop_event.is_set():
             with self._lock:
                 if self._new_messages:
@@ -1021,15 +1242,29 @@ class BotRunner:
                 brain_state = api.get_brain(self.name)
             except Exception as e:
                 print(f"[{self.name}/L1] Poll error: {e}")
+                _last_poll_error_time = time.time()
                 self._stop_event.wait(self.DIRECTIVE_POLL_INTERVAL)
                 continue
 
             directive_info = brain_state.get("directive")
             if not directive_info:
-                # Directive vanished — it completed and was cleared between polls
-                if not hasattr(self, '_directive_missing_count'):
-                    self._directive_missing_count = 0
                 self._directive_missing_count += 1
+                recently_had_errors = (time.time() - _last_poll_error_time) < 30
+                if recently_had_errors:
+                    if self._directive_missing_count >= 3:
+                        self._directive_missing_count = 0
+                        print(f"[{self.name}/L1] Directive lost after connection errors (server restart?)")
+                        shared_state.push_event({"bot": self.name, "type": "directive_lost", "reason": "server_restart"})
+                        return {"success": False, "reason": "directive_lost_server_restart"}
+                    self._stop_event.wait(1.0)
+                    continue
+                if not _ever_saw_directive:
+                    if self._directive_missing_count >= 5:
+                        self._directive_missing_count = 0
+                        print(f"[{self.name}/L1] Directive never appeared (rejected or instant-cleared)")
+                        return {"success": False, "reason": "directive_never_started"}
+                    self._stop_event.wait(1.0)
+                    continue
                 if self._directive_missing_count >= 3:
                     self._directive_missing_count = 0
                     print(f"[{self.name}/L1] Directive cleared (assumed completed)")
@@ -1038,11 +1273,13 @@ class BotRunner:
                 continue
             else:
                 self._directive_missing_count = 0
+                _ever_saw_directive = True
 
             status = directive_info.get("status", "")
             if status == "COMPLETED":
                 progress = brain_state.get("progress", {})
                 print(f"[{self.name}/L1] Directive COMPLETED: {progress.get('counters', {})}")
+                shared_state.push_event({"bot": self.name, "type": "directive_done", "status": "completed", "counters": progress.get("counters", {})})
                 try:
                     api.cancel_directive(self.name)
                 except Exception:
@@ -1051,6 +1288,7 @@ class BotRunner:
             elif status in ("FAILED", "CANCELLED"):
                 reason = directive_info.get("failure_reason", status.lower())
                 print(f"[{self.name}/L1] Directive {status}: {reason}")
+                shared_state.push_event({"bot": self.name, "type": "directive_done", "status": status.lower(), "reason": reason[:100]})
                 try:
                     api.cancel_directive(self.name)
                 except Exception:
@@ -1143,7 +1381,7 @@ class BotRunner:
             return None
 
         # Container ops: failures are unrecoverable at L2.
-        if dtype in ("CONTAINER_PLACE", "CONTAINER_SEARCH"):
+        if dtype in ("CONTAINER_PLACE", "CONTAINER_SEARCH", "CONTAINER_STORE", "CONTAINER_WITHDRAW"):
             return None
 
         return None
@@ -1169,7 +1407,7 @@ class BotRunner:
             print(f"[{self.name}/mem] store error after success: {e}")
 
         # Sync container registry changes to Postgres
-        if dtype in ("CONTAINER_PLACE", "CONTAINER_SEARCH") and _container_db:
+        if dtype in ("CONTAINER_PLACE", "CONTAINER_SEARCH", "CONTAINER_STORE", "CONTAINER_WITHDRAW") and _container_db:
             try:
                 _container_db.sync_from_mod()
             except Exception as e:
@@ -1216,10 +1454,23 @@ class BotRunner:
                 if any(bad in item for bad in _NONEXISTENT):
                     print(f"[{self.name}/L3-val] Rejected nonexistent item: {step[:60]}")
                     continue
+            # Reject SEND_ITEM to non-existent bots
+            if "send_item" in step_lower or ("send" in step_lower and ">" in step):
+                known_bots = set(_all_runners.keys()) if _all_runners else set()
+                bot_found = any(bn.lower() in step_lower for bn in known_bots)
+                if not bot_found and known_bots:
+                    print(f"[{self.name}/L3-val] Rejected SEND_ITEM to unknown bot: {step[:60]}")
+                    continue
             valid.append(step)
         return valid if valid else None
 
-    def _build_l3_prompt(self, failed_step, inv):
+    def _build_l3_prompt(self, failed_step, inv, failure_context=""):
+        bot_names = ", ".join(sorted(_all_runners.keys())) if _all_runners else "none"
+        failure_section = ""
+        if failure_context:
+            failure_section = f"""
+FAILURE CONTEXT: {failure_context}
+IMPORTANT: Use the failure context above to understand WHY the step failed. If the step was a CHANNEL/conjure action, output a CHANNEL primitive — do NOT replace it with MINE steps unless channeling is truly impossible. If parsing failed, reformat the same action as a valid primitive."""
         return f"""A Minecraft bot's plan step failed. Break it into smaller primitives.
 
 PRIMITIVES you can use:
@@ -1227,23 +1478,26 @@ PRIMITIVES you can use:
 - {{"type": "CRAFT", "target": "minecraft:<item>", "count": <n>}} — craft items
 - {{"type": "SMELT", "target": "<item>", "count": <n>}} — smelt in furnace
 - {{"type": "GOTO", "x": <x>, "y": <y>, "z": <z>}} — walk to coordinates
-- {{"type": "SEND_ITEM", "target": "<item_id>><bot_name>", "count": <n>}} — send items to another bot
+- {{"type": "SEND_ITEM", "target": "<item_id>><bot_name>", "count": <n>}} — send items to another bot (ONLY use these bot names: {bot_names})
 - {{"type": "BUILD", "target": "<blueprint>"}} — build a structure (shelter/wall/tower/platform)
 - {{"type": "FARM", "target": "<crop>"}} — build and harvest a crop farm (wheat/carrot/potato/beetroot)
-- {{"type": "CONTAINER_PLACE"}} — conjure and place a storage chest (costs XP)
-- {{"type": "CONTAINER_SEARCH", "target": "<item>", "count": <n>}} — search N containers for an item
+- {{"type": "CHANNEL", "target": "<modid:item>", "count": <n>}} — conjure/duplicate a discovered item using XP (for modded items that can't be crafted normally)
+- {{"type": "CONTAINER_STORE", "target": "<item>", "count": <n>}} — store items from inventory into a container (auto-finds or conjures one)
+- {{"type": "CONTAINER_WITHDRAW", "target": "<item>", "count": <n>}} — withdraw items from containers into inventory (auto-searches all containers)
+- {{"type": "TELEPORT", "x": <x>, "y": <y>, "z": <z>, "extra": {{"dimension": "<dim>"}}}} — teleport to another dimension (minecraft:the_nether, minecraft:the_end, minecraft:overworld)
 
 VALID MINE targets: cobblestone, stone, oak_log, birch_log, spruce_log, iron_ore, coal_ore, copper_ore, gold_ore, diamond_ore, sand, gravel, clay, dirt, deepslate_iron_ore, deepslate_gold_ore, deepslate_diamond_ore, obsidian, netherrack, ancient_debris, sugar_cane, bamboo, kelp, cactus
 VALID CRAFT targets: stick, oak_planks, crafting_table, furnace, chest, wooden_pickaxe, wooden_axe, wooden_sword, wooden_shovel, stone_pickaxe, stone_axe, stone_sword, stone_shovel, iron_pickaxe, iron_axe, iron_sword, iron_shovel, diamond_pickaxe, diamond_sword, bucket, torch, ladder, iron_ingot, gold_ingot, copper_ingot, bread, bowl, paper, book, shears, bow, arrow, shield, bed, iron_helmet, iron_chestplate, iron_leggings, iron_boots, diamond_helmet, diamond_chestplate, diamond_leggings, diamond_boots, blast_furnace, smoker, anvil, brewing_stand, enchanting_table, bookshelf, rail, powered_rail, hopper, piston, golden_apple, golden_carrot
 VALID SMELT targets: raw_iron, raw_gold, raw_copper, iron_ore, gold_ore, copper_ore, cobblestone, sand, clay_ball, oak_log, ancient_debris, potato, beef, porkchop, chicken, cod, salmon
 
 FAILED STEP: "{failed_step}"
-CURRENT INVENTORY: [{inv}]
+CURRENT INVENTORY: [{inv}]{failure_section}
 
 Think about what sub-steps are needed. For example:
 - To craft a stone_pickaxe: mine cobblestone, mine oak_log, then craft
 - To smelt iron: mine iron_ore, craft a furnace, then smelt
 - To mine underground: go to a cave entrance (y=40-60), then mine
+- To channel/conjure a modded item: use CHANNEL with the exact modid:item_name
 
 Respond with ONLY a JSON array. Example:
 [{{"type": "MINE", "target": "cobblestone", "count": 8}}, {{"type": "MINE", "target": "oak_log", "count": 2}}, {{"type": "CRAFT", "target": "minecraft:furnace", "count": 1}}]"""
@@ -1258,7 +1512,8 @@ Respond with ONLY a JSON array. Example:
         except Exception:
             inv = "unknown"
 
-        prompt = self._build_l3_prompt(failed_step, inv)
+        failure_ctx = getattr(self, '_last_failure_context', '')
+        prompt = self._build_l3_prompt(failed_step, inv, failure_context=failure_ctx)
 
         try:
             response = brain.raw_generate(self.model, prompt)
@@ -1277,21 +1532,39 @@ Respond with ONLY a JSON array. Example:
                         return None
                     print(f"[{self.name}/L3] Got {len(valid)} valid primitives")
                     steps = []
+                    known_bots = set(_all_runners.keys()) if _all_runners else set()
                     for p in valid:
                         ptype = p.get("type", "").upper()
                         target = p.get("target", "")
                         count = p.get("count", 1)
+                        if ptype == "SEND_ITEM" and known_bots:
+                            bot_in_target = any(bn in target for bn in known_bots)
+                            if not bot_in_target:
+                                print(f"[{self.name}/L3] Skipping SEND_ITEM to unknown bot: {target}")
+                                continue
                         if ptype == "MINE":
                             steps.append(f"Find and mine {target} (at least {count})")
                         elif ptype == "CRAFT":
-                            steps.append(f"Craft {target}")
+                            count_str = f"{count}x " if count > 1 else ""
+                            steps.append(f"Craft {count_str}{target}")
                         elif ptype == "SMELT":
-                            steps.append(f"Smelt {target} into ingots")
+                            count_str = f"{count}x " if count > 1 else ""
+                            steps.append(f"Smelt {count_str}{target} into ingots")
+                        elif ptype == "CHANNEL":
+                            count_str = f"{count}x " if count > 1 else ""
+                            steps.append(f"Channel {count_str}{target}")
+                        elif ptype == "CONTAINER_STORE":
+                            steps.append(f"Store {count}x {target} into container")
+                        elif ptype == "CONTAINER_WITHDRAW":
+                            steps.append(f"Withdraw {count}x {target} from container")
                         elif ptype == "GOTO":
                             steps.append(f"Go to coordinates ({p.get('x',0)}, {p.get('y',0)}, {p.get('z',0)})")
+                        elif ptype == "TELEPORT":
+                            dim = p.get("extra", {}).get("dimension", "minecraft:overworld")
+                            steps.append(f"Teleport to {dim} at ({p.get('x',0)}, {p.get('y',0)}, {p.get('z',0)})")
                         else:
                             steps.append(f"{ptype} {target}")
-                    return steps
+                    return steps if steps else None
             print(f"[{self.name}/L3] Could not parse response: {text[:100]}")
             return None
         except Exception as e:
@@ -1311,7 +1584,8 @@ Respond with ONLY a JSON array. Example:
         except Exception:
             inv = "unknown"
 
-        prompt = self._build_l3_prompt(failed_step, inv)
+        failure_ctx = getattr(self, '_last_failure_context', '')
+        prompt = self._build_l3_prompt(failed_step, inv, failure_context=failure_ctx)
 
         try:
             response = openai_brain.generate_primitives(prompt)
@@ -1332,21 +1606,39 @@ Respond with ONLY a JSON array. Example:
                         return None
                     print(f"[{self.name}/L4] Got {len(valid)} valid primitives")
                     steps = []
+                    known_bots = set(_all_runners.keys()) if _all_runners else set()
                     for p in valid:
                         ptype = p.get("type", "").upper()
                         target = p.get("target", "")
                         count = p.get("count", 1)
+                        if ptype == "SEND_ITEM" and known_bots:
+                            bot_in_target = any(bn in target for bn in known_bots)
+                            if not bot_in_target:
+                                print(f"[{self.name}/L4] Skipping SEND_ITEM to unknown bot: {target}")
+                                continue
                         if ptype == "MINE":
                             steps.append(f"Find and mine {target} (at least {count})")
                         elif ptype == "CRAFT":
-                            steps.append(f"Craft {target}")
+                            count_str = f"{count}x " if count > 1 else ""
+                            steps.append(f"Craft {count_str}{target}")
                         elif ptype == "SMELT":
-                            steps.append(f"Smelt {target} into ingots")
+                            count_str = f"{count}x " if count > 1 else ""
+                            steps.append(f"Smelt {count_str}{target} into ingots")
+                        elif ptype == "CHANNEL":
+                            count_str = f"{count}x " if count > 1 else ""
+                            steps.append(f"Channel {count_str}{target}")
+                        elif ptype == "CONTAINER_STORE":
+                            steps.append(f"Store {count}x {target} into container")
+                        elif ptype == "CONTAINER_WITHDRAW":
+                            steps.append(f"Withdraw {count}x {target} from container")
                         elif ptype == "GOTO":
                             steps.append(f"Go to coordinates ({p.get('x',0)}, {p.get('y',0)}, {p.get('z',0)})")
+                        elif ptype == "TELEPORT":
+                            dim = p.get("extra", {}).get("dimension", "minecraft:overworld")
+                            steps.append(f"Teleport to {dim} at ({p.get('x',0)}, {p.get('y',0)}, {p.get('z',0)})")
                         else:
                             steps.append(f"{ptype} {target}")
-                    return steps
+                    return steps if steps else None
             print(f"[{self.name}/L4] Could not parse response: {text[:100]}")
             return None
         except Exception as e:
@@ -1395,9 +1687,12 @@ Respond with ONLY a JSON array. Example:
                     # Skip L1 if this step already failed L1 (avoid infinite retry)
                     if current_step not in getattr(self, '_l1_failed_steps', set()):
                         directive = self._classify_step(current_step)
+                        if directive is None:
+                            self._last_failure_context = f"L1 could not parse this step into a known directive type. The step text did not match any recognized pattern (MINE, CRAFT, SMELT, CHANNEL, FOLLOW, BUILD, FARM, COMBAT, SEND_ITEM, CONTAINER_STORE, CONTAINER_WITHDRAW, GOTO, TELEPORT). Rephrase as a valid primitive."
                         if directive is not None:
                             print(f"[{self.name}/L1] Step \"{current_step}\" -> directive {directive['type']}")
                             api.system_chat(self.name, f"L1 step: {current_step[:50]}", "dark_aqua")
+                            shared_state.push_event({"bot": self.name, "type": "l1_directive", "directive": directive["type"], "step": current_step[:80]})
                             result = self._run_directive(directive)
 
                             if result.get("reason") == "interrupted_by_chat":
@@ -1411,6 +1706,7 @@ Respond with ONLY a JSON array. Example:
                                 if hasattr(self, '_l1_failed_steps'):
                                     self._l1_failed_steps.discard(old_step)
                                 self._l3_retries = 0
+                                self._last_failure_context = ""
                                 if self._plan_step_idx >= len(self._plan_steps):
                                     print(f"[{self.name}/planner] Plan COMPLETE! All {len(self._plan_steps)} steps done.")
                                     api.system_chat(self.name, f"Plan complete! ({len(self._plan_steps)} steps done)", "green")
@@ -1435,6 +1731,7 @@ Respond with ONLY a JSON array. Example:
                                 reason = result.get("reason", "unknown")
                                 print(f"[{self.name}/L1] Directive failed: {reason} — falling back to LLM for this step")
                                 api.system_chat(self.name, f"L1 failed: {reason[:40]}, using LLM", "yellow")
+                                self._last_failure_context = f"L1 directive {directive['type']} failed with reason: {reason}. The bot tried to execute this as a {directive['type']} directive but the game-side behavior failed. Consider an alternative approach or fix the parameters."
                                 # Mark step as L1-failed so we don't retry it
                                 if not hasattr(self, '_l1_failed_steps'):
                                     self._l1_failed_steps = set()
@@ -1449,25 +1746,30 @@ Respond with ONLY a JSON array. Example:
                     continue
 
                 # ── L3: LLM primitive regeneration (only when L1+L2 both failed) ──
-                if not hasattr(self, '_l3_retries'):
-                    self._l3_retries = 0
                 MAX_L3_RETRIES = 3
 
                 current_step = self._plan_steps[self._plan_step_idx]
 
                 if self._l3_retries >= MAX_L3_RETRIES:
                     # L4 escalation: try OpenAI before giving up
+                    if not hasattr(self, '_l4_escalations'):
+                        self._l4_escalations = 0
+                    MAX_L4_ESCALATIONS = 2
                     l4_resolved = False
-                    if openai_brain.is_available():
-                        print(f"[{self.name}/L4] Escalating to OpenAI: \"{current_step[:60]}\"")
+                    if openai_brain.is_available() and self._l4_escalations < MAX_L4_ESCALATIONS:
+                        self._l4_escalations += 1
+                        print(f"[{self.name}/L4] Escalating to OpenAI ({self._l4_escalations}/{MAX_L4_ESCALATIONS}): \"{current_step[:60]}\"")
                         api.system_chat(self.name, f"L4 escalation: {current_step[:40]}", "light_purple")
                         l4_prims = self._l4_regenerate(current_step, obs)
                         if l4_prims:
+                            l4_prims = self._validate_primitives(l4_prims)
+                        if l4_prims:
                             remaining = self._plan_steps[self._plan_step_idx + 1:]
-                            self._plan_steps = l4_prims + remaining
+                            self._plan_steps = (l4_prims + remaining)[:12]
                             self._plan_step_idx = 0
                             self._l3_retries = 0
                             self._l1_failed_steps = set()
+                            self._last_failure_context = ""
                             api.system_chat(self.name, f"L4: {len(l4_prims)} new steps", "light_purple")
                             l4_resolved = True
                     if not l4_resolved:
@@ -1476,6 +1778,7 @@ Respond with ONLY a JSON array. Example:
                         self._plan_step_idx += 1
                         self._l3_retries = 0
                         self._l1_failed_steps = set()
+                        self._last_failure_context = ""
                         if self._plan_step_idx >= len(self._plan_steps):
                             self._store_plan_outcome(success=False, failure_reason=f"All tiers failed on: {current_step}")
                             self._plan_steps = []
@@ -1497,9 +1800,10 @@ Respond with ONLY a JSON array. Example:
                 if new_primitives:
                     print(f"[{self.name}/L3] Got {len(new_primitives)} valid primitives")
                     remaining = self._plan_steps[self._plan_step_idx + 1:]
-                    self._plan_steps = new_primitives + remaining
+                    self._plan_steps = (new_primitives + remaining)[:12]
                     self._plan_step_idx = 0
                     self._l1_failed_steps = set()
+                    self._last_failure_context = ""
                     api.system_chat(self.name, f"L3: {len(new_primitives)} new steps", "gold")
                 else:
                     print(f"[{self.name}/L3] No valid primitives, skipping step")
@@ -1507,6 +1811,7 @@ Respond with ONLY a JSON array. Example:
                     self._plan_step_idx += 1
                     self._l3_retries = 0
                     self._l1_failed_steps = set()
+                    self._last_failure_context = ""
                     if self._plan_step_idx >= len(self._plan_steps):
                         self._store_plan_outcome(success=False, failure_reason=f"L3 failed on: {current_step}")
                         self._plan_steps = []
@@ -1553,6 +1858,62 @@ Respond with ONLY a JSON array. Example:
         obs = prompts.build_observation(
             status, inv, ents, blks, action_state, chat_snapshot, new_messages, action_results
         )
+
+        shared_state.push_bot_snapshot(self.name, {
+            "name": self.name,
+            "model": self.model,
+            "specializations": self.specializations,
+            "status": status,
+            "inventory": inv.get("inventory", []),
+            "entities": ents.get("entities", []),
+            "plan": {
+                "instruction": self._plan_instruction or (f"Following {self._following_player}" if self._following_player else ""),
+                "steps": list(self._plan_steps),
+                "step_idx": self._plan_step_idx,
+            },
+            "awaiting_taskboard": self._awaiting_taskboard,
+            "current_task_id": self._current_task_id,
+            "l3_retries": self._l3_retries,
+            "l4_escalations": self._l4_escalations,
+        })
+
+        self._terrain_tick += 1
+        if _terrain and self._terrain_tick >= 15:
+            self._terrain_tick = 0
+            try:
+                scan = api.surface_scan(self.name, radius=12)
+                blocks = scan.get("blocks", [])
+                dim = scan.get("dimension", "minecraft:overworld")
+                if blocks:
+                    _terrain.store_scan(blocks, dim)
+            except Exception:
+                pass
+
+            if _container_db:
+                try:
+                    result = api.nearby_containers(self.name, radius=8)
+                    found = result.get("containers", [])
+                    dim = result.get("dimension", "minecraft:overworld")
+                    for c in found:
+                        x, y, z = c["x"], c["y"], c["z"]
+                        if not _container_db.exists_at(x, y, z, dim):
+                            cid = _container_db.register(x, y, z, dim, f"discovered:{self.name}")
+                            api.raw_post("/containers", {"id": cid, "x": x, "y": y, "z": z, "dimension": dim, "placed_by": f"discovered:{self.name}"})
+                            print(f"[{self.name}/containers] Discovered {c.get('block', 'chest')} at {x},{y},{z} [{dim}] -> #{cid}")
+                            shared_state.push_event({"bot": self.name, "type": "container_found", "block": c.get("block", "chest"), "x": x, "y": y, "z": z, "dimension": dim})
+                except Exception:
+                    pass
+
+        if _transmute and self._terrain_tick == 7 and self.name == list(_all_runners.keys())[0]:
+            try:
+                global _transmute_tags
+                synced = _transmute.sync_from_mod()
+                if synced > 0:
+                    _transmute_tags = _build_transmute_tags()
+                    print(f"[agent] Transmute registry refreshed: {synced} new items, {len(_transmute_tags)} aliases")
+            except Exception:
+                pass
+
         return obs, new_messages
 
     def _execute_actions(self, actions):
@@ -1871,6 +2232,38 @@ def load_profiles():
     return profiles
 
 
+def _build_transmute_tags():
+    """Build a reverse index: normalized alias -> registry_id.
+    Sources: mod display names (ground truth) + generated aliases from registry IDs."""
+    tags = {}
+    if not _transmute:
+        return tags
+    all_items = _transmute.get_all()
+
+    # Source 1: display names from the mod API
+    try:
+        resp = api.transmute_names()
+        names = resp.get("names", {})
+        for reg_id, display_name in names.items():
+            dn = display_name.lower().strip()
+            tags[dn] = reg_id
+            tags[dn.replace(" ", "_")] = reg_id
+            tags[dn.rstrip("s")] = reg_id
+            tags[dn.replace(" ", "_").rstrip("s")] = reg_id
+    except Exception as e:
+        print(f"[agent] Could not fetch display names from mod: {e}")
+
+    # Source 2: auto-generated aliases from registry IDs
+    for reg_id in all_items:
+        bare = reg_id.split(":", 1)[-1] if ":" in reg_id else reg_id
+        human = bare.replace("_", " ")
+        for alias in (bare, human, bare.rstrip("s"), human.rstrip("s")):
+            a = alias.lower()
+            if a not in tags:
+                tags[a] = reg_id
+    return tags
+
+
 def run():
     print(f"[agent] Checking ollama at {OLLAMA_URL}...")
     ok, models = brain.check_ollama(OLLAMA_URL)
@@ -1902,21 +2295,21 @@ def run():
     try:
         _task_board = taskboard.TaskBoard(PG_DSN)
         _task_board.connect()
-        stale = _task_board.cleanup_stale()
-        if stale:
-            print(f"[agent] Cleaned up {stale} stale task(s)")
-        print(f"[agent] Task board: connected ({_task_board.pending_count()} pending tasks)")
+        _task_board.clear_all()
+        print(f"[agent] Task board: connected (cleared on restart)")
     except Exception as e:
         print(f"[agent] Task board unavailable: {e}")
         _task_board = None
 
     # Initialize transmute registry
-    global _transmute
+    global _transmute, _transmute_tags
     try:
         _transmute = transmute_db.TransmuteDB(PG_DSN)
         _transmute.connect()
         synced = _transmute.sync_from_mod()
         print(f"[agent] Transmute registry: {len(_transmute.get_all())} items ({synced} new from mod)")
+        _transmute_tags = _build_transmute_tags()
+        print(f"[agent] Transmute tag index: {len(_transmute_tags)} aliases")
     except Exception as e:
         print(f"[agent] Transmute DB unavailable: {e}")
         _transmute = None
@@ -1948,17 +2341,38 @@ def run():
     if wp_count:
         print(f"[agent] Waypoints: {wp_count} loaded for this server")
 
+    global _terrain
+    try:
+        _terrain = terrain_db.TerrainDB(PG_DSN)
+        _terrain.connect()
+        stats = _terrain.stats()
+        total = sum(stats.values())
+        print(f"[agent] Terrain DB: {total} blocks mapped ({', '.join(f'{k}: {v}' for k, v in stats.items()) or 'empty'})")
+    except Exception as e:
+        print(f"[agent] Terrain DB unavailable: {e}")
+        _terrain = None
+
+    if DASHBOARD_ENABLED:
+        start_dashboard(
+            DASHBOARD_PORT, api, sys.modules[__name__],
+            _task_board, _transmute, _container_db, waypoints, _terrain,
+        )
+
     profiles = load_profiles()
     print(f"[agent] Found {len(profiles)} bot profile(s): {[p['name'] for p in profiles]}")
 
     runners = []
-    for profile in profiles:
+    SPAWN_STAGGER_DELAY = 5.0
+    for i, profile in enumerate(profiles):
         runner = BotRunner(profile)
         _all_runners[runner.name] = runner
         runner.start()
         runners.append(runner)
+        if i < len(profiles) - 1:
+            print(f"[agent] Staggering next bot spawn ({SPAWN_STAGGER_DELAY}s)...")
+            time.sleep(SPAWN_STAGGER_DELAY)
 
-    print(f"[agent] All bots started (tick={TICK_DELAY}s)")
+    print(f"[agent] All {len(runners)} bots started (tick={TICK_DELAY}s)")
     print("=" * 50)
 
     transmute_sync_counter = 0

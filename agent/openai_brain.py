@@ -16,7 +16,7 @@ _enabled = False
 def init():
     global _client, _model, _enabled
     api_key = os.getenv("OPENAI_API_KEY", "")
-    _model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    _model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
     _enabled = bool(api_key) and os.getenv("L4_ENABLED", "true").lower() in ("true", "1", "yes")
     if not _enabled:
         return

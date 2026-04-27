@@ -20,6 +20,7 @@ spec:
       containers:
         - name: agent
           image: harbor.arcadia-ecs.local/aiplayermod/agent:latest
+          imagePullPolicy: Always
           envFrom:
             - secretRef:
                 name: agent-config

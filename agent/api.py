@@ -153,6 +153,9 @@ def stop(bot):
 def chat_inbox(bot):
     return _get(f"/bot/{bot}/chat_inbox")
 
+def inject_chat(bot, sender, message):
+    return _post(f"/bot/{bot}/inject_chat", {"sender": sender, "message": message})
+
 
 # ── Magic / enchanting / brewing ──
 
@@ -266,3 +269,18 @@ def transmute_register(item_id, xp_cost, source="agent"):
 
 def transmute_remove(item_id):
     return _delete("/transmute", {"item": item_id})
+
+def transmute_names():
+    return _get("/transmute/names")
+
+
+# ── Terrain scanning ──
+
+def surface_scan(bot, radius=12):
+    return _post(f"/bot/{bot}/surface_scan", {"radius": radius})
+
+def nearby_containers(bot, radius=8):
+    return _post(f"/bot/{bot}/nearby_containers", {"radius": radius})
+
+def dimensions():
+    return _get("/server/dimensions")

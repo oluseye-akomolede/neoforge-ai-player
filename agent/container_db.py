@@ -96,6 +96,14 @@ class ContainerDB:
             except Exception as e:
                 print(f"[container_db] remove error: {e}")
 
+    def exists_at(self, x, y, z, dimension):
+        """Check if a container is already registered at this position and dimension."""
+        with self._lock:
+            for info in self._cache.values():
+                if info["x"] == x and info["y"] == y and info["z"] == z and info["dimension"] == dimension:
+                    return True
+            return False
+
     def get_all(self):
         """Return all active containers."""
         with self._lock:
