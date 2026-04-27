@@ -111,7 +111,7 @@ All behaviors MUST respect the following timing constants:
 - THEN the behavior MUST return FAILED with a timeout reason
 
 ### Requirement: Wide Search Behavior
-WideSearchBehavior MUST implement a coordinated expanding-cube search across one or more bots. Each bot searches a deterministic X-axis sector of the cube. The behavior MUST support searching for both blocks and entities with fuzzy name matching.
+WideSearchBehavior MUST implement a coordinated expanding-cube search across one or more bots using a checkerboard cell grid pattern. The search area is divided into CELL_SIZE x CELL_SIZE (16x16) cells in XZ. Cells are assigned round-robin across bots by index: cell i goes to bot (i % bot_count). This creates an interleaved checkerboard pattern so each bot covers the full area evenly rather than a contiguous sector. The behavior MUST support searching for both blocks and entities with fuzzy name matching.
 
 #### Scenario: Single-bot wide search finds a block
 - GIVEN a WideSearchBehavior with target "diamond_ore" at center (0, 64, 0)
@@ -119,15 +119,16 @@ WideSearchBehavior MUST implement a coordinated expanding-cube search across one
 - THEN blocks matching "diamond_ore" (including deepslate variants) are detected
 - AND the bot navigates to the found block and reports its position
 
-#### Scenario: Multi-bot coordinated search
-- GIVEN 3 bots each receive a WIDE_SEARCH directive with the same center and target
-- WHEN bot_index=0, 1, 2 and bot_count=3 are specified in the extra params
-- THEN each bot searches a distinct 1/3 slice of the X-axis range
-- AND no two bots scan the same region
+#### Scenario: Multi-bot coordinated search with checkerboard grid
+- GIVEN 5 bots each receive a WIDE_SEARCH directive with the same center and target
+- WHEN bot_index=0..4 and bot_count=5 are specified in the extra params
+- THEN each shell's cells are divided round-robin: cell 0→bot 0, cell 1→bot 1, ..., cell 5→bot 0, etc.
+- AND no two bots scan the same cell
+- AND each bot searches multiple non-contiguous cells per shell (e.g., 58 cells each at radius 128)
 
 #### Scenario: Fuzzy entity matching
 - GIVEN a WideSearchBehavior with search_type=entity and target "cow"
-- WHEN scanning entities in the sector
+- WHEN scanning entities in the search area
 - THEN entities whose type ID or display name contains "cow" are matched
 - AND typos within Levenshtein distance of 25% of the query length are tolerated
 

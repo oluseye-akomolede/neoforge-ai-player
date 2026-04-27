@@ -284,3 +284,6 @@ def nearby_containers(bot, radius=8):
 
 def dimensions():
     return _get("/server/dimensions")
+
+def players():
+    return _get("/server/players")

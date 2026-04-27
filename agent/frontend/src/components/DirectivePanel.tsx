@@ -1,9 +1,9 @@
 import { useState, useEffect, useMemo } from 'react'
-import type { DirectiveDef, BotSnapshot, InventorySlot } from '../types'
+import type { DirectiveDef, BotSnapshot, InventorySlot, OnlinePlayer } from '../types'
 import {
   useDirectives, useSendDirective, useSendCommand,
   useTransmuteItems, useContainers, fetchContainerContents,
-  useDimensions,
+  useDimensions, usePlayers,
   type TransmuteItem, type ContainerInfo,
 } from '../hooks'
 
@@ -12,9 +12,11 @@ type Tier = 'l1' | 'l3' | 'l4'
 export default function DirectivePanel({
   selectedBot,
   botData,
+  allBots,
 }: {
   selectedBot: string | null
   botData: BotSnapshot | null
+  allBots: BotSnapshot[]
 }) {
   const directives = useDirectives()
   const sendDirective = useSendDirective()
@@ -22,6 +24,7 @@ export default function DirectivePanel({
   const transmuteItems = useTransmuteItems()
   const containers = useContainers()
   const serverDimensions = useDimensions()
+  const onlinePlayers = usePlayers()
 
   const [tier, setTier] = useState<Tier>('l1')
   const [selected, setSelected] = useState<DirectiveDef | null>(null)
@@ -31,6 +34,8 @@ export default function DirectivePanel({
   const [containerContents, setContainerContents] = useState<InventorySlot[]>([])
   const [selectedContainer, setSelectedContainer] = useState<ContainerInfo | null>(null)
   const [transmuteSearch, setTransmuteSearch] = useState('')
+  const [coordBots, setCoordBots] = useState<Set<string>>(new Set())
+  const [sendingCoord, setSendingCoord] = useState(false)
 
   const handleSelect = (d: DirectiveDef) => {
     setSelected(d)
@@ -441,23 +446,44 @@ export default function DirectivePanel({
                 <p className="text-[11px] text-mc-gray leading-snug">{selected.description}</p>
               )}
 
-              {/* "Use bot position" shortcut for directives with coordinate fields */}
-              {botData && selected.params.some((p) => p.use_bot_pos) && (
-                <button
-                  onClick={() => {
-                    const pos = botData.status?.position
-                    if (!pos) return
-                    setParams((prev) => ({
-                      ...prev,
-                      x: String(Math.round(pos.x)),
-                      y: String(Math.round(pos.y)),
-                      z: String(Math.round(pos.z)),
-                    }))
-                  }}
-                  className="text-[10px] px-2 py-1 bg-mc-accent rounded hover:bg-blue-700 text-mc-aqua"
-                >
-                  Use {selectedBot}'s position ({Math.round(botData.status?.position?.x ?? 0)}, {Math.round(botData.status?.position?.y ?? 0)}, {Math.round(botData.status?.position?.z ?? 0)})
-                </button>
+              {/* Position shortcuts for directives with coordinate fields */}
+              {selected.params.some((p) => p.use_bot_pos) && (
+                <div className="flex flex-wrap gap-1">
+                  {botData && (
+                    <button
+                      onClick={() => {
+                        const pos = botData.status?.position
+                        if (!pos) return
+                        setParams((prev) => ({
+                          ...prev,
+                          x: String(Math.round(pos.x)),
+                          y: String(Math.round(pos.y)),
+                          z: String(Math.round(pos.z)),
+                        }))
+                      }}
+                      className="text-[10px] px-2 py-1 bg-mc-accent rounded hover:bg-blue-700 text-mc-aqua"
+                    >
+                      {selectedBot}: {Math.round(botData.status?.position?.x ?? 0)}, {Math.round(botData.status?.position?.y ?? 0)}, {Math.round(botData.status?.position?.z ?? 0)}
+                    </button>
+                  )}
+                  {onlinePlayers.map((p) => (
+                    <button
+                      key={p.name}
+                      onClick={() =>
+                        setParams((prev) => ({
+                          ...prev,
+                          x: String(Math.round(p.x)),
+                          y: String(Math.round(p.y)),
+                          z: String(Math.round(p.z)),
+                        }))
+                      }
+                      className="text-[10px] px-2 py-1 bg-mc-accent rounded hover:bg-blue-700"
+                      style={{ color: '#ff55ff' }}
+                    >
+                      {p.name}: {Math.round(p.x)}, {Math.round(p.y)}, {Math.round(p.z)}
+                    </button>
+                  ))}
+                </div>
               )}
 
               {/* Container picker for container directives */}
@@ -538,6 +564,86 @@ export default function DirectivePanel({
               >
                 {sendingDirective ? 'Sending...' : `Execute ${selected.label}`}
               </button>
+
+              {/* Coordinated search: send WIDE_SEARCH to multiple bots */}
+              {selected.type === 'WIDE_SEARCH' && allBots.length > 1 && (
+                <div className="border border-mc-accent rounded p-2 mt-2 space-y-1">
+                  <label className="text-xs text-mc-gold block font-medium">Coordinated search</label>
+                  <p className="text-[10px] text-mc-gray">Select bots to search in parallel. Each bot gets a unique grid slice.</p>
+                  <div className="flex flex-wrap gap-1">
+                    {allBots.map((b) => (
+                      <label key={b.name} className="flex items-center gap-1 text-[10px] text-white cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={coordBots.has(b.name)}
+                          onChange={(e) => {
+                            setCoordBots((prev) => {
+                              const next = new Set(prev)
+                              e.target.checked ? next.add(b.name) : next.delete(b.name)
+                              return next
+                            })
+                          }}
+                          className="accent-mc-gold"
+                        />
+                        {b.name}
+                      </label>
+                    ))}
+                    <button
+                      onClick={() => setCoordBots(new Set(allBots.map((b) => b.name)))}
+                      className="text-[9px] px-1 text-mc-aqua hover:underline"
+                    >All</button>
+                    <button
+                      onClick={() => setCoordBots(new Set())}
+                      className="text-[9px] px-1 text-mc-gray hover:underline"
+                    >None</button>
+                  </div>
+                  <button
+                    disabled={coordBots.size < 2 || sendingCoord}
+                    onClick={async () => {
+                      if (coordBots.size < 2) return
+                      setSendingCoord(true)
+                      setStatus(`Sending coordinated search to ${coordBots.size} bots...`)
+                      const botNames = Array.from(coordBots)
+                      const target = params.target
+                      const x = Number(params.x), y = Number(params.y), z = Number(params.z)
+                      const extra: Record<string, string> = {}
+                      selected.params.find((p) => p.type === 'dict')?.fields?.forEach((f) => {
+                        const val = params[`extra.${f.name}`]
+                        if (val !== undefined && val !== '') extra[f.name] = val
+                      })
+                      try {
+                        const results = await Promise.all(
+                          botNames.map((bot, i) =>
+                            sendDirective({
+                              bot,
+                              directive_type: 'WIDE_SEARCH',
+                              target,
+                              x, y, z,
+                              extra: { ...extra, bot_index: String(i), bot_count: String(botNames.length) },
+                            })
+                          )
+                        )
+                        const ok = results.filter((r) => r.ok).length
+                        setStatus(`Sent to ${ok}/${botNames.length} bots`)
+                      } catch (e) {
+                        setStatus(`Error: ${e}`)
+                      } finally {
+                        setSendingCoord(false)
+                      }
+                    }}
+                    className={`w-full text-xs px-2 py-1.5 rounded font-medium transition-colors ${
+                      coordBots.size < 2 || sendingCoord
+                        ? 'bg-mc-accent text-mc-gray opacity-50'
+                        : 'bg-mc-gold text-black hover:opacity-90'
+                    }`}
+                  >
+                    {sendingCoord
+                      ? 'Sending...'
+                      : `Search with ${coordBots.size} bot${coordBots.size !== 1 ? 's' : ''}`}
+                  </button>
+                </div>
+              )}
+
               {status && (
                 <p className={`text-xs mt-1 ${
                   status.startsWith('Error') ? 'text-mc-red'

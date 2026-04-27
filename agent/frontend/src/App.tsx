@@ -105,7 +105,7 @@ function AppInner() {
 
           {/* Right: Directives + Data */}
           <div className="lg:w-80 shrink-0 space-y-4">
-            <DirectivePanel selectedBot={selectedBot} botData={activeBotData} />
+            <DirectivePanel selectedBot={selectedBot} botData={activeBotData} allBots={bots} />
             <DataBrowser selectedBot={selectedBot} />
           </div>
         </div>

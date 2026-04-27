@@ -66,6 +66,16 @@ export interface Waypoint {
   set_by: string | null
 }
 
+export interface OnlinePlayer {
+  name: string
+  x: number
+  y: number
+  z: number
+  dimension: string
+  gamemode: string
+  health: number
+}
+
 export interface DirectiveParam {
   name: string
   type: string

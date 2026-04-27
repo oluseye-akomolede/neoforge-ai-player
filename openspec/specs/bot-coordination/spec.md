@@ -101,6 +101,25 @@ The planning pipeline MUST escalate through four tiers:
 - WHEN L2 receives the failure
 - THEN it tries alternative names (birch_log, spruce_log) and expands radius
 
+### Requirement: L3 WIDE_SEARCH Awareness
+The L3 planner and orchestrator MUST recognize search instructions and generate WIDE_SEARCH steps. The step classifier (`_classify_step`) MUST parse "Wide search for X" into a WIDE_SEARCH directive. The planner prompt MUST include wide_search as a known action pattern.
+
+#### Scenario: Single-bot search via L3
+- GIVEN a player says "Scout search for diamond_ore"
+- WHEN the planner decomposes the instruction
+- THEN it produces a step "Wide search for diamond_ore"
+- AND `_classify_step` maps it to a WIDE_SEARCH directive with search_type=block
+
+### Requirement: Coordinated Search Grid Injection
+When the orchestrator distributes WIDE_SEARCH steps to multiple bots, it MUST inject grid-slicing metadata into each step's text as `[grid N/M]` (where N is bot_index, M is total bot_count). The step classifier MUST parse this notation and pass bot_index/bot_count in the directive's extra params.
+
+#### Scenario: All-bots search with grid slicing
+- GIVEN a player says "all bots search for ancient_debris" and 5 bots are available
+- WHEN the orchestrator redistributes the step to all bots
+- THEN each bot receives a step like "Wide search for ancient_debris [grid 0/5]" through "[grid 4/5]"
+- AND `_classify_step` extracts bot_index and bot_count from the grid notation
+- AND the resulting WIDE_SEARCH directives have extra.bot_index=0..4 and extra.bot_count=5
+
 ### Requirement: Directive Loss Detection
 When polling for directive status, the agent MUST distinguish between "directive completed" and "directive lost to server restart" by tracking recent connection errors within a 30-second window.
 

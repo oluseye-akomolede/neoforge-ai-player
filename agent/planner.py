@@ -59,6 +59,8 @@ IF the player gives a vague or high-level goal (e.g. "get me iron gear" or "set 
 - Use "send_item" to transfer items to another bot (works at any distance, across dimensions)
 - Use "shop_buy" to purchase items from the bot shop (costs emeralds)
 - Use "goto_waypoint" to travel to saved locations
+- Use "wide_search diamond_ore" to search a large area for blocks or entities (expands outward in shells)
+- For parallel multi-bot searching, delegate wide_search tasks to other bots with different bot_index values
 
 ## Examples
 
@@ -175,6 +177,7 @@ Each step MUST be a single primitive that the bot can execute directly. Use thes
 - Store: "Store 64 minecraft:cobblestone into container" (finds or conjures a chest, deposits items)
 - Withdraw: "Withdraw 10 minecraft:iron_ingot from container" (searches containers, takes items)
 - Teleport: "Teleport to the nether" or "Teleport to the end at 100 70 100" (cross-dimension travel)
+- Search: "Wide search for diamond_ore" or "Wide search for cow (entity)" — expanding-cube search across a large area
 - Dig: "Dig down to Y=16"
 
 PRIORITY: always prefer Craft > Mine > Smelt over Channel. Channel is a last resort for modded items that have no known recipe or cannot be gathered normally. Only use Channel for items listed in the transmute registry section below.
@@ -183,6 +186,7 @@ CHECK bot inventories below before planning. If a bot already has required mater
 For "engage combat", "fight enemies", "defend me", or similar — use "Engage combat mode 30s" for EVERY bot.
 For "come to me" or "come here" — use "Follow <player_name>" for EVERY bot (replace <player_name> with the sender's actual name from the instruction).
 When the instruction says "all bots", "every bot", or "everyone" — create a separate step for EVERY available bot. If there is a quantity, split it evenly (e.g. "all bots channel 200 items" with 5 bots = 40 per bot). Assign each step to a specific bot name — do NOT use "any".
+For "search for X" or "find X" across a large area — use "Wide search for X" and assign to ALL available bots for parallel searching. Each bot automatically searches a different grid slice.
 
 ALWAYS use registry IDs (modid:item_name). Include counts where relevant.
 

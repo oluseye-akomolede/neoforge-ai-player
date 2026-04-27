@@ -47,6 +47,7 @@ public class HttpApiServer {
             server.createContext("/transmute", this::handleTransmute);
             server.createContext("/containers", this::handleContainers);
             server.createContext("/server/dimensions", this::handleDimensions);
+            server.createContext("/server/players", this::handlePlayers);
 
             server.start();
         } catch (IOException e) {
@@ -785,6 +786,35 @@ public class HttpApiServer {
         }
         dims.sort(String::compareTo);
         sendJson(exchange, 200, Map.of("dimensions", dims));
+    }
+
+    // ── /server/players ──
+
+    private void handlePlayers(HttpExchange exchange) throws IOException {
+        if (!checkAuth(exchange)) return;
+        var server = BotManager.getServer();
+        if (server == null) {
+            sendJson(exchange, 503, Map.of("error", "Server not ready"));
+            return;
+        }
+        var future = new java.util.concurrent.CompletableFuture<List<Map<String, Object>>>();
+        server.execute(() -> {
+            List<Map<String, Object>> players = new ArrayList<>();
+            for (var sp : server.getPlayerList().getPlayers()) {
+                if (BotManager.getBot(sp.getName().getString()) != null) continue;
+                Map<String, Object> p = new java.util.LinkedHashMap<>();
+                p.put("name", sp.getName().getString());
+                p.put("x", sp.getX());
+                p.put("y", sp.getY());
+                p.put("z", sp.getZ());
+                p.put("dimension", sp.level().dimension().location().toString());
+                p.put("gamemode", sp.gameMode.getGameModeForPlayer().getName());
+                p.put("health", sp.getHealth());
+                players.add(p);
+            }
+            future.complete(players);
+        });
+        sendJson(exchange, 200, Map.of("players", future.join()));
     }
 
     // ── Helpers ──

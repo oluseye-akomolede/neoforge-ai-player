@@ -1,9 +1,9 @@
 import { useState, useMemo, useEffect, useRef, useCallback, Component } from 'react'
-import type { BotSnapshot, Waypoint } from '../types'
+import type { BotSnapshot, Waypoint, OnlinePlayer } from '../types'
 import type { ContainerInfo } from '../hooks'
 import {
   useWaypoints, useContainers, createWaypoint, deleteWaypoint,
-  sendGoto, sendTeleport, fetchContainerContents,
+  sendGoto, sendTeleport, fetchContainerContents, usePlayers,
 } from '../hooks'
 
 const MAP_SIZE = 400
@@ -165,7 +165,7 @@ function WorldMapInner({
   moveBotRef.current = moveBot
 
   const [tooltip, setTooltip] = useState<{
-    type: 'bot' | 'waypoint' | 'container'
+    type: 'bot' | 'waypoint' | 'container' | 'player'
     data: Record<string, unknown>
     screenX: number; screenY: number
   } | null>(null)
@@ -179,6 +179,7 @@ function WorldMapInner({
 
   const [rawWaypoints, refreshWaypoints] = useWaypoints()
   const rawContainers = useContainers()
+  const onlinePlayers = usePlayers()
   const waypoints = asArray<Waypoint>(rawWaypoints)
   const containers = asArray<ContainerInfo>(rawContainers)
 
@@ -188,12 +189,14 @@ function WorldMapInner({
   const dimensions = useMemo(() => {
     const dims = new Set<string>()
     bots.forEach((b) => dims.add(b.status?.dimension || 'minecraft:overworld'))
+    onlinePlayers.forEach((p) => dims.add(p.dimension || 'minecraft:overworld'))
     return Array.from(dims).sort()
-  }, [bots])
+  }, [bots, onlinePlayers])
 
   const [activeDim, setActiveDim] = useState<string | null>(null)
   const currentDim = activeDim || dimensions[0] || 'minecraft:overworld'
   const dimBots = bots.filter((b) => (b.status?.dimension || 'minecraft:overworld') === currentDim)
+  const dimPlayers = onlinePlayers.filter((p) => (p.dimension || 'minecraft:overworld') === currentDim)
   const dimWaypoints = waypoints.filter((w) => (w.dimension || 'minecraft:overworld') === currentDim)
   const dimContainers = containers
     .filter((c) => (c.dimension || 'minecraft:overworld') === currentDim)
@@ -535,7 +538,9 @@ function WorldMapInner({
       {/* Dimension tabs */}
       <div className="flex gap-1 mb-2 flex-wrap">
         {dimensions.map((dim) => {
-          const count = bots.filter((b) => (b.status?.dimension || 'minecraft:overworld') === dim).length
+          const botCount = bots.filter((b) => (b.status?.dimension || 'minecraft:overworld') === dim).length
+          const playerCount = onlinePlayers.filter((p) => (p.dimension || 'minecraft:overworld') === dim).length
+          const count = botCount + playerCount
           return (
             <button
               key={dim}
@@ -755,6 +760,39 @@ function WorldMapInner({
               )
             })
           })()}
+
+          {/* Player markers */}
+          {dimPlayers.map((p) => {
+            const s = worldToScreen(p.x, p.z)
+            const sx = Math.max(14, Math.min(MAP_SIZE - 14, s.x))
+            const sy = Math.max(14, Math.min(MAP_SIZE - 14, s.y))
+            return (
+              <div
+                key={`player-${p.name}`}
+                className="absolute pointer-events-auto cursor-pointer flex flex-col items-center"
+                style={{ left: 0, top: 0, transform: `translate3d(${sx}px, ${sy}px, 0) translate(-50%, -50%)` }}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setTooltip({
+                    type: 'player',
+                    screenX: sx, screenY: sy,
+                    data: { name: p.name, x: p.x, y: p.y, z: p.z, health: p.health, gamemode: p.gamemode },
+                  })
+                }}
+              >
+                <span
+                  className="text-[9px] font-bold whitespace-nowrap mb-0.5"
+                  style={{ color: '#ff55ff', textShadow: '0 0 2px #000, 0 0 2px #000' }}
+                >
+                  {p.name}
+                </span>
+                <div
+                  className="w-2.5 h-2.5 rounded-sm"
+                  style={{ background: '#ff55ff', border: '1.5px solid #aa00aa' }}
+                />
+              </div>
+            )
+          })}
         </div>
       </div>
 
@@ -801,6 +839,29 @@ function WorldMapInner({
                 ) : null}
                 <button onClick={() => { deleteWaypoint(String(tooltip.data.name)).then(() => refreshWaypoints()); setTooltip(null) }}
                   className="text-[9px] px-1.5 py-0.5 rounded bg-mc-red text-white">Delete</button>
+                <button onClick={() => setTooltip(null)} className="text-[9px] px-1.5 py-0.5 rounded bg-mc-accent text-mc-gray">Close</button>
+              </div>
+            </div>
+          )}
+          {tooltip.type === 'player' && (
+            <div>
+              <div className="font-bold mb-1" style={{ color: '#ff55ff' }}>{String(tooltip.data.name)}</div>
+              <div className="grid grid-cols-2 gap-x-2 text-mc-gray">
+                <span>HP: <span className="text-white">{Number(tooltip.data.health || 0).toFixed(0)}</span></span>
+                <span>Mode: <span className="text-white">{String(tooltip.data.gamemode)}</span></span>
+              </div>
+              <div className="text-mc-gray mt-0.5">
+                {Math.round(Number(tooltip.data.x))}, {Math.round(Number(tooltip.data.y))}, {Math.round(Number(tooltip.data.z))}
+              </div>
+              <div className="flex gap-1 mt-2 flex-wrap">
+                {selectedBot ? (
+                  <>
+                    <button onClick={() => { sendGoto(selectedBot, Number(tooltip.data.x), Number(tooltip.data.y), Number(tooltip.data.z)); setTooltip(null) }}
+                      className="text-[9px] px-1.5 py-0.5 rounded bg-mc-green text-black">Send {selectedBot}</button>
+                    <button onClick={() => { sendTeleport(selectedBot, Number(tooltip.data.x), Number(tooltip.data.y), Number(tooltip.data.z), currentDim); setTooltip(null) }}
+                      className="text-[9px] px-1.5 py-0.5 rounded bg-mc-purple text-white">TP {selectedBot}</button>
+                  </>
+                ) : null}
                 <button onClick={() => setTooltip(null)} className="text-[9px] px-1.5 py-0.5 rounded bg-mc-accent text-mc-gray">Close</button>
               </div>
             </div>

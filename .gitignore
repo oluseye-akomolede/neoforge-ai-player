@@ -18,6 +18,9 @@ runs/
 logs/
 *.log
 
+# Node
+node_modules/
+
 # OS
 .DS_Store
 Thumbs.db

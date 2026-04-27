@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import type { ServerState, DashEvent, DirectiveDef, Waypoint } from './types'
+import type { ServerState, DashEvent, DirectiveDef, Waypoint, OnlinePlayer } from './types'
 
 function wsUrl(path: string): string {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
@@ -208,6 +208,21 @@ export async function deleteWaypoint(name: string) {
     body: JSON.stringify({ name }),
   })
   return res.json()
+}
+
+export function usePlayers(): OnlinePlayer[] {
+  const [players, setPlayers] = useState<OnlinePlayer[]>([])
+  useEffect(() => {
+    const poll = () =>
+      fetch('/api/players')
+        .then((r) => r.json())
+        .then((d) => setPlayers(d.players || []))
+        .catch(() => {})
+    poll()
+    const id = setInterval(poll, 5_000)
+    return () => clearInterval(id)
+  }, [])
+  return players
 }
 
 export function useDimensions(): string[] {

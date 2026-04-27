@@ -386,6 +386,18 @@ def create_app() -> FastAPI:
         except Exception as e:
             return {"status": "error", "detail": str(e)}
 
+    # ── REST: online players ──
+
+    @app.get("/api/players")
+    async def get_players():
+        if not _api_module:
+            return {"players": []}
+        try:
+            result = await asyncio.to_thread(_api_module.players)
+            return {"players": result.get("players", [])}
+        except Exception as e:
+            return {"players": [], "error": str(e)}
+
     # ── REST: dimensions ──
 
     @app.get("/api/dimensions")

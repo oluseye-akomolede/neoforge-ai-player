@@ -30,7 +30,7 @@ The dashboard MUST present:
 - AND the right panel MUST contain the directive panel and data browser
 
 ### Requirement: World Map
-The WorldMap component MUST render terrain from TerrainDB on a canvas with HTML overlays for bot markers, container icons, and waypoint pins.
+The WorldMap component MUST render terrain from TerrainDB on a canvas with HTML overlays for bot markers, container icons, waypoint pins, and online player markers.
 
 #### Scenario: Map interaction
 - GIVEN the dashboard is connected
@@ -38,6 +38,21 @@ The WorldMap component MUST render terrain from TerrainDB on a canvas with HTML 
 - THEN bot positions update in real-time
 - AND containers show quick-store/withdraw buttons
 - AND waypoints are displayed as pins
+
+### Requirement: Player Markers on Map
+Online human players MUST be displayed on the world map as magenta square markers, polled every 5 seconds via GET /api/players. Clicking a player marker shows a tooltip with name, health, gamemode, position, and actions (send bot, teleport bot).
+
+#### Scenario: Player appears on map
+- GIVEN a human player is connected to the server
+- WHEN the dashboard polls /api/players
+- THEN a magenta square marker appears at the player's position on the map
+- AND clicking the marker shows a tooltip with goto/teleport actions for the selected bot
+
+#### Scenario: Player dimension filtering
+- GIVEN a player is in the nether and the map shows the overworld
+- WHEN the user views the overworld map tab
+- THEN the nether player marker is NOT shown
+- AND switching to the nether tab shows the player marker
 
 ### Requirement: Command Bar
 Users MUST be able to send natural-language instructions to bots via a text input that routes through the LLM planning pipeline.
@@ -56,6 +71,33 @@ Users MUST be able to fire L1 directives directly from dropdown menus with type-
 - WHEN the user selects a directive from the dropdown and submits it with parameters
 - THEN the directive row MUST display gold coloring while in-flight
 - AND the directive row MUST turn green on success or red on error
+
+### Requirement: Position Picker Buttons
+Directive parameters with `use_bot_pos: true` MUST display quick-fill buttons for each bot's current position and each online player's position. Bot buttons use the bot's theme color; player buttons use magenta.
+
+#### Scenario: Fill coordinates from player position
+- GIVEN a WIDE_SEARCH directive form is open with x, y, z fields
+- WHEN the user clicks a player position button
+- THEN the x, y, z fields are populated with the player's current coordinates
+
+### Requirement: Coordinated Search
+The directive panel MUST provide a coordinated search section for WIDE_SEARCH directives. Users select multiple bots via checkboxes (with All/None toggles), then click "Search with N bots" to send parallel WIDE_SEARCH directives with correct bot_index and bot_count values.
+
+#### Scenario: Coordinated search across 3 bots
+- GIVEN a WIDE_SEARCH directive form is open with target "diamond_ore"
+- WHEN the user selects 3 bots and clicks "Search with 3 bots"
+- THEN 3 WIDE_SEARCH directives are sent, each with the same target and center
+- AND bot_index is 0, 1, 2 respectively and bot_count is 3 for all three
+
+### Requirement: Directive Descriptions and Hints
+Each directive type MUST display a description explaining what it does. Individual parameters MUST show hint text explaining their purpose. Dict-type parameters with options MUST render as labeled dropdowns.
+
+#### Scenario: WIDE_SEARCH form shows helpful labels
+- GIVEN the WIDE_SEARCH directive is selected
+- WHEN the form renders
+- THEN the description explains expanding-cube search with parallel bot support
+- AND the "Max search radius" dropdown shows labels like "512 blocks (default)"
+- AND the search target field shows a hint about fuzzy matching
 
 ### Requirement: Data Browser
 The data browser MUST provide tabbed views for:

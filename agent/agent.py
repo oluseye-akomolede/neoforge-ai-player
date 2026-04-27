@@ -488,6 +488,16 @@ class BotRunner:
                           (f" (+1 for first {remainder})" if remainder else "") +
                           f": {[(s['assign'], s['step'][:50]) for s in orch_steps]}")
 
+                # Inject grid-slicing info for coordinated WIDE_SEARCH steps
+                ws_count = sum(1 for s in orch_steps if re.search(r"wide\s+search", s["step"], re.IGNORECASE))
+                if ws_count > 1:
+                    ws_idx = 0
+                    for s in orch_steps:
+                        if re.search(r"wide\s+search", s["step"], re.IGNORECASE):
+                            s["step"] = f"{s['step']} [grid {ws_idx}/{ws_count}]"
+                            ws_idx += 1
+                    print(f"[{self.name}/orchestrator] Injected grid slicing for {ws_count} WIDE_SEARCH steps")
+
                 my_steps = []
                 # Group steps by assigned bot for batch delegation
                 bot_steps = {}  # bot_name -> [(step_desc, spec), ...]
@@ -1126,6 +1136,23 @@ class BotRunner:
                     "type": "TELEPORT", "x": x, "y": y, "z": z,
                     "extra": {"dimension": dimension},
                 }
+
+        # Wide search
+        ws_match = re.search(
+            r"wide\s+search\s+(?:for\s+)?(?:minecraft:)?(\S+?)(?:\s+\(entity\))?(?:\s+\[grid\s+(\d+)/(\d+)\])?$",
+            text, re.IGNORECASE)
+        if ws_match:
+            target = ws_match.group(1).rstrip(",.")
+            search_type = "entity" if "(entity)" in text.lower() else "block"
+            extra = {"search_type": search_type, "radius": "512"}
+            if ws_match.group(2) is not None:
+                extra["bot_index"] = ws_match.group(2)
+                extra["bot_count"] = ws_match.group(3)
+            return {
+                "type": "WIDE_SEARCH",
+                "target": target,
+                "extra": extra,
+            }
 
         # Goto coordinates (x, y, z pattern)
         coord_match = re.search(r"(-?\d+)[,\s]+(-?\d+)[,\s]+(-?\d+)", text)
@@ -2094,6 +2121,21 @@ Respond with ONLY a JSON array. Example:
                 return api.find_blocks(bot, p["block"], p.get("radius", 32), p.get("max", 10))
             case "find_entities":
                 return api.find_entities(bot, p["target"], p.get("radius", 32.0))
+            case "wide_search":
+                target = p.get("target", "")
+                if not target:
+                    return {"error": "wide_search requires a target"}
+                pos = api.status(bot).get("position", {})
+                sx = p.get("x", pos.get("x", 0))
+                sy = p.get("y", pos.get("y", 64))
+                sz = p.get("z", pos.get("z", 0))
+                extra = {
+                    "search_type": p.get("search_type", "block"),
+                    "bot_index": str(p.get("bot_index", 0)),
+                    "bot_count": str(p.get("bot_count", 1)),
+                    "radius": str(p.get("radius", 512)),
+                }
+                return api.set_directive(bot, "WIDE_SEARCH", target=target, x=sx, y=sy, z=sz, extra=extra)
             case "container":
                 return api.container(bot, p["x"], p["y"], p["z"])
             case "container_insert":

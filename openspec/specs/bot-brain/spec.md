@@ -36,6 +36,7 @@ The system MUST support the following directive types:
 | CONTAINER_WITHDRAW | ContainerWithdrawBehavior | Find container → path → extract |
 | CONTAINER_PLACE | ContainerPlaceBehavior | Conjure and place a container |
 | CONTAINER_SEARCH | ContainerSearchBehavior | Scan containers for items |
+| WIDE_SEARCH | WideSearchBehavior | Expanding-cube coordinated search with checkerboard grid |
 | IDLE | IdleBehavior | Default state, always returns RUNNING |
 
 #### Scenario: Directive mapped to correct behavior

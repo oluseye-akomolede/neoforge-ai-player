@@ -30,7 +30,7 @@ The mod MUST expose endpoints across all listed categories to provide full bot c
 | Chat | 3 | /chat, /system_chat, /inject_chat |
 | Directives | 3 | GET/POST/DELETE /bot/{name}/directive |
 | Registries | 7 | /transmute/*, /containers/*, /bot/{name}/nearby_containers |
-| Server | 2 | /health, /server/dimensions |
+| Server | 3 | /health, /server/dimensions, /server/players |
 
 #### Scenario: Agent creates a bot via lifecycle endpoint
 - GIVEN the mod API is running
@@ -128,6 +128,24 @@ The dashboard MUST serve a directive catalog at GET /api/directives listing all 
 - WHEN a client sends GET /api/directives
 - THEN the response MUST contain all 16 directive types
 - AND each directive entry MUST include parameter definitions for UI form generation
+
+### Requirement: Online Players Endpoint
+GET /server/players MUST return a list of online human players (excluding bots). Each entry includes name, position (x, y, z), dimension, gamemode, and health. The handler MUST run on the server thread via CompletableFuture for tick safety.
+
+#### Scenario: Agent fetches online players
+- GIVEN two human players are connected and three bots are spawned
+- WHEN the agent sends GET /server/players
+- THEN the response contains exactly two player entries (bots are filtered out)
+- AND each entry includes name, x, y, z, dimension, gamemode, and health
+
+### Requirement: Dashboard Players Proxy
+The dashboard MUST expose GET /api/players that proxies the mod's /server/players endpoint, returning player positions for map rendering and coordinate picking.
+
+#### Scenario: Dashboard fetches player positions
+- GIVEN the dashboard is connected to the mod API
+- WHEN a client sends GET /api/players
+- THEN the response contains the same player list as /server/players
+- AND if the mod API is unreachable, the response returns an empty list
 
 ### Requirement: Dynamic Dimensions
 The teleport directive dropdown MUST fetch live dimension names from GET /api/dimensions (proxied from /server/dimensions) with fallback to vanilla three (overworld, nether, end).
