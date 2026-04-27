@@ -111,13 +111,22 @@ WebSocket `/ws/events` MUST stream events from a ring buffer (200 events). Event
 - THEN the client MUST receive the event with its type and payload
 - AND the ring buffer MUST retain up to 200 events
 
+### Requirement: Scan Data Endpoint
+GET /bot/{name}/scan_data MUST drain accumulated block scan data from the active behavior's ProgressReport and return it with the current dimension. This enables the agent to feed mapping data into the terrain database.
+
+#### Scenario: Agent drains scan data from wide search
+- GIVEN a WideSearchBehavior is running and has recorded 50 notable blocks
+- WHEN the agent sends GET /bot/{name}/scan_data
+- THEN the response MUST contain the 50 block records with x, y, z, and block_id
+- AND the scan data buffer MUST be cleared so subsequent calls return only new data
+
 ### Requirement: Dashboard Directive Catalog
-The dashboard MUST serve a directive catalog at GET /api/directives listing all 15 available directive types (MINE, CRAFT, SMELT, CHANNEL, ENCHANT, BREW, FOLLOW, GOTO, TELEPORT, COMBAT, FARM, BUILD, SEND_ITEM, CONTAINER_PLACE, CONTAINER_STORE, CONTAINER_WITHDRAW) with parameter definitions for UI form generation.
+The dashboard MUST serve a directive catalog at GET /api/directives listing all 16 available directive types (MINE, CRAFT, SMELT, CHANNEL, ENCHANT, BREW, FOLLOW, GOTO, TELEPORT, COMBAT, FARM, BUILD, SEND_ITEM, WIDE_SEARCH, CONTAINER_PLACE, CONTAINER_STORE, CONTAINER_WITHDRAW) with parameter definitions for UI form generation.
 
 #### Scenario: Dashboard returns directive catalog
 - GIVEN the dashboard API is running
 - WHEN a client sends GET /api/directives
-- THEN the response MUST contain all 15 directive types
+- THEN the response MUST contain all 16 directive types
 - AND each directive entry MUST include parameter definitions for UI form generation
 
 ### Requirement: Dynamic Dimensions

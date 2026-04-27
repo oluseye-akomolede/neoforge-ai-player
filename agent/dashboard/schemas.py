@@ -182,6 +182,24 @@ DIRECTIVE_CATALOG = [
         ],
     },
     {
+        "type": "WIDE_SEARCH",
+        "label": "Wide Search",
+        "params": [
+            {"name": "target", "type": "string", "label": "Block or entity name", "required": True},
+            {"name": "x", "type": "float", "label": "Center X", "required": True},
+            {"name": "y", "type": "float", "label": "Center Y", "required": True},
+            {"name": "z", "type": "float", "label": "Center Z", "required": True},
+            {"name": "radius", "type": "float", "label": "Max radius", "required": False, "default": 512},
+            {"name": "extra", "type": "dict", "label": "Options", "required": False,
+             "fields": [
+                 {"name": "search_type", "type": "string", "label": "Type",
+                  "options": ["block", "entity"], "default": "block"},
+                 {"name": "bot_index", "type": "string", "label": "Bot index (0-based)", "default": "0"},
+                 {"name": "bot_count", "type": "string", "label": "Total bots in search", "default": "1"},
+             ]},
+        ],
+    },
+    {
         "type": "CONTAINER_PLACE",
         "label": "Place Container",
         "params": [

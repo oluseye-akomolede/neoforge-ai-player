@@ -20,5 +20,6 @@ public enum DirectiveType {
     CONTAINER_WITHDRAW,
     TELEPORT,
     IDLE,
-    PATROL
+    PATROL,
+    WIDE_SEARCH
 }

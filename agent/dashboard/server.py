@@ -146,6 +146,57 @@ def create_app() -> FastAPI:
         except Exception as e:
             return {"status": "error", "detail": str(e)}
 
+    # ── REST: bot profile (export / import) ──
+
+    @app.get("/api/bots/{name}/profile")
+    async def get_bot_profile(name: str):
+        runner = _get_runner(name)
+        if not runner:
+            return {"error": "bot not found"}
+        return {"profile": runner.profile}
+
+    @app.post("/api/bots/{name}/profile")
+    async def set_bot_profile(name: str, body: dict):
+        runner = _get_runner(name)
+        if not runner:
+            return {"error": "bot not found"}
+        profile_data = body.get("profile", body)
+        runner.profile = profile_data
+        import prompts
+        runner.system_prompt = prompts.build_system_prompt(
+            runner.profile, runner.memory_entries
+        )
+        return {"status": "profile_updated", "name": profile_data.get("name", name)}
+
+    # ── REST: bulk memory import ──
+
+    @app.post("/api/bots/{name}/memories/import")
+    async def import_bot_memories(name: str, body: dict):
+        runner = _get_runner(name)
+        if not runner or not runner.semantic_mem:
+            return {"status": "error", "detail": "semantic memory unavailable"}
+        memories = body.get("memories", [])
+        imported = 0
+        skipped = 0
+        for mem in memories:
+            content = mem.get("content", "")
+            category = mem.get("category", "knowledge")
+            metadata = mem.get("metadata", {})
+            if not content:
+                skipped += 1
+                continue
+            try:
+                mid = await asyncio.to_thread(
+                    runner.semantic_mem.store, content, category=category, metadata=metadata
+                )
+                if mid is not None:
+                    imported += 1
+                else:
+                    skipped += 1
+            except Exception:
+                skipped += 1
+        return {"status": "imported", "imported": imported, "skipped": skipped, "total": len(memories)}
+
     # ── REST: send chat command (goes through orchestrator) ──
 
     @app.post("/api/command")

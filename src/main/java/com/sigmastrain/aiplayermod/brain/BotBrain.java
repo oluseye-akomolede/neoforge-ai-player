@@ -123,6 +123,7 @@ public class BotBrain {
             case CONTAINER_STORE -> new ContainerStoreBehavior();
             case CONTAINER_WITHDRAW -> new ContainerWithdrawBehavior();
             case TELEPORT -> new TeleportBehavior();
+            case WIDE_SEARCH -> new WideSearchBehavior();
             case IDLE -> idleBehavior;
             default -> idleBehavior;
         };

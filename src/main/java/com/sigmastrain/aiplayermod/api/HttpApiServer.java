@@ -14,6 +14,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 
 import java.io.*;
@@ -217,7 +218,36 @@ public class HttpApiServer {
                     sendJson(exchange, 200, Map.of("status", "teleported"));
                 }
             }
-            case "inventory" -> sendJson(exchange, 200, Map.of("inventory", bot.getCachedInventory()));
+            case "inventory" -> {
+                if ("POST".equals(exchange.getRequestMethod())) {
+                    var items = body.getAsJsonArray("items");
+                    var future = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                    BotManager.getServer().execute(() -> {
+                        var player = bot.getPlayer();
+                        player.getInventory().clearContent();
+                        int restored = 0;
+                        for (var elem : items) {
+                            var obj = elem.getAsJsonObject();
+                            int slot = obj.get("slot").getAsInt();
+                            String itemId = obj.get("item_id").getAsString();
+                            int count = obj.has("count") ? obj.get("count").getAsInt() : 1;
+                            var item = BuiltInRegistries.ITEM.get(ResourceLocation.parse(itemId));
+                            if (item != Items.AIR && slot >= 0 && slot < player.getInventory().getContainerSize()) {
+                                var stack = new ItemStack(item, count);
+                                if (obj.has("nbt") && obj.get("nbt").isJsonObject()) {
+                                    // NBT restoration could be expanded for enchantments etc.
+                                }
+                                player.getInventory().setItem(slot, stack);
+                                restored++;
+                            }
+                        }
+                        future.complete(Map.of("status", "inventory_restored", "items_set", restored));
+                    });
+                    sendJson(exchange, 200, future.join());
+                } else {
+                    sendJson(exchange, 200, Map.of("inventory", bot.getCachedInventory()));
+                }
+            }
             case "entities" -> sendJson(exchange, 200, Map.of("entities", bot.getCachedEntities()));
             case "blocks" -> sendJson(exchange, 200, Map.of("blocks", bot.getCachedBlocks()));
             case "actions" -> {
@@ -552,6 +582,29 @@ public class HttpApiServer {
                 var brainFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
                 BotManager.getServer().execute(() -> brainFuture.complete(bot.getBrain().toMap()));
                 sendJson(exchange, 200, brainFuture.join());
+            }
+            case "scan_data" -> {
+                var sdFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    var brainMap = bot.getBrain().toMap();
+                    var progressObj = brainMap.get("progress");
+                    // Access the live progress report to drain scan data
+                    try {
+                        var brainField = bot.getBrain().getClass().getDeclaredField("activeBehavior");
+                        brainField.setAccessible(true);
+                        var behavior = (com.sigmastrain.aiplayermod.brain.behavior.Behavior) brainField.get(bot.getBrain());
+                        if (behavior != null) {
+                            var data = behavior.getProgress().drainScanData();
+                            var dim = bot.getPlayer().level().dimension().location().toString();
+                            sdFuture.complete(Map.of("blocks", data, "dimension", dim, "count", data.size()));
+                        } else {
+                            sdFuture.complete(Map.of("blocks", java.util.List.of(), "count", 0));
+                        }
+                    } catch (Exception e) {
+                        sdFuture.complete(Map.of("blocks", java.util.List.of(), "count", 0, "error", e.getMessage()));
+                    }
+                });
+                sendJson(exchange, 200, sdFuture.join());
             }
             case "surface_scan" -> {
                 int radius = body.has("radius") ? body.get("radius").getAsInt() : 12;

@@ -109,3 +109,42 @@ All behaviors MUST respect the following timing constants:
 - GIVEN a GotoBehavior navigating to distant coordinates
 - WHEN 600 ticks elapse without arriving
 - THEN the behavior MUST return FAILED with a timeout reason
+
+### Requirement: Wide Search Behavior
+WideSearchBehavior MUST implement a coordinated expanding-cube search across one or more bots. Each bot searches a deterministic X-axis sector of the cube. The behavior MUST support searching for both blocks and entities with fuzzy name matching.
+
+#### Scenario: Single-bot wide search finds a block
+- GIVEN a WideSearchBehavior with target "diamond_ore" at center (0, 64, 0)
+- WHEN the bot scans expanding shells (32 → 64 → 128 → 256 → 512 → 1024)
+- THEN blocks matching "diamond_ore" (including deepslate variants) are detected
+- AND the bot navigates to the found block and reports its position
+
+#### Scenario: Multi-bot coordinated search
+- GIVEN 3 bots each receive a WIDE_SEARCH directive with the same center and target
+- WHEN bot_index=0, 1, 2 and bot_count=3 are specified in the extra params
+- THEN each bot searches a distinct 1/3 slice of the X-axis range
+- AND no two bots scan the same region
+
+#### Scenario: Fuzzy entity matching
+- GIVEN a WideSearchBehavior with search_type=entity and target "cow"
+- WHEN scanning entities in the sector
+- THEN entities whose type ID or display name contains "cow" are matched
+- AND typos within Levenshtein distance of 25% of the query length are tolerated
+
+### Requirement: Wide Search Mapping Data
+WideSearchBehavior MUST record notable blocks (ores, containers, spawners) encountered during scanning into the ProgressReport scan data buffer. The agent MUST be able to drain this data via GET /bot/{name}/scan_data to feed it into the terrain database.
+
+#### Scenario: Ores discovered during search
+- GIVEN a WideSearchBehavior scanning for "ancient_debris"
+- WHEN iron_ore and diamond_ore blocks are encountered during the scan
+- THEN those blocks are recorded in the progress report scan data
+- AND the agent can poll /bot/{name}/scan_data to retrieve and store them
+
+### Requirement: Wide Search Tick Safety
+All world reads in WideSearchBehavior MUST execute on the server tick thread. The behavior runs inside BotBrain.tick() which is called from ServerTickEvent.Post, ensuring tick safety. The per-tick scan budget MUST be capped to prevent tick overruns.
+
+#### Scenario: Scan budget prevents lag
+- GIVEN a WideSearchBehavior scanning a large area
+- WHEN the scan loop runs on a server tick
+- THEN at most 2048 blocks are checked per tick
+- AND the server tick rate is not degraded

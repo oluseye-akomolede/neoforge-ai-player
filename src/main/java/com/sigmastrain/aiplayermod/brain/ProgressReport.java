@@ -5,10 +5,12 @@ import java.util.*;
 public class ProgressReport {
     private final Map<String, Integer> counters = new LinkedHashMap<>();
     private final List<String> eventLog = new ArrayList<>();
+    private final List<Map<String, Object>> scanData = new ArrayList<>();
     private String phase = "idle";
     private String failureReason;
 
     private static final int MAX_EVENTS = 50;
+    private static final int MAX_SCAN_DATA = 500;
 
     public void increment(String key) {
         counters.merge(key, 1, Integer::sum);
@@ -37,6 +39,19 @@ public class ProgressReport {
         }
     }
 
+    public void recordBlock(int x, int y, int z, String blockId) {
+        if (scanData.size() < MAX_SCAN_DATA) {
+            scanData.add(Map.of("x", x, "y", y, "z", z, "block", blockId));
+        }
+    }
+
+    public List<Map<String, Object>> drainScanData() {
+        if (scanData.isEmpty()) return List.of();
+        var copy = new ArrayList<>(scanData);
+        scanData.clear();
+        return copy;
+    }
+
     public void setFailureReason(String reason) {
         this.failureReason = reason;
     }
@@ -44,6 +59,7 @@ public class ProgressReport {
     public void reset() {
         counters.clear();
         eventLog.clear();
+        scanData.clear();
         phase = "idle";
         failureReason = null;
     }
@@ -57,6 +73,7 @@ public class ProgressReport {
             map.put("recent_events", new ArrayList<>(eventLog.subList(start, eventLog.size())));
         }
         if (failureReason != null) map.put("failure_reason", failureReason);
+        if (!scanData.isEmpty()) map.put("scan_data_pending", scanData.size());
         return map;
     }
 }
