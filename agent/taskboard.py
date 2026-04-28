@@ -267,6 +267,25 @@ class TaskBoard:
         with self._lock:
             return [dict(t) for t in self._cache[:limit]]
 
+    def list_recent(self, limit=50):
+        """List all recent tasks from postgres (all statuses)."""
+        with self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT * FROM task_board
+                ORDER BY created_at DESC
+                LIMIT %s
+            """, (limit,))
+            return [dict(r) for r in cur.fetchall()]
+
+    def delete_task(self, task_id):
+        """Delete a single task by id."""
+        with self._conn.cursor() as cur:
+            cur.execute("DELETE FROM task_board WHERE id = %s", (task_id,))
+            deleted = cur.rowcount > 0
+        if deleted:
+            self._remove_from_cache(task_id)
+        return deleted
+
     def cleanup_stale(self, max_age_seconds=300):
         """Release tasks that have been assigned/in_progress too long.
         Hits postgres and refreshes cache."""

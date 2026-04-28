@@ -6,6 +6,7 @@ import BotDetail from './components/BotDetail'
 import CommandBar from './components/CommandBar'
 import DirectivePanel from './components/DirectivePanel'
 import EventLog from './components/EventLog'
+import TaskBoard, { useTasks } from './components/TaskBoard'
 import WorldMap from './components/WorldMap'
 import DataBrowser from './components/DataBrowser'
 
@@ -43,6 +44,7 @@ function AppInner() {
   const [selectedBot, setSelectedBot] = useState<string | null>(null)
   const [centerBot, setCenterBot] = useState<string | null>(null)
 
+  const [tasks, refreshTasks] = useTasks()
   const bots = state ? Object.values(state.bots) : []
   const activeBotData = selectedBot && state?.bots[selectedBot] ? state.bots[selectedBot] : null
 
@@ -103,9 +105,10 @@ function AppInner() {
             <EventLog events={events} />
           </div>
 
-          {/* Right: Directives + Data */}
+          {/* Right: Directives + Tasks + Data */}
           <div className="lg:w-80 shrink-0 space-y-4">
             <DirectivePanel selectedBot={selectedBot} botData={activeBotData} allBots={bots} />
+            <TaskBoard tasks={tasks} onRefresh={refreshTasks} />
             <DataBrowser selectedBot={selectedBot} />
           </div>
         </div>

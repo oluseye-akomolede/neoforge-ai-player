@@ -285,8 +285,42 @@ def create_app() -> FastAPI:
         if not _taskboard:
             return {"tasks": [], "error": "task board unavailable"}
         try:
-            tasks = _taskboard.list_active(limit=50)
+            tasks = await asyncio.to_thread(_taskboard.list_recent, 50)
             return {"tasks": tasks}
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app.delete("/api/tasks/{task_id}")
+    async def delete_task(task_id: int):
+        if not _taskboard:
+            return {"error": "task board unavailable"}
+        try:
+            ok = await asyncio.to_thread(_taskboard.delete_task, task_id)
+            if ok:
+                shared_state.push_event({"type": "task_deleted", "task_id": task_id, "source": "dashboard"})
+            return {"ok": ok}
+        except Exception as e:
+            return {"error": str(e)}
+
+    # ── REST: reset all bots ──
+
+    @app.post("/api/reset")
+    async def reset_all():
+        if not _api_module:
+            return {"error": "agent not connected"}
+        snap = shared_state.snapshot()
+        bot_names = list(snap["bots"].keys())
+        if not bot_names:
+            return {"error": "no bots online"}
+        try:
+            for bot_name in bot_names:
+                await asyncio.to_thread(_api_module.inject_chat, bot_name, "dashboard", "/aibot reset")
+            shared_state.push_event({
+                "type": "reset",
+                "source": "dashboard",
+                "bots": bot_names,
+            })
+            return {"ok": True, "reset_bots": bot_names}
         except Exception as e:
             return {"error": str(e)}
 

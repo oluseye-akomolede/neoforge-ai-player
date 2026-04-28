@@ -1689,12 +1689,20 @@ Respond with ONLY a JSON array. Example:
                     self._l1_failed_steps = set()
                     self._current_task_id = None
                     self._awaiting_taskboard = False
+                    self._following_player = None
                     self.conversation_history.clear()
                     if _task_board:
                         try:
                             _task_board.clear_all()
                         except Exception:
                             pass
+                    with _orchestration_lock:
+                        _orchestrated_messages.clear()
+                    try:
+                        api.cancel_directive(self.name)
+                        api.stop(self.name)
+                    except Exception:
+                        pass
                     new_msgs = [m for m in new_msgs if "RESET:" not in m]
                     continue
 
