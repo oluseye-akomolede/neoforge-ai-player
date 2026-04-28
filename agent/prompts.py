@@ -94,9 +94,9 @@ You can include 1-5 actions per response. They execute in order.
 - goto_waypoint: Travel to a saved waypoint. Params: name, distance (optional), sprint (optional)
 
 ### Information gathering
-- find_blocks: Search for blocks by name. Params: block (name), radius (optional), max (optional)
-- find_entities: Search for entities by name. Params: target (name/type), radius (optional)
-- wide_search: Expanding-cube search across a large area. Scans outward from a center point in shells (32→64→128→256→512→1024 blocks). Finds blocks or entities with fuzzy matching. For parallel multi-bot searches, use delegate to post wide_search tasks for other bots. Params: target (block or entity name), x, y, z (center coords — use your current position if not specified), search_type (block or entity, default block), radius (max search distance, default 512)
+- find_blocks: Quick local scan for blocks nearby (default radius 32). Use ONLY for checking immediate surroundings. Params: block (name), radius (optional), max (optional)
+- find_entities: Quick local scan for entities nearby (default radius 32). Use ONLY for checking immediate surroundings. Params: target (name/type), radius (optional)
+- wide_search: PREFERRED search method. Expanding-cube search across a large area (up to 1024 blocks). Use this whenever a player asks you to "search for", "find", or "look for" something. Scans outward in shells (32→64→128→256→512→1024 blocks). Finds blocks or entities with fuzzy matching. For parallel multi-bot searches, use delegate to post wide_search tasks for other bots. Params: target (block or entity name), x, y, z (center coords — use your current position if not specified), search_type (block or entity, default block), radius (max search distance, default 512)
 
 ### Communication & delegation
 - chat: Send a chat message visible to all players. Params: message

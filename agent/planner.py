@@ -59,7 +59,7 @@ IF the player gives a vague or high-level goal (e.g. "get me iron gear" or "set 
 - Use "send_item" to transfer items to another bot (works at any distance, across dimensions)
 - Use "shop_buy" to purchase items from the bot shop (costs emeralds)
 - Use "goto_waypoint" to travel to saved locations
-- Use "wide_search diamond_ore" to search a large area for blocks or entities (expands outward in shells)
+- ALWAYS use "Wide search for X" when asked to search, find, or look for blocks or entities. NEVER use find_blocks or find_entities for search tasks
 - For parallel multi-bot searching, delegate wide_search tasks to other bots with different bot_index values
 
 ## Examples
