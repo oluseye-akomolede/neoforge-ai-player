@@ -1,0 +1,140 @@
+name: night-watch
+description: >
+  2-hour combat endurance test. Bot equips for battle, then fights hostile
+  mobs through multiple night cycles. Tests combat AI, health management
+  through eating, target prioritization, and the ability to sustain
+  engagement over long periods without dying or getting stuck.
+
+goal: >
+  End state: iron sword, 24+ rotten flesh, 16+ bones, 8+ string,
+  6+ gunpowder, 8+ arrows. Proves sustained multi-cycle mob combat.
+
+world:
+  type: normal
+  settings:
+    spawn_animals: "true"
+    spawn_monsters: "true"
+    difficulty: "normal"
+
+ttl: 7200
+halt_on_failure: false
+
+bots:
+  - image: null
+
+steps:
+  # === PHASE 1: ARM UP ===
+  # Get basic weapons and food before the first night.
+  # Minecraft day lasts 10 minutes, so the bot has time.
+
+  - phase: equip
+    instruction: "Gather wood, craft a crafting table, and craft a wooden sword and a wooden shield."
+    timeout: 300
+    success:
+      inventory_contains:
+        item: "minecraft:wooden_sword"
+        min_count: 1
+
+  - phase: equip
+    instruction: "Mine cobblestone and craft a stone sword. Also craft some torches."
+    timeout: 600
+    success:
+      inventory_contains:
+        item: "minecraft:stone_sword"
+        min_count: 1
+
+  - phase: equip
+    instruction: "Hunt a few animals for food and cook the meat. You need food to heal during combat. Get at least 8 cooked meat."
+    timeout: 600
+    success:
+      inventory_contains:
+        item: "cooked_"
+        min_count: 8
+
+  # === PHASE 2: FIRST NIGHT ===
+  # Mobs spawn at night on the surface. Fight zombies and skeletons.
+  # Night lasts ~7 minutes, then mobs burn at dawn.
+
+  - phase: first-night
+    instruction: "Fight hostile mobs — zombies, skeletons, and spiders. Eat food when your health is low. Collect at least 8 rotten flesh from zombies."
+    timeout: 900
+    success:
+      inventory_contains:
+        item: "minecraft:rotten_flesh"
+        min_count: 8
+
+  - phase: first-night
+    instruction: "Continue fighting. Target skeletons and collect at least 8 bones."
+    timeout: 900
+    success:
+      inventory_contains:
+        item: "minecraft:bone"
+        min_count: 8
+
+  # === PHASE 3: UPGRADE AND SUSTAIN ===
+  # Between nights, mine iron for better equipment.
+  # Then fight through more nights with upgraded gear.
+
+  - phase: upgrade
+    instruction: "Mine iron ore underground, smelt it, and craft an iron sword. Also craft iron armor if you have enough ingots."
+    timeout: 900
+    success:
+      inventory_contains:
+        item: "minecraft:iron_sword"
+        min_count: 1
+
+  - phase: upgrade
+    instruction: "Hunt more animals and cook meat. Restock to at least 16 cooked meat for the longer fights ahead."
+    timeout: 600
+    success:
+      inventory_contains:
+        item: "cooked_"
+        min_count: 16
+
+  # === PHASE 4: EXTENDED COMBAT ===
+  # Multiple night cycles of sustained fighting. Higher drop thresholds
+  # force the bot to survive and fight across several in-game nights.
+
+  - phase: extended-combat
+    instruction: "Fight hostile mobs aggressively through the night. Kill spiders and collect at least 8 string."
+    timeout: 900
+    success:
+      inventory_contains:
+        item: "minecraft:string"
+        min_count: 8
+
+  - phase: extended-combat
+    instruction: "Hunt creepers carefully — hit them and back away before they explode. Collect at least 6 gunpowder."
+    timeout: 1200
+    success:
+      inventory_contains:
+        item: "minecraft:gunpowder"
+        min_count: 6
+
+  - phase: extended-combat
+    instruction: "Keep fighting all hostile mobs. Collect at least 8 arrows from skeleton drops."
+    timeout: 900
+    success:
+      inventory_contains:
+        item: "minecraft:arrow"
+        min_count: 8
+
+  # === PHASE 5: ENDURANCE CHECK ===
+  # Final high-threshold checks. The bot needs cumulative drops from
+  # many fights — proves it stayed alive and active through multiple cycles.
+
+  - phase: endurance
+    instruction: "Continue hunting all hostile mobs through the night. Accumulate at least 24 rotten flesh total."
+    timeout: 1200
+    success:
+      inventory_contains:
+        item: "minecraft:rotten_flesh"
+        min_count: 24
+
+  - phase: endurance
+    instruction: "Final push — fight through one more night. Accumulate at least 16 bones total."
+    timeout: 1200
+    success:
+      inventory_contains:
+        item: "minecraft:bone"
+        min_count: 16

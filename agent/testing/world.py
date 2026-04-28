@@ -11,6 +11,14 @@ TEMPLATE_PATH = Path(__file__).resolve().parent / "pod-template.yaml"
 NAMESPACE = "minecraft-test"
 DEFAULT_TTL = 1800
 
+WORLD_TYPE_ENV: dict[str, dict[str, str]] = {
+    "flat": {},
+    "normal": {
+        "LEVEL_TYPE": "minecraft:normal",
+        "SPAWN_ANIMALS": "true",
+    },
+}
+
 
 @dataclass
 class TestWorld:
@@ -35,15 +43,37 @@ def _load_template() -> dict:
         return yaml.safe_load(f)
 
 
-def create_world(name: str, ttl: int = DEFAULT_TTL) -> TestWorld:
+def _patch_mc_env(pod: dict, overrides: dict[str, str]):
+    """Override mc-server container env vars in-place."""
+    for container in pod["spec"]["containers"]:
+        if container["name"] == "mc-server":
+            for entry in container.get("env", []):
+                name = entry.get("name")
+                if name in overrides and "value" in entry:
+                    entry["value"] = overrides[name]
+            break
+
+
+def create_world(
+    name: str,
+    ttl: int = DEFAULT_TTL,
+    world_type: str = "flat",
+    world_settings: dict[str, str] | None = None,
+) -> TestWorld:
     world = TestWorld(name=name)
     pod = _load_template()
 
     pod["metadata"]["name"] = world.pod_name
     pod["metadata"]["annotations"]["test-world/ttl"] = str(ttl)
 
+    env_overrides = WORLD_TYPE_ENV.get(world_type, {}).copy()
+    if world_settings:
+        for k, v in world_settings.items():
+            env_overrides[k.upper()] = str(v)
+    if env_overrides:
+        _patch_mc_env(pod, env_overrides)
+
     manifest = yaml.dump(pod)
-    result = _kubectl("apply", "-n", world.namespace, "-f", "-", capture=True)
     proc = subprocess.run(
         ["kubectl", "apply", "-n", world.namespace, "-f", "-"],
         input=manifest, capture_output=True, text=True, timeout=30,
@@ -51,7 +81,7 @@ def create_world(name: str, ttl: int = DEFAULT_TTL) -> TestWorld:
     if proc.returncode != 0:
         raise RuntimeError(f"Failed to create pod: {proc.stderr}")
 
-    print(f"[test-world] Created pod {world.pod_name}")
+    print(f"[test-world] Created pod {world.pod_name} (type={world_type})")
     return world
 
 

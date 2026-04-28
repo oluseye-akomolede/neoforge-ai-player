@@ -1,0 +1,197 @@
+name: operation-basecamp
+description: >
+  4-hour endurance test: solo bot progresses from bare hands through the
+  full survival tech tree on a normal world. Tests sustained autonomous
+  gameplay, multi-step planning, inventory management, and recovery from
+  hostile mobs across 7 phases and 18 milestones.
+
+goal: >
+  End state: diamond pickaxe, diamond sword, iron armor, 32+ cooked food,
+  10+ gold ingots, 32+ redstone, 16+ lapis lazuli.
+
+world:
+  type: normal
+  settings:
+    spawn_animals: "true"
+    spawn_monsters: "true"
+    difficulty: "normal"
+
+ttl: 14400
+halt_on_failure: false
+
+bots:
+  - image: null
+
+steps:
+  # === PHASE 1: WOOD AGE ===
+  # Bot starts with nothing. Must find trees, punch them, get logs.
+  # Tests: basic navigation, block breaking, item pickup.
+
+  - phase: wood-age
+    instruction: "Look around for trees and chop them. Collect at least 16 logs."
+    timeout: 600
+    success:
+      inventory_contains:
+        item: "_log"
+        min_count: 16
+
+  - phase: wood-age
+    instruction: "Convert logs into planks, then craft a crafting table, a wooden pickaxe, a wooden axe, and a wooden sword."
+    timeout: 300
+    success:
+      inventory_contains:
+        item: "minecraft:wooden_pickaxe"
+        min_count: 1
+
+  # === PHASE 2: STONE AGE ===
+  # Bot digs underground and mines cobblestone. Upgrades tools.
+  # Tests: vertical navigation, sustained mining, crafting chains.
+
+  - phase: stone-age
+    instruction: "Dig underground and mine at least 48 cobblestone."
+    timeout: 600
+    success:
+      inventory_contains:
+        item: "minecraft:cobblestone"
+        min_count: 48
+
+  - phase: stone-age
+    instruction: "Craft a stone pickaxe, a stone sword, and a stone axe."
+    timeout: 300
+    success:
+      inventory_contains:
+        item: "minecraft:stone_pickaxe"
+        min_count: 1
+
+  - phase: stone-age
+    instruction: "Craft a furnace and a chest."
+    timeout: 300
+    success:
+      inventory_contains:
+        item: "minecraft:furnace"
+        min_count: 1
+
+  # === PHASE 3: INFRASTRUCTURE ===
+  # Coal for fuel and torches. Foundation for smelting and light.
+  # Tests: ore identification, resource planning.
+
+  - phase: infrastructure
+    instruction: "Mine coal ore underground. Collect at least 16 coal."
+    timeout: 600
+    success:
+      inventory_contains:
+        item: "minecraft:coal"
+        min_count: 16
+
+  - phase: infrastructure
+    instruction: "Craft at least 32 torches from coal and sticks."
+    timeout: 300
+    success:
+      inventory_contains:
+        item: "minecraft:torch"
+        min_count: 32
+
+  # === PHASE 4: IRON AGE ===
+  # Mine, smelt, and craft iron equipment. Major capability unlock.
+  # Tests: deep mining, furnace operation, multi-step crafting, L3 plan depth.
+
+  - phase: iron-age
+    instruction: "Mine iron ore deep underground. Dig to y-level 16 or below where iron is common. Collect at least 24 raw iron."
+    timeout: 1200
+    success:
+      inventory_contains:
+        item: "minecraft:raw_iron"
+        min_count: 24
+
+  - phase: iron-age
+    instruction: "Smelt all your raw iron into iron ingots using the furnace and coal as fuel. You need at least 24 iron ingots."
+    timeout: 600
+    success:
+      inventory_contains:
+        item: "minecraft:iron_ingot"
+        min_count: 24
+
+  - phase: iron-age
+    instruction: "Craft an iron pickaxe, an iron sword, and an iron axe."
+    timeout: 300
+    success:
+      inventory_contains:
+        item: "minecraft:iron_pickaxe"
+        min_count: 1
+
+  - phase: iron-age
+    instruction: "Craft iron armor: a chestplate and a helmet. The chestplate costs 8 iron ingots and the helmet costs 5."
+    timeout: 300
+    success:
+      inventory_contains:
+        item: "minecraft:iron_chestplate"
+        min_count: 1
+
+  # === PHASE 5: SELF-SUFFICIENCY ===
+  # Hunt, cook, and craft utility items. Bot must manage hunger and health.
+  # Tests: entity tracking, combat, furnace reuse, utility crafting.
+
+  - phase: self-sufficiency
+    instruction: "Hunt animals — cows, pigs, chickens, or sheep — to collect raw meat. Cook the meat in a furnace. Get at least 32 cooked meat total."
+    timeout: 1200
+    success:
+      inventory_contains:
+        item: "cooked_"
+        min_count: 32
+
+  - phase: self-sufficiency
+    instruction: "Craft a shield and a bucket."
+    timeout: 300
+    success:
+      inventory_contains:
+        item: "minecraft:shield"
+        min_count: 1
+
+  # === PHASE 6: DIAMOND AGE ===
+  # Deep underground mining for diamonds. Highest-value objective.
+  # Tests: deep navigation (y -59), sustained underground operation, rare ore location.
+
+  - phase: diamond-age
+    instruction: "Mine deep underground to y-level -59 where diamonds are most common. Dig a branch mine if needed. Collect at least 5 diamonds."
+    timeout: 1800
+    success:
+      inventory_contains:
+        item: "minecraft:diamond"
+        min_count: 5
+
+  - phase: diamond-age
+    instruction: "Craft a diamond pickaxe and a diamond sword."
+    timeout: 300
+    success:
+      inventory_contains:
+        item: "minecraft:diamond_pickaxe"
+        min_count: 1
+
+  # === PHASE 7: RESOURCE STOCKPILE ===
+  # Collect advanced resources for a final score. Proves the bot can
+  # sustain autonomous gameplay and resource gathering over hours.
+  # Tests: multi-ore mining, sustained operation in late game.
+
+  - phase: resource-stockpile
+    instruction: "Mine gold ore deep underground and smelt it. Collect at least 10 gold ingots."
+    timeout: 1200
+    success:
+      inventory_contains:
+        item: "minecraft:gold_ingot"
+        min_count: 10
+
+  - phase: resource-stockpile
+    instruction: "Mine redstone ore at deep levels. Collect at least 32 redstone dust."
+    timeout: 900
+    success:
+      inventory_contains:
+        item: "minecraft:redstone"
+        min_count: 32
+
+  - phase: resource-stockpile
+    instruction: "Mine lapis lazuli ore underground. Collect at least 16 lapis lazuli."
+    timeout: 900
+    success:
+      inventory_contains:
+        item: "minecraft:lapis_lazuli"
+        min_count: 16

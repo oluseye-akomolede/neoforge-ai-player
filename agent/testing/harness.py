@@ -16,16 +16,21 @@ class TestStep:
     instruction: str
     timeout: int = 120
     success: dict = field(default_factory=dict)
+    phase: str = ""
+    bot: str = ""
 
 
 @dataclass
 class TestDefinition:
     name: str
+    description: str = ""
+    goal: str = ""
     world_type: str = "flat"
-    world_seed: str | None = None
+    world_settings: dict = field(default_factory=dict)
     bots: list[dict] = field(default_factory=list)
     steps: list[TestStep] = field(default_factory=list)
     ttl: int = 1800
+    halt_on_failure: bool = False
 
 
 @dataclass
@@ -34,6 +39,7 @@ class StepResult:
     passed: bool
     duration: float
     details: dict = field(default_factory=dict)
+    phase: str = ""
 
 
 @dataclass
@@ -44,6 +50,8 @@ class TestResult:
     step_results: list[StepResult] = field(default_factory=list)
     error: str | None = None
     logs: str = ""
+    phases_completed: int = 0
+    phases_total: int = 0
 
 
 def load_test(path: Path) -> TestDefinition:
@@ -56,15 +64,26 @@ def load_test(path: Path) -> TestDefinition:
             instruction=s["instruction"],
             timeout=s.get("timeout", 120),
             success=s.get("success", {}),
+            phase=s.get("phase", ""),
+            bot=s.get("bot", ""),
         ))
+
+    world_cfg = raw.get("world", {})
+    settings = world_cfg.get("settings", {})
+    seed = world_cfg.get("seed")
+    if seed:
+        settings.setdefault("seed", str(seed))
 
     return TestDefinition(
         name=raw["name"],
-        world_type=raw.get("world", {}).get("type", "flat"),
-        world_seed=raw.get("world", {}).get("seed"),
+        description=raw.get("description", ""),
+        goal=raw.get("goal", ""),
+        world_type=world_cfg.get("type", "flat"),
+        world_settings=settings,
         bots=raw.get("bots", [{"image": None}]),
         steps=steps,
         ttl=raw.get("ttl", 1800),
+        halt_on_failure=raw.get("halt_on_failure", False),
     )
 
 
@@ -151,11 +170,34 @@ class TestRunner:
 
         return True, {"note": "no criteria specified"}
 
+    def _resolve_bots(self, world: TestWorld) -> list[str]:
+        for _ in range(3):
+            try:
+                bots = self._api_get(world.mod_api_url, "/bots")
+                bot_list = bots.get("bots", [])
+                if bot_list:
+                    return [
+                        b["name"] if isinstance(b, dict) else b
+                        for b in bot_list
+                    ]
+            except Exception:
+                time.sleep(2)
+        return []
+
     def run_test(self, test_def: TestDefinition) -> TestResult:
         start = time.time()
         world = None
         try:
-            world = create_world(test_def.name, ttl=test_def.ttl)
+            if test_def.description:
+                print(f"[harness] {test_def.description.strip()}")
+            if test_def.goal:
+                print(f"[harness] Goal: {test_def.goal.strip()}")
+
+            world = create_world(
+                test_def.name, ttl=test_def.ttl,
+                world_type=test_def.world_type,
+                world_settings=test_def.world_settings,
+            )
 
             if not wait_ready(world, timeout=300):
                 return TestResult(
@@ -174,20 +216,8 @@ class TestRunner:
 
             time.sleep(5)
 
-            bot_name = None
-            for bot_def in test_def.bots:
-                try:
-                    bots = self._api_get(world.mod_api_url, "/bots")
-                    bot_list = bots.get("bots", [])
-                    if bot_list:
-                        if isinstance(bot_list[0], dict):
-                            bot_name = bot_list[0]["name"]
-                        else:
-                            bot_name = bot_list[0]
-                except Exception:
-                    pass
-
-            if not bot_name:
+            bot_names = self._resolve_bots(world)
+            if not bot_names:
                 return TestResult(
                     test_name=test_def.name, passed=False,
                     duration=time.time() - start,
@@ -195,26 +225,49 @@ class TestRunner:
                     logs=get_logs(world, "agent", 50),
                 )
 
-            step_results = []
-            all_passed = True
+            default_bot = bot_names[0]
+            print(f"[harness] Bots available: {', '.join(bot_names)}")
 
-            for step in test_def.steps:
+            step_results: list[StepResult] = []
+            all_passed = True
+            current_phase = ""
+            total_steps = len(test_def.steps)
+            phases_seen: set[str] = set()
+            phases_passed: set[str] = set()
+            phase_has_failure: set[str] = set()
+
+            for i, step in enumerate(test_def.steps, 1):
+                if step.phase and step.phase != current_phase:
+                    current_phase = step.phase
+                    phases_seen.add(current_phase)
+                    print(f"\n--- Phase: {current_phase} ---")
+
+                elapsed = time.time() - start
+                target_bot = step.bot or default_bot
+                print(f"[harness] Step {i}/{total_steps}: {step.instruction}")
+                print(f"[harness]   bot={target_bot}, timeout={step.timeout}s, elapsed={elapsed/60:.0f}m")
+
                 step_start = time.time()
-                print(f"[harness] Running step: {step.instruction}")
 
                 try:
                     self._api_post(
                         world.agent_api_url, "/api/command",
-                        {"bot": bot_name, "message": step.instruction},
+                        {"bot": target_bot, "message": step.instruction},
                     )
                 except Exception as e:
                     sr = StepResult(
                         step=step.instruction, passed=False,
                         duration=time.time() - step_start,
                         details={"error": f"Failed to send instruction: {e}"},
+                        phase=step.phase,
                     )
                     step_results.append(sr)
                     all_passed = False
+                    if step.phase:
+                        phase_has_failure.add(step.phase)
+                    if test_def.halt_on_failure:
+                        print("[harness] Halting on failure (halt_on_failure=true)")
+                        break
                     continue
 
                 passed = False
@@ -224,7 +277,7 @@ class TestRunner:
                 while time.time() < deadline:
                     time.sleep(5)
                     passed, details = self._check_success(
-                        step.success, world, bot_name,
+                        step.success, world, target_bot,
                     )
                     if passed:
                         break
@@ -233,11 +286,25 @@ class TestRunner:
                     step=step.instruction, passed=passed,
                     duration=time.time() - step_start,
                     details=details,
+                    phase=step.phase,
                 )
                 step_results.append(sr)
+
+                tag = "PASS" if passed else "FAIL"
+                print(f"[harness] [{tag}] Step {i} ({sr.duration:.0f}s) {details}")
+
                 if not passed:
                     all_passed = False
+                    if step.phase:
+                        phase_has_failure.add(step.phase)
+                    if test_def.halt_on_failure:
+                        print("[harness] Halting on failure (halt_on_failure=true)")
+                        break
+                else:
+                    if step.phase:
+                        phases_passed.add(step.phase)
 
+            phases_fully_passed = phases_seen - phase_has_failure
             logs = get_logs(world, "agent", 100)
 
             return TestResult(
@@ -245,6 +312,8 @@ class TestRunner:
                 duration=time.time() - start,
                 step_results=step_results,
                 logs=logs,
+                phases_completed=len(phases_fully_passed),
+                phases_total=len(phases_seen),
             )
 
         except Exception as e:
@@ -264,15 +333,32 @@ def run_tests(test_paths: list[Path], **runner_kwargs) -> list[TestResult]:
     for path in test_paths:
         test_def = load_test(path)
         print(f"\n{'='*60}")
-        print(f"Running test: {test_def.name}")
+        print(f"Test: {test_def.name}")
+        if test_def.description:
+            desc = test_def.description.strip()
+            print(f"  {desc[:120]}")
+        print(f"  Steps: {len(test_def.steps)}, TTL: {test_def.ttl}s, World: {test_def.world_type}")
         print(f"{'='*60}")
         result = runner.run_test(test_def)
         results.append(result)
+
         status = "PASS" if result.passed else "FAIL"
-        print(f"[{status}] {result.test_name} ({result.duration:.1f}s)")
+        passed_steps = sum(1 for sr in result.step_results if sr.passed)
+        total_steps = len(result.step_results)
+        print(f"\n[{status}] {result.test_name}")
+        print(f"  Duration: {result.duration:.0f}s ({result.duration/60:.1f}m)")
+        print(f"  Steps: {passed_steps}/{total_steps} passed")
+        if result.phases_total > 0:
+            print(f"  Phases: {result.phases_completed}/{result.phases_total} fully passed")
+
+        current_phase = ""
         for sr in result.step_results:
+            if sr.phase and sr.phase != current_phase:
+                current_phase = sr.phase
+                print(f"  --- {current_phase} ---")
             s = "PASS" if sr.passed else "FAIL"
-            print(f"  [{s}] {sr.step} ({sr.duration:.1f}s) {sr.details}")
+            step_desc = sr.step[:70] + ("..." if len(sr.step) > 70 else "")
+            print(f"  [{s}] {step_desc} ({sr.duration:.1f}s)")
         if result.error:
             print(f"  ERROR: {result.error}")
     return results

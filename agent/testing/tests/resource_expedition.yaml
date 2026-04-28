@@ -1,0 +1,117 @@
+name: deep-mine-expedition
+description: >
+  3-hour mining expedition. Bot gathers tools, descends underground, and
+  mines every major ore type. Tests sustained underground navigation, ore
+  identification, inventory management under pressure, and the ability to
+  operate far from spawn for extended periods without getting stuck.
+
+goal: >
+  End state: iron pickaxe or better, 24+ raw copper, 12+ raw gold,
+  48+ redstone, 24+ lapis lazuli, 12+ diamonds.
+
+world:
+  type: normal
+  settings:
+    spawn_animals: "false"
+    spawn_monsters: "true"
+    difficulty: "normal"
+
+ttl: 10800
+halt_on_failure: false
+
+bots:
+  - image: null
+
+steps:
+  # === PHASE 1: QUICK PREP ===
+  # Minimal surface time — get tools and get underground fast.
+
+  - phase: preparation
+    instruction: "Quickly gather wood and craft a wooden pickaxe. Do not spend long on the surface."
+    timeout: 300
+    success:
+      inventory_contains:
+        item: "minecraft:wooden_pickaxe"
+        min_count: 1
+
+  - phase: preparation
+    instruction: "Mine cobblestone and craft a stone pickaxe. Mine some coal for torches while you are underground."
+    timeout: 600
+    success:
+      inventory_contains:
+        item: "minecraft:stone_pickaxe"
+        min_count: 1
+
+  # === PHASE 2: IRON BOOTSTRAP ===
+  # Need iron pickaxe for gold, redstone, diamond, and lapis.
+
+  - phase: iron-bootstrap
+    instruction: "Find and mine iron ore, then smelt at least 10 iron ingots. Craft an iron pickaxe — you will need it for the deeper ores."
+    timeout: 900
+    success:
+      inventory_contains:
+        item: "minecraft:iron_pickaxe"
+        min_count: 1
+
+  # === PHASE 3: THE DESCENT ===
+  # Work through ore layers top to bottom. Copper at y 48, iron/coal
+  # throughout, gold at y -16, redstone/lapis/diamond at y -59.
+
+  - phase: upper-mines
+    instruction: "Mine copper ore around y-level 48. Collect at least 24 raw copper."
+    timeout: 900
+    success:
+      inventory_contains:
+        item: "minecraft:raw_copper"
+        min_count: 24
+
+  - phase: upper-mines
+    instruction: "Continue mining. Collect at least 32 additional coal for smelting fuel."
+    timeout: 600
+    success:
+      inventory_contains:
+        item: "minecraft:coal"
+        min_count: 32
+
+  - phase: deep-mines
+    instruction: "Descend to y-level -16 and mine gold ore. Collect at least 12 raw gold."
+    timeout: 900
+    success:
+      inventory_contains:
+        item: "minecraft:raw_gold"
+        min_count: 12
+
+  - phase: deep-mines
+    instruction: "Mine redstone ore at y-level -59 or below. Collect at least 48 redstone dust."
+    timeout: 900
+    success:
+      inventory_contains:
+        item: "minecraft:redstone"
+        min_count: 48
+
+  - phase: deep-mines
+    instruction: "Mine lapis lazuli ore. Collect at least 24 lapis lazuli."
+    timeout: 900
+    success:
+      inventory_contains:
+        item: "minecraft:lapis_lazuli"
+        min_count: 24
+
+  # === PHASE 4: DIAMOND HUNT ===
+  # The main prize. Strip mine at y -59 for maximum diamond exposure.
+
+  - phase: diamond-hunt
+    instruction: "Strip mine at y-level -59 looking for diamond ore. Dig long tunnels with 2-block gaps between them. Collect at least 8 diamonds."
+    timeout: 1800
+    success:
+      inventory_contains:
+        item: "minecraft:diamond"
+        min_count: 8
+
+  - phase: diamond-hunt
+    instruction: "Keep mining diamonds. Aim for at least 12 diamonds total."
+    timeout: 1200
+    success:
+      inventory_contains:
+        item: "minecraft:diamond"
+        min_count: 12
