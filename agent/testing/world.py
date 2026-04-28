@@ -11,6 +11,11 @@ TEMPLATE_PATH = Path(__file__).resolve().parent / "pod-template.yaml"
 NAMESPACE = "minecraft-test"
 DEFAULT_TTL = 1800
 
+PG_HOST = "pgvector.minecraft-test.svc.cluster.local"
+PG_PORT = "5432"
+PG_USER = "aibot"
+PG_PASSWORD = "aibot-memory-2026"
+
 WORLD_TYPE_ENV: dict[str, dict[str, str]] = {
     "flat": {},
     "normal": {
@@ -28,9 +33,11 @@ class TestWorld:
     mod_api_url: str = ""
     agent_api_url: str = ""
     ready: bool = False
+    test_db: str = ""
 
     def __post_init__(self):
         self.pod_name = f"test-world-{self.name}"
+        self.test_db = f"botmemory_test_{self.name.replace('-', '_')}"
 
 
 def _kubectl(*args, capture=True) -> subprocess.CompletedProcess:
@@ -38,20 +45,55 @@ def _kubectl(*args, capture=True) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=capture, text=True, timeout=30)
 
 
+def _psql(sql: str, db: str = "botmemory") -> subprocess.CompletedProcess:
+    """Run SQL against the pgvector instance via kubectl exec."""
+    return subprocess.run(
+        ["kubectl", "exec", "-n", NAMESPACE, "deploy/pgvector", "--",
+         "psql", "-U", PG_USER, "-d", db, "-c", sql],
+        capture_output=True, text=True, timeout=30,
+    )
+
+
 def _load_template() -> dict:
     with open(TEMPLATE_PATH) as f:
         return yaml.safe_load(f)
 
 
-def _patch_mc_env(pod: dict, overrides: dict[str, str]):
-    """Override mc-server container env vars in-place."""
+def _patch_container_env(pod: dict, container_name: str, overrides: dict[str, str]):
+    """Override env vars for a named container in-place."""
     for container in pod["spec"]["containers"]:
-        if container["name"] == "mc-server":
+        if container["name"] == container_name:
             for entry in container.get("env", []):
                 name = entry.get("name")
                 if name in overrides and "value" in entry:
                     entry["value"] = overrides[name]
             break
+
+
+def create_test_db(world: "TestWorld"):
+    """Create an isolated temporary database for a test world."""
+    db = world.test_db
+    _psql(f"DROP DATABASE IF EXISTS {db};")
+    result = _psql(f"CREATE DATABASE {db} OWNER {PG_USER};")
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to create test DB {db}: {result.stderr}")
+    _psql("CREATE EXTENSION IF NOT EXISTS vector;", db=db)
+    print(f"[test-world] Created temp database: {db}")
+
+
+def drop_test_db(world: "TestWorld"):
+    """Drop the temporary test database."""
+    db = world.test_db
+    _psql(f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{db}';")
+    result = _psql(f"DROP DATABASE IF EXISTS {db};")
+    if result.returncode == 0:
+        print(f"[test-world] Dropped temp database: {db}")
+    else:
+        print(f"[test-world] Warning: failed to drop {db}: {result.stderr}")
+
+
+def _test_dsn(world: "TestWorld") -> str:
+    return f"postgresql://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{world.test_db}"
 
 
 def create_world(
@@ -66,12 +108,17 @@ def create_world(
     pod["metadata"]["name"] = world.pod_name
     pod["metadata"]["annotations"]["test-world/ttl"] = str(ttl)
 
+    # World type env overrides for mc-server
     env_overrides = WORLD_TYPE_ENV.get(world_type, {}).copy()
     if world_settings:
         for k, v in world_settings.items():
             env_overrides[k.upper()] = str(v)
     if env_overrides:
-        _patch_mc_env(pod, env_overrides)
+        _patch_container_env(pod, "mc-server", env_overrides)
+
+    # Isolated database for this test world
+    create_test_db(world)
+    _patch_container_env(pod, "agent", {"PG_DSN": _test_dsn(world)})
 
     manifest = yaml.dump(pod)
     proc = subprocess.run(
@@ -79,9 +126,10 @@ def create_world(
         input=manifest, capture_output=True, text=True, timeout=30,
     )
     if proc.returncode != 0:
+        drop_test_db(world)
         raise RuntimeError(f"Failed to create pod: {proc.stderr}")
 
-    print(f"[test-world] Created pod {world.pod_name} (type={world_type})")
+    print(f"[test-world] Created pod {world.pod_name} (type={world_type}, db={world.test_db})")
     return world
 
 
@@ -122,6 +170,8 @@ def destroy_world(world: TestWorld) -> bool:
         "delete", "pod", world.pod_name, "-n", world.namespace,
         "--grace-period=10", "--ignore-not-found",
     )
+    if world.test_db:
+        drop_test_db(world)
     return result.returncode == 0
 
 
