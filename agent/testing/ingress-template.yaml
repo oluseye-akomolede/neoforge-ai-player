@@ -1,0 +1,32 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: test-world-PLACEHOLDER
+  namespace: minecraft-test
+  labels:
+    app: test-world
+    app.kubernetes.io/part-of: aiplayermod
+    test-world: "true"
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: PLACEHOLDER.mc-test.local
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: test-world-PLACEHOLDER
+                port:
+                  number: 3100
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: test-world-PLACEHOLDER
+                port:
+                  number: 5000

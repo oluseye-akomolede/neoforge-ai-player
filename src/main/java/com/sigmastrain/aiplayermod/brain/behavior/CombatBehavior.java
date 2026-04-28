@@ -21,9 +21,11 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.List;
+import java.util.Random;
 
 public class CombatBehavior implements Behavior {
     private final ProgressReport progress = new ProgressReport();
+    private final Random random = new Random();
 
     private int duration;
     private int elapsed;
@@ -37,6 +39,8 @@ public class CombatBehavior implements Behavior {
     private int kills;
     private double currentSearchRadius;
     private int ticksSinceTarget;
+    private Vec3 patrolDirection;
+    private int patrolTicks;
 
     private static final double ATTACK_RANGE = 3.5;
     private static final double SPRINT_SPEED = 0.5;
@@ -47,7 +51,7 @@ public class CombatBehavior implements Behavior {
     private static final double JUMP_VELOCITY = 0.42;
     private static final float RETREAT_HEALTH = 4.0f;
     private static final int EAT_HUNGER_THRESHOLD = 14;
-    private static final int DEFAULT_DURATION = 600; // 30 seconds
+    private static final int DEFAULT_DURATION = 6000; // 5 minutes
 
     @Override
     public void start(BotPlayer bot, Directive directive) {
@@ -63,6 +67,8 @@ public class CombatBehavior implements Behavior {
         searchRadius = directive.getRadius() > 0 ? directive.getRadius() : 24;
         currentSearchRadius = searchRadius;
         ticksSinceTarget = 0;
+        patrolDirection = null;
+        patrolTicks = 0;
         specificTarget = directive.getTarget();
         hostileOnly = specificTarget == null || specificTarget.isEmpty();
 
@@ -109,10 +115,7 @@ public class CombatBehavior implements Behavior {
                 currentSearchRadius = Math.min(currentSearchRadius * 2, 256);
             }
             progress.setPhase("patrolling");
-            if (!player.onGround()) {
-                yVelocity -= GRAVITY;
-                player.move(MoverType.SELF, new Vec3(0, yVelocity, 0));
-            }
+            patrol(player);
             return BehaviorResult.RUNNING;
         }
 
@@ -213,6 +216,26 @@ public class CombatBehavior implements Behavior {
             yVelocity -= GRAVITY;
         }
         player.move(MoverType.SELF, new Vec3(dir.x * SPRINT_SPEED, yVelocity, dir.z * SPRINT_SPEED));
+    }
+
+    private void patrol(ServerPlayer player) {
+        if (patrolDirection == null || patrolTicks <= 0) {
+            double angle = random.nextDouble() * Math.PI * 2;
+            patrolDirection = new Vec3(Math.cos(angle), 0, Math.sin(angle));
+            patrolTicks = 60 + random.nextInt(80);
+        }
+        patrolTicks--;
+        if (player.onGround()) {
+            yVelocity = 0;
+            if (com.sigmastrain.aiplayermod.actions.GoToAction.shouldJump(player, patrolDirection)) {
+                yVelocity = JUMP_VELOCITY;
+            }
+        } else {
+            yVelocity -= GRAVITY;
+        }
+        double walkSpeed = 0.25;
+        player.move(MoverType.SELF, new Vec3(
+                patrolDirection.x * walkSpeed, yVelocity, patrolDirection.z * walkSpeed));
     }
 
     private void equipBestWeapon(BotPlayer bot) {

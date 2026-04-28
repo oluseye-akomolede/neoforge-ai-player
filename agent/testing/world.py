@@ -8,6 +8,8 @@ from pathlib import Path
 from dataclasses import dataclass, field
 
 TEMPLATE_PATH = Path(__file__).resolve().parent / "pod-template.yaml"
+SERVICE_TEMPLATE_PATH = Path(__file__).resolve().parent / "service-template.yaml"
+INGRESS_TEMPLATE_PATH = Path(__file__).resolve().parent / "ingress-template.yaml"
 NAMESPACE = "minecraft-test"
 DEFAULT_TTL = 1800
 
@@ -34,6 +36,7 @@ class TestWorld:
     agent_api_url: str = ""
     ready: bool = False
     test_db: str = ""
+    nodeport: int = 0
 
     def __post_init__(self):
         self.pod_name = f"test-world-{self.name}"
@@ -56,6 +59,16 @@ def _psql(sql: str, db: str = "botmemory") -> subprocess.CompletedProcess:
 
 def _load_template() -> dict:
     with open(TEMPLATE_PATH) as f:
+        return yaml.safe_load(f)
+
+
+def _load_service_template() -> dict:
+    with open(SERVICE_TEMPLATE_PATH) as f:
+        return yaml.safe_load(f)
+
+
+def _load_ingress_template() -> dict:
+    with open(INGRESS_TEMPLATE_PATH) as f:
         return yaml.safe_load(f)
 
 
@@ -96,6 +109,57 @@ def _test_dsn(world: "TestWorld") -> str:
     return f"postgresql://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{world.test_db}"
 
 
+def _create_service(world: "TestWorld"):
+    svc = _load_service_template()
+    svc["metadata"]["name"] = world.pod_name
+    svc["spec"]["selector"]["test-world/name"] = world.pod_name
+    manifest = yaml.dump(svc)
+    proc = subprocess.run(
+        ["kubectl", "apply", "-n", world.namespace, "-f", "-"],
+        input=manifest, capture_output=True, text=True, timeout=30,
+    )
+    if proc.returncode != 0:
+        print(f"[test-world] Warning: failed to create service: {proc.stderr}")
+        return
+    nodeports = _kubectl(
+        "get", "svc", world.pod_name, "-n", world.namespace,
+        "-o", "jsonpath={.spec.ports[?(@.name=='minecraft')].nodePort}",
+    )
+    mc_port = nodeports.stdout.strip()
+    if mc_port:
+        world.nodeport = int(mc_port)
+        print(f"[test-world] Service {world.pod_name} — Minecraft NodePort: {mc_port}")
+
+
+def _create_ingress(world: "TestWorld"):
+    ingress = _load_ingress_template()
+    world_slug = world.name
+    ingress["metadata"]["name"] = world.pod_name
+    ingress["spec"]["rules"][0]["host"] = f"{world_slug}.mc-test.local"
+    for path_entry in ingress["spec"]["rules"][0]["http"]["paths"]:
+        path_entry["backend"]["service"]["name"] = world.pod_name
+    manifest = yaml.dump(ingress)
+    proc = subprocess.run(
+        ["kubectl", "apply", "-n", world.namespace, "-f", "-"],
+        input=manifest, capture_output=True, text=True, timeout=30,
+    )
+    if proc.returncode != 0:
+        print(f"[test-world] Warning: failed to create ingress: {proc.stderr}")
+        return
+    print(f"[test-world] Ingress {world.pod_name} — http://{world_slug}.mc-test.local")
+
+
+def _destroy_service_and_ingress(world: "TestWorld"):
+    _kubectl(
+        "delete", "svc", world.pod_name, "-n", world.namespace,
+        "--ignore-not-found",
+    )
+    _kubectl(
+        "delete", "ingress", world.pod_name, "-n", world.namespace,
+        "--ignore-not-found",
+    )
+
+
 def create_world(
     name: str,
     ttl: int = DEFAULT_TTL,
@@ -106,6 +170,7 @@ def create_world(
     pod = _load_template()
 
     pod["metadata"]["name"] = world.pod_name
+    pod["metadata"]["labels"]["test-world/name"] = world.pod_name
     pod["metadata"]["annotations"]["test-world/ttl"] = str(ttl)
 
     # World type env overrides for mc-server
@@ -128,6 +193,9 @@ def create_world(
     if proc.returncode != 0:
         drop_test_db(world)
         raise RuntimeError(f"Failed to create pod: {proc.stderr}")
+
+    _create_service(world)
+    _create_ingress(world)
 
     print(f"[test-world] Created pod {world.pod_name} (type={world_type}, db={world.test_db})")
     return world
@@ -166,6 +234,7 @@ def wait_ready(world: TestWorld, timeout: int = 300) -> bool:
 
 def destroy_world(world: TestWorld) -> bool:
     print(f"[test-world] Destroying {world.pod_name}...")
+    _destroy_service_and_ingress(world)
     result = _kubectl(
         "delete", "pod", world.pod_name, "-n", world.namespace,
         "--grace-period=10", "--ignore-not-found",

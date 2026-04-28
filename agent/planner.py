@@ -27,7 +27,7 @@ IF the player gives a vague or high-level goal (e.g. "get me iron gear" or "set 
 ## Rules
 - Each step = ONE concrete action: mine, craft, find, go to, place, build, farm, collect, smelt, combat, follow, channel, send_item, etc.
 - Use Minecraft registry IDs where possible (e.g. "minecraft:stone_pickaxe" not "stone pickaxe")
-- For combat: "Engage combat mode 30s" (fights hostiles for N seconds) or "Attack zombie 30s"
+- For combat: "Engage combat mode 300s" (fights hostiles for N seconds — use 300s+ for sustained combat) or "Attack zombie 120s"
 - For following: "Follow <player_name>" or "goto_player <player_name>" (replace <player_name> with the actual player name from the instruction)
 - For channeling: "Channel modid:item_name" or "Channel 3x modid:item_name" — only for items listed in the transmute registry below
 - For sending items: "Send 10 minecraft:iron_ingot to Scout" (transfers items between bots instantly)
@@ -167,7 +167,7 @@ Each step MUST be a single primitive that the bot can execute directly. Use thes
 - Craft: "Craft minecraft:iron_pickaxe" or "Craft 4x minecraft:stick"
 - Smelt: "Smelt minecraft:raw_iron" or "Smelt 8x minecraft:raw_iron"
 - Channel: "Channel modid:item_name" or "Channel 3x modid:item_name" (conjure discovered items for XP)
-- Combat: "Engage combat mode 30s" (fights hostile mobs for N seconds)
+- Combat: "Engage combat mode 300s" (fights hostile mobs for N seconds — use 300s for a full night cycle)
 - Attack: "Attack zombie 30s" or "Kill creeper" (fights specific mob type)
 - Follow: "Follow <player_name>" or "goto_player <player_name>" (replace <player_name> with the actual player name)
 - Goto: "goto_player <player_name>" or "goto_waypoint base"
@@ -183,7 +183,7 @@ Each step MUST be a single primitive that the bot can execute directly. Use thes
 PRIORITY: always prefer Craft > Mine > Smelt over Channel. Channel is a last resort for modded items that have no known recipe or cannot be gathered normally. Only use Channel for items listed in the transmute registry section below.
 CHECK bot inventories below before planning. If a bot already has required materials, SKIP the gathering step for that bot. Use send_item to transfer materials between bots when it saves time.
 
-For "engage combat", "fight enemies", "defend me", or similar — use "Engage combat mode 30s" for EVERY bot.
+For "engage combat", "fight enemies", "defend me", or similar — use "Engage combat mode 300s" for EVERY bot. Use longer durations (600s+) for sustained combat or "fight through the night" scenarios.
 For "come to me" or "come here" — use "Follow <player_name>" for EVERY bot (replace <player_name> with the sender's actual name from the instruction).
 When the instruction says "all bots", "every bot", or "everyone" — create a separate step for EVERY available bot. If there is a quantity, split it evenly (e.g. "all bots channel 200 items" with 5 bots = 40 per bot). Assign each step to a specific bot name — do NOT use "any".
 For "search for X" or "find X" across a large area — use "Wide search for X" and assign to ALL available bots for parallel searching. Each bot automatically searches a different grid slice.

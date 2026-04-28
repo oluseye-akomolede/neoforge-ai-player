@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-world-PLACEHOLDER
+  namespace: minecraft-test
+  labels:
+    app: test-world
+    app.kubernetes.io/part-of: aiplayermod
+    test-world: "true"
+spec:
+  type: NodePort
+  selector:
+    test-world/name: PLACEHOLDER
+  ports:
+    - name: minecraft
+      port: 25565
+      targetPort: 25565
+      protocol: TCP
+    - name: mod-api
+      port: 3100
+      targetPort: 3100
+      protocol: TCP
+    - name: dashboard
+      port: 5000
+      targetPort: 5000
+      protocol: TCP

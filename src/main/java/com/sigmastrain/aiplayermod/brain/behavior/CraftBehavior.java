@@ -358,35 +358,62 @@ public class CraftBehavior implements Behavior {
     private RecipeHolder<CraftingRecipe> findVanillaRecipe(Item target, ServerPlayer player) {
         var server = player.getServer();
         var allRecipes = server.getRecipeManager().getAllRecipesFor(RecipeType.CRAFTING);
-        RecipeHolder<CraftingRecipe> fallback = null;
         String targetId = BuiltInRegistries.ITEM.getKey(target).toString();
+
+        RecipeHolder<CraftingRecipe> bestRecipe = null;
+        int bestScore = -1;
+        RecipeHolder<CraftingRecipe> fallback = null;
+
         for (var holder : allRecipes) {
             ItemStack result = holder.value().getResultItem(server.registryAccess());
             if (result.getItem() != target) continue;
-
-            // Skip nugget/block conversion recipes to avoid circular chains
-            // (e.g. iron_ingot <-> iron_nugget, iron_ingot <-> iron_block)
             if (isCircularConversion(holder, targetId)) continue;
 
-            if (holder.id().getNamespace().equals("minecraft")) {
-                return holder;
-            }
-            if (fallback == null) {
-                boolean allVanillaIngredients = true;
-                for (var ing : holder.value().getIngredients()) {
-                    if (ing.isEmpty()) continue;
-                    for (ItemStack stack : ing.getItems()) {
-                        if (!BuiltInRegistries.ITEM.getKey(stack.getItem()).getNamespace().equals("minecraft")) {
-                            allVanillaIngredients = false;
-                            break;
+            boolean isVanilla = holder.id().getNamespace().equals("minecraft");
+            if (!isVanilla) {
+                if (fallback == null) {
+                    boolean allVanillaIngredients = true;
+                    for (var ing : holder.value().getIngredients()) {
+                        if (ing.isEmpty()) continue;
+                        for (ItemStack stack : ing.getItems()) {
+                            if (!BuiltInRegistries.ITEM.getKey(stack.getItem()).getNamespace().equals("minecraft")) {
+                                allVanillaIngredients = false;
+                                break;
+                            }
                         }
+                        if (!allVanillaIngredients) break;
                     }
-                    if (!allVanillaIngredients) break;
+                    if (allVanillaIngredients) fallback = holder;
                 }
-                if (allVanillaIngredients) fallback = holder;
+                continue;
+            }
+
+            // Score by how many ingredients the bot already has
+            int score = scoreRecipeByInventory(holder, player);
+            if (score > bestScore) {
+                bestScore = score;
+                bestRecipe = holder;
             }
         }
-        return fallback;
+        return bestRecipe != null ? bestRecipe : fallback;
+    }
+
+    private int scoreRecipeByInventory(RecipeHolder<CraftingRecipe> holder, ServerPlayer player) {
+        int satisfied = 0;
+        int total = 0;
+        Map<Item, Integer> needed = new LinkedHashMap<>();
+        for (var ing : holder.value().getIngredients()) {
+            if (ing.isEmpty()) continue;
+            ItemStack[] items = ing.getItems();
+            if (items.length == 0) continue;
+            total++;
+            needed.merge(items[0].getItem(), 1, Integer::sum);
+        }
+        for (var entry : needed.entrySet()) {
+            int have = countInInventory(player, entry.getKey());
+            if (have >= entry.getValue()) satisfied++;
+        }
+        return total == 0 ? 0 : satisfied;
     }
 
     private boolean isCircularConversion(RecipeHolder<CraftingRecipe> holder, String targetId) {

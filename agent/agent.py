@@ -1103,7 +1103,7 @@ class BotRunner:
             r"(?:engage|enter|start|activate)\s+combat\s+(?:mode)?(?:\s+(\d+)s)?",
             text, re.IGNORECASE)
         if combat_match or re.search(r"combat\s+mode", text, re.IGNORECASE):
-            duration = int(combat_match.group(1)) if combat_match and combat_match.group(1) else 30
+            duration = int(combat_match.group(1)) if combat_match and combat_match.group(1) else 300
             return {"type": "COMBAT", "count": duration, "radius": 24}
 
         # Attack specific target
@@ -1112,7 +1112,7 @@ class BotRunner:
             text, re.IGNORECASE)
         if attack_match:
             target = attack_match.group(1).rstrip(",.")
-            duration = int(attack_match.group(2)) if attack_match.group(2) else 30
+            duration = int(attack_match.group(2)) if attack_match.group(2) else 300
             return {"type": "COMBAT", "target": target, "count": duration, "radius": 24}
 
         # Follow player

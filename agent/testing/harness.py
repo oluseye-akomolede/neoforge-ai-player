@@ -120,6 +120,14 @@ class TestRunner:
             time.sleep(5)
         return False
 
+    def _get_all_bots(self, world: TestWorld) -> list[str]:
+        try:
+            resp = self._api_get(world.mod_api_url, "/bots")
+            bot_list = resp.get("bots", [])
+            return [b["name"] if isinstance(b, dict) else b for b in bot_list]
+        except Exception:
+            return []
+
     def _check_success(self, criteria: dict, world: TestWorld, bot_name: str) -> tuple[bool, dict]:
         details: dict[str, Any] = {}
 
@@ -128,15 +136,24 @@ class TestRunner:
             item = inv_check["item"]
             min_count = inv_check.get("min_count", 1)
             try:
-                inv = self._api_get(world.mod_api_url, f"/bot/{bot_name}/inventory")
-                items = inv.get("inventory", inv.get("items", []))
-                total = sum(
-                    slot.get("count", 0)
-                    for slot in items
-                    if item in slot.get("item", "")
-                )
+                all_bots = self._get_all_bots(world)
+                total = 0
+                holder = ""
+                for bot in all_bots:
+                    inv = self._api_get(world.mod_api_url, f"/bot/{bot}/inventory")
+                    items = inv.get("inventory", inv.get("items", []))
+                    bot_count = sum(
+                        slot.get("count", 0)
+                        for slot in items
+                        if item in slot.get("item", "")
+                    )
+                    if bot_count > 0:
+                        holder = bot
+                    total += bot_count
                 details["expected"] = f">= {min_count} {item}"
-                details["actual"] = f"{total} {item}"
+                details["actual"] = f"{total} {item} (across {len(all_bots)} bots)"
+                if holder:
+                    details["holder"] = holder
                 return total >= min_count, details
             except Exception as e:
                 details["error"] = str(e)
@@ -227,6 +244,9 @@ class TestRunner:
 
             default_bot = bot_names[0]
             print(f"[harness] Bots available: {', '.join(bot_names)}")
+            if world.nodeport:
+                print(f"[harness] Minecraft client: connect to any node IP on port {world.nodeport}")
+                print(f"[harness] Dashboard: http://{test_def.name}.mc-test.local")
 
             step_results: list[StepResult] = []
             all_passed = True
