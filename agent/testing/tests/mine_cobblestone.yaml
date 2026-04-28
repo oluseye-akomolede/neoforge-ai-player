@@ -1,0 +1,16 @@
+name: mine-cobblestone-basic
+description: Bot mines cobblestone on a flat world — validates basic L1 MINE directive
+
+world:
+  type: flat
+
+bots:
+  - image: null  # uses default bot spawned by agent
+
+steps:
+  - instruction: "Mine 10 minecraft:cobblestone"
+    timeout: 90
+    success:
+      inventory_contains:
+        item: minecraft:cobblestone
+        min_count: 10

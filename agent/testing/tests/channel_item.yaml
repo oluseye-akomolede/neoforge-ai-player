@@ -1,0 +1,16 @@
+name: channel-iron-ingot
+description: Bot channels iron ingots from XP — validates CHANNEL directive and XP economy
+
+world:
+  type: flat
+
+bots:
+  - image: null
+
+steps:
+  - instruction: "Channel 5 minecraft:iron_ingot"
+    timeout: 60
+    success:
+      inventory_contains:
+        item: minecraft:iron_ingot
+        min_count: 5

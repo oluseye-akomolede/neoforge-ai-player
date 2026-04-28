@@ -1,0 +1,18 @@
+name: multi-step-iron-tools
+description: Bot follows a multi-step plan to produce iron ingots — validates L3 planner decomposition and sequential execution
+
+world:
+  type: flat
+
+ttl: 2400
+
+bots:
+  - image: null
+
+steps:
+  - instruction: "Get me 5 iron ingots. Mine the ore, build a furnace, and smelt them."
+    timeout: 300
+    success:
+      inventory_contains:
+        item: minecraft:iron_ingot
+        min_count: 5

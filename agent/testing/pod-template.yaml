@@ -1,0 +1,174 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-world-PLACEHOLDER
+  namespace: minecraft-test
+  labels:
+    app: test-world
+    app.kubernetes.io/part-of: aiplayermod
+    test-world: "true"
+  annotations:
+    test-world/ttl: "1800"
+spec:
+  terminationGracePeriodSeconds: 30
+  imagePullSecrets:
+    - name: harbor-creds
+  initContainers:
+    - name: mod-sync
+      image: minio/mc:latest
+      env:
+        - name: MINIO_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: minio-creds
+              key: MINIO_ACCESS_KEY
+        - name: MINIO_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: minio-creds
+              key: MINIO_SECRET_KEY
+        - name: MINIO_ENDPOINT
+          value: "http://minio.minio.svc.cluster.local:9000"
+        - name: MINIO_BUCKET_PATH
+          value: "minecraft-mods/test/lightweight"
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          mc alias set minio "$MINIO_ENDPOINT" "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
+          rm -rf /mods/*.jar
+          mc cp --recursive "minio/${MINIO_BUCKET_PATH}/" /mods/
+          echo "Mod sync: $(ls /mods/*.jar 2>/dev/null | wc -l) mods"
+      volumeMounts:
+        - name: mods
+          mountPath: /mods
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+  containers:
+    - name: mc-server
+      image: itzg/minecraft-server:java21
+      env:
+        - name: EULA
+          value: "TRUE"
+        - name: TYPE
+          value: "NEOFORGE"
+        - name: VERSION
+          value: "1.21.1"
+        - name: NEOFORGE_VERSION
+          value: "LATEST"
+        - name: MEMORY
+          value: "2G"
+        - name: ENABLE_RCON
+          value: "true"
+        - name: RCON_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: minecraft-rcon
+              key: password
+        - name: LEVEL_TYPE
+          value: "minecraft:flat"
+        - name: GENERATE_STRUCTURES
+          value: "false"
+        - name: SPAWN_MONSTERS
+          value: "true"
+        - name: SPAWN_ANIMALS
+          value: "false"
+        - name: SPAWN_NPCS
+          value: "false"
+        - name: DIFFICULTY
+          value: "normal"
+        - name: MODE
+          value: "survival"
+        - name: PVP
+          value: "false"
+        - name: MAX_PLAYERS
+          value: "10"
+        - name: VIEW_DISTANCE
+          value: "8"
+        - name: SIMULATION_DISTANCE
+          value: "6"
+        - name: ONLINE_MODE
+          value: "false"
+        - name: ENABLE_COMMAND_BLOCK
+          value: "true"
+        - name: ALLOW_FLIGHT
+          value: "true"
+        - name: MOTD
+          value: "AI Bot Test World"
+        - name: MAX_TICK_TIME
+          value: "-1"
+        - name: SYNC_CHUNK_WRITES
+          value: "false"
+      ports:
+        - containerPort: 25565
+          name: minecraft
+        - containerPort: 25575
+          name: rcon
+        - containerPort: 3100
+          name: mod-api
+      volumeMounts:
+        - name: mods
+          mountPath: /mods
+        - name: world-data
+          mountPath: /data
+      resources:
+        requests:
+          cpu: 500m
+          memory: 2560Mi
+        limits:
+          cpu: "2"
+          memory: 3Gi
+      readinessProbe:
+        tcpSocket:
+          port: 3100
+        initialDelaySeconds: 60
+        periodSeconds: 10
+        failureThreshold: 18
+      livenessProbe:
+        tcpSocket:
+          port: 25565
+        initialDelaySeconds: 90
+        periodSeconds: 30
+    - name: agent
+      image: harbor.arcadia-ecs.local/aiplayermod/agent:latest
+      imagePullPolicy: Always
+      env:
+        - name: MOD_API_URL
+          value: "http://localhost:3100"
+        - name: MOD_API_KEY
+          value: ""
+        - name: OLLAMA_URL
+          value: "http://ollama.mindcraft.svc.cluster.local:11434"
+        - name: PG_DSN
+          value: "postgresql://aibot:aibot-memory-2026@pgvector.minecraft-test.svc.cluster.local:5432/botmemory"
+        - name: DASHBOARD_ENABLED
+          value: "true"
+        - name: DASHBOARD_PORT
+          value: "5000"
+        - name: TICK_DELAY
+          value: "2.0"
+        - name: PROFILE_PATH
+          value: "/opt/aibot-agent/profiles/default.json"
+        - name: L4_ENABLED
+          value: "false"
+      ports:
+        - containerPort: 5000
+          name: dashboard
+      resources:
+        requests:
+          cpu: 200m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+  volumes:
+    - name: mods
+      emptyDir: {}
+    - name: world-data
+      emptyDir: {}

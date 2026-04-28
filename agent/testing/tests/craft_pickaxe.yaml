@@ -1,0 +1,16 @@
+name: craft-stone-pickaxe
+description: Bot gathers materials and crafts a stone pickaxe — validates L3 planning + L1 MINE/CRAFT chain
+
+world:
+  type: flat
+
+bots:
+  - image: null
+
+steps:
+  - instruction: "Craft a minecraft:stone_pickaxe"
+    timeout: 180
+    success:
+      inventory_contains:
+        item: minecraft:stone_pickaxe
+        min_count: 1
