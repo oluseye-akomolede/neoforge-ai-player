@@ -1,6 +1,6 @@
-# Endurance Test Round 1 — Full Report
+# Endurance Test — Full Report (Round 1 + Round 2)
 
-**Date**: 2026-04-28
+**Date**: 2026-04-28 / 2026-04-29
 **Environment**: Kubernetes homelab cluster (sigma-worker1), ephemeral test pods
 **NeoForge**: 1.21.1 with aiplayermod (latest build)
 **Agent**: Python-based L1/L2/L3 planning agent with ollama backend
@@ -394,19 +394,126 @@ Steps 11-12 failed with connection errors — the pod's TTL expired during the f
 
 ---
 
-## Round 2 Plan
+## Round 2 Results
 
-With H1 + H2 + H4 + H5 fixes applied:
+**Fixes deployed**: H1 (aggregate inventory), H2 (recipe scoring), H4 (DB isolation), H5 (combat duration + patrol)
+**Infrastructure**: NodePort Services + Ingress per test world for Minecraft client access
 
-1. Rebuild mod JAR and agent Docker image
-2. Upload new JAR to MinIO test bucket
-3. Re-run all three endurance tests
-4. Expect real PASS/FAIL results from the fixed harness
-5. Monitor combat effectiveness — bots should now patrol, find mobs, and engage
-6. Connect via Minecraft client to observe bot behavior in real-time (NodePort service)
-7. Track XP economy — verify H2 fix reduces unnecessary channeling
+### Comparison: Round 1 vs Round 2
 
-**Expected improvement areas**:
-- Inventory checks will reflect actual bot holdings
-- Combat will run for 5 minutes per cycle with active patrol movement
-- Recipe selection will prefer ingredients already in inventory
+| Test | R1 Steps Passed | R2 Steps Passed | R1 Phases | R2 Phases | Duration |
+|------|----------------|----------------|-----------|-----------|----------|
+| operation-basecamp | 0/18 | **10/18** | 0/7 | 1/7 | 136 min |
+| deep-mine-expedition | 0/10 | **6/10** | 0/5 | 2/5 | 84 min |
+| night-watch | 1/12 | **3/12** | 0/5 | 0/5 | 129 min |
+
+### operation-basecamp Round 2 — Step by Step
+
+| # | Phase | Step | Result | Detail |
+|---|-------|------|--------|--------|
+| 1 | wood-age | Collect at least 16 logs | **FAIL** | 15/16 (1 short, 602s) |
+| 2 | wood-age | Craft wooden pickaxe, axe, sword | **PASS** | Axiom, 40s |
+| 3 | stone-age | Mine at least 48 cobblestone | **PASS** | Scout, 48 exact, 482s |
+| 4 | stone-age | Craft stone pickaxe, sword, axe | **PASS** | Axiom, 25s |
+| 5 | stone-age | Craft furnace and chest | **PASS** | Axiom, 15s |
+| 6 | infrastructure | Mine at least 16 coal | **FAIL** | 6/16, 602s |
+| 7 | infrastructure | Craft at least 32 torches | **FAIL** | 4/32, 301s |
+| 8 | iron-age | Mine at least 24 raw iron | **FAIL** | 15/24, 1205s |
+| 9 | iron-age | Smelt at least 24 iron ingots | **FAIL** | 0/24, 602s |
+| 10 | iron-age | Craft iron pickaxe, sword, axe | **PASS** | Axiom, 20s |
+| 11 | iron-age | Craft iron chestplate and helmet | **PASS** | Axiom, 30s |
+| 12 | self-sufficiency | Cook at least 32 meat | **FAIL** | 0/32, 1205s |
+| 13 | self-sufficiency | Craft shield and bucket | **PASS** | Axiom, 15s |
+| 14 | diamond-age | Mine at least 5 diamonds | **FAIL** | 3/5, 1802s |
+| 15 | diamond-age | Craft diamond pickaxe and sword | **PASS** | Axiom, 15s |
+| 16 | resource-stockpile | Smelt at least 10 gold ingots | **PASS** | Axiom, 20s |
+| 17 | resource-stockpile | Mine at least 32 redstone | **PASS** | Scout, 39 redstone, 151s |
+| 18 | resource-stockpile | Mine at least 16 lapis lazuli | **FAIL** | 0/16, 903s |
+
+**Analysis**: Crafting steps pass rapidly (15-40s) once materials exist. The bot reaches diamond pickaxe + iron armor + gold + redstone. Failures are in raw material gathering thresholds — the bot gathers materials but sometimes falls short of the exact count within the timeout. Cooked food (step 12) and lapis lazuli (step 18) remain at 0, suggesting the planner doesn't prioritize animal hunting or lapis mining.
+
+### deep-mine-expedition Round 2 — Step by Step
+
+| # | Phase | Step | Result | Detail |
+|---|-------|------|--------|--------|
+| 1 | preparation | Craft wooden pickaxe | **PASS** | Axiom, 183s |
+| 2 | preparation | Craft stone pickaxe + coal | **PASS** | Axiom, 105s |
+| 3 | iron-bootstrap | Smelt iron + craft iron pickaxe | **PASS** | Axiom, 30s |
+| 4 | upper-mines | Mine at least 24 raw copper | **PASS** | Scout, 25 copper, 201s |
+| 5 | upper-mines | Mine at least 32 coal | **FAIL** | 30/32 (2 short, 602s) |
+| 6 | deep-mines | Mine at least 12 raw gold | **FAIL** | 4/12, 904s |
+| 7 | deep-mines | Mine at least 48 redstone | **PASS** | Scout, 54 redstone, 146s |
+| 8 | deep-mines | Mine at least 24 lapis lazuli | **FAIL** | 0/24, 904s |
+| 9 | diamond-hunt | Mine at least 8 diamonds | **FAIL** | 6/8 (close, 1802s) |
+| 10 | diamond-hunt | Mine at least 12 diamonds | **PASS** | Scout, 15 diamonds, 50s |
+
+**Analysis**: Tool progression is flawless (3/3). Scout reached deep levels quickly and accumulated massive resources — 81 raw copper, 142 redstone, 15 diamonds by end of test. Step 9→10 shows an interesting pattern: Scout had 6 diamonds at step 9 timeout but reached 15 by the time step 10 checked (50s later). The bot continues mining between steps. Lapis lazuli consistently at 0 across both tests — the MINE directive may not know how to find lapis specifically.
+
+### night-watch Round 2 — Step by Step
+
+| # | Phase | Step | Result | Detail |
+|---|-------|------|--------|--------|
+| 1 | equip | Craft wooden sword + shield | **PASS** | Axiom, 90s |
+| 2 | equip | Craft stone sword + torches | **PASS** | Axiom, 276s |
+| 3 | equip | Cook at least 8 meat | **FAIL** | 1/8, 602s |
+| 4 | first-night | Collect 8 rotten flesh | **FAIL** | 0 (0 kills, 904s) |
+| 5 | first-night | Collect 8 bones | **FAIL** | 0 (0 kills, 904s) |
+| 6 | upgrade | Craft iron sword + armor | **PASS** | Axiom, 35s |
+| 7 | upgrade | Cook at least 16 meat | **FAIL** | 1/16, 602s |
+| 8 | extended-combat | Collect 8 string | **FAIL** | 0 (0 kills, 904s) |
+| 9 | extended-combat | Collect 6 gunpowder | **FAIL** | 0 (0 kills, 1205s) |
+| 10 | extended-combat | Collect 8 arrows | **FAIL** | 0 (0 kills, 903s) |
+| 11 | endurance | Collect 24 rotten flesh | **FAIL** | 0 (pod dying, 1207s) |
+| 12 | endurance | Collect 16 bones | — | Pod destroyed before step ran |
+
+**Analysis**: Tool/weapon crafting works perfectly (wooden sword → stone sword → iron sword in 3 passes). Combat remains completely broken — **zero mob kills across 129 minutes and multiple 300s combat cycles**. The H5 fix (duration + patrol) is confirmed active (logs show "Combat mode engaged (300s)" and bots move during patrol), but bots patrol underground where they ended up from prior mining steps. They never ascend to the surface for nighttime mob encounters. See H6.
+
+### New Issue: H6 — Combat patrols underground instead of surface (MODERATE — mod)
+
+**Symptom**: Bots enter combat mode and patrol actively (confirmed by position changes), but patrol underground in caves/mines where mob density is near zero. Zero kills after 129 minutes of testing.
+
+**Root cause**: After equip/upgrade phases, bots are underground from mining. When combat is issued, `CombatBehavior.patrol()` walks randomly from the bot's current position. There is no logic to ascend to the surface first. Underground patrolling covers small areas of already-explored (and possibly lit) caves.
+
+**Fix (proposed)**:
+1. Combat directive should navigate the bot to the surface (y > 60) before starting patrol
+2. Or: add a `GOTO_SURFACE` pre-step that the planner inserts before combat
+3. Or: patrol movement should prefer upward navigation when underground
+
+**Status**: PENDING — next round fix
+
+### New Issue: H7 — Animal hunting / food cooking unreliable (MINOR — agent)
+
+**Symptom**: "Cook at least 8/16/32 meat" consistently fails. Bots find 0-1 cooked food items across all tests.
+
+**Root cause**: The MINE directive can find ores by scanning for block types, but hunting animals requires entity tracking + killing + furnace cooking — a multi-step chain that the planner may not decompose correctly. Animals are also finite and may have been killed or wandered away.
+
+**Status**: PENDING — investigate animal hunting directive chain
+
+### New Issue: H8 — Lapis lazuli never found (MINOR — mod)
+
+**Symptom**: 0 lapis lazuli across all tests and both rounds. Every other deep ore (redstone, diamond, gold, copper) is found.
+
+**Root cause**: MINE directive searches for the nearest matching block by name. Lapis lazuli ore may use a registry name that doesn't match the search pattern, or it may spawn in veins the scan doesn't reach.
+
+**Status**: PENDING — investigate `lapis_lazuli_ore` vs `lapis_ore` registry ID and scan coverage
+
+---
+
+## Overall Assessment
+
+### What the fixes solved
+
+| Fix | Round 1 Impact | Round 2 Impact |
+|-----|---------------|----------------|
+| H1 (inventory aggregation) | 0 real PASSes | 19 real PASSes across 3 tests |
+| H2 (recipe scoring) | Bamboo channeling for sticks | Planks used correctly (no wasted XP observed) |
+| H4 (DB isolation) | Production tasks leaked | Clean isolation, 0 production impact |
+| H5 (combat duration + patrol) | 30s combat, standing still | 300s combat, bots move — but still 0 kills (see H6) |
+
+### Remaining gaps
+
+1. **Combat (H6)**: Needs surface navigation before patrol. The duration and movement fixes are necessary but insufficient — bots must be in the right place.
+2. **Food (H7)**: Animal hunting + cooking pipeline broken. Bots don't reliably hunt, kill, and cook animals.
+3. **Lapis (H8)**: Lapis lazuli ore never located by the MINE directive. Possible registry ID mismatch.
+4. **Gathering thresholds**: Several steps fail by small margins (15/16 logs, 30/32 coal, 6/8 diamonds). Consider slightly longer timeouts or lower thresholds for close-miss items.
+5. **Idle coordinators**: 3 of 5 bots (Mystic, Tiller, Forge) remain idle at spawn. Only Axiom and Scout do meaningful work. The coordinator pattern wastes 60% of bot capacity.
