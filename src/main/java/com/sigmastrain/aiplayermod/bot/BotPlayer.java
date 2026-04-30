@@ -33,6 +33,7 @@ import net.minecraft.core.registries.BuiltInRegistries;
 
 import net.minecraft.world.SimpleContainer;
 import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -502,6 +503,7 @@ public class BotPlayer {
         item.put("item", BuiltInRegistries.ITEM.getKey(stack.getItem()).toString());
         item.put("count", stack.getCount());
         item.put("display_name", stack.getHoverName().getString());
+        item.put("max_stack_size", stack.getMaxStackSize());
 
         if (stack.isDamageableItem()) {
             item.put("durability", stack.getMaxDamage() - stack.getDamageValue());
@@ -520,6 +522,25 @@ public class BotPlayer {
                 if (!e.isEmpty()) enchList.add(e);
             });
             item.put("enchantments", enchList);
+        }
+
+        var attrs = stack.getAttributeModifiers();
+        if (attrs != null && !attrs.modifiers().isEmpty()) {
+            Map<String, Object> attributes = new LinkedHashMap<>();
+            for (var entry : attrs.modifiers()) {
+                String attrName = entry.attribute().unwrapKey()
+                        .map(k -> k.location().getPath())
+                        .orElse("unknown");
+                double amount = entry.modifier().amount();
+                String op = entry.modifier().operation().name().toLowerCase();
+                String slotGroup = entry.slot().getSerializedName();
+                attributes.put(attrName, Map.of(
+                        "amount", Math.round(amount * 100.0) / 100.0,
+                        "operation", op,
+                        "slot", slotGroup
+                ));
+            }
+            item.put("attributes", attributes);
         }
 
         return item;

@@ -15,6 +15,30 @@ function shortName(id: string): string {
   return (id || '').replace('minecraft:', '').replace(/_/g, ' ')
 }
 
+const ATTR_LABELS: Record<string, string> = {
+  'generic.attack_damage': 'Attack Damage',
+  'generic.attack_speed': 'Attack Speed',
+  'generic.attack_knockback': 'Knockback',
+  'generic.armor': 'Armor',
+  'generic.armor_toughness': 'Armor Toughness',
+  'generic.knockback_resistance': 'Knockback Resist',
+  'player.block_break_speed': 'Break Speed',
+  'player.mining_efficiency': 'Mining Efficiency',
+  'player.block_interaction_range': 'Block Range',
+  'player.entity_interaction_range': 'Entity Range',
+}
+
+function attrLabel(key: string): string {
+  return ATTR_LABELS[key] || key.replace('generic.', '').replace('player.', '').replace(/_/g, ' ')
+}
+
+function formatAttrValue(amount: number, operation: string): string {
+  if (operation === 'add_value') return amount >= 0 ? `+${amount}` : `${amount}`
+  if (operation === 'add_multiplied_base' || operation === 'add_multiplied_total')
+    return `${amount >= 0 ? '+' : ''}${Math.round(amount * 100)}%`
+  return String(amount)
+}
+
 function ItemDetailPanel({ item, onClose }: { item: InventorySlot; onClose: () => void }) {
   const hasEnchants = item.enchantments && item.enchantments.length > 0
   const hasDurability = item.max_durability != null && item.max_durability > 0
@@ -58,6 +82,20 @@ function ItemDetailPanel({ item, onClose }: { item: InventorySlot; onClose: () =
             className={`h-1.5 rounded ${durabilityPct! > 60 ? 'bg-mc-green' : durabilityPct! > 25 ? 'bg-mc-gold' : 'bg-mc-red'}`}
             style={{ width: `${durabilityPct}%` }}
           />
+        </div>
+      )}
+
+      {item.attributes && Object.keys(item.attributes).length > 0 && (
+        <div>
+          <h5 className="text-xs text-mc-green font-medium mb-1">Attributes</h5>
+          <div className="space-y-0.5">
+            {Object.entries(item.attributes).map(([key, attr]) => (
+              <div key={key} className="text-xs flex justify-between">
+                <span className="text-mc-gray">{attrLabel(key)}</span>
+                <span className="text-mc-green">{formatAttrValue(attr.amount, attr.operation)}</span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

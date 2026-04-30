@@ -159,6 +159,7 @@ function WorldMapInner({
 
   const [mode, setMode] = useState<MapMode>('view')
   const [moveBot, setMoveBot] = useState<string | null>(null)
+  const [followBot, setFollowBot] = useState<string | null>(null)
   const modeRef = useRef(mode)
   modeRef.current = mode
   const moveBotRef = useRef(moveBot)
@@ -216,8 +217,12 @@ function WorldMapInner({
   centerZRef.current = centerZ
 
   useEffect(() => {
-    if (!onCenterBot) return
-    const bot = bots.find((b) => b.name === onCenterBot)
+    setFollowBot(onCenterBot || null)
+  }, [onCenterBot])
+
+  useEffect(() => {
+    if (!followBot) return
+    const bot = bots.find((b) => b.name === followBot)
     if (!bot?.status?.position) return
     const dim = bot.status.dimension || 'minecraft:overworld'
     if (dim !== currentDim) setActiveDim(dim)
@@ -225,7 +230,7 @@ function WorldMapInner({
       x: (bot.status.position.x ?? 0) - baseCenterX,
       z: (bot.status.position.z ?? 0) - baseCenterZ,
     })
-  }, [onCenterBot])
+  }, [followBot, bots])
 
   const stableCenterX = useRef(centerX)
   const stableCenterZ = useRef(centerZ)
@@ -314,6 +319,7 @@ function WorldMapInner({
       if (e.touches.length === 1) {
         cancelAnimationFrame(inertiaFrameRef.current)
         velocityRef.current = { x: 0, z: 0 }
+        setFollowBot(null)
         const t = e.touches[0]
         const pt = getSvgCoords(t.clientX, t.clientY)
         draggingRef.current = true
@@ -407,6 +413,7 @@ function WorldMapInner({
     if (e.button !== 0) return
     cancelAnimationFrame(inertiaFrameRef.current)
     velocityRef.current = { x: 0, z: 0 }
+    setFollowBot(null)
     const pt = getSvgCoords(e.clientX, e.clientY)
     draggingRef.current = true
     dragStartRef.current = pt
@@ -569,12 +576,27 @@ function WorldMapInner({
             {label}
           </button>
         ))}
-        <button
-          onClick={() => { setZoom(() => 1); setPanOffset({ x: 0, z: 0 }) }}
-          className="text-[10px] px-2 py-0.5 rounded bg-mc-accent text-mc-gray hover:text-white ml-auto"
-        >
-          Reset
-        </button>
+        {selectedBot && !followBot && (
+          <button
+            onClick={() => setFollowBot(selectedBot)}
+            className="text-[10px] px-2 py-0.5 rounded bg-mc-accent text-mc-aqua hover:text-white ml-auto"
+          >
+            Follow {selectedBot}
+          </button>
+        )}
+        {followBot && (
+          <span className="text-[10px] text-mc-aqua ml-auto">
+            Following {followBot}
+          </span>
+        )}
+        {!selectedBot && (
+          <button
+            onClick={() => { setZoom(() => 1); setPanOffset({ x: 0, z: 0 }) }}
+            className="text-[10px] px-2 py-0.5 rounded bg-mc-accent text-mc-gray hover:text-white ml-auto"
+          >
+            Reset
+          </button>
+        )}
       </div>
 
       {mode === 'move' && (

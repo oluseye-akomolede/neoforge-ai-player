@@ -9,6 +9,17 @@ bots:
 
 steps:
   - instruction: "Wide search for stone"
+    directive:
+      directive_type: WIDE_SEARCH
+      target: stone
+      x: 0
+      y: 64
+      z: 0
+      extra:
+        search_type: block
+        radius: "64"
+        bot_index: "0"
+        bot_count: "1"
     timeout: 180
     success:
       directive_completed: true

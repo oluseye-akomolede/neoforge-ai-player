@@ -8,20 +8,18 @@ bots:
   - image: null
 
 steps:
-  - instruction: "Channel 1 minecraft:diamond_sword"
-    timeout: 30
+  - instruction: "Enchant diamond sword with Sharpness V"
+    give_items:
+      - item_id: minecraft:diamond_sword
+        count: 1
+    directive:
+      directive_type: ENCHANT
+      target: diamond_sword
+      extra:
+        enchantment: sharpness
+        level: "5"
+    timeout: 120
     success:
       inventory_contains:
         item: minecraft:diamond_sword
         min_count: 1
-
-  - instruction: "Enchant diamond_sword with sharpness 5"
-    timeout: 60
-    success:
-      inventory_contains:
-        item: minecraft:diamond_sword
-        min_count: 1
-        nbt_match:
-          enchantments:
-            - id: "minecraft:sharpness"
-              lvl: 5

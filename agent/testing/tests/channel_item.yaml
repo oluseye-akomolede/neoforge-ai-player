@@ -8,8 +8,12 @@ bots:
   - image: null
 
 steps:
-  - instruction: "Channel 5 minecraft:iron_ingot"
-    timeout: 60
+  - instruction: "Channel 5 iron ingots"
+    directive:
+      directive_type: CHANNEL
+      target: minecraft:iron_ingot
+      count: 5
+    timeout: 120
     success:
       inventory_contains:
         item: minecraft:iron_ingot

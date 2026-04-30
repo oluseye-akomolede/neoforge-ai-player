@@ -51,7 +51,7 @@ function AppInner() {
   const handleBotSelect = (name: string) => {
     const next = selectedBot === name ? null : name
     setSelectedBot(next)
-    if (next) setCenterBot(next)
+    setCenterBot(next)
   }
 
   return (

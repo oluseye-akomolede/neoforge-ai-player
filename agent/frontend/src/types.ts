@@ -17,14 +17,22 @@ export interface ItemEnchantment {
   level: number
 }
 
+export interface ItemAttribute {
+  amount: number
+  operation: string
+  slot: string
+}
+
 export interface InventorySlot {
   slot: number
   item: string
   count: number
   display_name?: string
+  max_stack_size?: number
   durability?: number
   max_durability?: number
   enchantments?: ItemEnchantment[]
+  attributes?: Record<string, ItemAttribute>
 }
 
 export interface BotSnapshot {

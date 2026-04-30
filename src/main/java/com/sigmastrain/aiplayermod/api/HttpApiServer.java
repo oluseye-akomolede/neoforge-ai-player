@@ -251,6 +251,29 @@ public class HttpApiServer {
                     sendJson(exchange, 200, Map.of("inventory", bot.getCachedInventory()));
                 }
             }
+            case "give" -> {
+                var items = body.getAsJsonArray("items");
+                var future = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    var player = bot.getPlayer();
+                    int given = 0;
+                    for (var elem : items) {
+                        var obj = elem.getAsJsonObject();
+                        String itemId = obj.get("item_id").getAsString();
+                        int count = obj.has("count") ? obj.get("count").getAsInt() : 1;
+                        var item = BuiltInRegistries.ITEM.get(ResourceLocation.parse(itemId));
+                        if (item != Items.AIR) {
+                            var stack = new ItemStack(item, count);
+                            if (!player.getInventory().add(stack)) {
+                                player.drop(stack, false);
+                            }
+                            given++;
+                        }
+                    }
+                    future.complete(Map.of("status", "given", "items_given", given));
+                });
+                sendJson(exchange, 200, future.join());
+            }
             case "entities" -> sendJson(exchange, 200, Map.of("entities", bot.getCachedEntities()));
             case "blocks" -> sendJson(exchange, 200, Map.of("blocks", bot.getCachedBlocks()));
             case "actions" -> {

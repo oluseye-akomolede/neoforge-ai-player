@@ -18,6 +18,8 @@ class TestStep:
     success: dict = field(default_factory=dict)
     phase: str = ""
     bot: str = ""
+    directive: dict | None = None
+    give_items: list[dict] | None = None
 
 
 @dataclass
@@ -61,11 +63,13 @@ def load_test(path: Path) -> TestDefinition:
     steps = []
     for s in raw.get("steps", []):
         steps.append(TestStep(
-            instruction=s["instruction"],
+            instruction=s.get("instruction", ""),
             timeout=s.get("timeout", 120),
             success=s.get("success", {}),
             phase=s.get("phase", ""),
             bot=s.get("bot", ""),
+            directive=s.get("directive"),
+            give_items=s.get("give_items"),
         ))
 
     world_cfg = raw.get("world", {})
@@ -270,10 +274,21 @@ class TestRunner:
                 step_start = time.time()
 
                 try:
-                    self._api_post(
-                        world.agent_api_url, "/api/command",
-                        {"bot": target_bot, "message": step.instruction},
-                    )
+                    if step.give_items:
+                        self._api_post(
+                            world.mod_api_url, f"/bot/{target_bot}/give",
+                            {"items": step.give_items},
+                        )
+                        print(f"[harness]   gave {len(step.give_items)} item(s)")
+
+                    if step.directive:
+                        body = {"bot": target_bot, **step.directive}
+                        self._api_post(world.agent_api_url, "/api/directive", body)
+                    elif step.instruction:
+                        self._api_post(
+                            world.agent_api_url, "/api/command",
+                            {"bot": target_bot, "message": step.instruction},
+                        )
                 except Exception as e:
                     sr = StepResult(
                         step=step.instruction, passed=False,

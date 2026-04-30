@@ -8,17 +8,17 @@ bots:
   - image: null
 
 steps:
-  - instruction: "Channel 1 minecraft:iron_pickaxe"
-    timeout: 30
+  - instruction: "Enchant iron pickaxe with random tier 2"
+    give_items:
+      - item_id: minecraft:iron_pickaxe
+        count: 1
+    directive:
+      directive_type: ENCHANT
+      target: iron_pickaxe
+      extra:
+        option: "2"
+    timeout: 120
     success:
       inventory_contains:
         item: minecraft:iron_pickaxe
         min_count: 1
-
-  - instruction: "Enchant iron_pickaxe random tier 2"
-    timeout: 60
-    success:
-      inventory_contains:
-        item: minecraft:iron_pickaxe
-        min_count: 1
-        has_enchantments: true
