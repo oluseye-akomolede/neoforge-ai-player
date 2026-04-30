@@ -158,11 +158,17 @@ DIRECTIVE_CATALOG = [
     {
         "type": "ENCHANT",
         "label": "Enchant",
+        "description": "Apply a specific enchantment to an item using XP. Select an enchantment from the registry or leave blank for random.",
         "params": [
-            {"name": "target", "type": "string", "label": "Item (name or slot #)", "required": False},
-            {"name": "extra", "type": "dict", "label": "Options", "required": False,
+            {"name": "target", "type": "string", "label": "Item (name or slot #)",
+             "hint": "Item to enchant — searched in inventory by name", "required": False},
+            {"name": "extra", "type": "dict", "label": "Enchantment", "required": False,
              "fields": [
-                 {"name": "option", "type": "string", "label": "Tier",
+                 {"name": "enchantment", "type": "string", "label": "Enchantment",
+                  "hint": "Leave blank for random enchantment"},
+                 {"name": "level", "type": "string", "label": "Level",
+                  "hint": "Enchantment level (default: max)"},
+                 {"name": "option", "type": "string", "label": "Random tier (if no enchantment selected)",
                   "options": ["0", "1", "2"],
                   "option_labels": ["Basic (1-8)", "Mid (9-20)", "Max (21-30)"],
                   "default": "2"},

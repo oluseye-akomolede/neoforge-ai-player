@@ -64,13 +64,29 @@ Users MUST be able to send natural-language instructions to bots via a text inpu
 - AND the resulting plan MUST be sent to the selected bot for execution
 
 ### Requirement: Directive Panel
-Users MUST be able to fire L1 directives directly from dropdown menus with type-specific parameter forms, searchable transmute item picker, and visual feedback (gold=in-flight, green=success, red=error).
+Users MUST be able to fire L1 directives directly from dropdown menus with type-specific parameter forms, searchable transmute item picker, searchable enchantment picker, and visual feedback (gold=in-flight, green=success, red=error).
 
 #### Scenario: Firing a directive with visual feedback
 - GIVEN the directive panel is visible and a bot is selected
 - WHEN the user selects a directive from the dropdown and submits it with parameters
 - THEN the directive row MUST display gold coloring while in-flight
 - AND the directive row MUST turn green on success or red on error
+
+### Requirement: Enchantment Directive UI
+The ENCHANT directive form MUST provide a searchable dropdown populated from GET /api/enchantments (polled every 30 seconds). The dropdown shows each enchantment's ID, max level, XP cost per level, and source badge (vanilla vs. discovered). A level input constrains to 1..max_level. When no specific enchantment is selected, a random tier selector (Basic/Mid/Max) is shown as fallback. The form calculates and displays estimated XP cost.
+
+#### Scenario: Selecting a specific enchantment
+- GIVEN the ENCHANT directive is selected
+- WHEN the user searches for "sharpness" in the enchantment dropdown
+- THEN matching enchantments are filtered and displayed with max level and cost info
+- AND selecting "sharpness" sets the enchantment field and constrains the level input to 1-5
+- AND the estimated XP cost updates to show (level x cost_per_level)
+
+#### Scenario: Random enchantment fallback
+- GIVEN the ENCHANT directive is selected
+- WHEN no specific enchantment is chosen
+- THEN the form shows a random tier selector with options: Basic (1-8), Mid (9-20), Max (21-30)
+- AND the XP cost displays the tier's level cost
 
 ### Requirement: Position Picker Buttons
 Directive parameters with `use_bot_pos: true` MUST display quick-fill buttons for each bot's current position and each online player's position. Bot buttons use the bot's theme color; player buttons use magenta.
@@ -107,6 +123,7 @@ The data browser MUST provide tabbed views for:
 | Memories | /api/bots/{name}/memories | Category filtering, decay scores, per-memory delete |
 | Tasks | /api/tasks | Status coloring, assignee display |
 | Transmute | /api/transmute | Item list with XP costs |
+| Enchantments | /api/enchantments | Searchable list with max levels, costs, source badges |
 | Containers | /api/containers | Expandable with live contents |
 | Waypoints | /api/waypoints | Name, coordinates, dimension |
 

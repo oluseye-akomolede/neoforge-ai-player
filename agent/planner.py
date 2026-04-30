@@ -27,7 +27,9 @@ IF the player gives a vague or high-level goal (e.g. "get me iron gear" or "set 
 ## Rules
 - Each step = ONE concrete action: mine, craft, find, go to, place, build, farm, collect, smelt, combat, follow, channel, send_item, etc.
 - Use Minecraft registry IDs where possible (e.g. "minecraft:stone_pickaxe" not "stone pickaxe")
-- For combat: "Engage combat mode 300s" (fights hostiles for N seconds — use 300s+ for sustained combat) or "Attack zombie 120s"
+- For combat vs hostile mobs: "Engage combat mode 300s" (fights hostiles only — zombies, skeletons, spiders, creepers)
+- For hunting animals: "Attack cow 120s" or "Attack pig 120s" (targets specific animal type — NEVER use "Engage combat mode" for animals)
+- For combat vs specific mob: "Attack zombie 120s" or "Kill creeper 60s"
 - For following: "Follow <player_name>" or "goto_player <player_name>" (replace <player_name> with the actual player name from the instruction)
 - For channeling: "Channel modid:item_name" or "Channel 3x modid:item_name" — only for items listed in the transmute registry below
 - For sending items: "Send 10 minecraft:iron_ingot to Scout" (transfers items between bots instantly)
@@ -72,6 +74,12 @@ Output: {{"steps": ["Craft minecraft:stone_pickaxe", "Find and mine minecraft:ir
 
 Input: "Go chop some trees"
 Output: {{"steps": ["Find and mine nearby logs (minecraft:oak_log or minecraft:birch_log)"]}}
+
+Input: "Hunt animals and cook at least 8 meat"
+Output: {{"steps": ["Smelt 8x minecraft:beef"]}}
+
+Input: "Restock to at least 16 cooked meat"
+Output: {{"steps": ["Smelt 16x minecraft:beef"]}}
 
 Input: "Help me get diamonds"
 Output: {{"steps": ["Craft minecraft:stone_pickaxe", "Find and mine minecraft:iron_ore", "Craft and place minecraft:furnace", "Smelt minecraft:raw_iron into minecraft:iron_ingot", "Craft minecraft:iron_pickaxe", "Dig down to Y=16 or below", "Find and mine minecraft:diamond_ore"]}}
@@ -184,6 +192,8 @@ PRIORITY: always prefer Craft > Mine > Smelt over Channel. Channel is a last res
 CHECK bot inventories below before planning. If a bot already has required materials, SKIP the gathering step for that bot. Use send_item to transfer materials between bots when it saves time.
 
 For "engage combat", "fight enemies", "defend me", or similar — use "Engage combat mode 300s" for EVERY bot. Use longer durations (600s+) for sustained combat or "fight through the night" scenarios.
+For "hunt animals", "kill cows/pigs/chickens" — use "Attack cow 120s" or "Attack pig 120s" (NOT "Engage combat mode"). NEVER use "Engage combat mode" for hunting — it only targets hostile mobs.
+For "get food", "cook meat", "restock cooked meat", or any food task — use "Smelt Nx minecraft:beef" directly. The smelt system auto-channels raw materials when not in inventory, so hunting is unnecessary. This is the most reliable way to get cooked food.
 For "come to me" or "come here" — use "Follow <player_name>" for EVERY bot (replace <player_name> with the sender's actual name from the instruction).
 When the instruction says "all bots", "every bot", or "everyone" — create a separate step for EVERY available bot. If there is a quantity, split it evenly (e.g. "all bots channel 200 items" with 5 bots = 40 per bot). Assign each step to a specific bot name — do NOT use "any".
 For "search for X" or "find X" across a large area — use "Wide search for X" and assign to ALL available bots for parallel searching. Each bot automatically searches a different grid slice.
@@ -210,6 +220,9 @@ ALWAYS use registry IDs (modid:item_name). Include counts where relevant.
 - Torches: 1 minecraft:coal + 1 minecraft:stick = 4 torches
 - Sticks: 2 minecraft:oak_planks = 4 sticks
 - Planks: 1 minecraft:oak_log = 4 planks
+- Hunting: "Attack cow 120s" or "Attack pig 120s" kills animals and auto-collects drops (raw beef, raw porkchop, raw chicken)
+- Cooking: "Smelt 8x minecraft:beef" cooks raw meat into cooked food. Works for beef, porkchop, chicken, mutton, rabbit, cod, salmon, potato
+- For "get food", "cook meat", or "restock cooked meat" — prefer "Smelt Nx minecraft:beef" directly. The smelt system auto-channels raw materials if not in inventory. Hunting is unreliable when few animals are available
 
 {memory_section}
 

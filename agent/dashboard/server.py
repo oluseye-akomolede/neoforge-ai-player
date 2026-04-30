@@ -324,6 +324,18 @@ def create_app() -> FastAPI:
         except Exception as e:
             return {"error": str(e)}
 
+    # ── REST: enchantment registry ──
+
+    @app.get("/api/enchantments")
+    async def get_enchantments():
+        if not _api_module:
+            return {"enchantments": [], "error": "agent not connected"}
+        try:
+            data = await asyncio.to_thread(_api_module.enchantment_list)
+            return {"enchantments": data.get("enchantments", [])}
+        except Exception as e:
+            return {"enchantments": [], "error": str(e)}
+
     # ── REST: transmute registry ──
 
     @app.get("/api/transmute")

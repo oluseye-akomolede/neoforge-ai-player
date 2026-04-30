@@ -5,10 +5,11 @@ import com.sigmastrain.aiplayermod.bot.BotPlayer;
 import com.sigmastrain.aiplayermod.brain.BehaviorResult;
 import com.sigmastrain.aiplayermod.brain.Directive;
 import com.sigmastrain.aiplayermod.brain.ProgressReport;
+import com.sigmastrain.aiplayermod.shop.EnchantmentRegistry;
 import net.minecraft.core.Holder;
-import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
+import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
@@ -21,13 +22,25 @@ import net.minecraft.world.item.enchantment.EnchantmentInstance;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Stream;
 
 /**
- * Channeled enchanting — bots enchant items directly using XP.
- * No enchanting table needed. Random enchantments based on XP level spent.
- * Phases: VALIDATE → MEDITATING → ENCHANTING
+ * Deterministic enchanting — bots can apply specific enchantments by name.
+ * Falls back to random enchantment selection if no specific enchantment is given.
+ * Auto-meditates for XP if the bot doesn't have enough.
+ *
+ * Directive target formats:
+ *   "sharpness 5"                → find enchantable weapon, apply sharpness 5
+ *   "sharpness 5 on iron_sword"  → find iron_sword, apply sharpness 5
+ *   "iron_sword"                 → find iron_sword, apply random enchantment (option tier)
+ *   ""                           → find any enchantable item, apply random enchantment
+ *
+ * Extra params:
+ *   enchantment: "minecraft:sharpness" — explicit enchantment ID
+ *   level: "3" — enchantment level
+ *   option: "0"|"1"|"2" — random tier (basic/mid/max), used when no specific enchantment
  */
 public class EnchantBehavior implements Behavior {
     private enum Phase { VALIDATE, MEDITATING, ENCHANTING }
@@ -36,28 +49,91 @@ public class EnchantBehavior implements Behavior {
     private Phase phase;
 
     private String targetItem;
-    private int option; // 0=basic(1-8), 1=mid(9-20), 2=max(21-30)
+    private String requestedEnchantment;
+    private int requestedLevel;
+    private int option;
     private int itemSlot = -1;
-    private int enchantLevel;
+    private int xpCost;
     private int enchantTicks;
     private int meditateTarget;
     private int meditateTicks;
     private int meditateLevelsGained;
 
-    private static final int ENCHANT_DURATION = 60; // 3 seconds
-    private static final int TICKS_PER_LEVEL = 5;
+    private Holder<Enchantment> resolvedEnchantment;
+
+    private static final int ENCHANT_DURATION = 20;
+    private static final int TICKS_PER_LEVEL = 1;
 
     @Override
     public void start(BotPlayer bot, Directive directive) {
         progress.reset();
-        this.targetItem = directive.getTarget();
-        this.option = 2;
-        if (directive.getExtra().containsKey("option")) {
-            try { this.option = Integer.parseInt(directive.getExtra().get("option")); }
-            catch (NumberFormatException ignored) {}
-        }
+        Map<String, String> extra = directive.getExtra();
+
+        this.requestedEnchantment = extra.getOrDefault("enchantment", "");
+        this.requestedLevel = parseIntOr(extra.get("level"), -1);
+        this.option = parseIntOr(extra.get("option"), 2);
         this.option = Math.max(0, Math.min(2, this.option));
+
+        String rawTarget = directive.getTarget();
+        parseTarget(rawTarget);
+
         enterPhase(Phase.VALIDATE);
+    }
+
+    private void parseTarget(String raw) {
+        if (raw == null || raw.isEmpty()) {
+            targetItem = "";
+            return;
+        }
+
+        if (requestedEnchantment != null && !requestedEnchantment.isEmpty()) {
+            targetItem = raw;
+            return;
+        }
+
+        // "sharpness 5 on iron_sword" or "sharpness 5"
+        String lower = raw.toLowerCase().trim();
+        if (lower.contains(" on ")) {
+            String[] parts = lower.split("\\s+on\\s+", 2);
+            parseEnchantmentFromText(parts[0].trim());
+            targetItem = parts[1].trim();
+        } else {
+            // Try to parse as "enchantment_name level" first
+            if (parseEnchantmentFromText(lower)) {
+                targetItem = "";
+            } else {
+                targetItem = raw;
+            }
+        }
+    }
+
+    private boolean parseEnchantmentFromText(String text) {
+        // Try "enchantment_name N" pattern
+        String[] words = text.split("\\s+");
+        if (words.length >= 2) {
+            String lastWord = words[words.length - 1];
+            try {
+                int level = Integer.parseInt(lastWord);
+                String enchName = String.join("_", java.util.Arrays.copyOf(words, words.length - 1));
+                if (!enchName.contains(":")) enchName = "minecraft:" + enchName;
+                if (EnchantmentRegistry.isKnown(enchName)) {
+                    requestedEnchantment = enchName;
+                    requestedLevel = level;
+                    return true;
+                }
+            } catch (NumberFormatException ignored) {}
+        }
+
+        // Try whole string as enchantment name
+        String enchName = text.replace(" ", "_");
+        if (!enchName.contains(":")) enchName = "minecraft:" + enchName;
+        if (EnchantmentRegistry.isKnown(enchName)) {
+            requestedEnchantment = enchName;
+            if (requestedLevel < 0) requestedLevel = EnchantmentRegistry.getMaxLevel(enchName);
+            return true;
+        }
+
+        return false;
     }
 
     @Override
@@ -72,55 +148,49 @@ public class EnchantBehavior implements Behavior {
     private BehaviorResult tickValidate(BotPlayer bot) {
         ServerPlayer player = bot.getPlayer();
 
-        // Find enchantable item
-        itemSlot = -1;
-        if (targetItem != null && !targetItem.isEmpty()) {
-            try {
-                int slot = Integer.parseInt(targetItem);
-                ItemStack stack = player.getInventory().getItem(slot);
-                if (!stack.isEmpty() && stack.isEnchantable()) {
-                    itemSlot = slot;
-                }
-            } catch (NumberFormatException e) {
-                String search = targetItem.toLowerCase();
-                for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
-                    ItemStack stack = player.getInventory().getItem(i);
-                    if (stack.isEmpty() || !stack.isEnchantable()) continue;
-                    String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
-                    if (id.contains(search)) {
-                        itemSlot = i;
-                        break;
-                    }
-                }
-            }
-        }
-
+        itemSlot = findItemSlot(player, targetItem);
         if (itemSlot < 0) {
-            for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
-                ItemStack stack = player.getInventory().getItem(i);
-                if (!stack.isEmpty() && stack.isEnchantable()) {
-                    itemSlot = i;
-                    break;
-                }
-            }
-        }
-
-        if (itemSlot < 0) {
-            progress.setFailureReason("No enchantable item found in inventory");
+            progress.setFailureReason("No enchantable item found" +
+                    (targetItem.isEmpty() ? " in inventory" : " matching '" + targetItem + "'"));
             return BehaviorResult.FAILED;
         }
 
-        // Determine enchant level based on option tier
-        RandomSource random = player.getRandom();
-        enchantLevel = switch (option) {
-            case 0 -> 1 + random.nextInt(8);      // 1-8
-            case 1 -> 9 + random.nextInt(12);      // 9-20
-            default -> 21 + random.nextInt(10);     // 21-30
-        };
-
-        int xpCost = getXpCost(enchantLevel);
         String itemId = BuiltInRegistries.ITEM.getKey(player.getInventory().getItem(itemSlot).getItem()).toString();
-        progress.logEvent("Enchanting " + itemId + " at level " + enchantLevel + " (cost: " + xpCost + " XP levels)");
+
+        // Resolve specific enchantment if requested
+        if (requestedEnchantment != null && !requestedEnchantment.isEmpty()) {
+            if (!requestedEnchantment.contains(":"))
+                requestedEnchantment = "minecraft:" + requestedEnchantment;
+
+            Optional<Holder<Enchantment>> opt = EnchantmentRegistry.resolve(
+                    requestedEnchantment, player.server);
+            if (opt.isEmpty()) {
+                progress.setFailureReason("Unknown enchantment: " + requestedEnchantment);
+                return BehaviorResult.FAILED;
+            }
+            resolvedEnchantment = opt.get();
+
+            int maxLevel = resolvedEnchantment.value().definition().maxLevel();
+            if (requestedLevel < 0) requestedLevel = maxLevel;
+            requestedLevel = Math.max(1, Math.min(requestedLevel, 255));
+
+            xpCost = EnchantmentRegistry.getCostPerLevel(requestedEnchantment) * requestedLevel;
+            progress.logEvent("Enchanting " + itemId + " with " + requestedEnchantment +
+                    " " + requestedLevel + " (cost: " + xpCost + " XP)");
+        } else {
+            // Random enchantment mode
+            resolvedEnchantment = null;
+            RandomSource random = player.getRandom();
+            int enchantLevel = switch (option) {
+                case 0 -> 1 + random.nextInt(8);
+                case 1 -> 9 + random.nextInt(12);
+                default -> 21 + random.nextInt(10);
+            };
+            xpCost = enchantLevel;
+            requestedLevel = enchantLevel;
+            progress.logEvent("Random enchant " + itemId + " at level " + enchantLevel +
+                    " (cost: " + xpCost + " XP)");
+        }
 
         if (player.experienceLevel < xpCost) {
             meditateTarget = xpCost - player.experienceLevel;
@@ -168,7 +238,6 @@ public class EnchantBehavior implements Behavior {
         Vec3 pos = player.position();
         enchantTicks++;
 
-        // Enchanting particles
         if (enchantTicks % 3 == 0) {
             level.sendParticles(ParticleTypes.ENCHANT,
                     pos.x, pos.y + 1.0, pos.z, 5, 0.8, 1.0, 0.8, 0.3);
@@ -178,33 +247,50 @@ public class EnchantBehavior implements Behavior {
 
         if (enchantTicks < ENCHANT_DURATION) return BehaviorResult.RUNNING;
 
-        // Apply enchantments
         ItemStack item = player.getInventory().getItem(itemSlot);
         if (item.isEmpty()) {
             progress.setFailureReason("Item disappeared from slot " + itemSlot);
             return BehaviorResult.FAILED;
         }
 
-        int xpCost = getXpCost(enchantLevel);
         player.giveExperienceLevels(-xpCost);
 
-        // Use vanilla enchantment selection
-        RandomSource random = player.getRandom();
-        Stream<Holder<Enchantment>> enchantmentStream =
-                level.registryAccess().lookupOrThrow(Registries.ENCHANTMENT)
-                        .listElements().map(ref -> (Holder<Enchantment>) ref);
-        List<EnchantmentInstance> enchants =
-                EnchantmentHelper.selectEnchantment(random, item, enchantLevel, enchantmentStream);
+        String itemId = BuiltInRegistries.ITEM.getKey(item.getItem()).toString();
+        String enchantDesc;
 
-        if (enchants.isEmpty()) {
-            // Fallback: refund XP, item wasn't compatible
-            player.giveExperienceLevels(xpCost);
-            progress.setFailureReason("No compatible enchantments for this item at level " + enchantLevel);
-            return BehaviorResult.FAILED;
-        }
+        if (resolvedEnchantment != null) {
+            // Deterministic: apply the exact requested enchantment
+            item.enchant(resolvedEnchantment, requestedLevel);
+            String enchName = resolvedEnchantment.unwrapKey()
+                    .map(k -> k.location().getPath()).orElse("unknown");
+            enchantDesc = enchName + " " + requestedLevel;
+        } else {
+            // Random: use vanilla selection
+            RandomSource random = player.getRandom();
+            Stream<Holder<Enchantment>> enchantmentStream =
+                    level.registryAccess().lookupOrThrow(Registries.ENCHANTMENT)
+                            .listElements().map(ref -> (Holder<Enchantment>) ref);
+            List<EnchantmentInstance> enchants =
+                    EnchantmentHelper.selectEnchantment(random, item, requestedLevel, enchantmentStream);
 
-        for (var inst : enchants) {
-            item.enchant(inst.enchantment, inst.level);
+            if (enchants.isEmpty()) {
+                player.giveExperienceLevels(xpCost);
+                progress.setFailureReason("No compatible enchantments for this item at level " + requestedLevel);
+                return BehaviorResult.FAILED;
+            }
+
+            for (var inst : enchants) {
+                item.enchant(inst.enchantment, inst.level);
+            }
+
+            StringBuilder sb = new StringBuilder();
+            for (var inst : enchants) {
+                if (!sb.isEmpty()) sb.append(", ");
+                String name = inst.enchantment.unwrapKey()
+                        .map(k -> k.location().getPath()).orElse("unknown");
+                sb.append(name).append(" ").append(inst.level);
+            }
+            enchantDesc = sb.toString();
         }
 
         // Effects
@@ -213,28 +299,46 @@ public class EnchantBehavior implements Behavior {
         level.playSound(null, player.blockPosition(),
                 SoundEvents.ENCHANTMENT_TABLE_USE, SoundSource.PLAYERS, 1.0f, 1.0f);
 
-        String itemId = BuiltInRegistries.ITEM.getKey(item.getItem()).toString();
-        StringBuilder enchantNames = new StringBuilder();
-        for (var inst : enchants) {
-            if (!enchantNames.isEmpty()) enchantNames.append(", ");
-            String name = inst.enchantment.unwrapKey()
-                    .map(k -> k.location().getPath()).orElse("unknown");
-            enchantNames.append(name).append(" ").append(inst.level);
-        }
-
         progress.increment("items_enchanted");
-        progress.logEvent("Enchanted " + itemId + ": " + enchantNames);
-        bot.systemChat("Enchanted " + itemId + " with " + enchantNames, "light_purple");
-        AIPlayerMod.LOGGER.info("[{}] Channeled enchant: {} -> {} (level {}, cost {} XP)",
-                player.getName().getString(), itemId, enchantNames, enchantLevel, xpCost);
+        progress.logEvent("Enchanted " + itemId + ": " + enchantDesc);
+        bot.systemChat("Enchanted " + itemId + " with " + enchantDesc, "light_purple");
+        AIPlayerMod.LOGGER.info("[{}] Enchanted: {} -> {} (cost {} XP)",
+                player.getName().getString(), itemId, enchantDesc, xpCost);
 
         return BehaviorResult.SUCCESS;
     }
 
-    private int getXpCost(int level) {
-        if (level <= 8) return level;
-        if (level <= 20) return level;
-        return level;
+    private int findItemSlot(ServerPlayer player, String search) {
+        if (search != null && !search.isEmpty()) {
+            // Try as slot number
+            try {
+                int slot = Integer.parseInt(search);
+                ItemStack stack = player.getInventory().getItem(slot);
+                if (!stack.isEmpty()) return slot;
+            } catch (NumberFormatException ignored) {}
+
+            // Search by item name
+            String s = search.toLowerCase();
+            for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+                ItemStack stack = player.getInventory().getItem(i);
+                if (stack.isEmpty()) continue;
+                String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+                if (id.contains(s)) return i;
+            }
+        }
+
+        // Fallback: find any enchantable item
+        for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+            ItemStack stack = player.getInventory().getItem(i);
+            if (!stack.isEmpty() && stack.isEnchantable()) return i;
+        }
+        return -1;
+    }
+
+    private static int parseIntOr(String s, int fallback) {
+        if (s == null || s.isEmpty()) return fallback;
+        try { return Integer.parseInt(s); }
+        catch (NumberFormatException e) { return fallback; }
     }
 
     private void enterPhase(Phase p) {

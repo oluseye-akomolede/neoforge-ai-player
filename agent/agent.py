@@ -1104,16 +1104,16 @@ class BotRunner:
             text, re.IGNORECASE)
         if combat_match or re.search(r"combat\s+mode", text, re.IGNORECASE):
             duration = int(combat_match.group(1)) if combat_match and combat_match.group(1) else 300
-            return {"type": "COMBAT", "count": duration, "radius": 24}
+            return {"type": "COMBAT", "count": duration, "radius": 128}
 
         # Attack specific target
         attack_match = re.search(
-            r"(?:attack|fight|kill)\s+(?:all\s+)?(?:nearby\s+)?(?:minecraft:)?(\S+?)(?:\s+(\d+)s)?$",
+            r"(?:attack|fight|kill|hunt)\s+(?:all\s+)?(?:nearby\s+)?(?:minecraft:)?(\S+?)(?:\s+(\d+)s)?$",
             text, re.IGNORECASE)
         if attack_match:
             target = attack_match.group(1).rstrip(",.")
             duration = int(attack_match.group(2)) if attack_match.group(2) else 300
-            return {"type": "COMBAT", "target": target, "count": duration, "radius": 24}
+            return {"type": "COMBAT", "target": target, "count": duration, "radius": 128}
 
         # Follow player
         follow_match = re.search(
@@ -1513,9 +1513,9 @@ PRIMITIVES you can use:
 - {{"type": "CONTAINER_WITHDRAW", "target": "<item>", "count": <n>}} — withdraw items from containers into inventory (auto-searches all containers)
 - {{"type": "TELEPORT", "x": <x>, "y": <y>, "z": <z>, "extra": {{"dimension": "<dim>"}}}} — teleport to another dimension (minecraft:the_nether, minecraft:the_end, minecraft:overworld)
 
-VALID MINE targets: cobblestone, stone, oak_log, birch_log, spruce_log, iron_ore, coal_ore, copper_ore, gold_ore, diamond_ore, sand, gravel, clay, dirt, deepslate_iron_ore, deepslate_gold_ore, deepslate_diamond_ore, obsidian, netherrack, ancient_debris, sugar_cane, bamboo, kelp, cactus
+VALID MINE targets: cobblestone, stone, oak_log, birch_log, spruce_log, iron_ore, coal_ore, copper_ore, gold_ore, diamond_ore, lapis_ore, redstone_ore, emerald_ore, deepslate_iron_ore, deepslate_gold_ore, deepslate_diamond_ore, deepslate_lapis_ore, deepslate_redstone_ore, deepslate_emerald_ore, deepslate_coal_ore, deepslate_copper_ore, sand, gravel, clay, dirt, obsidian, netherrack, ancient_debris, quartz_ore, sugar_cane, bamboo, kelp, cactus
 VALID CRAFT targets: stick, oak_planks, crafting_table, furnace, chest, wooden_pickaxe, wooden_axe, wooden_sword, wooden_shovel, stone_pickaxe, stone_axe, stone_sword, stone_shovel, iron_pickaxe, iron_axe, iron_sword, iron_shovel, diamond_pickaxe, diamond_sword, bucket, torch, ladder, iron_ingot, gold_ingot, copper_ingot, bread, bowl, paper, book, shears, bow, arrow, shield, bed, iron_helmet, iron_chestplate, iron_leggings, iron_boots, diamond_helmet, diamond_chestplate, diamond_leggings, diamond_boots, blast_furnace, smoker, anvil, brewing_stand, enchanting_table, bookshelf, rail, powered_rail, hopper, piston, golden_apple, golden_carrot
-VALID SMELT targets: raw_iron, raw_gold, raw_copper, iron_ore, gold_ore, copper_ore, cobblestone, sand, clay_ball, oak_log, ancient_debris, potato, beef, porkchop, chicken, cod, salmon
+VALID SMELT targets: raw_iron, raw_gold, raw_copper, iron_ore, gold_ore, copper_ore, cobblestone, sand, clay_ball, oak_log, ancient_debris, potato, beef, raw_beef, porkchop, raw_porkchop, chicken, raw_chicken, mutton, raw_mutton, rabbit, raw_rabbit, cod, raw_cod, salmon, raw_salmon
 
 FAILED STEP: "{failed_step}"
 CURRENT INVENTORY: [{inv}]{failure_section}
@@ -2323,12 +2323,18 @@ def run():
         print(f"[error] Cannot reach ollama: {models}")
 
     print(f"[agent] Connecting to mod API...")
-    try:
-        h = api.health()
-        print(f"[agent] Mod API: {h}")
-    except Exception as e:
-        print(f"[error] Cannot reach mod API: {e}")
-        sys.exit(1)
+    max_retries = 60
+    for attempt in range(1, max_retries + 1):
+        try:
+            h = api.health()
+            print(f"[agent] Mod API: {h}")
+            break
+        except Exception as e:
+            if attempt == max_retries:
+                print(f"[error] Cannot reach mod API after {max_retries} attempts: {e}")
+                sys.exit(1)
+            print(f"[agent] Mod API not ready (attempt {attempt}/{max_retries}), retrying in 5s...")
+            time.sleep(5)
 
     # Despawn any stale bots from a previous agent run
     try:

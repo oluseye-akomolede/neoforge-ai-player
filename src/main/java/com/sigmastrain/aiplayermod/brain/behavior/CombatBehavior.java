@@ -5,21 +5,35 @@ import com.sigmastrain.aiplayermod.bot.BotPlayer;
 import com.sigmastrain.aiplayermod.brain.BehaviorResult;
 import com.sigmastrain.aiplayermod.brain.Directive;
 import com.sigmastrain.aiplayermod.brain.ProgressReport;
-import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.level.TicketType;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.MobCategory;
-import net.minecraft.world.entity.MoverType;
+import net.minecraft.world.entity.MobSpawnType;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.entity.monster.Monster;
+import net.minecraft.world.entity.projectile.AbstractArrow;
+import net.minecraft.network.protocol.game.ClientboundAnimatePacket;
+import net.minecraft.network.protocol.game.ClientboundHurtAnimationPacket;
+import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.food.FoodProperties;
+import net.minecraft.world.item.BowItem;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.item.enchantment.EnchantmentHelper;
+import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Random;
 
@@ -34,24 +48,29 @@ public class CombatBehavior implements Behavior {
     private String specificTarget;
 
     private int attackCooldown;
-    private double yVelocity;
     private boolean weaponEquipped;
     private int kills;
-    private double currentSearchRadius;
-    private int ticksSinceTarget;
-    private Vec3 patrolDirection;
-    private int patrolTicks;
+    private int patrolCooldown;
+    private int spawnCooldown;
+    private int noTargetTicks;
 
-    private static final double ATTACK_RANGE = 3.5;
-    private static final double SPRINT_SPEED = 0.5;
-    private static final double TELEPORT_THRESHOLD = 32.0;
-    private static final double FLY_THRESHOLD = 4.0;
-    private static final double FLY_SPEED = 0.8;
-    private static final double GRAVITY = 0.08;
-    private static final double JUMP_VELOCITY = 0.42;
+    private static final TicketType<ChunkPos> BOT_TICKET =
+            TicketType.create("aiplayermod_bot", Comparator.comparingLong(ChunkPos::toLong), 200);
+
+    private static final double MELEE_RANGE = 2.5;
+    private static final double PATROL_RADIUS = 80.0;
+    private static final int PATROL_INTERVAL = 60;
     private static final float RETREAT_HEALTH = 4.0f;
     private static final int EAT_HUNGER_THRESHOLD = 14;
-    private static final int DEFAULT_DURATION = 6000; // 5 minutes
+    private static final int DEFAULT_DURATION = 6000;
+    private static final int SPAWN_COOLDOWN_TICKS = 200;
+    private static final int NO_TARGET_THRESHOLD = 100;
+    private static final int MOBS_PER_WAVE = 3;
+
+    @SuppressWarnings("unchecked")
+    private static final EntityType<? extends Monster>[] HOSTILE_TYPES = new EntityType[]{
+            EntityType.ZOMBIE, EntityType.SKELETON, EntityType.SPIDER, EntityType.CREEPER
+    };
 
     @Override
     public void start(BotPlayer bot, Directive directive) {
@@ -60,20 +79,25 @@ public class CombatBehavior implements Behavior {
         elapsed = 0;
         kills = 0;
         attackCooldown = 0;
-        yVelocity = 0;
         weaponEquipped = false;
+        patrolCooldown = 0;
+        spawnCooldown = 0;
+        noTargetTicks = 0;
 
         duration = directive.getCount() > 0 ? directive.getCount() * 20 : DEFAULT_DURATION;
-        searchRadius = directive.getRadius() > 0 ? directive.getRadius() : 24;
-        currentSearchRadius = searchRadius;
-        ticksSinceTarget = 0;
-        patrolDirection = null;
-        patrolTicks = 0;
+        searchRadius = directive.getRadius() > 0 ? directive.getRadius() : 256;
         specificTarget = directive.getTarget();
         hostileOnly = specificTarget == null || specificTarget.isEmpty();
 
         equipBestWeapon(bot);
         weaponEquipped = true;
+
+        // Ensure entity-ticking around bot's starting position
+        ServerPlayer player = bot.getPlayer();
+        if (player.level() instanceof ServerLevel serverLevel) {
+            ChunkPos center = new ChunkPos(player.blockPosition());
+            serverLevel.getChunkSource().addRegionTicket(BOT_TICKET, center, 3, center);
+        }
 
         String mode = specificTarget != null && !specificTarget.isEmpty()
                 ? "target=" + specificTarget : "hostile mobs";
@@ -96,10 +120,13 @@ public class CombatBehavior implements Behavior {
         }
 
         if (player.getHealth() <= RETREAT_HEALTH) {
-            tryEatFood(player);
-            progress.logEvent("Retreating — low health");
-            bot.systemChat("Retreating — low health!", "red");
-            return BehaviorResult.SUCCESS;
+            boolean ate = tryEatFood(player);
+            if (!ate) {
+                progress.logEvent("Retreating — low health, no food");
+                bot.systemChat("Retreating — no food!", "red");
+                return BehaviorResult.SUCCESS;
+            }
+            progress.logEvent("Ate food at low health");
         }
 
         if (player.getFoodData().getFoodLevel() < EAT_HUNGER_THRESHOLD) {
@@ -107,61 +134,111 @@ public class CombatBehavior implements Behavior {
         }
 
         if (attackCooldown > 0) attackCooldown--;
+        if (spawnCooldown > 0) spawnCooldown--;
 
         Entity target = findTarget(player);
+
         if (target == null) {
-            ticksSinceTarget++;
-            if (ticksSinceTarget % 40 == 0 && currentSearchRadius < 256) {
-                currentSearchRadius = Math.min(currentSearchRadius * 2, 256);
+            noTargetTicks++;
+            if (hostileOnly && noTargetTicks >= NO_TARGET_THRESHOLD && spawnCooldown <= 0) {
+                spawnHostileMobs(player);
+                spawnCooldown = SPAWN_COOLDOWN_TICKS;
+                noTargetTicks = 0;
             }
             progress.setPhase("patrolling");
             patrol(player);
             return BehaviorResult.RUNNING;
         }
+        noTargetTicks = 0;
 
-        ticksSinceTarget = 0;
-        currentSearchRadius = searchRadius;
         progress.setPhase("fighting");
         bot.lookAt(target.getX(), target.getEyeY(), target.getZ());
+
         double dist = player.distanceTo(target);
 
-        if (dist <= ATTACK_RANGE) {
-            if (attackCooldown <= 0) {
-                float hpBefore = target instanceof LivingEntity lt ? lt.getHealth() : -1;
-                forceFullAttackStrength(player);
-                player.attack(target);
-                player.resetAttackStrengthTicker();
-                float hpAfter = target instanceof LivingEntity lt2 ? lt2.getHealth() : -1;
-                boolean didDamage = hpAfter < hpBefore;
-                if (!didDamage && target instanceof LivingEntity lt3) {
-                    float weaponDamage = (float) player.getAttributeValue(Attributes.ATTACK_DAMAGE);
-                    lt3.hurt(player.damageSources().playerAttack(player), weaponDamage);
-                    hpAfter = lt3.getHealth();
-                }
-                attackCooldown = 15;
-                if (hpAfter <= 0) {
-                    kills++;
-                    progress.increment("kills");
-                    progress.logEvent("Killed " + target.getName().getString());
+        // Always teleport to melee range if not already there
+        if (dist > MELEE_RANGE) {
+            // Bonus: shoot arrow first if we have a bow
+            if (dist > 8.0) {
+                tryBowShot(bot, player, target);
+            }
+            teleportToTarget(player, target);
+            dist = player.distanceTo(target);
+        }
+
+        // Direct damage — bypasses player attack system which doesn't work for fake players
+        if (dist <= MELEE_RANGE && attackCooldown <= 0 && target instanceof LivingEntity le) {
+            le.invulnerableTime = 0;
+            ItemStack weapon = player.getInventory().getItem(player.getInventory().selected);
+            float baseDamage = getHeldWeaponDamage(player);
+            DamageSource damageSource = player.damageSources().playerAttack(player);
+
+            // Apply enchantment damage bonus (Sharpness, Smite, Bane of Arthropods, etc.)
+            float damage = baseDamage;
+            if (player.level() instanceof ServerLevel sl && !weapon.isEmpty()) {
+                damage = EnchantmentHelper.modifyDamage(sl, weapon, le, damageSource, baseDamage);
+            }
+
+            boolean hurt = le.hurt(damageSource, damage);
+
+            // Apply enchantment post-attack effects (Fire Aspect, Knockback, etc.)
+            if (hurt && player.level() instanceof ServerLevel sl && !weapon.isEmpty()) {
+                EnchantmentHelper.doPostAttackEffectsWithItemSource(sl, le, damageSource, weapon);
+            }
+
+            // Broadcast arm swing + hit animation to all online players
+            if (player.level() instanceof ServerLevel sl) {
+                var swingPacket = new ClientboundAnimatePacket(player, ClientboundAnimatePacket.SWING_MAIN_HAND);
+                var hurtPacket = new ClientboundHurtAnimationPacket(le);
+                for (ServerPlayer online : sl.getServer().getPlayerList().getPlayers()) {
+                    online.connection.send(swingPacket);
+                    online.connection.send(hurtPacket);
                 }
             }
-        } else {
-            moveToward(bot, player, target);
+
+            AIPlayerMod.LOGGER.info("[{}] Attack {} — dmg={} (base={}), hurt={}, hp={}/{}",
+                    player.getName().getString(), target.getName().getString(),
+                    damage, baseDamage, hurt, le.getHealth(), le.getMaxHealth());
+
+            if (!hurt) {
+                le.setHealth(le.getHealth() - damage);
+            }
+
+            attackCooldown = 10;
+
+            if (!le.isAlive() || le.getHealth() <= 0) {
+                if (le.isAlive()) le.kill();
+                kills++;
+                progress.increment("kills");
+                progress.logEvent("Killed " + target.getName().getString());
+                teleportBot(player, target.getX(), target.getY(), target.getZ());
+                collectNearbyItems(player);
+            }
         }
+
+        if (elapsed % 20 == 0) collectNearbyItems(player);
 
         return BehaviorResult.RUNNING;
     }
 
     private Entity findTarget(ServerPlayer player) {
-        AABB searchBox = player.getBoundingBox().inflate(currentSearchRadius);
-        List<Entity> entities = player.level().getEntities(player, searchBox);
+        if (!(player.level() instanceof ServerLevel serverLevel)) return null;
+
+        // Use getAllEntities() — AABB search relies on entity sections which aren't active for fake players
         Entity best = null;
         double bestDist = Double.MAX_VALUE;
+        double searchRadiusSq = searchRadius * searchRadius;
+        int totalScanned = 0;
+        int matchedType = 0;
 
-        for (Entity e : entities) {
+        for (Entity e : serverLevel.getAllEntities()) {
             if (!(e instanceof LivingEntity le)) continue;
             if (!le.isAlive() || le.getHealth() <= 0) continue;
             if (e instanceof ServerPlayer) continue;
+
+            double distSq = e.distanceToSqr(player);
+            if (distSq > searchRadiusSq) continue;
+            totalScanned++;
 
             if (specificTarget != null && !specificTarget.isEmpty()) {
                 String type = e.getType().toShortString().toLowerCase();
@@ -174,68 +251,115 @@ public class CombatBehavior implements Behavior {
                 if (!isHostile) continue;
             }
 
-            double dist = e.distanceTo(player);
-            if (dist < bestDist) {
-                bestDist = dist;
+            matchedType++;
+            if (distSq < bestDist) {
+                bestDist = distSq;
                 best = e;
             }
         }
+
+        if (elapsed % 100 == 0) {
+            AIPlayerMod.LOGGER.info("[{}] findTarget: scanned={} matched={} best={}",
+                    player.getName().getString(), totalScanned, matchedType,
+                    best != null ? best.getName().getString() + " @" + String.format("%.0f", Math.sqrt(bestDist)) : "none");
+        }
+
         return best;
     }
 
-    private void moveToward(BotPlayer bot, ServerPlayer player, Entity target) {
-        Vec3 currentPos = player.position();
-        double dist = player.distanceTo(target);
-        double heightDiff = Math.abs(target.getY() - player.getY());
-
-        if (dist > TELEPORT_THRESHOLD) {
-            Vec3 tPos = target.position();
-            Vec3 dir = currentPos.subtract(tPos).normalize();
-            player.moveTo(tPos.x + dir.x * ATTACK_RANGE, tPos.y, tPos.z + dir.z * ATTACK_RANGE);
-            yVelocity = 0;
-            return;
-        }
-
-        if (heightDiff > FLY_THRESHOLD || (!player.onGround() && heightDiff > 1.5)) {
-            Vec3 dir = target.position().subtract(currentPos).normalize();
-            player.moveTo(
-                    player.getX() + dir.x * FLY_SPEED,
-                    player.getY() + dir.y * FLY_SPEED,
-                    player.getZ() + dir.z * FLY_SPEED);
-            yVelocity = 0;
-            return;
-        }
-
-        Vec3 dir = target.position().subtract(currentPos).normalize();
-        if (player.onGround()) {
-            yVelocity = 0;
-            if (com.sigmastrain.aiplayermod.actions.GoToAction.shouldJump(player, dir)) {
-                yVelocity = JUMP_VELOCITY;
-            }
+    private void teleportToTarget(ServerPlayer player, Entity target) {
+        Vec3 tPos = target.position();
+        Vec3 dir = player.position().subtract(tPos);
+        double len = dir.length();
+        if (len > 0.1) {
+            dir = dir.normalize();
         } else {
-            yVelocity -= GRAVITY;
+            dir = new Vec3(1, 0, 0);
         }
-        player.move(MoverType.SELF, new Vec3(dir.x * SPRINT_SPEED, yVelocity, dir.z * SPRINT_SPEED));
+        teleportBot(player, tPos.x + dir.x * MELEE_RANGE * 0.8, tPos.y, tPos.z + dir.z * MELEE_RANGE * 0.8);
     }
 
     private void patrol(ServerPlayer player) {
-        if (patrolDirection == null || patrolTicks <= 0) {
-            double angle = random.nextDouble() * Math.PI * 2;
-            patrolDirection = new Vec3(Math.cos(angle), 0, Math.sin(angle));
-            patrolTicks = 60 + random.nextInt(80);
+        if (patrolCooldown > 0) {
+            patrolCooldown--;
+            return;
         }
-        patrolTicks--;
-        if (player.onGround()) {
-            yVelocity = 0;
-            if (com.sigmastrain.aiplayermod.actions.GoToAction.shouldJump(player, patrolDirection)) {
-                yVelocity = JUMP_VELOCITY;
-            }
+        patrolCooldown = PATROL_INTERVAL;
+
+        double angle = random.nextDouble() * Math.PI * 2;
+        double radius = PATROL_RADIUS * (0.3 + random.nextDouble() * 0.7);
+        double tx = player.getX() + Math.cos(angle) * radius;
+        double tz = player.getZ() + Math.sin(angle) * radius;
+        int surfaceY = player.level().getHeight(Heightmap.Types.MOTION_BLOCKING, (int) tx, (int) tz);
+        teleportBot(player, tx, surfaceY + 1, tz);
+    }
+
+    private void teleportBot(ServerPlayer player, double x, double y, double z) {
+        player.moveTo(x, y, z);
+        if (player.level() instanceof ServerLevel serverLevel) {
+            ChunkPos center = new ChunkPos(player.blockPosition());
+            // Entity-ticking ticket — makes entities in nearby chunks visible and active
+            serverLevel.getChunkSource().addRegionTicket(BOT_TICKET, center, 3, center);
+        }
+    }
+
+    private void tryBowShot(BotPlayer bot, ServerPlayer player, Entity target) {
+        int bowSlot = findBow(player);
+        if (bowSlot < 0) return;
+        if (!hasArrows(player)) return;
+
+        int prevSlot = player.getInventory().selected;
+        if (bowSlot < 9) {
+            player.getInventory().selected = bowSlot;
         } else {
-            yVelocity -= GRAVITY;
+            ItemStack bow = player.getInventory().getItem(bowSlot);
+            ItemStack existing = player.getInventory().getItem(0);
+            player.getInventory().setItem(0, bow.copy());
+            player.getInventory().setItem(bowSlot, existing);
+            player.getInventory().selected = 0;
         }
-        double walkSpeed = 0.25;
-        player.move(MoverType.SELF, new Vec3(
-                patrolDirection.x * walkSpeed, yVelocity, patrolDirection.z * walkSpeed));
+
+        Vec3 toTarget = target.position().add(0, target.getBbHeight() * 0.6, 0).subtract(player.getEyePosition());
+        float velocity = 3.0f;
+        ItemStack arrowStack = new ItemStack(Items.ARROW);
+        AbstractArrow arrow = new net.minecraft.world.entity.projectile.Arrow(
+                player.level(), player, arrowStack, null);
+        arrow.shoot(toTarget.x, toTarget.y, toTarget.z, velocity, 1.0f);
+        arrow.setCritArrow(true);
+        player.level().addFreshEntity(arrow);
+
+        consumeArrow(player);
+
+        // Restore weapon
+        player.getInventory().selected = prevSlot;
+        bot.broadcastEquipmentChange(EquipmentSlot.MAINHAND,
+                player.getInventory().getItem(player.getInventory().selected));
+    }
+
+    private int findBow(ServerPlayer player) {
+        for (int i = 0; i < 36; i++) {
+            ItemStack stack = player.getInventory().getItem(i);
+            if (!stack.isEmpty() && stack.getItem() instanceof BowItem) return i;
+        }
+        return -1;
+    }
+
+    private boolean hasArrows(ServerPlayer player) {
+        for (int i = 0; i < 36; i++) {
+            ItemStack stack = player.getInventory().getItem(i);
+            if (!stack.isEmpty() && stack.is(Items.ARROW)) return true;
+        }
+        return false;
+    }
+
+    private void consumeArrow(ServerPlayer player) {
+        for (int i = 0; i < 36; i++) {
+            ItemStack stack = player.getInventory().getItem(i);
+            if (!stack.isEmpty() && stack.is(Items.ARROW)) {
+                stack.shrink(1);
+                return;
+            }
+        }
     }
 
     private void equipBestWeapon(BotPlayer bot) {
@@ -249,8 +373,10 @@ public class CombatBehavior implements Behavior {
             if (attrs != null) {
                 for (var entry : attrs.modifiers()) {
                     if (entry.attribute().is(Attributes.ATTACK_DAMAGE)) {
-                        bestDamage = Math.max(bestDamage, entry.modifier().amount());
-                        if (entry.modifier().amount() >= bestDamage) bestSlot = i;
+                        if (entry.modifier().amount() >= bestDamage) {
+                            bestDamage = entry.modifier().amount();
+                            bestSlot = i;
+                        }
                     }
                 }
             }
@@ -270,45 +396,74 @@ public class CombatBehavior implements Behavior {
         }
     }
 
-    private void tryEatFood(ServerPlayer player) {
+    private float getHeldWeaponDamage(ServerPlayer player) {
+        ItemStack held = player.getInventory().getItem(player.getInventory().selected);
+        double weaponBonus = 0;
+        if (!held.isEmpty()) {
+            var attrs = held.getAttributeModifiers();
+            if (attrs != null) {
+                for (var entry : attrs.modifiers()) {
+                    if (entry.attribute().is(Attributes.ATTACK_DAMAGE)) {
+                        weaponBonus = Math.max(weaponBonus, entry.modifier().amount());
+                    }
+                }
+            }
+        }
+        // 1.0 base player damage + weapon bonus, minimum 2.0
+        return Math.max((float) (1.0 + weaponBonus), 2.0f);
+    }
+
+    private void collectNearbyItems(ServerPlayer player) {
+        if (!(player.level() instanceof ServerLevel serverLevel)) return;
+        double pickupRadiusSq = 10.0 * 10.0;
+        for (Entity e : serverLevel.getAllEntities()) {
+            if (!(e instanceof ItemEntity ie)) continue;
+            if (!ie.isAlive()) continue;
+            if (ie.distanceToSqr(player) > pickupRadiusSq) continue;
+            ItemStack stack = ie.getItem().copy();
+            if (player.getInventory().add(stack)) {
+                ie.discard();
+            }
+        }
+    }
+
+    private void spawnHostileMobs(ServerPlayer player) {
+        if (!(player.level() instanceof ServerLevel serverLevel)) return;
+        int spawned = 0;
+        for (int i = 0; i < MOBS_PER_WAVE; i++) {
+            EntityType<? extends Monster> type = HOSTILE_TYPES[random.nextInt(HOSTILE_TYPES.length)];
+            double angle = random.nextDouble() * Math.PI * 2;
+            double dist = 10 + random.nextDouble() * 20;
+            double sx = player.getX() + Math.cos(angle) * dist;
+            double sz = player.getZ() + Math.sin(angle) * dist;
+            int sy = serverLevel.getHeight(Heightmap.Types.MOTION_BLOCKING, (int) sx, (int) sz);
+            Monster mob = type.create(serverLevel);
+            if (mob == null) continue;
+            mob.moveTo(sx, sy, sz, random.nextFloat() * 360, 0);
+            mob.finalizeSpawn(serverLevel, serverLevel.getCurrentDifficultyAt(mob.blockPosition()),
+                    MobSpawnType.MOB_SUMMONED, null);
+            serverLevel.addFreshEntityWithPassengers(mob);
+            spawned++;
+        }
+        if (spawned > 0) {
+            AIPlayerMod.LOGGER.info("[{}] Spawned {} hostile mobs (no targets found for {}t)",
+                    player.getName().getString(), spawned, NO_TARGET_THRESHOLD);
+            progress.logEvent("Spawned " + spawned + " hostile mobs");
+        }
+    }
+
+    private boolean tryEatFood(ServerPlayer player) {
         for (int i = 0; i < 36; i++) {
             ItemStack stack = player.getInventory().getItem(i);
             if (stack.isEmpty()) continue;
             FoodProperties food = stack.getFoodProperties(player);
             if (food != null) {
                 player.eat(player.level(), stack);
-                return;
+                player.setHealth(Math.min(player.getHealth() + food.nutrition() * 0.5f, player.getMaxHealth()));
+                return true;
             }
         }
-    }
-
-    private static java.lang.reflect.Field attackTickerField;
-    private static boolean fieldResolved = false;
-
-    private void forceFullAttackStrength(ServerPlayer player) {
-        if (!fieldResolved) {
-            fieldResolved = true;
-            for (var f : LivingEntity.class.getDeclaredFields()) {
-                if (f.getType() == int.class) {
-                    f.setAccessible(true);
-                    try {
-                        int val = f.getInt(player);
-                        if (val >= 0 && val < 1000) {
-                            f.setInt(player, 100);
-                            float scale = player.getAttackStrengthScale(0.5f);
-                            f.setInt(player, val);
-                            if (scale >= 0.9f) {
-                                attackTickerField = f;
-                                break;
-                            }
-                        }
-                    } catch (Exception ignored) {}
-                }
-            }
-        }
-        if (attackTickerField != null) {
-            try { attackTickerField.setInt(player, 100); } catch (Exception ignored) {}
-        }
+        return false;
     }
 
     @Override

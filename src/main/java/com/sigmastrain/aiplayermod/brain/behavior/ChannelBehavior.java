@@ -5,6 +5,7 @@ import com.sigmastrain.aiplayermod.bot.BotPlayer;
 import com.sigmastrain.aiplayermod.brain.BehaviorResult;
 import com.sigmastrain.aiplayermod.brain.Directive;
 import com.sigmastrain.aiplayermod.brain.ProgressReport;
+import com.sigmastrain.aiplayermod.actions.ConjureAction;
 import com.sigmastrain.aiplayermod.shop.TransmuteRegistry;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -37,8 +38,8 @@ public class ChannelBehavior implements Behavior {
     private int meditateTicks;
     private int meditateLevelsGained;
 
-    private static final int TICKS_PER_ITEM = 5;
-    private static final int TICKS_PER_LEVEL = 5;
+    private static final int TICKS_PER_ITEM = 1;
+    private static final int TICKS_PER_LEVEL = 1;
 
     @Override
     public void start(BotPlayer bot, Directive directive) {
@@ -70,8 +71,14 @@ public class ChannelBehavior implements Behavior {
         }
 
         if (!TransmuteRegistry.isKnown(itemId)) {
-            progress.setFailureReason("Item not in transmute registry: " + itemId);
-            return BehaviorResult.FAILED;
+            int vanillaCost = ConjureAction.getVanillaCost(itemId);
+            if (vanillaCost > 0) {
+                TransmuteRegistry.register(itemId, vanillaCost, "auto_channel", 0);
+                AIPlayerMod.LOGGER.info("Auto-registered {} in transmute registry (cost={})", itemId, vanillaCost);
+            } else {
+                progress.setFailureReason("Item not in transmute registry: " + itemId);
+                return BehaviorResult.FAILED;
+            }
         }
 
         Item item = BuiltInRegistries.ITEM.get(ResourceLocation.parse(itemId));

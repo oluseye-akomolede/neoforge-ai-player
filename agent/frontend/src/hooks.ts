@@ -115,6 +115,28 @@ export function useBroadcast() {
   }, [])
 }
 
+export interface EnchantmentItem {
+  id: string
+  max_level: number
+  xp_cost_per_level: number
+  source: string
+}
+
+export function useEnchantments(): EnchantmentItem[] {
+  const [items, setItems] = useState<EnchantmentItem[]>([])
+  useEffect(() => {
+    const poll = () =>
+      fetch('/api/enchantments')
+        .then((r) => r.json())
+        .then((d) => setItems(d.enchantments || []))
+        .catch(() => {})
+    poll()
+    const id = setInterval(poll, 30_000)
+    return () => clearInterval(id)
+  }, [])
+  return items
+}
+
 export interface TransmuteItem {
   item_id: string
   xp_cost: number

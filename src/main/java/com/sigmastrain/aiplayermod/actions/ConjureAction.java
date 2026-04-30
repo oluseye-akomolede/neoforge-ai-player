@@ -28,7 +28,7 @@ public class ConjureAction implements BotAction {
     private int xpCost;
     private String result = null;
 
-    private static final int TICKS_PER_LEVEL = 20; // 1 second per level of cost
+    private static final int TICKS_PER_LEVEL = 2;
 
     private static final Map<String, Integer> COST_TABLE = Map.ofEntries(
         // Basic resources (1-2 levels)
@@ -225,6 +225,11 @@ public class ConjureAction implements BotAction {
         int registryCost = TransmuteRegistry.getCost(itemId);
         if (registryCost > 0) return registryCost;
         return DEFAULT_COST;
+    }
+
+    public static int getVanillaCost(String itemId) {
+        Integer cost = COST_TABLE.get(itemId);
+        return cost != null ? cost : -1;
     }
 
     @Override

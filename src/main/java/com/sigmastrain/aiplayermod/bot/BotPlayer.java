@@ -3,6 +3,7 @@ package com.sigmastrain.aiplayermod.bot;
 import com.sigmastrain.aiplayermod.AIPlayerMod;
 import com.sigmastrain.aiplayermod.actions.ActionQueue;
 import com.sigmastrain.aiplayermod.brain.BotBrain;
+import com.sigmastrain.aiplayermod.shop.EnchantmentRegistry;
 import com.sigmastrain.aiplayermod.shop.TransmuteRegistry;
 import com.mojang.authlib.GameProfile;
 import net.minecraft.core.BlockPos;
@@ -822,6 +823,7 @@ public class BotPlayer {
             ItemStack stack = player.getInventory().getItem(transmuteScanSlot);
             if (!stack.isEmpty()) {
                 TransmuteRegistry.discover(stack, player.getName().getString(), tick);
+                EnchantmentRegistry.discoverFromItem(stack, player.getName().getString());
             }
             transmuteScanSlot++;
         }

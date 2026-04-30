@@ -274,6 +274,12 @@ def transmute_names():
     return _get("/transmute/names")
 
 
+# ── Enchantment registry ──
+
+def enchantment_list():
+    return _get("/enchantments")
+
+
 # ── Terrain scanning ──
 
 def surface_scan(bot, radius=12):

@@ -14,7 +14,7 @@ Each bot MUST track XP as two values: experience level (integer) and experience 
 - THEN it starts with 10,000 XP points (approximately 53 levels)
 
 ### Requirement: XP Earning — Meditation
-Bots MUST be able to earn XP through meditation at a rate of 1 level per 5 ticks (0.25 seconds at 20 TPS).
+Bots MUST be able to earn XP through meditation at a rate of 1 level per 2 ticks (0.1 seconds at 20 TPS).
 
 #### Scenario: Meditation for XP
 - GIVEN a bot with 10 XP levels
@@ -31,7 +31,7 @@ Bots MUST earn XP from standard Minecraft sources: mob kills, mining, crafting, 
 - THEN the bot's XP increases by the orb value
 
 ### Requirement: XP Spending — Channeling
-Bots MUST be able to spend XP to materialize items from the TransmuteRegistry at 5 ticks per item (0.25 seconds).
+Bots MUST be able to spend XP to materialize items from the TransmuteRegistry at 1 tick per item (near-instant).
 
 #### Scenario: Conjure items via XP
 - GIVEN a bot with 15 XP levels
@@ -81,6 +81,45 @@ Costs are further adjusted by max stack size, durability, and food status (food 
 - WHEN its XP cost is calculated
 - THEN the base cost is 2 XP levels
 - AND the cost is further adjusted by stack size, durability, and food status
+
+### Requirement: EnchantmentRegistry
+The server MUST maintain a shared enchantment registry mapping enchantment IDs to max levels and XP costs, following the same pattern as TransmuteRegistry.
+
+#### Scenario: Auto-seeding at startup
+- GIVEN the server starts with enchantment registry enabled
+- WHEN `EnchantmentRegistry.init(server)` is called during server startup
+- THEN all vanilla enchantments are discovered from the server's data-driven registry
+- AND each enchantment entry includes ID, max level, XP cost per level, and source ("vanilla")
+
+#### Scenario: Discovery from enchanted items
+- GIVEN a bot scans its inventory and finds an item with an unknown enchantment
+- WHEN `EnchantmentRegistry.discoverFromItem(stack, source)` is called
+- THEN the unknown enchantment is added to the registry with source set to "discovered:{source}"
+- AND the registry persists to `aiplayermod-enchantments.json`
+
+### Requirement: EnchantmentRegistry Cost Heuristics
+XP costs per enchantment level MUST be estimated based on enchantment weight (rarity):
+
+| Weight Range | Cost Per Level |
+|-------------|---------------|
+| 1 (Treasure) | 10 |
+| 2-3 (Rare) | 8 |
+| 4-5 (Uncommon) | 5 |
+| 6+ (Common) | 3 |
+
+#### Scenario: Rare enchantment cost estimation
+- GIVEN an enchantment with weight 2 (e.g., Mending)
+- WHEN its XP cost per level is calculated
+- THEN the cost is 8 XP per level
+
+### Requirement: EnchantmentRegistry API
+The mod MUST expose GET /enchantments returning the full registry with count and per-entry details (id, max_level, xp_cost_per_level, source).
+
+#### Scenario: Agent fetches enchantment registry
+- GIVEN the mod API is running with enchantments initialized
+- WHEN the agent sends GET /enchantments
+- THEN the response contains all known enchantments with their IDs, max levels, costs, and sources
+- AND the count field reflects the total number of registered enchantments
 
 ### Requirement: XP Serialization
 A bot's XP state MUST be serializable as:

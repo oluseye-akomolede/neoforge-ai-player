@@ -1,0 +1,38 @@
+name: enchant-multi-step
+description: Bot channels a sword, enchants it with multiple specific enchantments — validates stacking
+
+world:
+  type: flat
+
+bots:
+  - image: null
+
+steps:
+  - instruction: "Channel 1 minecraft:diamond_sword"
+    timeout: 30
+    success:
+      inventory_contains:
+        item: minecraft:diamond_sword
+        min_count: 1
+
+  - instruction: "Enchant diamond_sword with sharpness 5"
+    timeout: 60
+    success:
+      inventory_contains:
+        item: minecraft:diamond_sword
+        min_count: 1
+        nbt_match:
+          enchantments:
+            - id: "minecraft:sharpness"
+              lvl: 5
+
+  - instruction: "Enchant diamond_sword with fire_aspect 2"
+    timeout: 60
+    success:
+      inventory_contains:
+        item: minecraft:diamond_sword
+        min_count: 1
+        nbt_match:
+          enchantments:
+            - id: "minecraft:fire_aspect"
+              lvl: 2

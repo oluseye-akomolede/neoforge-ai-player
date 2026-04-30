@@ -29,7 +29,7 @@ The mod MUST expose endpoints across all listed categories to provide full bot c
 | Inventory | 7 | /equip, /use, /drop, /collect, /swap, /container*, /send_item |
 | Chat | 3 | /chat, /system_chat, /inject_chat |
 | Directives | 3 | GET/POST/DELETE /bot/{name}/directive |
-| Registries | 7 | /transmute/*, /containers/*, /bot/{name}/nearby_containers |
+| Registries | 8 | /transmute/*, /enchantments, /containers/*, /bot/{name}/nearby_containers |
 | Server | 3 | /health, /server/dimensions, /server/players |
 
 #### Scenario: Agent creates a bot via lifecycle endpoint
@@ -119,6 +119,23 @@ GET /bot/{name}/scan_data MUST drain accumulated block scan data from the active
 - WHEN the agent sends GET /bot/{name}/scan_data
 - THEN the response MUST contain the 50 block records with x, y, z, and block_id
 - AND the scan data buffer MUST be cleared so subsequent calls return only new data
+
+### Requirement: Enchantment Registry Endpoint
+GET /enchantments MUST return the full enchantment registry with count and per-entry details.
+
+#### Scenario: Agent fetches enchantment registry
+- GIVEN the mod API is running with EnchantmentRegistry initialized
+- WHEN the agent sends GET /enchantments
+- THEN the response contains `enchantments` (array of {id, max_level, xp_cost_per_level, source}) and `count` (integer)
+
+### Requirement: Dashboard Enchantments Proxy
+The dashboard MUST expose GET /api/enchantments that proxies the mod's /enchantments endpoint, returning the enchantment registry for UI rendering (searchable dropdown in ENCHANT directive form).
+
+#### Scenario: Dashboard fetches enchantment registry
+- GIVEN the dashboard is connected to the mod API
+- WHEN a client sends GET /api/enchantments
+- THEN the response contains the enchantment list from the mod
+- AND if the mod API is unreachable, the response returns an empty list with an error message
 
 ### Requirement: Dashboard Directive Catalog
 The dashboard MUST serve a directive catalog at GET /api/directives listing all 16 available directive types (MINE, CRAFT, SMELT, CHANNEL, ENCHANT, BREW, FOLLOW, GOTO, TELEPORT, COMBAT, FARM, BUILD, SEND_ITEM, WIDE_SEARCH, CONTAINER_PLACE, CONTAINER_STORE, CONTAINER_WITHDRAW) with parameter definitions for UI form generation.

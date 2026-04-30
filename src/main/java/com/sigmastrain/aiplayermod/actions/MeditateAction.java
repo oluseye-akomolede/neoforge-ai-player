@@ -17,7 +17,7 @@ public class MeditateAction implements BotAction {
     private final int targetLevels;
     private int tickCount = 0;
     private int levelsGained = 0;
-    private static final int TICKS_PER_LEVEL = 40;
+    private static final int TICKS_PER_LEVEL = 2;
 
     public MeditateAction(int targetLevels) {
         this.targetLevels = Math.max(1, Math.min(100, targetLevels));

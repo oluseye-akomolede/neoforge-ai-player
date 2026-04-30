@@ -70,14 +70,21 @@ public class SmeltBehavior implements Behavior {
         Map.entry("minecraft:deepslate_emerald_ore", "minecraft:emerald"),
         Map.entry("minecraft:coal_ore", "minecraft:coal"),
         Map.entry("minecraft:deepslate_coal_ore", "minecraft:coal"),
-        // Food
+        // Food (Minecraft uses "beef" not "raw_beef", but LLMs often say "raw_X")
         Map.entry("minecraft:beef", "minecraft:cooked_beef"),
+        Map.entry("minecraft:raw_beef", "minecraft:cooked_beef"),
         Map.entry("minecraft:porkchop", "minecraft:cooked_porkchop"),
+        Map.entry("minecraft:raw_porkchop", "minecraft:cooked_porkchop"),
         Map.entry("minecraft:chicken", "minecraft:cooked_chicken"),
+        Map.entry("minecraft:raw_chicken", "minecraft:cooked_chicken"),
         Map.entry("minecraft:mutton", "minecraft:cooked_mutton"),
+        Map.entry("minecraft:raw_mutton", "minecraft:cooked_mutton"),
         Map.entry("minecraft:rabbit", "minecraft:cooked_rabbit"),
+        Map.entry("minecraft:raw_rabbit", "minecraft:cooked_rabbit"),
         Map.entry("minecraft:cod", "minecraft:cooked_cod"),
+        Map.entry("minecraft:raw_cod", "minecraft:cooked_cod"),
         Map.entry("minecraft:salmon", "minecraft:cooked_salmon"),
+        Map.entry("minecraft:raw_salmon", "minecraft:cooked_salmon"),
         Map.entry("minecraft:potato", "minecraft:baked_potato")
     );
 

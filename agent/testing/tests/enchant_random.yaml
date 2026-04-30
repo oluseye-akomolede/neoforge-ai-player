@@ -1,0 +1,24 @@
+name: enchant-random-tier
+description: Bot enchants an iron pickaxe with a random max-tier enchantment — validates random fallback path
+
+world:
+  type: flat
+
+bots:
+  - image: null
+
+steps:
+  - instruction: "Channel 1 minecraft:iron_pickaxe"
+    timeout: 30
+    success:
+      inventory_contains:
+        item: minecraft:iron_pickaxe
+        min_count: 1
+
+  - instruction: "Enchant iron_pickaxe random tier 2"
+    timeout: 60
+    success:
+      inventory_contains:
+        item: minecraft:iron_pickaxe
+        min_count: 1
+        has_enchantments: true

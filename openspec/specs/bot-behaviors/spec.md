@@ -15,12 +15,12 @@ Each Behavior MUST be implemented as a phase-based state machine that returns Be
 - AND return SUCCESS once all requested blocks have been mined
 
 ### Requirement: Channeling Speed
-All behaviors that involve meditation or channeling MUST use 5 ticks per XP level (0.25 seconds at 20 TPS).
+All behaviors that involve meditation or channeling MUST use 1-2 ticks per XP level (near-instant at 20 TPS). Conjuring uses 2 ticks per level, meditation uses 2 ticks per level, and channeling uses 1 tick per item and 1 tick per level.
 
 #### Scenario: Uniform channeling speed
 - GIVEN any behavior that needs to meditate for XP
 - WHEN it enters its meditation phase
-- THEN it gains 1 XP level every 5 ticks
+- THEN it gains 1 XP level every 1-2 ticks
 
 ### Requirement: Escalating Search
 Behaviors that search for blocks MUST use escalating search radii: 32 → 64 → 128 → 256 → 512 → 1024 blocks. Default starting radius is 256.
@@ -95,20 +95,57 @@ All behaviors MUST respect the following timing constants:
 
 | Behavior | Constant | Value | Description |
 |----------|----------|-------|-------------|
-| ChannelBehavior | TICKS_PER_ITEM | 5 | Ticks per item conjured |
-| ChannelBehavior | TICKS_PER_LEVEL | 5 | Ticks per meditation level |
-| MineBehavior | TICKS_PER_LEVEL | 5 | Ticks per meditation level |
-| CraftBehavior | TICKS_PER_LEVEL | 5 | Ticks per meditation level |
-| BrewBehavior | CHANNEL_TICKS_PER_LEVEL | 5 | Ticks per meditation level |
-| EnchantBehavior | TICKS_PER_LEVEL | 5 | Ticks per meditation level |
-| EnchantBehavior | ENCHANT_DURATION | 60 | Ticks for enchanting animation |
+| ChannelBehavior | TICKS_PER_ITEM | 1 | Ticks per item conjured |
+| ChannelBehavior | TICKS_PER_LEVEL | 1 | Ticks per meditation level |
+| MineBehavior | TICKS_PER_LEVEL | 1 | Ticks per meditation level |
+| CraftBehavior | TICKS_PER_LEVEL | 1 | Ticks per meditation level |
+| BrewBehavior | CHANNEL_TICKS_PER_LEVEL | 1 | Ticks per meditation level |
+| EnchantBehavior | TICKS_PER_LEVEL | 1 | Ticks per meditation level |
+| EnchantBehavior | ENCHANT_DURATION | 20 | Ticks for enchanting animation (1 second) |
 | ContainerPlaceBehavior | CHANNEL_TICKS | 5 | Ticks for container conjuring |
 | GotoBehavior | MAX_TICKS | 600 | Timeout for navigation |
+| ConjureAction | TICKS_PER_LEVEL | 2 | Ticks per meditation level (conjure ritual) |
+| MeditateAction | TICKS_PER_LEVEL | 2 | Ticks per meditation level (meditate action) |
 
 #### Scenario: Navigation times out
 - GIVEN a GotoBehavior navigating to distant coordinates
 - WHEN 600 ticks elapse without arriving
 - THEN the behavior MUST return FAILED with a timeout reason
+
+### Requirement: Deterministic Enchanting
+EnchantBehavior MUST support deterministic enchanting by accepting a specific enchantment name and level. When a specific enchantment is provided, the behavior uses `ItemStack.enchant(holder, level)` to apply it directly. When no enchantment is specified, it falls back to vanilla random enchanting via `EnchantmentHelper.selectEnchantment()`.
+
+#### Scenario: Deterministic enchantment application
+- GIVEN an EnchantBehavior with target "sharpness 5 on diamond_sword"
+- WHEN the behavior executes
+- THEN it resolves "sharpness" via EnchantmentRegistry to get a `Holder<Enchantment>`
+- AND applies Sharpness V directly to the diamond sword via `ItemStack.enchant(holder, 5)`
+- AND 5 XP levels are deducted (1 per enchantment level)
+
+#### Scenario: Random enchantment fallback
+- GIVEN an EnchantBehavior with no specific enchantment
+- WHEN the behavior executes
+- THEN it uses `EnchantmentHelper.selectEnchantment()` with the specified tier option (0=basic, 1=mid, 2=max)
+- AND all selected enchantments are applied to the item
+
+### Requirement: Combat Enchantment Activation
+CombatBehavior MUST activate weapon enchantments during attacks. Since bots use direct `hurt()` instead of `player.attack()`, the behavior MUST manually call `EnchantmentHelper.modifyDamage()` for damage-boosting enchantments (Sharpness, Smite, Bane of Arthropods) and `EnchantmentHelper.doPostAttackEffectsWithItemSource()` for post-attack effects (Fire Aspect, Knockback, Looting).
+
+#### Scenario: Sharpness bonus applied in combat
+- GIVEN a bot holding a diamond sword with Sharpness V
+- WHEN the bot attacks a zombie
+- THEN the base weapon damage is modified by `EnchantmentHelper.modifyDamage()` adding the Sharpness bonus
+- AND Fire Aspect, Knockback, and other post-attack effects are triggered via `doPostAttackEffectsWithItemSource()`
+
+### Requirement: Channel Auto-Registration
+ChannelBehavior MUST auto-register items in the TransmuteRegistry when it encounters an item not already known. It checks ConjureAction's vanilla cost table for a known cost, and if found, registers the item automatically.
+
+#### Scenario: Unknown item auto-registered during channeling
+- GIVEN a ChannelBehavior attempting to channel "iron_ingot" on a fresh server
+- WHEN "iron_ingot" is not in the TransmuteRegistry
+- THEN the behavior checks ConjureAction.getVanillaCost("iron_ingot")
+- AND if a cost is found, auto-registers it in the TransmuteRegistry
+- AND proceeds with channeling without user intervention
 
 ### Requirement: Wide Search Behavior
 WideSearchBehavior MUST implement a coordinated expanding-cube search across one or more bots using a checkerboard cell grid pattern. The search area is divided into CELL_SIZE x CELL_SIZE (16x16) cells in XZ. Cells are assigned round-robin across bots by index: cell i goes to bot (i % bot_count). This creates an interleaved checkerboard pattern so each bot covers the full area evenly rather than a contiguous sector. The behavior MUST support searching for both blocks and entities with fuzzy name matching.

@@ -1,0 +1,27 @@
+name: enchant-diamond-sword
+description: Bot enchants a diamond sword with Sharpness V — validates deterministic ENCHANT directive
+
+world:
+  type: flat
+
+bots:
+  - image: null
+
+steps:
+  - instruction: "Channel 1 minecraft:diamond_sword"
+    timeout: 30
+    success:
+      inventory_contains:
+        item: minecraft:diamond_sword
+        min_count: 1
+
+  - instruction: "Enchant diamond_sword with sharpness 5"
+    timeout: 60
+    success:
+      inventory_contains:
+        item: minecraft:diamond_sword
+        min_count: 1
+        nbt_match:
+          enchantments:
+            - id: "minecraft:sharpness"
+              lvl: 5

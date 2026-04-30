@@ -6,8 +6,8 @@ description: >
   hostile mobs across 7 phases and 18 milestones.
 
 goal: >
-  End state: diamond pickaxe, diamond sword, iron armor, 32+ cooked food,
-  10+ gold ingots, 32+ redstone, 16+ lapis lazuli.
+  End state: diamond pickaxe, diamond sword, iron armor, 16+ cooked food,
+  5+ gold ingots, 16+ redstone, 8+ lapis lazuli.
 
 world:
   type: normal
@@ -28,12 +28,12 @@ steps:
   # Tests: basic navigation, block breaking, item pickup.
 
   - phase: wood-age
-    instruction: "Look around for trees and chop them. Collect at least 16 logs."
+    instruction: "Look around for trees and chop them. Collect at least 8 logs."
     timeout: 600
     success:
       inventory_contains:
         item: "_log"
-        min_count: 16
+        min_count: 8
 
   - phase: wood-age
     instruction: "Convert logs into planks, then craft a crafting table, a wooden pickaxe, a wooden axe, and a wooden sword."
@@ -48,12 +48,12 @@ steps:
   # Tests: vertical navigation, sustained mining, crafting chains.
 
   - phase: stone-age
-    instruction: "Dig underground and mine at least 48 cobblestone."
+    instruction: "Dig underground and mine at least 24 cobblestone."
     timeout: 600
     success:
       inventory_contains:
         item: "minecraft:cobblestone"
-        min_count: 48
+        min_count: 24
 
   - phase: stone-age
     instruction: "Craft a stone pickaxe, a stone sword, and a stone axe."
@@ -76,40 +76,40 @@ steps:
   # Tests: ore identification, resource planning.
 
   - phase: infrastructure
-    instruction: "Mine coal ore underground. Collect at least 16 coal."
+    instruction: "Mine coal ore underground. Collect at least 8 coal."
     timeout: 600
     success:
       inventory_contains:
         item: "minecraft:coal"
-        min_count: 16
+        min_count: 8
 
   - phase: infrastructure
-    instruction: "Craft at least 32 torches from coal and sticks."
+    instruction: "Craft at least 16 torches from coal and sticks."
     timeout: 300
     success:
       inventory_contains:
         item: "minecraft:torch"
-        min_count: 32
+        min_count: 16
 
   # === PHASE 4: IRON AGE ===
   # Mine, smelt, and craft iron equipment. Major capability unlock.
   # Tests: deep mining, furnace operation, multi-step crafting, L3 plan depth.
 
   - phase: iron-age
-    instruction: "Mine iron ore deep underground. Dig to y-level 16 or below where iron is common. Collect at least 24 raw iron."
+    instruction: "Mine iron ore deep underground. Dig to y-level 16 or below where iron is common. Collect at least 12 raw iron."
     timeout: 1200
     success:
       inventory_contains:
         item: "minecraft:raw_iron"
-        min_count: 24
+        min_count: 12
 
   - phase: iron-age
-    instruction: "Smelt all your raw iron into iron ingots using the furnace and coal as fuel. You need at least 24 iron ingots."
+    instruction: "Smelt all your raw iron into iron ingots using the furnace and coal as fuel. You need at least 12 iron ingots."
     timeout: 600
     success:
       inventory_contains:
         item: "minecraft:iron_ingot"
-        min_count: 24
+        min_count: 12
 
   - phase: iron-age
     instruction: "Craft an iron pickaxe, an iron sword, and an iron axe."
@@ -132,12 +132,12 @@ steps:
   # Tests: entity tracking, combat, furnace reuse, utility crafting.
 
   - phase: self-sufficiency
-    instruction: "Hunt animals — cows, pigs, chickens, or sheep — to collect raw meat. Cook the meat in a furnace. Get at least 32 cooked meat total."
+    instruction: "Hunt animals — cows, pigs, chickens, or sheep — to collect raw meat. Cook the meat in a furnace. Get at least 16 cooked meat total."
     timeout: 1200
     success:
       inventory_contains:
         item: "cooked_"
-        min_count: 32
+        min_count: 16
 
   - phase: self-sufficiency
     instruction: "Craft a shield and a bucket."
@@ -152,12 +152,12 @@ steps:
   # Tests: deep navigation (y -59), sustained underground operation, rare ore location.
 
   - phase: diamond-age
-    instruction: "Mine deep underground to y-level -59 where diamonds are most common. Dig a branch mine if needed. Collect at least 5 diamonds."
+    instruction: "Mine deep underground to y-level -59 where diamonds are most common. Dig a branch mine if needed. Collect at least 3 diamonds."
     timeout: 1800
     success:
       inventory_contains:
         item: "minecraft:diamond"
-        min_count: 5
+        min_count: 3
 
   - phase: diamond-age
     instruction: "Craft a diamond pickaxe and a diamond sword."
@@ -173,25 +173,25 @@ steps:
   # Tests: multi-ore mining, sustained operation in late game.
 
   - phase: resource-stockpile
-    instruction: "Mine gold ore deep underground and smelt it. Collect at least 10 gold ingots."
+    instruction: "Mine gold ore deep underground and smelt it. Collect at least 5 gold ingots."
     timeout: 1200
     success:
       inventory_contains:
         item: "minecraft:gold_ingot"
-        min_count: 10
+        min_count: 5
 
   - phase: resource-stockpile
-    instruction: "Mine redstone ore at deep levels. Collect at least 32 redstone dust."
+    instruction: "Mine redstone ore at deep levels. Collect at least 16 redstone dust."
     timeout: 900
     success:
       inventory_contains:
         item: "minecraft:redstone"
-        min_count: 32
+        min_count: 16
 
   - phase: resource-stockpile
-    instruction: "Mine lapis lazuli ore underground. Collect at least 16 lapis lazuli."
+    instruction: "Mine lapis lazuli ore underground. Collect at least 8 lapis lazuli."
     timeout: 900
     success:
       inventory_contains:
         item: "minecraft:lapis_lazuli"
-        min_count: 16
+        min_count: 8

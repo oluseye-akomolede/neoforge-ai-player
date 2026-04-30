@@ -9,6 +9,7 @@ import com.sigmastrain.aiplayermod.actions.*;
 import com.sigmastrain.aiplayermod.bot.BotManager;
 import com.sigmastrain.aiplayermod.bot.BotPlayer;
 import com.sigmastrain.aiplayermod.shop.BotShop;
+import com.sigmastrain.aiplayermod.shop.EnchantmentRegistry;
 import com.sigmastrain.aiplayermod.shop.TransmuteRegistry;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -45,6 +46,7 @@ public class HttpApiServer {
             server.createContext("/shop", this::handleShop);
             server.createContext("/transmute/names", this::handleTransmuteNames);
             server.createContext("/transmute", this::handleTransmute);
+            server.createContext("/enchantments", this::handleEnchantments);
             server.createContext("/containers", this::handleContainers);
             server.createContext("/server/dimensions", this::handleDimensions);
             server.createContext("/server/players", this::handlePlayers);
@@ -664,6 +666,19 @@ public class HttpApiServer {
             }
             default -> sendJson(exchange, 405, Map.of("error", "Method not allowed"));
         }
+    }
+
+    // ── /enchantments ── (GET = list known enchantments)
+
+    private void handleEnchantments(HttpExchange exchange) throws IOException {
+        if (!checkAuth(exchange)) return;
+        if (!"GET".equals(exchange.getRequestMethod())) {
+            sendJson(exchange, 405, Map.of("error", "Method not allowed"));
+            return;
+        }
+        sendJson(exchange, 200, Map.of(
+                "enchantments", EnchantmentRegistry.listAll(),
+                "count", EnchantmentRegistry.size()));
     }
 
     // ── /transmute ── (GET = list/lookup, POST = register/update, DELETE = remove)

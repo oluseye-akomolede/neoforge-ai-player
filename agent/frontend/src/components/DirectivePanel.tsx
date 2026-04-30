@@ -2,9 +2,9 @@ import { useState, useEffect, useMemo } from 'react'
 import type { DirectiveDef, BotSnapshot, InventorySlot, OnlinePlayer } from '../types'
 import {
   useDirectives, useSendDirective, useSendCommand,
-  useTransmuteItems, useContainers, fetchContainerContents,
+  useTransmuteItems, useEnchantments, useContainers, fetchContainerContents,
   useDimensions, usePlayers,
-  type TransmuteItem, type ContainerInfo,
+  type TransmuteItem, type EnchantmentItem, type ContainerInfo,
 } from '../hooks'
 
 type Tier = 'l1' | 'l3' | 'l4'
@@ -22,6 +22,7 @@ export default function DirectivePanel({
   const sendDirective = useSendDirective()
   const sendCommand = useSendCommand()
   const transmuteItems = useTransmuteItems()
+  const enchantmentItems = useEnchantments()
   const containers = useContainers()
   const serverDimensions = useDimensions()
   const onlinePlayers = usePlayers()
@@ -34,6 +35,7 @@ export default function DirectivePanel({
   const [containerContents, setContainerContents] = useState<InventorySlot[]>([])
   const [selectedContainer, setSelectedContainer] = useState<ContainerInfo | null>(null)
   const [transmuteSearch, setTransmuteSearch] = useState('')
+  const [enchantSearch, setEnchantSearch] = useState('')
   const [coordBots, setCoordBots] = useState<Set<string>>(new Set())
   const [sendingCoord, setSendingCoord] = useState(false)
 
@@ -161,8 +163,19 @@ export default function DirectivePanel({
     return sortedTransmute.filter((i) => i.item_id.toLowerCase().includes(q))
   }, [sortedTransmute, transmuteSearch])
 
+  const sortedEnchantments = useMemo(
+    () => [...enchantmentItems].sort((a, b) => a.id.localeCompare(b.id)),
+    [enchantmentItems],
+  )
+  const filteredEnchantments = useMemo(() => {
+    if (!enchantSearch.trim()) return sortedEnchantments
+    const q = enchantSearch.toLowerCase().replace('minecraft:', '')
+    return sortedEnchantments.filter((e) => e.id.toLowerCase().includes(q))
+  }, [sortedEnchantments, enchantSearch])
+
   const isContainerDirective = selected?.type === 'CONTAINER_STORE' || selected?.type === 'CONTAINER_WITHDRAW'
   const isConjureDirective = selected?.type === 'CHANNEL'
+  const isEnchantDirective = selected?.type === 'ENCHANT'
   const needsInventoryPick = selected?.type === 'CONTAINER_STORE' || selected?.type === 'SEND_ITEM'
 
   const renderParamInput = (p: DirectiveDef['params'][0]) => {
@@ -213,6 +226,162 @@ export default function DirectivePanel({
             placeholder="or type custom item ID"
             className="w-full mt-1 bg-mc-dark border border-mc-accent rounded px-2 py-1 text-[10px] focus:outline-none focus:border-mc-gold text-mc-gray"
           />
+        </div>
+      )
+    }
+
+    // Enchant directive: item to enchant picker
+    if (isEnchantDirective && p.name === 'target') {
+      return (
+        <div className="border border-mc-accent rounded p-2 space-y-2">
+          <label className="text-xs text-mc-gold block font-medium">Item to Enchant</label>
+
+          {/* Inventory picker */}
+          {botData && (botData.inventory || []).length > 0 && (
+            <div className="max-h-28 overflow-y-auto border border-mc-accent rounded">
+              {(botData.inventory || []).filter((item) => {
+                const id = item.item.toLowerCase()
+                return !id.includes('air') && (
+                  id.includes('sword') || id.includes('pickaxe') || id.includes('axe') ||
+                  id.includes('shovel') || id.includes('hoe') || id.includes('bow') ||
+                  id.includes('crossbow') || id.includes('trident') || id.includes('mace') ||
+                  id.includes('helmet') || id.includes('chestplate') || id.includes('leggings') ||
+                  id.includes('boots') || id.includes('shield') || id.includes('fishing_rod') ||
+                  id.includes('shears') || id.includes('flint_and_steel') || id.includes('book') ||
+                  !id.includes('_') || true
+                )
+              }).map((item, i) => (
+                <button
+                  key={i}
+                  onClick={() => setParams((prev) => ({ ...prev, target: item.item }))}
+                  className={`text-[10px] block w-full text-left px-2 py-0.5 hover:bg-mc-accent ${
+                    params.target === item.item ? 'bg-mc-accent text-mc-gold' : 'text-mc-gray'
+                  }`}
+                >
+                  [{item.slot}] {(item.display_name || item.item).replace('minecraft:', '')} x{item.count}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Text input fallback */}
+          <input
+            type="text"
+            value={params.target || ''}
+            onChange={(e) => setParams((prev) => ({ ...prev, target: e.target.value }))}
+            placeholder="Item name (e.g. diamond_sword) or slot number"
+            className="w-full bg-mc-dark border border-mc-accent rounded px-2 py-1 text-sm focus:outline-none focus:border-mc-gold"
+          />
+          {params.target && (
+            <p className="text-[10px] text-mc-aqua">
+              Enchanting: {params.target.replace('minecraft:', '')}
+            </p>
+          )}
+          {!params.target && (
+            <p className="text-[10px] text-mc-gray">Leave empty to enchant any enchantable item</p>
+          )}
+        </div>
+      )
+    }
+
+    // Enchant directive: searchable enchantment + level + inventory item picker
+    if (isEnchantDirective && p.type === 'dict' && p.fields) {
+      const selectedEnch = params['extra.enchantment'] || ''
+      const selectedEnchEntry = enchantmentItems.find((e) => e.id === selectedEnch)
+      return (
+        <div className="border border-mc-accent rounded p-2 space-y-2">
+          <label className="text-xs text-mc-gold block font-medium">Enchantment</label>
+
+          {/* Searchable enchantment dropdown */}
+          <div>
+            <input
+              type="text"
+              value={enchantSearch}
+              onChange={(e) => setEnchantSearch(e.target.value)}
+              placeholder={`Search ${enchantmentItems.length} enchantments...`}
+              className="w-full bg-mc-dark border border-mc-accent rounded px-2 py-1 text-sm focus:outline-none focus:border-mc-gold"
+            />
+            <div className="mt-1 max-h-40 overflow-y-auto border border-mc-accent rounded">
+              {filteredEnchantments.length === 0 ? (
+                <p className="text-[10px] text-mc-gray px-2 py-1">No matches</p>
+              ) : (
+                filteredEnchantments.map((ench) => (
+                  <button
+                    key={ench.id}
+                    onClick={() => {
+                      setParams((prev) => ({
+                        ...prev,
+                        'extra.enchantment': ench.id,
+                        'extra.level': String(ench.max_level),
+                      }))
+                      setEnchantSearch('')
+                    }}
+                    className={`text-[10px] block w-full text-left px-2 py-0.5 hover:bg-mc-accent ${
+                      selectedEnch === ench.id ? 'bg-mc-accent text-mc-gold' : 'text-mc-gray'
+                    }`}
+                  >
+                    {ench.id.replace('minecraft:', '')}
+                    <span className="text-mc-aqua ml-1">max {ench.max_level}</span>
+                    <span className="text-mc-green ml-1">({ench.xp_cost_per_level} XP/lvl)</span>
+                    {ench.source !== 'vanilla' && (
+                      <span className="text-mc-purple ml-1">[{ench.source}]</span>
+                    )}
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* Selected enchantment + level */}
+          {selectedEnch && (
+            <div className="flex gap-2 items-center">
+              <span className="text-xs text-mc-aqua flex-1">
+                {selectedEnch.replace('minecraft:', '')}
+              </span>
+              <label className="text-[10px] text-mc-gray">Level:</label>
+              <input
+                type="number"
+                min="1"
+                max={selectedEnchEntry?.max_level || 255}
+                value={params['extra.level'] || ''}
+                onChange={(e) => setParams((prev) => ({ ...prev, 'extra.level': e.target.value }))}
+                className="w-16 bg-mc-dark border border-mc-accent rounded px-2 py-0.5 text-sm focus:outline-none focus:border-mc-gold"
+              />
+              <button
+                onClick={() => {
+                  setParams((prev) => {
+                    const next = { ...prev }
+                    delete next['extra.enchantment']
+                    delete next['extra.level']
+                    return next
+                  })
+                }}
+                className="text-[10px] px-1 text-mc-red hover:underline"
+              >Clear</button>
+            </div>
+          )}
+
+          {/* Random tier fallback */}
+          {!selectedEnch && (
+            <div>
+              <label className="text-[10px] text-mc-gray block mb-0.5">Random tier (no specific enchantment)</label>
+              <select
+                value={params['extra.option'] || '2'}
+                onChange={(e) => setParams((prev) => ({ ...prev, 'extra.option': e.target.value }))}
+                className="w-full bg-mc-dark border border-mc-accent rounded px-2 py-1 text-sm focus:outline-none focus:border-mc-gold"
+              >
+                <option value="0">Basic (1-8)</option>
+                <option value="1">Mid (9-20)</option>
+                <option value="2">Max (21-30)</option>
+              </select>
+            </div>
+          )}
+
+          {selectedEnchEntry && (
+            <p className="text-[10px] text-mc-gray">
+              Cost: {selectedEnchEntry.xp_cost_per_level * (parseInt(params['extra.level'] || '1') || 1)} XP levels
+            </p>
+          )}
         </div>
       )
     }
@@ -551,7 +720,7 @@ export default function DirectivePanel({
               {/* Render params (skip x/y/z for container directives since picker fills them) */}
               {selected.params
                 .filter((p) => !(isContainerDirective && ['x', 'y', 'z'].includes(p.name)))
-                .filter((p) => !(needsInventoryPick && p.name === 'target'))
+                .filter((p) => !(needsInventoryPick && p.name === 'target' && !isEnchantDirective))
                 .filter((p) => !(selected.type === 'CONTAINER_WITHDRAW' && p.name === 'target'))
                 .map((p) => (
                   <div key={p.name}>{renderParamInput(p)}</div>

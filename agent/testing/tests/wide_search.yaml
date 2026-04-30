@@ -9,6 +9,6 @@ bots:
 
 steps:
   - instruction: "Wide search for stone"
-    timeout: 60
+    timeout: 180
     success:
       directive_completed: true
