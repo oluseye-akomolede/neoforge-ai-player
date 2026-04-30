@@ -1219,7 +1219,7 @@ class BotRunner:
                 print(f"[{self.name}/L1] Failed to send directive: {e}")
                 return {"success": False, "reason": str(e)}
 
-            result = self._poll_directive()
+            result = self._poll_directive(dtype=dtype)
             if result.get("reason") == "interrupted_by_chat":
                 return result
             if result["success"]:
@@ -1245,11 +1245,12 @@ class BotRunner:
 
         return {"success": False, "reason": result.get("reason", "unknown")}
 
-    def _poll_directive(self):
+    def _poll_directive(self, dtype=""):
         """Poll the brain until directive completes, fails, or is interrupted."""
         self._directive_missing_count = 0
         _last_poll_error_time = 0
         _ever_saw_directive = False
+        _seen_events = set()
         while not self._stop_event.is_set():
             with self._lock:
                 if self._new_messages:
@@ -1327,6 +1328,18 @@ class BotRunner:
             counters = progress.get("counters", {})
             state_desc = brain_state.get("state", "")
             print(f"[{self.name}/L1] {state_desc} (phase={phase}, counters={counters})")
+
+            recent = progress.get("recent_events", [])
+            for evt_text in recent:
+                if evt_text not in _seen_events:
+                    _seen_events.add(evt_text)
+                    shared_state.push_event({
+                        "bot": self.name,
+                        "type": "l1_progress",
+                        "directive": dtype,
+                        "message": evt_text[:120],
+                    })
+
             self._stop_event.wait(self.DIRECTIVE_POLL_INTERVAL)
 
         return {"success": False, "reason": "agent_stopped"}

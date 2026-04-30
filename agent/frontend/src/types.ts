@@ -12,11 +12,19 @@ export interface BotStatus {
   gamemode?: string
 }
 
+export interface ItemEnchantment {
+  id: string
+  level: number
+}
+
 export interface InventorySlot {
   slot: number
   item: string
   count: number
   display_name?: string
+  durability?: number
+  max_durability?: number
+  enchantments?: ItemEnchantment[]
 }
 
 export interface BotSnapshot {

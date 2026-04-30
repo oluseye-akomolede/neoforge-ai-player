@@ -490,14 +490,39 @@ public class BotPlayer {
         for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
             ItemStack stack = player.getInventory().getItem(i);
             if (!stack.isEmpty()) {
-                Map<String, Object> item = new LinkedHashMap<>();
-                item.put("slot", i);
-                item.put("item", BuiltInRegistries.ITEM.getKey(stack.getItem()).toString());
-                item.put("count", stack.getCount());
-                result.add(item);
+                result.add(serializeItemStack(stack, i));
             }
         }
         return result;
+    }
+
+    private Map<String, Object> serializeItemStack(ItemStack stack, int slot) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("slot", slot);
+        item.put("item", BuiltInRegistries.ITEM.getKey(stack.getItem()).toString());
+        item.put("count", stack.getCount());
+        item.put("display_name", stack.getHoverName().getString());
+
+        if (stack.isDamageableItem()) {
+            item.put("durability", stack.getMaxDamage() - stack.getDamageValue());
+            item.put("max_durability", stack.getMaxDamage());
+        }
+
+        var enchantments = stack.getEnchantments();
+        if (!enchantments.isEmpty()) {
+            List<Map<String, Object>> enchList = new ArrayList<>();
+            enchantments.entrySet().forEach(entry -> {
+                Map<String, Object> e = new LinkedHashMap<>();
+                entry.getKey().unwrapKey().ifPresent(key ->
+                    e.put("id", key.location().toString())
+                );
+                e.put("level", entry.getIntValue());
+                if (!e.isEmpty()) enchList.add(e);
+            });
+            item.put("enchantments", enchList);
+        }
+
+        return item;
     }
 
     // ── Container interaction ──

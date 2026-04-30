@@ -200,6 +200,16 @@ public class CombatBehavior implements Behavior {
                     player.getName().getString(), target.getName().getString(),
                     damage, baseDamage, hurt, le.getHealth(), le.getMaxHealth());
 
+            String targetName = target.getName().getString();
+            String dmgStr = String.format("%.1f", damage);
+            String hpStr = String.format("%.0f/%.0f", le.getHealth(), le.getMaxHealth());
+            String bonusInfo = damage > baseDamage
+                    ? String.format(" (+%.1f enchant)", damage - baseDamage)
+                    : "";
+            bot.systemChat("Hit " + targetName + " for " + dmgStr + bonusInfo +
+                    " — " + hpStr + " HP left", "yellow");
+            progress.logEvent("Hit " + targetName + " for " + dmgStr + bonusInfo);
+
             if (!hurt) {
                 le.setHealth(le.getHealth() - damage);
             }
@@ -210,7 +220,8 @@ public class CombatBehavior implements Behavior {
                 if (le.isAlive()) le.kill();
                 kills++;
                 progress.increment("kills");
-                progress.logEvent("Killed " + target.getName().getString());
+                progress.logEvent("Killed " + targetName + " (" + kills + " total)");
+                bot.systemChat("Killed " + targetName + "! (" + kills + " kills)", "green");
                 teleportBot(player, target.getX(), target.getY(), target.getZ());
                 collectNearbyItems(player);
             }

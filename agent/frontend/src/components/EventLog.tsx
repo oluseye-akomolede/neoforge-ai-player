@@ -16,6 +16,7 @@ function eventColor(type: string): string {
     case 'l2_retry': return 'text-yellow-400'
     case 'l4_escalation': return 'text-mc-purple'
     case 'task_claimed': return 'text-mc-gold'
+    case 'l1_progress': return 'text-yellow-300'
     case 'container_found': return 'text-yellow-600'
     case 'bot_stopped': return 'text-mc-red'
     case 'waypoint_set': return 'text-mc-aqua'
@@ -65,6 +66,8 @@ function eventText(ev: DashEvent): string {
       return 'L4 escalation'
     case 'task_claimed':
       return `Claimed task #${String(ev.task_id || '?')}: ${String(ev.description || '')}`
+    case 'l1_progress':
+      return `${String(ev.directive || '')} — ${String(ev.message || '')}`
     case 'container_found':
       return `Found ${String(ev.block || 'chest').replace('minecraft:', '')} at ${ev.x}, ${ev.y}, ${ev.z}`
     case 'bot_stopped':

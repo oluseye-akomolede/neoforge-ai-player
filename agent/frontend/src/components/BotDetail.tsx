@@ -1,10 +1,85 @@
-import type { BotSnapshot } from '../types'
+import { useState } from 'react'
+import type { BotSnapshot, InventorySlot } from '../types'
 
 function dimLabel(dim: string): string {
   return (dim || 'overworld').replace('minecraft:', '').split('_').join(' ')
 }
 
+function romanNumeral(n: number): string {
+  if (n <= 0 || n > 10) return String(n)
+  const numerals = ['', 'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X']
+  return numerals[n]
+}
+
+function shortName(id: string): string {
+  return (id || '').replace('minecraft:', '').replace(/_/g, ' ')
+}
+
+function ItemDetailPanel({ item, onClose }: { item: InventorySlot; onClose: () => void }) {
+  const hasEnchants = item.enchantments && item.enchantments.length > 0
+  const hasDurability = item.max_durability != null && item.max_durability > 0
+  const durabilityPct = hasDurability
+    ? Math.round(((item.durability ?? 0) / item.max_durability!) * 100)
+    : null
+  const durabilityColor = durabilityPct != null
+    ? durabilityPct > 60 ? 'text-mc-green' : durabilityPct > 25 ? 'text-mc-gold' : 'text-mc-red'
+    : ''
+
+  return (
+    <div className="border border-mc-gold rounded p-3 bg-mc-dark space-y-2">
+      <div className="flex justify-between items-start">
+        <div>
+          <h4 className={`text-sm font-bold ${hasEnchants ? 'text-mc-aqua' : 'text-white'}`}>
+            {item.display_name || shortName(item.item)}
+          </h4>
+          <p className="text-[10px] text-mc-gray">{item.item}</p>
+        </div>
+        <button onClick={onClose} className="text-mc-gray hover:text-white text-xs px-1">x</button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+        <div>Slot: <span className="text-white">{item.slot}</span></div>
+        <div>Count: <span className="text-white">{item.count}</span></div>
+        {hasDurability && (
+          <>
+            <div>
+              Durability: <span className={durabilityColor}>{item.durability}/{item.max_durability}</span>
+            </div>
+            <div>
+              <span className={durabilityColor}>{durabilityPct}%</span>
+            </div>
+          </>
+        )}
+      </div>
+
+      {hasDurability && (
+        <div className="w-full bg-mc-accent rounded h-1.5">
+          <div
+            className={`h-1.5 rounded ${durabilityPct! > 60 ? 'bg-mc-green' : durabilityPct! > 25 ? 'bg-mc-gold' : 'bg-mc-red'}`}
+            style={{ width: `${durabilityPct}%` }}
+          />
+        </div>
+      )}
+
+      {hasEnchants && (
+        <div>
+          <h5 className="text-xs text-mc-purple font-medium mb-1">Enchantments</h5>
+          <div className="space-y-0.5">
+            {item.enchantments!.map((e, i) => (
+              <div key={i} className="text-xs flex justify-between">
+                <span className="text-mc-aqua">{shortName(e.id)}</span>
+                <span className="text-mc-purple">{romanNumeral(e.level)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function BotDetail({ bot }: { bot: BotSnapshot }) {
+  const [selectedItem, setSelectedItem] = useState<InventorySlot | null>(null)
   const s = bot?.status
   if (!s) return null
   const isAlive = s.alive ?? s.is_alive ?? true
@@ -97,14 +172,31 @@ export default function BotDetail({ bot }: { bot: BotSnapshot }) {
           <p className="text-xs text-mc-gray">Empty</p>
         ) : (
           <div className="grid grid-cols-2 gap-1 max-h-48 overflow-y-auto">
-            {inv.map((item, i) => (
-              <div key={i} className="text-xs flex justify-between px-1">
-                <span className="text-mc-gray truncate">
-                  {(item.display_name || item.item || '').replace('minecraft:', '')}
-                </span>
-                <span className="text-white ml-1">{item.count}</span>
-              </div>
-            ))}
+            {inv.map((item, i) => {
+              const hasEnchants = item.enchantments && item.enchantments.length > 0
+              const isSelected = selectedItem?.slot === item.slot
+              return (
+                <button
+                  key={i}
+                  onClick={() => setSelectedItem(isSelected ? null : item)}
+                  className={`text-xs flex justify-between px-1 py-0.5 rounded text-left transition-colors ${
+                    isSelected
+                      ? 'bg-mc-accent ring-1 ring-mc-gold'
+                      : 'hover:bg-mc-accent/50'
+                  }`}
+                >
+                  <span className={`truncate ${hasEnchants ? 'text-mc-aqua' : 'text-mc-gray'}`}>
+                    {(item.display_name || item.item || '').replace('minecraft:', '')}
+                  </span>
+                  <span className="text-white ml-1 flex-shrink-0">{item.count}</span>
+                </button>
+              )
+            })}
+          </div>
+        )}
+        {selectedItem && (
+          <div className="mt-2">
+            <ItemDetailPanel item={selectedItem} onClose={() => setSelectedItem(null)} />
           </div>
         )}
       </div>
