@@ -12,7 +12,6 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
-import net.minecraft.world.entity.MoverType;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
@@ -61,18 +60,10 @@ public class MineBehavior implements Behavior {
     // Pre-check
     private boolean preCheckPassed;
 
-    // Movement
-    private double yVelocity;
-    private int ticksStuck;
-    private Vec3 lastPos;
 
     private static final int COLLECT_TICKS = 30;
     private static final int COOLDOWN_TICKS = 5;
     private static final double MINE_REACH = 4.5;
-    private static final double SPRINT_SPEED = 0.4;
-    private static final double FLY_SPEED = 0.8;
-    private static final double GRAVITY = 0.08;
-    private static final double JUMP_VELOCITY = 0.42;
     private static final int TICKS_PER_LEVEL = 5;
 
     @Override
@@ -83,9 +74,6 @@ public class MineBehavior implements Behavior {
         this.maxRadius = directive.getRadius();
         this.totalMined = 0;
         this.radiusIndex = 0;
-        this.yVelocity = 0;
-        this.ticksStuck = 0;
-        this.lastPos = null;
         progress.reset();
 
         // Inventory pre-check: skip mining if we already have enough of the drop item
@@ -310,9 +298,15 @@ public class MineBehavior implements Behavior {
 
     private BehaviorResult tickPathing(BotPlayer bot) {
         ServerPlayer player = bot.getPlayer();
-        Vec3 currentPos = player.position();
+        ServerLevel level = player.serverLevel();
+
+        if (level.getBlockState(targetPos).isAir()) {
+            enterPhase(Phase.SEARCHING);
+            return BehaviorResult.RUNNING;
+        }
+
         Vec3 target = Vec3.atCenterOf(targetPos);
-        double dist = currentPos.distanceTo(target);
+        double dist = player.position().distanceTo(target);
 
         if (dist <= MINE_REACH) {
             enterPhase(Phase.MINING);
@@ -320,14 +314,32 @@ public class MineBehavior implements Behavior {
             return BehaviorResult.RUNNING;
         }
 
-        ServerLevel level = player.serverLevel();
-        if (level.getBlockState(targetPos).isAir()) {
-            enterPhase(Phase.SEARCHING);
-            return BehaviorResult.RUNNING;
-        }
-
-        moveToward(bot, player, target, dist);
+        // Teleport to adjacent position for distant blocks
+        BlockPos adjacent = findStandingPos(level, targetPos);
+        player.teleportTo(adjacent.getX() + 0.5, adjacent.getY(), adjacent.getZ() + 0.5);
+        bot.lookAt(targetPos.getX() + 0.5, targetPos.getY() + 0.5, targetPos.getZ() + 0.5);
+        enterPhase(Phase.MINING);
+        breakProgress = 0;
         return BehaviorResult.RUNNING;
+    }
+
+    private BlockPos findStandingPos(ServerLevel level, BlockPos target) {
+        // Try adjacent positions for existing air pockets
+        BlockPos[] offsets = {
+            target.north(), target.south(), target.east(), target.west(),
+            target.above().north(), target.above().south(), target.above().east(), target.above().west(),
+            target.above(2),
+        };
+        for (BlockPos pos : offsets) {
+            if (level.getBlockState(pos).isAir() && level.getBlockState(pos.above()).isAir()) {
+                return pos;
+            }
+        }
+        // Underground ore — carve a 2-high standing pocket adjacent to the target
+        BlockPos stand = target.above();
+        level.destroyBlock(stand, false);
+        level.destroyBlock(stand.above(), false);
+        return stand;
     }
 
     private BehaviorResult tickMining(BotPlayer bot) {
@@ -394,54 +406,6 @@ public class MineBehavior implements Behavior {
             enterPhase(Phase.SEARCHING);
         }
         return BehaviorResult.RUNNING;
-    }
-
-    private void moveToward(BotPlayer bot, ServerPlayer player, Vec3 target, double dist) {
-        Vec3 currentPos = player.position();
-
-        double heightDiff = Math.abs(target.y - currentPos.y);
-        if (heightDiff > 4.0) {
-            Vec3 dir = target.subtract(currentPos).normalize();
-            double moveSpeed = Math.min(FLY_SPEED, dist);
-            player.moveTo(
-                    currentPos.x + dir.x * moveSpeed,
-                    currentPos.y + dir.y * moveSpeed,
-                    currentPos.z + dir.z * moveSpeed
-            );
-            yVelocity = 0;
-            bot.lookAt(target.x, target.y, target.z);
-            return;
-        }
-
-        Vec3 direction = target.subtract(currentPos).normalize();
-
-        if (player.onGround()) {
-            yVelocity = 0;
-            if (com.sigmastrain.aiplayermod.actions.GoToAction.shouldJump(player, direction)) {
-                yVelocity = JUMP_VELOCITY;
-            }
-        } else {
-            yVelocity -= GRAVITY;
-        }
-
-        if (lastPos != null && currentPos.distanceTo(lastPos) < 0.01) {
-            ticksStuck++;
-            if (ticksStuck > 20) {
-                player.moveTo(
-                        currentPos.x + direction.x * 2.0,
-                        currentPos.y + 1.0,
-                        currentPos.z + direction.z * 2.0
-                );
-                yVelocity = 0;
-                ticksStuck = 0;
-            }
-        } else {
-            ticksStuck = 0;
-        }
-        lastPos = currentPos;
-
-        player.move(MoverType.SELF, new Vec3(direction.x * SPRINT_SPEED, yVelocity, direction.z * SPRINT_SPEED));
-        bot.lookAt(target.x, target.y, target.z);
     }
 
     private int countInInventory(ServerPlayer player, Item item) {
