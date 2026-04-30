@@ -306,15 +306,10 @@ def create_app() -> FastAPI:
 
     @app.post("/api/reset")
     async def reset_all():
-        if not _api_module:
+        if not _agent_module:
             return {"error": "agent not connected"}
-        snap = shared_state.snapshot()
-        bot_names = list(snap["bots"].keys())
-        if not bot_names:
-            return {"error": "no bots online"}
         try:
-            for bot_name in bot_names:
-                await asyncio.to_thread(_api_module.inject_chat, bot_name, "dashboard", "/aibot reset")
+            bot_names = await asyncio.to_thread(_agent_module.reset_all)
             shared_state.push_event({
                 "type": "reset",
                 "source": "dashboard",

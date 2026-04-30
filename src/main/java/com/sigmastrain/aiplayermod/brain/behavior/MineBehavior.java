@@ -12,13 +12,11 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
-import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.*;
@@ -31,7 +29,7 @@ import java.util.*;
  */
 public class MineBehavior implements Behavior {
     private enum Phase {
-        SEARCHING, EQUIPPING, PATHING, MINING, COLLECTING, COOLDOWN, CHANNELING
+        SEARCHING, EQUIPPING, PATHING, MINING, CHANNELING
     }
 
     private final ProgressReport progress = new ProgressReport();
@@ -42,9 +40,6 @@ public class MineBehavior implements Behavior {
     private int targetCount;
     private int maxRadius;
     private BlockPos targetPos;
-    private int breakProgress;
-    private int collectTicks;
-    private int cooldownTicks;
     private int totalMined;
 
     // Escalating search
@@ -61,9 +56,8 @@ public class MineBehavior implements Behavior {
     private boolean preCheckPassed;
 
 
-    private static final int COLLECT_TICKS = 30;
-    private static final int COOLDOWN_TICKS = 5;
     private static final double MINE_REACH = 4.5;
+    private static final int BLOCKS_PER_TICK = 3;
     private static final int TICKS_PER_LEVEL = 5;
 
     @Override
@@ -110,8 +104,6 @@ public class MineBehavior implements Behavior {
             case EQUIPPING -> tickEquipping(bot);
             case PATHING -> tickPathing(bot);
             case MINING -> tickMining(bot);
-            case COLLECTING -> tickCollecting(bot);
-            case COOLDOWN -> tickCooldown(bot);
             case CHANNELING -> tickChanneling(bot);
         };
     }
@@ -308,18 +300,13 @@ public class MineBehavior implements Behavior {
         Vec3 target = Vec3.atCenterOf(targetPos);
         double dist = player.position().distanceTo(target);
 
-        if (dist <= MINE_REACH) {
-            enterPhase(Phase.MINING);
-            breakProgress = 0;
-            return BehaviorResult.RUNNING;
+        if (dist > MINE_REACH) {
+            BlockPos adjacent = findStandingPos(level, targetPos);
+            player.teleportTo(adjacent.getX() + 0.5, adjacent.getY(), adjacent.getZ() + 0.5);
         }
 
-        // Teleport to adjacent position for distant blocks
-        BlockPos adjacent = findStandingPos(level, targetPos);
-        player.teleportTo(adjacent.getX() + 0.5, adjacent.getY(), adjacent.getZ() + 0.5);
         bot.lookAt(targetPos.getX() + 0.5, targetPos.getY() + 0.5, targetPos.getZ() + 0.5);
         enterPhase(Phase.MINING);
-        breakProgress = 0;
         return BehaviorResult.RUNNING;
     }
 
@@ -345,65 +332,55 @@ public class MineBehavior implements Behavior {
     private BehaviorResult tickMining(BotPlayer bot) {
         ServerPlayer player = bot.getPlayer();
         ServerLevel level = player.serverLevel();
-        BlockState state = level.getBlockState(targetPos);
 
-        if (state.isAir()) {
+        for (int i = 0; i < BLOCKS_PER_TICK; i++) {
+            BlockState state = level.getBlockState(targetPos);
+
+            if (state.isAir()) {
+                enterPhase(Phase.SEARCHING);
+                return BehaviorResult.RUNNING;
+            }
+
+            if (state.getDestroySpeed(level, targetPos) < 0) {
+                progress.logEvent("Unbreakable block at " + targetPos.toShortString());
+                enterPhase(Phase.SEARCHING);
+                return BehaviorResult.RUNNING;
+            }
+
+            // Instant break: compute drops, add to inventory, destroy block
+            net.minecraft.world.level.block.entity.BlockEntity be =
+                    state.hasBlockEntity() ? level.getBlockEntity(targetPos) : null;
+            List<ItemStack> drops = Block.getDrops(state, level, targetPos, be, player, player.getMainHandItem());
+            for (ItemStack drop : drops) {
+                if (!player.getInventory().add(drop)) {
+                    player.drop(drop, false);
+                }
+                progress.increment("items_collected", drop.getCount());
+            }
+            level.destroyBlock(targetPos, false, player);
             totalMined++;
             progress.increment("blocks_mined");
-            progress.logEvent("Mined block at " + targetPos.toShortString() + " (" + totalMined + "/" + targetCount + ")");
-            enterPhase(Phase.COLLECTING);
-            collectTicks = 0;
-            return BehaviorResult.RUNNING;
-        }
 
-        bot.lookAt(targetPos.getX() + 0.5, targetPos.getY() + 0.5, targetPos.getZ() + 0.5);
-
-        float hardness = state.getDestroySpeed(level, targetPos);
-        if (hardness < 0) {
-            progress.logEvent("Unbreakable block at " + targetPos.toShortString());
-            enterPhase(Phase.SEARCHING);
-            return BehaviorResult.RUNNING;
-        }
-
-        float speed = player.getMainHandItem().getDestroySpeed(state);
-        float progressPerTick = speed / hardness / 30.0f;
-        breakProgress++;
-
-        if (breakProgress * progressPerTick >= 1.0f || hardness == 0) {
-            net.minecraft.world.level.block.entity.BlockEntity be = state.hasBlockEntity() ? level.getBlockEntity(targetPos) : null;
-            Block.dropResources(state, level, targetPos, be, player, player.getMainHandItem());
-            level.destroyBlock(targetPos, false, player);
-        }
-
-        return BehaviorResult.RUNNING;
-    }
-
-    private BehaviorResult tickCollecting(BotPlayer bot) {
-        ServerPlayer player = bot.getPlayer();
-        collectTicks++;
-
-        AABB collectBox = player.getBoundingBox().inflate(3.0);
-        for (var entity : player.level().getEntities(player, collectBox)) {
-            if (entity instanceof ItemEntity item && item.isAlive()) {
-                ItemStack stack = item.getItem();
-                if (player.getInventory().add(stack.copy())) {
-                    progress.increment("items_collected", stack.getCount());
-                    item.discard();
-                }
+            if (totalMined >= targetCount) {
+                progress.logEvent("Target count reached: " + totalMined);
+                return BehaviorResult.SUCCESS;
             }
-        }
 
-        if (collectTicks >= COLLECT_TICKS) {
-            enterPhase(Phase.COOLDOWN);
-            cooldownTicks = 0;
-        }
-        return BehaviorResult.RUNNING;
-    }
+            // Search for next block inline for batch mining
+            String search = targetBlock.toLowerCase();
+            BlockPos next = findBlock(level, player.blockPosition(), search,
+                    SEARCH_RADII[Math.min(radiusIndex, SEARCH_RADII.length - 1)]);
+            if (next == null) {
+                enterPhase(Phase.SEARCHING);
+                return BehaviorResult.RUNNING;
+            }
+            targetPos = next;
 
-    private BehaviorResult tickCooldown(BotPlayer bot) {
-        cooldownTicks++;
-        if (cooldownTicks >= COOLDOWN_TICKS) {
-            enterPhase(Phase.SEARCHING);
+            // Teleport if needed
+            if (player.position().distanceTo(Vec3.atCenterOf(targetPos)) > MINE_REACH) {
+                BlockPos adjacent = findStandingPos(level, targetPos);
+                player.teleportTo(adjacent.getX() + 0.5, adjacent.getY(), adjacent.getZ() + 0.5);
+            }
         }
         return BehaviorResult.RUNNING;
     }
@@ -424,6 +401,7 @@ public class MineBehavior implements Behavior {
      */
     private String resolveDropItem(String blockTarget) {
         String t = blockTarget.toLowerCase();
+        String stripped = t.contains(":") ? t.substring(t.indexOf(':') + 1) : t;
         if (t.contains("iron_ore")) return "minecraft:raw_iron";
         if (t.contains("gold_ore")) return "minecraft:raw_gold";
         if (t.contains("copper_ore")) return "minecraft:raw_copper";
@@ -436,11 +414,11 @@ public class MineBehavior implements Behavior {
         if (t.contains("ancient_debris")) return "minecraft:ancient_debris";
         if (t.contains("log")) return "minecraft:" + (t.contains(":") ? t.split(":")[1] : "oak_log");
         if (t.contains("cobblestone")) return "minecraft:cobblestone";
-        if (t.contains("stone")) return "minecraft:cobblestone";
-        if (t.contains("sand")) return "minecraft:sand";
-        if (t.contains("gravel")) return "minecraft:gravel";
-        if (t.contains("dirt")) return "minecraft:dirt";
-        if (t.contains("clay")) return "minecraft:clay_ball";
+        if (stripped.equals("stone")) return "minecraft:cobblestone";
+        if (stripped.equals("sand") || stripped.equals("red_sand")) return "minecraft:sand";
+        if (stripped.equals("gravel")) return "minecraft:gravel";
+        if (stripped.equals("dirt")) return "minecraft:dirt";
+        if (stripped.equals("clay")) return "minecraft:clay_ball";
         if (t.contains("obsidian")) return "minecraft:obsidian";
         // Generic fallback: try minecraft:<target> as item
         String id = t.contains(":") ? t : "minecraft:" + t;
@@ -479,10 +457,8 @@ public class MineBehavior implements Behavior {
         return switch (phase) {
             case SEARCHING -> "Searching for " + targetBlock + " (radius " + SEARCH_RADII[Math.min(radiusIndex, SEARCH_RADII.length - 1)] + ")";
             case EQUIPPING -> "Equipping tool";
-            case PATHING -> "Moving to " + (targetPos != null ? targetPos.toShortString() : "target");
-            case MINING -> "Mining at " + (targetPos != null ? targetPos.toShortString() : "target");
-            case COLLECTING -> "Collecting drops";
-            case COOLDOWN -> "Cooldown";
+            case PATHING -> "Teleporting to " + (targetPos != null ? targetPos.toShortString() : "target");
+            case MINING -> "Mining " + targetBlock + " (" + totalMined + "/" + targetCount + ")";
             case CHANNELING -> "Channeling " + channelItemId + " (" + channelTicks / 20 + "s)";
         };
     }

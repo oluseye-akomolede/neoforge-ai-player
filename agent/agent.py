@@ -60,6 +60,18 @@ _COUNT_IN_STEP_RE = re.compile(r"(\d+)\s*x\s+|\((\d+)\)|\s(\d+)$")
 CHAT_POLL_INTERVAL = 0.25
 
 
+def reset_all():
+    """Reset all bot runners and clear the task board. Called by dashboard."""
+    for runner in _all_runners.values():
+        runner.reset()
+    if _task_board:
+        try:
+            _task_board.clear_all()
+        except Exception:
+            pass
+    return list(_all_runners.keys())
+
+
 class BotRunner:
     """Runs the observe/think/act loop for a single bot in its own thread."""
 
@@ -157,6 +169,25 @@ class BotRunner:
             except Exception:
                 pass
             self._stop_event.wait(CHAT_POLL_INTERVAL)
+
+    def reset(self):
+        """Clear all planning state, cancel directives, and stop actions."""
+        print(f"[{self.name}/reset] Clearing all state")
+        self._plan_steps = []
+        self._plan_step_idx = 0
+        self._plan_instruction = ""
+        self._l1_failed_steps = set()
+        self._current_task_id = None
+        self._awaiting_taskboard = False
+        self._following_player = None
+        self.conversation_history.clear()
+        with _orchestration_lock:
+            _orchestrated_messages.clear()
+        try:
+            api.cancel_directive(self.name)
+            api.stop(self.name)
+        except Exception:
+            pass
 
     def _handle_chat_commands(self, new_messages):
         """Process special chat commands (remember, area, forget) before the planner.
@@ -1695,27 +1726,7 @@ Respond with ONLY a JSON array. Example:
 
                 # Check for system reset signal
                 if any("RESET: All tasks cleared" in m for m in new_msgs):
-                    print(f"[{self.name}/reset] Received reset signal — clearing all state")
-                    self._plan_steps = []
-                    self._plan_step_idx = 0
-                    self._plan_instruction = ""
-                    self._l1_failed_steps = set()
-                    self._current_task_id = None
-                    self._awaiting_taskboard = False
-                    self._following_player = None
-                    self.conversation_history.clear()
-                    if _task_board:
-                        try:
-                            _task_board.clear_all()
-                        except Exception:
-                            pass
-                    with _orchestration_lock:
-                        _orchestrated_messages.clear()
-                    try:
-                        api.cancel_directive(self.name)
-                        api.stop(self.name)
-                    except Exception:
-                        pass
+                    self.reset()
                     new_msgs = [m for m in new_msgs if "RESET:" not in m]
                     continue
 
