@@ -1,5 +1,5 @@
 name: wide-search-block
-description: Bot performs a wide search for stone — validates WIDE_SEARCH directive on flat world
+description: Bot performs a wide search for dirt — validates WIDE_SEARCH directive on flat world
 
 world:
   type: flat
@@ -8,18 +8,18 @@ bots:
   - image: null
 
 steps:
-  - instruction: "Wide search for stone"
+  - instruction: "Wide search for dirt"
     directive:
       directive_type: WIDE_SEARCH
-      target: stone
+      target: dirt
+      radius: 32
       x: 0
-      y: 64
+      y: 4
       z: 0
       extra:
         search_type: block
-        radius: "64"
         bot_index: "0"
         bot_count: "1"
-    timeout: 180
+    timeout: 120
     success:
       directive_completed: true
