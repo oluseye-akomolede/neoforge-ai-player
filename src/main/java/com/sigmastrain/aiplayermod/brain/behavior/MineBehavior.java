@@ -108,11 +108,29 @@ public class MineBehavior implements Behavior {
         };
     }
 
+    private static String resolveItemToOre(String search) {
+        return switch (search) {
+            case "lapis_lazuli" -> "lapis_ore";
+            case "redstone" -> "redstone_ore";
+            case "diamond" -> "diamond_ore";
+            case "emerald" -> "emerald_ore";
+            case "coal" -> "coal_ore";
+            case "quartz" -> "nether_quartz_ore";
+            case "raw_iron" -> "iron_ore";
+            case "raw_gold" -> "gold_ore";
+            case "raw_copper" -> "copper_ore";
+            default -> null;
+        };
+    }
+
     private BehaviorResult tickSearching(BotPlayer bot) {
         ServerPlayer player = bot.getPlayer();
         ServerLevel level = player.serverLevel();
         BlockPos center = player.blockPosition();
         String search = targetBlock.toLowerCase();
+        String stripped = search.contains(":") ? search.substring(search.indexOf(':') + 1) : search;
+        String oreResolved = resolveItemToOre(stripped);
+        if (oreResolved != null) search = oreResolved;
 
         int radius = SEARCH_RADII[Math.min(radiusIndex, SEARCH_RADII.length - 1)];
         radius = Math.min(radius, maxRadius);

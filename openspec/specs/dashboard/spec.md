@@ -64,7 +64,7 @@ Users MUST be able to send natural-language instructions to bots via a text inpu
 - AND the resulting plan MUST be sent to the selected bot for execution
 
 ### Requirement: Directive Panel
-Users MUST be able to fire L1 directives directly from dropdown menus with type-specific parameter forms, searchable transmute item picker, searchable enchantment picker, and visual feedback (gold=in-flight, green=success, red=error).
+Users MUST be able to fire L1 directives directly from dropdown menus with type-specific parameter forms, searchable transmute item picker, searchable enchantment picker, and visual feedback (gold=in-flight, green=success, red=error). The COMBAT directive target dropdown MUST include both hostile mobs (zombie, skeleton, creeper, spider, enderman, blaze, wither_skeleton, piglin) and passive/animal mobs (cow, pig, chicken, sheep, rabbit, horse, donkey, llama, goat, fox, wolf). The SMELT directive MUST include raw meat types (beef, porkchop, chicken, mutton, rabbit, cod, salmon, potato) in addition to ore/material options.
 
 #### Scenario: Firing a directive with visual feedback
 - GIVEN the directive panel is visible and a bot is selected

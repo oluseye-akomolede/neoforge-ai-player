@@ -181,10 +181,67 @@ multi-step planning and execution. At 40 minutes, basecamp reached full stone ag
 with infrastructure (furnace + chest), and expedition reached iron pickaxe tier.
 Combat remains non-functional (H5) — 0 mob kills across all night-watch bots.
 
+---
+
+### H6: Combat patrols underground — bots never encounter surface mobs (MODERATE — agent)
+
+**Symptom**: Bots enter combat mode and patrol actively (position changes confirmed),
+but patrol underground in caves/mines from prior mining steps. Zero kills after 129
+minutes in night-watch Round 2.
+
+**Root cause**: After equip/upgrade phases, bots are underground from mining. When
+combat is issued, CombatBehavior.patrol() walks randomly from the bot's current
+position. The planner does not insert a "return to surface" step before combat.
+
+**Fix**: Updated planner.py to instruct the LLM: "If prior steps involved mining or
+digging underground, add 'Mine upward to surface' BEFORE any combat or hunting step."
+This keeps combat behavior unchanged and lets the planner handle context-aware
+sequencing.
+
+**Status**: FIXED — planner.py
+
+---
+
+### H7: Animal hunting/cooking pipeline unreliable (MODERATE — agent)
+
+**Symptom**: "Cook at least 8/16/32 meat" consistently fails. Bots find 0-1 cooked
+food items across all tests.
+
+**Root cause**: Planner prompt explicitly told LLM to skip hunting and use
+"Smelt Nx minecraft:beef" directly, relying on auto-channeling. This costs XP and
+doesn't actually hunt animals. Four locations in planner.py reinforced this behavior.
+
+**Fix**: Updated all four planner prompt locations to instruct the LLM to emit
+hunt steps before smelt steps: "Attack cow 120s", "Attack pig 120s", then
+"Smelt Nx minecraft:beef". Hunting provides raw meat without XP cost.
+
+**Status**: FIXED — planner.py
+
+---
+
+### H8: Lapis lazuli ore never found by MINE directive (MINOR — mod)
+
+**Symptom**: 0 lapis lazuli across all tests and both rounds. Every other deep ore
+(redstone, diamond, gold, copper) is found.
+
+**Root cause**: MINE directive target "lapis_lazuli" is an item name, not a block
+name. The actual block registry IDs are "minecraft:lapis_ore" and
+"minecraft:deepslate_lapis_ore". The matchesBlock() function searched for
+"lapis_lazuli" which doesn't appear in any block ID.
+
+**Fix**: Added `resolveItemToOre()` in MineBehavior.java that maps item names to
+ore block names before searching: lapis_lazuli→lapis_ore, redstone→redstone_ore,
+diamond→diamond_ore, etc.
+
+**Status**: FIXED — MineBehavior.java
+
+---
+
 ## Re-test Plan
 
 After all hotfixes are committed:
-1. Re-run all three endurance tests
-2. Expect meaningful PASS/FAIL results reflecting actual bot capability
-3. Monitor H2/H3 impact on XP economy across long runs
-4. Verify H5 combat fix — bots should patrol and engage mobs during night cycles
+1. Re-run all three endurance tests (Round 3)
+2. Verify H6 — bots should surface before combat, encounter mobs
+3. Verify H7 — bots should hunt animals, then smelt raw drops
+4. Verify H8 — lapis lazuli ore should be found and mined
+5. Monitor close-miss gathering thresholds (15/16, 30/32, 6/8)

@@ -40,6 +40,21 @@ MineBehavior MUST handle ore variants by stripping namespaces, extracting the ba
 - THEN "allthemodium:allthemodium_slate_ore" is matched
 - AND "allthemodium:deepslate_allthemodium_ore" is also matched
 
+### Requirement: Item-to-Ore Name Resolution
+MineBehavior MUST resolve item names to their corresponding ore block names before searching. When a directive target is an item name (e.g., "lapis_lazuli", "redstone", "diamond"), tickSearching() MUST map it to the ore block name (e.g., "lapis_ore", "redstone_ore", "diamond_ore") via `resolveItemToOre()` before passing it to `findBlock()`.
+
+#### Scenario: Mining by item name finds ore blocks
+- GIVEN a MINE directive with target "lapis_lazuli"
+- WHEN tickSearching() runs
+- THEN "lapis_lazuli" is resolved to "lapis_ore" before block scanning
+- AND both "minecraft:lapis_ore" and "minecraft:deepslate_lapis_ore" are matched
+
+#### Scenario: Mining by ore name still works
+- GIVEN a MINE directive with target "iron_ore"
+- WHEN tickSearching() runs
+- THEN resolveItemToOre() returns null (no mapping needed)
+- AND the search proceeds with "iron_ore" as before
+
 ### Requirement: Safe Y Positioning
 GotoBehavior and FollowBehavior MUST adjust target Y coordinates upward if the destination is inside a solid block.
 

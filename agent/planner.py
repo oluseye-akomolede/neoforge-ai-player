@@ -30,6 +30,7 @@ IF the player gives a vague or high-level goal (e.g. "get me iron gear" or "set 
 - For combat vs hostile mobs: "Engage combat mode 300s" (fights hostiles only — zombies, skeletons, spiders, creepers)
 - For hunting animals: "Attack cow 120s" or "Attack pig 120s" (targets specific animal type — NEVER use "Engage combat mode" for animals)
 - For combat vs specific mob: "Attack zombie 120s" or "Kill creeper 60s"
+- IMPORTANT: If prior steps involved mining or digging underground, add "Mine upward to surface" BEFORE any combat or hunting step — mobs spawn on the surface at night, not in lit caves
 - For following: "Follow <player_name>" or "goto_player <player_name>" (replace <player_name> with the actual player name from the instruction)
 - For channeling: "Channel modid:item_name" or "Channel 3x modid:item_name" — only for items listed in the transmute registry below
 - For sending items: "Send 10 minecraft:iron_ingot to Scout" (transfers items between bots instantly)
@@ -76,10 +77,10 @@ Input: "Go chop some trees"
 Output: {{"steps": ["Find and mine nearby logs (minecraft:oak_log or minecraft:birch_log)"]}}
 
 Input: "Hunt animals and cook at least 8 meat"
-Output: {{"steps": ["Smelt 8x minecraft:beef"]}}
+Output: {{"steps": ["Attack cow 120s", "Attack pig 120s", "Smelt 8x minecraft:beef"]}}
 
 Input: "Restock to at least 16 cooked meat"
-Output: {{"steps": ["Smelt 16x minecraft:beef"]}}
+Output: {{"steps": ["Attack cow 180s", "Attack pig 120s", "Smelt 16x minecraft:beef"]}}
 
 Input: "Help me get diamonds"
 Output: {{"steps": ["Craft minecraft:stone_pickaxe", "Find and mine minecraft:iron_ore", "Craft and place minecraft:furnace", "Smelt minecraft:raw_iron into minecraft:iron_ingot", "Craft minecraft:iron_pickaxe", "Dig down to Y=16 or below", "Find and mine minecraft:diamond_ore"]}}
@@ -193,7 +194,7 @@ CHECK bot inventories below before planning. If a bot already has required mater
 
 For "engage combat", "fight enemies", "defend me", or similar — use "Engage combat mode 300s" for EVERY bot. Use longer durations (600s+) for sustained combat or "fight through the night" scenarios.
 For "hunt animals", "kill cows/pigs/chickens" — use "Attack cow 120s" or "Attack pig 120s" (NOT "Engage combat mode"). NEVER use "Engage combat mode" for hunting — it only targets hostile mobs.
-For "get food", "cook meat", "restock cooked meat", or any food task — use "Smelt Nx minecraft:beef" directly. The smelt system auto-channels raw materials when not in inventory, so hunting is unnecessary. This is the most reliable way to get cooked food.
+For "get food", "cook meat", "restock cooked meat", or any food task — first hunt animals ("Attack cow 120s", "Attack pig 120s"), then smelt the drops ("Smelt Nx minecraft:beef"). Hunting provides raw meat without spending XP. Only fall back to channeling if no animals are available.
 For "come to me" or "come here" — use "Follow <player_name>" for EVERY bot (replace <player_name> with the sender's actual name from the instruction).
 When the instruction says "all bots", "every bot", or "everyone" — create a separate step for EVERY available bot. If there is a quantity, split it evenly (e.g. "all bots channel 200 items" with 5 bots = 40 per bot). Assign each step to a specific bot name — do NOT use "any".
 For "search for X" or "find X" across a large area — use "Wide search for X" and assign to ALL available bots for parallel searching. Each bot automatically searches a different grid slice.
@@ -222,7 +223,7 @@ ALWAYS use registry IDs (modid:item_name). Include counts where relevant.
 - Planks: 1 minecraft:oak_log = 4 planks
 - Hunting: "Attack cow 120s" or "Attack pig 120s" kills animals and auto-collects drops (raw beef, raw porkchop, raw chicken)
 - Cooking: "Smelt 8x minecraft:beef" cooks raw meat into cooked food. Works for beef, porkchop, chicken, mutton, rabbit, cod, salmon, potato
-- For "get food", "cook meat", or "restock cooked meat" — prefer "Smelt Nx minecraft:beef" directly. The smelt system auto-channels raw materials if not in inventory. Hunting is unreliable when few animals are available
+- For "get food", "cook meat", or "restock cooked meat" — hunt animals first ("Attack cow 120s", "Attack pig 120s"), then smelt the drops ("Smelt Nx minecraft:beef"). Hunting provides free raw meat without XP cost
 
 {memory_section}
 
