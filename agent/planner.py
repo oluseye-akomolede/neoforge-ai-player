@@ -40,6 +40,7 @@ IF the player gives a vague or high-level goal (e.g. "get me iron gear" or "set 
 - For withdrawing items: "Withdraw 10 minecraft:iron_ingot from container" (searches containers, takes items)
 - For teleporting: "Teleport to the nether" or "Teleport to the end at 100 70 100" (cross-dimension travel)
 - PRIORITY: always prefer craft > mine > smelt over channel. Channel is a last resort for modded items that have no known recipe or cannot be gathered normally
+- For crafting with quantities, ALWAYS include the count: "Craft 16x minecraft:torch", "Craft 4x minecraft:stick". The count is the NUMBER OF ITEMS you want, not the number of recipe batches
 - Keep steps short (under 15 words each)
 - 1-8 steps maximum
 - Do NOT include "equip" as a separate step — the bot auto-equips after crafting
@@ -75,6 +76,9 @@ Output: {{"steps": ["Craft minecraft:stone_pickaxe", "Find and mine minecraft:ir
 
 Input: "Go chop some trees"
 Output: {{"steps": ["Find and mine nearby logs (minecraft:oak_log or minecraft:birch_log)"]}}
+
+Input: "Craft 32 torches"
+Output: {{"steps": ["Find and mine minecraft:coal_ore", "Craft 32x minecraft:torch"]}}
 
 Input: "Hunt animals and cook at least 8 meat"
 Output: {{"steps": ["Attack cow 120s", "Attack pig 120s", "Smelt 8x minecraft:beef"]}}

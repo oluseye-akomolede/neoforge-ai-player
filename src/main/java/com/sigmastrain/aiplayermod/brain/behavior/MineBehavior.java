@@ -46,6 +46,16 @@ public class MineBehavior implements Behavior {
     private static final int[] SEARCH_RADII = {64, 128, 256, 512, 1024};
     private int radiusIndex;
 
+    // Tick-budgeted scan state
+    private static final int MAX_BLOCKS_PER_TICK = 4096;
+    private int scanR, scanX, scanY, scanZ;
+    private int scanRadius;
+    private boolean scanActive;
+    private BlockPos scanCenter;
+    private String scanSearch;
+    private BlockPos scanBest;
+    private double scanBestDist;
+
     // Channeling state
     private int channelTicks;
     private int channelTotal;
@@ -126,84 +136,162 @@ public class MineBehavior implements Behavior {
     private BehaviorResult tickSearching(BotPlayer bot) {
         ServerPlayer player = bot.getPlayer();
         ServerLevel level = player.serverLevel();
-        BlockPos center = player.blockPosition();
-        String search = targetBlock.toLowerCase();
-        String stripped = search.contains(":") ? search.substring(search.indexOf(':') + 1) : search;
-        String oreResolved = resolveItemToOre(stripped);
-        if (oreResolved != null) search = oreResolved;
 
-        int radius = SEARCH_RADII[Math.min(radiusIndex, SEARCH_RADII.length - 1)];
-        radius = Math.min(radius, maxRadius);
+        if (!scanActive) {
+            BlockPos center = player.blockPosition();
+            String search = targetBlock.toLowerCase();
+            String stripped = search.contains(":") ? search.substring(search.indexOf(':') + 1) : search;
+            String oreResolved = resolveItemToOre(stripped);
+            if (oreResolved != null) search = oreResolved;
 
-        BlockPos nearest = findBlock(level, center, search, radius);
+            int radius = SEARCH_RADII[Math.min(radiusIndex, SEARCH_RADII.length - 1)];
+            radius = Math.min(radius, maxRadius);
 
-        if (nearest == null) {
-            radiusIndex++;
-            int nextRadius = radiusIndex < SEARCH_RADII.length
-                    ? Math.min(SEARCH_RADII[radiusIndex], maxRadius)
-                    : maxRadius;
+            scanCenter = center;
+            scanSearch = search;
+            scanRadius = radius;
+            scanR = 1;
+            scanX = -1;
+            scanY = -1;
+            scanZ = -1;
+            scanBest = null;
+            scanBestDist = Double.MAX_VALUE;
+            scanActive = true;
+        }
 
-            if (radiusIndex >= SEARCH_RADII.length || nextRadius <= radius) {
-                // Exhausted all radii — fall back to channeling
-                progress.logEvent("Could not find " + targetBlock + " within " + radius + " blocks, channeling");
-                bot.systemChat("Channeling " + targetBlock + " (not found in " + radius + "b)", "light_purple");
-                return startChanneling(bot);
-            }
+        int result = scanTick(level);
 
-            progress.logEvent("Expanding search to " + nextRadius + " blocks");
+        if (result == 0) {
+            // Still scanning
             return BehaviorResult.RUNNING;
         }
 
-        radiusIndex = 0; // Reset for next search cycle
-        targetPos = nearest;
-        progress.logEvent("Found " + targetBlock + " at " + nearest.toShortString());
-        enterPhase(Phase.EQUIPPING);
+        scanActive = false;
+
+        if (result == 1 && scanBest != null) {
+            radiusIndex = 0;
+            targetPos = scanBest;
+            progress.logEvent("Found " + targetBlock + " at " + scanBest.toShortString());
+            enterPhase(Phase.EQUIPPING);
+            return BehaviorResult.RUNNING;
+        }
+
+        // Scan completed with no result — escalate radius
+        radiusIndex++;
+        int nextRadius = radiusIndex < SEARCH_RADII.length
+                ? Math.min(SEARCH_RADII[radiusIndex], maxRadius)
+                : maxRadius;
+
+        if (radiusIndex >= SEARCH_RADII.length || nextRadius <= scanRadius) {
+            progress.logEvent("Could not find " + targetBlock + " within " + scanRadius + " blocks, channeling");
+            bot.systemChat("Channeling " + targetBlock + " (not found in " + scanRadius + "b)", "light_purple");
+            return startChanneling(bot);
+        }
+
+        progress.logEvent("Expanding search to " + nextRadius + " blocks");
         return BehaviorResult.RUNNING;
     }
 
-    private BlockPos findBlock(ServerLevel level, BlockPos center, String search, int radius) {
-        BlockPos nearest = null;
-        double nearestDist = Double.MAX_VALUE;
+    /**
+     * Tick-budgeted block scan. Returns:
+     *   0 = still scanning (budget exhausted)
+     *   1 = found a match (scanBest is set)
+     *   2 = scan complete, no match
+     */
+    private int scanTick(ServerLevel level) {
+        String searchBase = scanSearch.contains(":") ? scanSearch.substring(scanSearch.indexOf(':') + 1) : scanSearch;
+        String oreBase = searchBase.endsWith("_ore") ? searchBase.substring(0, searchBase.length() - 4) : null;
 
-        // Build variant match terms for ores (e.g. "allthemodium_ore" also matches "allthemodium_slate_ore")
-        String searchBase = search.contains(":") ? search.substring(search.indexOf(':') + 1) : search;
-        String oreBase = null;
-        if (searchBase.endsWith("_ore")) {
-            oreBase = searchBase.substring(0, searchBase.length() - 4);
-        }
+        int checked = 0;
 
-        for (int r = 1; r <= radius; r += (r < 64 ? 1 : 2)) {
-            for (int x = -r; x <= r; x++) {
-                for (int y = -r; y <= r; y++) {
-                    for (int z = -r; z <= r; z++) {
+        while (scanR <= scanRadius) {
+            int r = scanR;
+            for (int x = scanX; x <= r; x++) {
+                for (int y = (x == scanX ? scanY : -r); y <= r; y++) {
+                    for (int z = (x == scanX && y == scanY ? scanZ : -r); z <= r; z++) {
                         if (Math.abs(x) != r && Math.abs(y) != r && Math.abs(z) != r) continue;
-                        BlockPos pos = center.offset(x, y, z);
-                        if (pos.getY() < level.getMinBuildHeight() || pos.getY() > level.getMaxBuildHeight())
-                            continue;
-                        BlockState state = level.getBlockState(pos);
-                        if (state.isAir()) continue;
-                        String id = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
-                        if (matchesBlock(id, search, searchBase, oreBase)) {
-                            double dist = center.distSqr(pos);
-                            if (dist < nearestDist) {
-                                nearestDist = dist;
-                                nearest = pos;
+
+                        BlockPos pos = scanCenter.offset(x, y, z);
+                        if (pos.getY() >= level.getMinBuildHeight() && pos.getY() <= level.getMaxBuildHeight()) {
+                            BlockState state = level.getBlockState(pos);
+                            if (!state.isAir()) {
+                                String id = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
+                                if (matchesBlock(id, scanSearch, searchBase, oreBase)) {
+                                    double dist = scanCenter.distSqr(pos);
+                                    if (dist < scanBestDist) {
+                                        scanBestDist = dist;
+                                        scanBest = pos;
+                                    }
+                                }
                             }
+                            checked++;
+                        }
+
+                        if (checked >= MAX_BLOCKS_PER_TICK) {
+                            // Save position for next tick — advance z so we don't recheck
+                            scanX = x;
+                            scanY = y;
+                            scanZ = z + 1;
+                            if (scanZ > r) { scanZ = -r; scanY = y + 1; }
+                            if (scanY > r) { scanY = -r; scanX = x + 1; }
+                            return scanBest != null ? 1 : 0;
                         }
                     }
                 }
             }
-            if (nearest != null) break;
+
+            // Finished this shell — if we found something, return it
+            if (scanBest != null) return 1;
+
+            // Advance to next shell
+            scanR += (scanR < 64 ? 1 : 2);
+            scanX = -scanR;
+            scanY = -scanR;
+            scanZ = -scanR;
         }
-        return nearest;
+
+        return scanBest != null ? 1 : 2;
     }
 
     private static boolean matchesBlock(String blockId, String search, String searchBase, String oreBase) {
         if (blockId.contains(search)) return true;
         if (blockId.contains(searchBase)) return true;
-        // For ore variants: "iron_ore" matches "deepslate_iron_ore", "allthemodium_ore" matches "allthemodium_slate_ore"
         if (oreBase != null && blockId.contains(oreBase) && blockId.contains("ore")) return true;
         return false;
+    }
+
+    private BlockPos findNearby(ServerLevel level, BlockPos center, String search, int radius) {
+        String stripped = search.contains(":") ? search.substring(search.indexOf(':') + 1) : search;
+        String oreResolved = resolveItemToOre(stripped);
+        if (oreResolved != null) search = oreResolved;
+        String searchBase = search.contains(":") ? search.substring(search.indexOf(':') + 1) : search;
+        String oreBase = searchBase.endsWith("_ore") ? searchBase.substring(0, searchBase.length() - 4) : null;
+
+        BlockPos best = null;
+        double bestDist = Double.MAX_VALUE;
+        for (int r = 1; r <= radius; r += (r < 16 ? 1 : 2)) {
+            for (int x = -r; x <= r; x++) {
+                for (int y = -r; y <= r; y++) {
+                    for (int z = -r; z <= r; z++) {
+                        if (Math.abs(x) != r && Math.abs(y) != r && Math.abs(z) != r) continue;
+                        BlockPos pos = center.offset(x, y, z);
+                        if (pos.getY() < level.getMinBuildHeight() || pos.getY() > level.getMaxBuildHeight()) continue;
+                        BlockState state = level.getBlockState(pos);
+                        if (state.isAir()) continue;
+                        String id = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
+                        if (matchesBlock(id, search, searchBase, oreBase)) {
+                            double dist = center.distSqr(pos);
+                            if (dist < bestDist) {
+                                bestDist = dist;
+                                best = pos;
+                            }
+                        }
+                    }
+                }
+            }
+            if (best != null) return best;
+        }
+        return null;
     }
 
     private BehaviorResult startChanneling(BotPlayer bot) {
@@ -384,10 +472,8 @@ public class MineBehavior implements Behavior {
                 return BehaviorResult.SUCCESS;
             }
 
-            // Search for next block inline for batch mining
-            String search = targetBlock.toLowerCase();
-            BlockPos next = findBlock(level, player.blockPosition(), search,
-                    SEARCH_RADII[Math.min(radiusIndex, SEARCH_RADII.length - 1)]);
+            // Quick local search for next block (small radius, safe for single tick)
+            BlockPos next = findNearby(level, player.blockPosition(), targetBlock.toLowerCase(), 32);
             if (next == null) {
                 enterPhase(Phase.SEARCHING);
                 return BehaviorResult.RUNNING;

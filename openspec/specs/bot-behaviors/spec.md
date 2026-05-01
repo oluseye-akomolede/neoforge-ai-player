@@ -193,6 +193,22 @@ WideSearchBehavior MUST record notable blocks (ores, containers, spawners) encou
 - THEN those blocks are recorded in the progress report scan data
 - AND the agent can poll /bot/{name}/scan_data to retrieve and store them
 
+### Requirement: Mine Behavior Tick-Safe Scanning
+MineBehavior MUST use tick-budgeted block scanning. The `tickSearching()` phase initializes scan state (center, radius, search term) on first tick, then calls `scanTick()` each tick. `scanTick()` processes up to MAX_BLOCKS_PER_TICK (4096) blocks per tick, saves its x/y/z scan position when the budget is exhausted, and resumes from that position on the next tick. Returns 0 (still scanning), 1 (found match), or 2 (scan complete, no match). After mining a block, batch mining uses `findNearby()` with a small radius (32) for quick local searches.
+
+#### Scenario: Large radius scan spread across ticks
+- GIVEN a MineBehavior searching for diamond_ore at radius 512
+- WHEN the scan runs
+- THEN at most 4096 blocks are checked per server tick
+- AND the scan resumes from its saved position on the next tick
+- AND the server tick rate is not degraded
+
+#### Scenario: Batch mining finds next block locally
+- GIVEN a MineBehavior that just mined a diamond_ore block
+- WHEN it searches for the next block
+- THEN `findNearby()` checks within 32 blocks synchronously
+- AND if no block is found locally, it falls back to the tick-budgeted SEARCHING phase
+
 ### Requirement: Wide Search Tick Safety
 All world reads in WideSearchBehavior MUST execute on the server tick thread. The behavior runs inside BotBrain.tick() which is called from ServerTickEvent.Post, ensuring tick safety. The per-tick scan budget MUST be capped to prevent tick overruns.
 

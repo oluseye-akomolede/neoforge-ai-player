@@ -237,11 +237,38 @@ diamond→diamond_ore, etc.
 
 ---
 
+### H9: Torch crafting count dropped by planner (MINOR — agent)
+
+**Symptom**: "Craft 16 torches" yields only 4 torches. R3 basecamp torch step: 4/16.
+**Root cause**: Planner outputs "Craft minecraft:torch" without a count prefix. L1
+CRAFT parser defaults count=1. CraftBehavior does ceil(1/4)=1 batch = 4 torches.
+**Fix**: Added planner rule: "For crafting with quantities, ALWAYS include the count:
+'Craft 16x minecraft:torch'". Added torch example to prompt.
+**Status**: FIXED — planner.py
+
+---
+
+### H10: MineBehavior findBlock scans millions of blocks in one tick (MODERATE — mod)
+
+**Symptom**: Potential server tick overruns when searching large radii (512-1024).
+The old `findBlock()` scanned the entire radius synchronously in a single tick.
+**Root cause**: `findBlock()` used nested loops over the full cubic volume with no
+per-tick budget. At radius 512, this is ~1 billion block checks in one tick.
+**Fix**: Replaced `findBlock()` with tick-budgeted `scanTick()`:
+- MAX_BLOCKS_PER_TICK = 4096
+- Saves scan position (scanX, scanY, scanZ, scanR) between ticks
+- Returns 0 (still scanning), 1 (found match), 2 (scan complete)
+- Batch mining uses `findNearby()` with radius 32 for quick local searches
+**Status**: FIXED — MineBehavior.java
+
+---
+
 ## Re-test Plan
 
 After all hotfixes are committed:
-1. Re-run all three endurance tests (Round 3)
-2. Verify H6 — bots should surface before combat, encounter mobs
-3. Verify H7 — bots should hunt animals, then smelt raw drops
-4. Verify H8 — lapis lazuli ore should be found and mined
-5. Monitor close-miss gathering thresholds (15/16, 30/32, 6/8)
+1. Re-run all three endurance tests (Round 4)
+2. Verify H9 — torch count should be correct (16/16)
+3. Verify H10 — tick-safe scanning doesn't break mining behavior
+4. Verify H6 — bots should surface before combat, encounter mobs
+5. Verify H7 — bots should hunt animals, then smelt raw drops
+6. Verify H8 — lapis lazuli ore should be found and mined
