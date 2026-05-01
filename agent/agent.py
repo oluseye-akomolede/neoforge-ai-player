@@ -1152,7 +1152,9 @@ class BotRunner:
             text, re.IGNORECASE)
         if follow_match:
             target = follow_match.group(1).rstrip(",.")
-            return {"type": "FOLLOW", "target": target}
+            _INVALID_FOLLOW = {"dashboard", "menu", "screen", "ui", "map", "panel", "console", "log"}
+            if target.lower() not in _INVALID_FOLLOW:
+                return {"type": "FOLLOW", "target": target}
 
         # Teleport to dimension / coordinates
         m = self._TELEPORT_PATTERNS.search(text)

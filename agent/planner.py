@@ -45,6 +45,7 @@ IF the player gives a vague or high-level goal (e.g. "get me iron gear" or "set 
 - 1-8 steps maximum
 - Do NOT include "equip" as a separate step — the bot auto-equips after crafting
 - "collect" after mining is automatic — don't add separate collect steps
+- NEVER generate "Follow dashboard", "Follow menu", or any follow-UI steps — follow is ONLY for following players
 - If the instruction is already a single action, output just one step
 - NEVER say "go to Y=N" — the bot cannot teleport to a Y level. Say "dig a staircase down to Y=N" instead
 - For underground tasks, always say "dig down" or "mine downward" — the bot must physically dig, not use goto
