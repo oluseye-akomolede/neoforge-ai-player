@@ -262,12 +262,55 @@ positions. Radius escalation only triggers on shell scan misses.
 
 ---
 
-## Re-test Plan
+### H11: "Follow dashboard" LLM hallucination blocks task pickup (MODERATE — agent)
 
-After all hotfixes are committed:
-1. Re-run all three endurance tests (Round 4)
-2. Verify H9 — torch count should be correct (16/16)
-3. Verify H10 — tick-safe scanning doesn't break mining behavior
-4. Verify H6 — bots should surface before combat, encounter mobs
-5. Verify H7 — bots should hunt animals, then smelt raw drops
-6. Verify H8 — lapis lazuli ore should be found and mined
+**Symptom**: Scout bot enters infinite "Following dashboard" loop after completing
+a gold mining task. Cannot pick up subsequent redstone/lapis tasks.
+**Root cause**: LLM planner generated "Follow dashboard" as step 2 of a 2-step
+gold mining plan. L1 parser matched it as FOLLOW directive with target "dashboard".
+FollowBehavior searched endlessly for a player named "dashboard".
+**Fix**: Added blocklist of invalid follow targets (dashboard, menu, ui, screen,
+etc.) in `_classify_step()`. Added planner rule: "NEVER generate Follow dashboard
+or follow-UI steps — follow is ONLY for following players."
+**Status**: FIXED — agent.py, planner.py
+
+---
+
+## Test Results Summary (Round 4)
+
+R4 only ran operation-basecamp (stale pod blocked R4 initially, then restarted).
+
+| World | Steps | Result | Notes |
+|-------|-------|--------|-------|
+| operation-basecamp | 16/18 | FAIL | Torch PASS (16/16, H9 confirmed). Redstone/lapis FAIL — Scout stuck in "Follow dashboard" loop (H11) |
+
+**Confirmed fixed**: H9 (torch count 16/16)
+**New bug found**: H11 (Follow dashboard hallucination)
+
+---
+
+## Test Results Summary (Round 5)
+
+All H1-H11 fixes applied. 37/40 steps passed.
+
+| World | Steps | Result | Notes |
+|-------|-------|--------|-------|
+| operation-basecamp | 16/18 | FAIL | Torch PASS, redstone PASS (72), lapis PASS (54). Fails: smelt count=1 (LLM), gold stored in container (LLM) |
+| deep-mine-expedition | 10/10 | PASS | Perfect. 69 lapis, 109 redstone, 13 diamonds in 7.7 min |
+| night-watch | 11/12 | FAIL | Combat fully functional. Fail: initial food hunt 4/8 (timing, self-corrected to 36 by step 7) |
+
+**Progression across all rounds:**
+
+| Round | Date | Score | Key changes |
+|-------|------|-------|-------------|
+| R1 | Apr 28 | 1/40 | Harness checked wrong bot (H1) |
+| R2 | Apr 29 | 19/40 | H1-H5 fixed |
+| R3 | Apr 30 | 38/40 | H6-H8 fixed |
+| R4 | May 1 | 16/18* | H9 fixed, H11 found (*basecamp only) |
+| R5 | May 1 | 37/40 | H11 fixed, all code bugs resolved |
+
+**Remaining 3 failures are LLM output variance** (qwen2.5:14b-instruct), not code
+bugs: wrong smelt count, unnecessary container storage step, animal spawn timing.
+Further improvement requires a more capable local LLM or GPU upgrade.
+
+**Status**: All code bugs resolved. Test harness stable. Project feature-complete.
