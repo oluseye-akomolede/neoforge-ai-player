@@ -193,21 +193,21 @@ WideSearchBehavior MUST record notable blocks (ores, containers, spawners) encou
 - THEN those blocks are recorded in the progress report scan data
 - AND the agent can poll /bot/{name}/scan_data to retrieve and store them
 
-### Requirement: Mine Behavior Tick-Safe Scanning
-MineBehavior MUST use tick-budgeted block scanning. The `tickSearching()` phase initializes scan state (center, radius, search term) on first tick, then calls `scanTick()` each tick. `scanTick()` processes up to MAX_BLOCKS_PER_TICK (4096) blocks per tick, saves its x/y/z scan position when the budget is exhausted, and resumes from that position on the next tick. Returns 0 (still scanning), 1 (found match), or 2 (scan complete, no match). After mining a block, batch mining uses `findNearby()` with a small radius (32) for quick local searches.
+### Requirement: Layered Search Strategy
+MineBehavior MUST alternate between two search strategies on each SEARCHING tick: shell-based scanning (existing expanding cubic shells at escalating radii) and column scanning (full Y depth from bot position down to bedrock within a smaller XZ radius of 32). This provides both wide horizontal coverage and deep vertical coverage without overloading any single tick. Column scan results are recorded for future reference via `drainColumnScanResults()`. Radius escalation only occurs on shell scan misses.
 
-#### Scenario: Large radius scan spread across ticks
-- GIVEN a MineBehavior searching for diamond_ore at radius 512
-- WHEN the scan runs
-- THEN at most 4096 blocks are checked per server tick
-- AND the scan resumes from its saved position on the next tick
-- AND the server tick rate is not degraded
+#### Scenario: Alternating search finds deep ore
+- GIVEN a MineBehavior searching for diamond_ore on the surface
+- WHEN tick 1 runs shell-based search at the bot's Y level (finds nothing)
+- AND tick 2 runs column scan from bot Y down to bedrock within XZ radius 32
+- THEN the column scan finds diamond_ore at y=-50 below the bot
+- AND the bot navigates to and mines the ore
 
-#### Scenario: Batch mining finds next block locally
-- GIVEN a MineBehavior that just mined a diamond_ore block
-- WHEN it searches for the next block
-- THEN `findNearby()` checks within 32 blocks synchronously
-- AND if no block is found locally, it falls back to the tick-budgeted SEARCHING phase
+#### Scenario: Column scan records ore positions
+- GIVEN a MineBehavior running a column scan
+- WHEN iron_ore and gold_ore blocks are found during the scan
+- THEN all found positions are recorded in columnScanResults
+- AND they can be drained via `drainColumnScanResults()` for terrain mapping
 
 ### Requirement: Wide Search Tick Safety
 All world reads in WideSearchBehavior MUST execute on the server tick thread. The behavior runs inside BotBrain.tick() which is called from ServerTickEvent.Post, ensuring tick safety. The per-tick scan budget MUST be capped to prevent tick overruns.

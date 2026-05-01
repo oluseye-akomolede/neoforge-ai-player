@@ -254,11 +254,10 @@ CRAFT parser defaults count=1. CraftBehavior does ceil(1/4)=1 batch = 4 torches.
 The old `findBlock()` scanned the entire radius synchronously in a single tick.
 **Root cause**: `findBlock()` used nested loops over the full cubic volume with no
 per-tick budget. At radius 512, this is ~1 billion block checks in one tick.
-**Fix**: Replaced `findBlock()` with tick-budgeted `scanTick()`:
-- MAX_BLOCKS_PER_TICK = 4096
-- Saves scan position (scanX, scanY, scanZ, scanR) between ticks
-- Returns 0 (still scanning), 1 (found match), 2 (scan complete)
-- Batch mining uses `findNearby()` with radius 32 for quick local searches
+**Fix**: Added layered search strategy — `tickSearching()` alternates between the
+existing shell-based `findBlock()` (wide horizontal) and a new `columnScan()` (full
+Y depth from bot to bedrock, XZ radius 32). Column scan records all found ore
+positions. Radius escalation only triggers on shell scan misses.
 **Status**: FIXED — MineBehavior.java
 
 ---
