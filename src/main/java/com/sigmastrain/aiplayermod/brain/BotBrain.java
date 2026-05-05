@@ -3,6 +3,7 @@ package com.sigmastrain.aiplayermod.brain;
 import com.sigmastrain.aiplayermod.AIPlayerMod;
 import com.sigmastrain.aiplayermod.bot.BotPlayer;
 import com.sigmastrain.aiplayermod.brain.behavior.*;
+import com.sigmastrain.aiplayermod.compat.ModCompat;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -124,6 +125,9 @@ public class BotBrain {
             case CONTAINER_WITHDRAW -> new ContainerWithdrawBehavior();
             case TELEPORT -> new TeleportBehavior();
             case WIDE_SEARCH -> new WideSearchBehavior();
+            case STORE_ALL -> new StoreAllBehavior();
+            case ME_STORE -> ModCompat.isAE2Loaded() ? new MEStoreBehavior() : new FailFastBehavior("AE2 not loaded");
+            case ME_WITHDRAW -> ModCompat.isAE2Loaded() ? new MEWithdrawBehavior() : new FailFastBehavior("AE2 not loaded");
             case IDLE -> idleBehavior;
             default -> idleBehavior;
         };

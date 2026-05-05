@@ -186,6 +186,32 @@ export async function fetchContainerContents(x: number, y: number, z: number) {
   return res.json()
 }
 
+export interface MEInterface {
+  x: number
+  y: number
+  z: number
+}
+
+export function useMEInterfaces(): { available: boolean; interfaces: MEInterface[] } {
+  const [data, setData] = useState<{ available: boolean; interfaces: MEInterface[] }>({
+    available: false, interfaces: [],
+  })
+  useEffect(() => {
+    const poll = () =>
+      fetch('/api/me-interfaces')
+        .then((r) => r.json())
+        .then((d) => setData({
+          available: d.ae2_available || false,
+          interfaces: d.interfaces || [],
+        }))
+        .catch(() => {})
+    poll()
+    const id = setInterval(poll, 30_000)
+    return () => clearInterval(id)
+  }, [])
+  return data
+}
+
 export interface MemoryEntry {
   id: number
   content: string

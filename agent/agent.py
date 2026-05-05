@@ -880,6 +880,18 @@ class BotRunner:
         r"(?:withdraw|retrieve|take|grab|get)\s+(?:(\d+)x?\s+)?(?:minecraft:)?(\S+?)\s+(?:from\s+)?(?:container|chest|storage)|CONTAINER_WITHDRAW\s+(?:(\d+)x?\s+)?(?:minecraft:)?(\S+)",
         re.IGNORECASE,
     )
+    _STORE_ALL_PATTERNS = re.compile(
+        r"(?:store|dump|deposit|stash)\s+(?:all|everything|inventory)|STORE_ALL",
+        re.IGNORECASE,
+    )
+    _ME_STORE_PATTERNS = re.compile(
+        r"(?:me|ae2?)\s+(?:store|insert|deposit)\s+(?:(\d+)x?\s+)?(?:minecraft:)?(\S+)|ME_STORE\s+(?:(\d+)x?\s+)?(?:minecraft:)?(\S+)",
+        re.IGNORECASE,
+    )
+    _ME_WITHDRAW_PATTERNS = re.compile(
+        r"(?:me|ae2?)\s+(?:withdraw|retrieve|extract|get)\s+(?:(\d+)x?\s+)?(?:minecraft:)?(\S+)|ME_WITHDRAW\s+(?:(\d+)x?\s+)?(?:minecraft:)?(\S+)",
+        re.IGNORECASE,
+    )
 
     DIRECTIVE_POLL_INTERVAL = 2.0
 
@@ -1128,6 +1140,34 @@ class BotRunner:
                     item_str = "minecraft:" + item_str
                 count = int(count_str) if count_str else 64
                 return {"type": "CONTAINER_WITHDRAW", "target": item_str, "count": count}
+
+        # Store all (dump entire inventory)
+        if self._STORE_ALL_PATTERNS.search(text):
+            return {"type": "STORE_ALL"}
+
+        # ME store (AE2 network)
+        m = self._ME_STORE_PATTERNS.search(text)
+        if m:
+            count_str = m.group(1) or m.group(3)
+            item_str = m.group(2) or m.group(4)
+            if item_str:
+                item_str = item_str.rstrip(",.")
+                if item_str.lower() != "all" and ":" not in item_str:
+                    item_str = "minecraft:" + item_str
+                count = int(count_str) if count_str else 64
+                return {"type": "ME_STORE", "target": item_str, "count": count}
+
+        # ME withdraw (AE2 network)
+        m = self._ME_WITHDRAW_PATTERNS.search(text)
+        if m:
+            count_str = m.group(1) or m.group(3)
+            item_str = m.group(2) or m.group(4)
+            if item_str:
+                item_str = item_str.rstrip(",.")
+                if ":" not in item_str:
+                    item_str = "minecraft:" + item_str
+                count = int(count_str) if count_str else 64
+                return {"type": "ME_WITHDRAW", "target": item_str, "count": count}
 
         # Combat mode
         combat_match = re.search(

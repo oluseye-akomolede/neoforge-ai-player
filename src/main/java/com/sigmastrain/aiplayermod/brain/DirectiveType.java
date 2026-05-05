@@ -21,5 +21,8 @@ public enum DirectiveType {
     TELEPORT,
     IDLE,
     PATROL,
-    WIDE_SEARCH
+    WIDE_SEARCH,
+    STORE_ALL,
+    ME_STORE,
+    ME_WITHDRAW
 }

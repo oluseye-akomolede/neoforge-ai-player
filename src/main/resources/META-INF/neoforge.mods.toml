@@ -26,3 +26,17 @@ the bot's actions: mining, combat, building, navigation, and chat.
     versionRange="${minecraft_version_range}"
     ordering="NONE"
     side="SERVER"
+
+[[dependencies.${mod_id}]]
+    modId="ae2"
+    type="optional"
+    versionRange="[19.0.0,)"
+    ordering="AFTER"
+    side="SERVER"
+
+[[dependencies.${mod_id}]]
+    modId="bettercombat"
+    type="optional"
+    versionRange="[1.9.0,)"
+    ordering="AFTER"
+    side="SERVER"

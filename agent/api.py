@@ -256,6 +256,10 @@ def cancel_directive(bot):
     return _delete(f"/bot/{bot}/directive")
 
 
+def me_status(bot):
+    return _get(f"/bot/{bot}/me_status")
+
+
 # ── Transmute registry ──
 
 def transmute_list():

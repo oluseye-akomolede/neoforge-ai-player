@@ -5,6 +5,7 @@ import com.sigmastrain.aiplayermod.bot.BotPlayer;
 import com.sigmastrain.aiplayermod.brain.BehaviorResult;
 import com.sigmastrain.aiplayermod.brain.Directive;
 import com.sigmastrain.aiplayermod.brain.ProgressReport;
+import com.sigmastrain.aiplayermod.compat.bettercombat.BetterCombatCompat;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.level.TicketType;
@@ -186,12 +187,22 @@ public class CombatBehavior implements Behavior {
                 EnchantmentHelper.doPostAttackEffectsWithItemSource(sl, le, damageSource, weapon);
             }
 
-            // Broadcast arm swing + hit animation to all online players
+            // Broadcast attack animation — use Better Combat if available, vanilla swing otherwise
             if (player.level() instanceof ServerLevel sl) {
-                var swingPacket = new ClientboundAnimatePacket(player, ClientboundAnimatePacket.SWING_MAIN_HAND);
+                boolean bcHandled = false;
+                try {
+                    bcHandled = BetterCombatCompat.broadcastAttackAnimation(player);
+                } catch (Exception e) {
+                    AIPlayerMod.LOGGER.debug("[CombatBehavior] BC compat exception, using vanilla: {}", e.getMessage());
+                }
+                if (!bcHandled) {
+                    var swingPacket = new ClientboundAnimatePacket(player, ClientboundAnimatePacket.SWING_MAIN_HAND);
+                    for (ServerPlayer online : sl.getServer().getPlayerList().getPlayers()) {
+                        online.connection.send(swingPacket);
+                    }
+                }
                 var hurtPacket = new ClientboundHurtAnimationPacket(le);
                 for (ServerPlayer online : sl.getServer().getPlayerList().getPlayers()) {
-                    online.connection.send(swingPacket);
                     online.connection.send(hurtPacket);
                 }
             }

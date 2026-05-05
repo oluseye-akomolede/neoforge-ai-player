@@ -373,6 +373,24 @@ def create_app() -> FastAPI:
         except Exception as e:
             return {"error": str(e)}
 
+    # ── REST: ME interfaces (AE2) ──
+
+    @app.get("/api/me-interfaces")
+    async def get_me_interfaces():
+        if not _api_module:
+            return {"ae2_available": False, "interfaces": []}
+        try:
+            bots = list(shared_state.snapshot()["bots"].keys())
+            if not bots:
+                return {"ae2_available": False, "interfaces": []}
+            result = await asyncio.to_thread(_api_module.me_status, bots[0])
+            available = result.get("ae2_available", False)
+            interface = result.get("nearest_interface")
+            interfaces = [interface] if interface else []
+            return {"ae2_available": available, "interfaces": interfaces}
+        except Exception as e:
+            return {"ae2_available": False, "interfaces": [], "error": str(e)}
+
     # ── REST: waypoints ──
 
     @app.get("/api/waypoints")

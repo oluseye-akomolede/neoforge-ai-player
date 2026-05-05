@@ -1,9 +1,9 @@
 import { useState, useMemo, useEffect, useRef, useCallback, Component } from 'react'
 import type { BotSnapshot, Waypoint, OnlinePlayer } from '../types'
-import type { ContainerInfo } from '../hooks'
+import type { ContainerInfo, MEInterface } from '../hooks'
 import {
   useWaypoints, useContainers, createWaypoint, deleteWaypoint,
-  sendGoto, sendTeleport, fetchContainerContents, usePlayers,
+  sendGoto, sendTeleport, fetchContainerContents, usePlayers, useMEInterfaces,
 } from '../hooks'
 
 const MAP_SIZE = 400
@@ -181,8 +181,10 @@ function WorldMapInner({
   const [rawWaypoints, refreshWaypoints] = useWaypoints()
   const rawContainers = useContainers()
   const onlinePlayers = usePlayers()
+  const meData = useMEInterfaces()
   const waypoints = asArray<Waypoint>(rawWaypoints)
   const containers = asArray<ContainerInfo>(rawContainers)
+  const meInterfaces = meData.interfaces
 
   const svgRef = useRef<SVGSVGElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
@@ -684,6 +686,33 @@ function WorldMapInner({
             )
           })}
 
+          {/* ME Interfaces (AE2) */}
+          {meInterfaces.map((me, idx) => {
+            const s = worldToScreen(me.x, me.z)
+            if (s.x < -10 || s.x > MAP_SIZE + 10 || s.y < -10 || s.y > MAP_SIZE + 10) return null
+            return (
+              <div
+                key={`me-${idx}`}
+                className="absolute pointer-events-auto cursor-pointer"
+                style={{ left: 0, top: 0, transform: `translate3d(${s.x - 7}px, ${s.y - 7}px, 0)` }}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  draggingRef.current = false
+                  const off = getWrapperOffset(e)
+                  setTooltip({
+                    type: 'container',
+                    data: { x: me.x, y: me.y, z: me.z, placed_by: 'AE2 ME Interface' },
+                    screenX: off.x, screenY: off.y,
+                  })
+                }}
+              >
+                <div className="w-3.5 h-3.5 rounded-sm border border-purple-400 flex items-center justify-center" style={{ background: '#2a0a3a' }}>
+                  <span className="text-[7px] font-bold text-purple-300">ME</span>
+                </div>
+              </div>
+            )
+          })}
+
           {/* Waypoints */}
           {dimWaypoints.map((wp) => {
             const s = worldToScreen(wp.x, wp.z)
@@ -938,9 +967,13 @@ function WorldMapInner({
           )}
           {selectedBot && (
             <div className="mt-2">
-              <div className="flex gap-1 mb-1">
+              <div className="flex gap-1 mb-1 flex-wrap">
                 <button onClick={() => sendGoto(selectedBot, containerPanel.container.x, containerPanel.container.y, containerPanel.container.z)}
                   className="text-[9px] px-2 py-0.5 rounded bg-mc-green text-black">Send {selectedBot}</button>
+                <button onClick={() => {
+                  fetch('/api/directive', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ bot: selectedBot, directive_type: 'STORE_ALL' }) })
+                }} className="text-[9px] px-2 py-0.5 rounded bg-purple-600 text-white">Store All</button>
                 <button onClick={() => setStorePickerOpen(!storePickerOpen)}
                   className={`text-[9px] px-2 py-0.5 rounded ${storePickerOpen ? 'bg-mc-gold text-black' : 'bg-yellow-600 text-black'}`}>
                   {storePickerOpen ? 'Cancel' : 'Store items...'}</button>

@@ -654,6 +654,25 @@ public class HttpApiServer {
                 });
                 sendJson(exchange, 200, future.join());
             }
+            case "me_status" -> {
+                var meFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    boolean available = com.sigmastrain.aiplayermod.compat.ModCompat.isAE2Loaded();
+                    var result = new LinkedHashMap<String, Object>();
+                    result.put("ae2_available", available);
+                    if (available) {
+                        var pos = com.sigmastrain.aiplayermod.compat.ae2.AE2Compat.findNearestMEInterfacePos(
+                                bot.getPlayer().serverLevel(), bot.getPlayer().blockPosition(), 16);
+                        if (pos != null) {
+                            result.put("nearest_interface", Map.of("x", pos.getX(), "y", pos.getY(), "z", pos.getZ()));
+                        } else {
+                            result.put("nearest_interface", null);
+                        }
+                    }
+                    meFuture.complete(result);
+                });
+                sendJson(exchange, 200, meFuture.join());
+            }
             default -> sendJson(exchange, 400, Map.of("error", "Unknown action: " + action));
         }
         } catch (Exception e) {

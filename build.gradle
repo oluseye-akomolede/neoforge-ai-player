@@ -50,6 +50,9 @@ configurations {
 
 dependencies {
     implementation "net.neoforged:neoforge:${neo_version}"
+    // AE2 and Better Combat are optional runtime dependencies.
+    // Integration uses NeoForge capabilities (IItemHandler) and reflection only —
+    // no compile-time dependency on their classes is needed.
 }
 
 tasks.withType(ProcessResources).configureEach {

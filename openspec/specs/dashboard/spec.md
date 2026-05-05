@@ -30,7 +30,7 @@ The dashboard MUST present:
 - AND the right panel MUST contain the directive panel and data browser
 
 ### Requirement: World Map
-The WorldMap component MUST render terrain from TerrainDB on a canvas with HTML overlays for bot markers, container icons, waypoint pins, and online player markers.
+The WorldMap component MUST render terrain from TerrainDB on a canvas with HTML overlays for bot markers, container icons, waypoint pins, online player markers, and ME Interface markers (when AE2 is available).
 
 #### Scenario: Map interaction
 - GIVEN the dashboard is connected
@@ -38,6 +38,12 @@ The WorldMap component MUST render terrain from TerrainDB on a canvas with HTML 
 - THEN bot positions update in real-time
 - AND containers show quick-store/withdraw buttons
 - AND waypoints are displayed as pins
+
+#### Scenario: ME Interface markers on map
+- GIVEN AE2 is loaded on the server
+- WHEN the dashboard polls /api/me-interfaces
+- THEN purple "ME" markers appear at each discovered ME Interface position
+- AND markers are filtered by the currently viewed dimension
 
 ### Requirement: Player Markers on Map
 Online human players MUST be displayed on the world map as magenta square markers, polled every 5 seconds via GET /api/players. Clicking a player marker shows a tooltip with name, health, gamemode, position, and actions (send bot, teleport bot).
@@ -114,6 +120,15 @@ Each directive type MUST display a description explaining what it does. Individu
 - THEN the description explains expanding-cube search with parallel bot support
 - AND the "Max search radius" dropdown shows labels like "512 blocks (default)"
 - AND the search target field shows a hint about fuzzy matching
+
+### Requirement: Store All Button
+The container panel on the world map MUST include a "Store All" button alongside existing container actions. Clicking it sends a STORE_ALL directive for the selected bot.
+
+#### Scenario: Store All from container panel
+- GIVEN a bot is selected and the container panel is visible on the map
+- WHEN the user clicks the "Store All" button
+- THEN a STORE_ALL directive is sent via POST /api/directive for the selected bot
+- AND the button provides visual feedback (color change) on success or error
 
 ### Requirement: Data Browser
 The data browser MUST provide tabbed views for:

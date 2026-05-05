@@ -256,4 +256,37 @@ DIRECTIVE_CATALOG = [
             {"name": "z", "type": "float", "label": "Z", "required": False},
         ],
     },
+    {
+        "type": "STORE_ALL",
+        "label": "Store All",
+        "description": "Dump all non-essential inventory items into nearby containers. Keeps weapon, armor, and food.",
+        "params": [
+            {"name": "extra", "type": "dict", "label": "Options", "required": False,
+             "fields": [
+                 {"name": "keep_food", "type": "string", "label": "Keep food",
+                  "options": ["true", "false"], "default": "true"},
+                 {"name": "keep_items", "type": "string", "label": "Keep items (comma-sep IDs)",
+                  "hint": "Extra items to keep, e.g. diamond_sword,golden_apple"},
+             ]},
+        ],
+    },
+    {
+        "type": "ME_STORE",
+        "label": "ME Store (AE2)",
+        "description": "Store items into AE2 ME network via nearby ME Interface. Requires AE2.",
+        "params": [
+            {"name": "target", "type": "string", "label": "Item (or 'all')", "required": True,
+             "options": ["all"]},
+            {"name": "count", "type": "int", "label": "Count", "required": False, "default": 64},
+        ],
+    },
+    {
+        "type": "ME_WITHDRAW",
+        "label": "ME Withdraw (AE2)",
+        "description": "Retrieve items from AE2 ME network via nearby ME Interface. Requires AE2.",
+        "params": [
+            {"name": "target", "type": "string", "label": "Item", "required": True},
+            {"name": "count", "type": "int", "label": "Count", "required": False, "default": 64},
+        ],
+    },
 ]

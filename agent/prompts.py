@@ -87,6 +87,11 @@ You can include 1-5 actions per response. They execute in order.
 ### Item transfer
 - send_item: Send items from your inventory to another bot, anywhere in the world (works across dimensions). Params: slot (your inventory slot), target (bot name), count (optional)
 
+### Bulk storage
+- store_all: Dump all non-essential items (keeps equipped weapon, armor, food) into nearby containers. Use after mining/gathering to free up inventory. No required params. Optional extra: keep_food (true/false), keep_items (comma-separated item IDs to keep)
+- me_store: Store items into AE2 ME network via nearby ME Interface (requires AE2). Params: target (item ID or "all"), count (optional)
+- me_withdraw: Retrieve items from AE2 ME network via nearby ME Interface (requires AE2). Params: target (item ID), count (optional, default 64)
+
 ### Waypoints
 - set_waypoint: Save your current location as a named waypoint. Params: name
 - delete_waypoint: Remove a saved waypoint. Params: name
