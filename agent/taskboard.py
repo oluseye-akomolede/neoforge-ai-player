@@ -287,12 +287,12 @@ class TaskBoard:
         return deleted
 
     def cleanup_stale(self, max_age_seconds=300):
-        """Release tasks that have been assigned/in_progress too long.
+        """Fail tasks that have been assigned/in_progress too long.
         Hits postgres and refreshes cache."""
         with self._conn.cursor() as cur:
             cur.execute("""
                 UPDATE task_board
-                SET status = 'pending', assigned_to = NULL, updated_at = NOW()
+                SET status = 'failed', result = 'Timed out (stale)', updated_at = NOW()
                 WHERE status IN ('assigned', 'in_progress')
                   AND updated_at < NOW() - INTERVAL '%s seconds'
             """, (max_age_seconds,))

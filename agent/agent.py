@@ -1882,6 +1882,7 @@ Respond with ONLY a JSON array. Example:
                         self._last_failure_context = ""
                         if self._plan_step_idx >= len(self._plan_steps):
                             self._store_plan_outcome(success=False, failure_reason=f"All tiers failed on: {current_step}")
+                            self._fail_task_board_task(f"All tiers exhausted on: {current_step[:80]}")
                             self._plan_steps = []
                             self._plan_step_idx = 0
                             self._plan_instruction = ""
@@ -1915,6 +1916,7 @@ Respond with ONLY a JSON array. Example:
                     self._last_failure_context = ""
                     if self._plan_step_idx >= len(self._plan_steps):
                         self._store_plan_outcome(success=False, failure_reason=f"L3 failed on: {current_step}")
+                        self._fail_task_board_task(f"L3 failed on: {current_step[:80]}")
                         self._plan_steps = []
                         self._plan_step_idx = 0
                         self._plan_instruction = ""
@@ -2498,13 +2500,23 @@ def run():
     print("=" * 50)
 
     transmute_sync_counter = 0
+    stale_cleanup_counter = 0
     try:
         while True:
             time.sleep(1)
             transmute_sync_counter += 1
+            stale_cleanup_counter += 1
             if _transmute and transmute_sync_counter >= 60:
                 transmute_sync_counter = 0
                 _transmute.sync_from_mod()
+            if _task_board and stale_cleanup_counter >= 60:
+                stale_cleanup_counter = 0
+                try:
+                    cleaned = _task_board.cleanup_stale(max_age_seconds=300)
+                    if cleaned:
+                        print(f"[taskboard] Cleaned {cleaned} stale task(s)")
+                except Exception:
+                    pass
     except KeyboardInterrupt:
         print("\n[agent] Shutting down all bots...")
         for runner in runners:
