@@ -163,11 +163,18 @@ def validate_primitive(primitive):
                 return primitive, False, f"GOTO {coord} not a number"
         return primitive, True, ""
 
+    if ptype == "TELEPORT":
+        extra = primitive.get("extra", {})
+        if not extra.get("dimension"):
+            return primitive, False, "TELEPORT missing dimension in extra"
+        return primitive, True, ""
+
     # Types that don't use standard item targets — pass through with basic checks
     _PASSTHROUGH_TYPES = {
         "SEND_ITEM", "BUILD", "FARM", "CONTAINER_PLACE", "CONTAINER_SEARCH",
         "CONTAINER_STORE", "CONTAINER_WITHDRAW",
         "CHANNEL", "COMBAT", "FOLLOW", "ENCHANT", "BREW",
+        "STORE_ALL", "ME_STORE", "ME_WITHDRAW", "WIDE_SEARCH",
     }
     if ptype in _PASSTHROUGH_TYPES:
         return primitive, True, ""

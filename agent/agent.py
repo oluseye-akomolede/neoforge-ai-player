@@ -820,8 +820,8 @@ class BotRunner:
         re.IGNORECASE,
     )
     _TELEPORT_PATTERNS = re.compile(
-        r"(?:teleport|tp|warp|dimension.?travel)\s+(?:to\s+)?(?:(?:the\s+)?(nether|end|overworld)|(\S+?))\s*"
-        r"(?:(?:at\s+)?(-?\d+)[,\s]+(-?\d+)[,\s]+(-?\d+))?",
+        r"(?:teleport|tp|warp|dimension.?travel)\s+(?:to\s+)?(?:(?:the\s+)?(nether|end|overworld)|(\S+))"
+        r"(?:\s+(?:at\s+)?(-?\d+)[,\s]+(-?\d+)[,\s]+(-?\d+))?",
         re.IGNORECASE,
     )
     _DIMENSION_ALIASES = {
