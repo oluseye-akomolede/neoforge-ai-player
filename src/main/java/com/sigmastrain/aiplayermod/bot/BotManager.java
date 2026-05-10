@@ -3,6 +3,7 @@ package com.sigmastrain.aiplayermod.bot;
 import com.sigmastrain.aiplayermod.AIPlayerMod;
 import net.minecraft.server.MinecraftServer;
 
+import java.nio.file.Path;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -15,6 +16,12 @@ public class BotManager {
     }
 
     public static void shutdown() {
+        Path saveDir = getSaveDir();
+        if (saveDir != null) {
+            for (BotPlayer bot : bots.values()) {
+                bot.saveState(saveDir);
+            }
+        }
         bots.values().forEach(BotPlayer::remove);
         bots.clear();
         server = null;
@@ -32,6 +39,10 @@ public class BotManager {
             throw new IllegalStateException("Server not started");
         }
         BotPlayer bot = BotPlayer.create(server, name);
+        Path saveDir = getSaveDir();
+        if (saveDir != null) {
+            bot.loadState(saveDir);
+        }
         bots.put(name, bot);
         AIPlayerMod.LOGGER.info("Spawned bot: {}", name);
         return bot;
@@ -55,5 +66,10 @@ public class BotManager {
 
     public static void tick() {
         bots.values().forEach(BotPlayer::tickActions);
+    }
+
+    private static Path getSaveDir() {
+        if (server == null) return null;
+        return server.getServerDirectory().resolve("config").resolve("aiplayermod-bots");
     }
 }

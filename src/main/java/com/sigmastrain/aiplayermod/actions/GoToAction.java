@@ -13,6 +13,7 @@ public class GoToAction implements BotAction {
     private Vec3 lastPos = null;
     private int totalTicks = 0;
     private double yVelocity = 0;
+    private boolean flying = false;
     private static final int MAX_TICKS = 600;
     private static final double WALK_SPEED = 0.2;
     private static final double SPRINT_SPEED = 0.4;
@@ -48,14 +49,20 @@ public class GoToAction implements BotAction {
         if (distance > TELEPORT_THRESHOLD) {
             Vec3 dir = target.subtract(currentPos).normalize();
             player.moveTo(targetX - dir.x * arriveDistance, targetY, targetZ - dir.z * arriveDistance);
+            flying = false;
             yVelocity = 0;
             return false;
         }
 
         double heightDiff = Math.abs(targetY - currentPos.y);
         if (heightDiff > FLY_THRESHOLD) {
+            flying = true;
+        }
+
+        if (flying) {
             Vec3 dir = target.subtract(currentPos).normalize();
-            double moveSpeed = Math.min(FLY_SPEED, distance);
+            double moveSpeed = Math.min(FLY_SPEED, distance - arriveDistance + 0.5);
+            if (moveSpeed < 0.1) moveSpeed = 0.1;
             player.moveTo(
                     currentPos.x + dir.x * moveSpeed,
                     currentPos.y + dir.y * moveSpeed,
@@ -81,14 +88,9 @@ public class GoToAction implements BotAction {
         if (lastPos != null && currentPos.distanceTo(lastPos) < 0.01) {
             ticksStuck++;
             if (ticksStuck > 20) {
-                Vec3 dir = target.subtract(currentPos).normalize();
-                player.moveTo(
-                        currentPos.x + dir.x * 2.0,
-                        currentPos.y + 1.0,
-                        currentPos.z + dir.z * 2.0
-                );
-                yVelocity = 0;
+                flying = true;
                 ticksStuck = 0;
+                return false;
             }
         } else {
             ticksStuck = 0;

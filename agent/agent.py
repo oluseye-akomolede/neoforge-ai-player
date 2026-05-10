@@ -95,6 +95,7 @@ class BotRunner:
         self._plan_step_idx = 0
         self._plan_instruction = ""
         self._l1_failed_steps = set()
+        self._all_failed_steps = set()
         self._l3_retries = 0
         self._l4_escalations = 0
         self._last_failure_context = ""
@@ -177,6 +178,7 @@ class BotRunner:
         self._plan_step_idx = 0
         self._plan_instruction = ""
         self._l1_failed_steps = set()
+        self._all_failed_steps = set()
         self._current_task_id = None
         self._awaiting_taskboard = False
         self._following_player = None
@@ -326,6 +328,58 @@ class BotRunner:
             # Determine if this came from another bot (not a real player)
             from_bot = sender in _all_runners
 
+            # Short-circuit: navigation and control commands → skip planner entirely.
+            # Check BEFORE cancel_directive to avoid a race where cancel (queued on
+            # server thread) fires after set_directive (immediate), wiping the new directive.
+            _follow_phrases = ["follow me", "follow us", "keep following"]
+            _goto_phrases = ["come to me", "come here", "get over here", "come over here",
+                             "get to me", "walk to me", "run to me", "tp to me",
+                             "to my location", "to me", "come to my"]
+            _stop_phrases = ["stop following", "go idle", "stand still", "stay here", "stay put",
+                             "halt", "wait here", "stop what you"]
+            _stop_exact = ["stop"]
+            is_follow = not from_bot and any(p in text_lower for p in _follow_phrases)
+            is_goto = not from_bot and any(p in text_lower for p in _goto_phrases)
+            is_stop = not from_bot and (
+                any(p in text_lower for p in _stop_phrases)
+                or any(text_lower.strip() == p for p in _stop_exact)
+            )
+            if is_follow or is_goto or is_stop:
+                if self._plan_steps and self._plan_step_idx < len(self._plan_steps):
+                    self._store_plan_outcome(success=False, failure_reason=f"Overridden by player: {text[:60]}")
+                self._plan_steps = []
+                self._plan_step_idx = 0
+                self._plan_instruction = ""
+                self._l1_failed_steps = set()
+                self._all_failed_steps = set()
+                if self._current_task_id and _task_board:
+                    try:
+                        _task_board.release(self._current_task_id)
+                    except Exception:
+                        pass
+                    self._current_task_id = None
+                self._awaiting_taskboard = False
+                self._consume_message(msg)
+                if is_follow or is_goto:
+                    # Don't call api.stop() here — applyDirective already
+                    # cleans up old state, and the async cancel races with
+                    # set_directive, wiping the new FOLLOW directive.
+                    api.set_directive(self.name, "FOLLOW", target=sender,
+                                     extra={"distance": "3.0"})
+                    self._following_player = sender
+                    api.chat(self.name, f"On my way, {sender}!")
+                    print(f"[{self.name}/nav] FOLLOW directive for {sender} (shortcut)")
+                else:
+                    self._following_player = None
+                    api.stop(self.name)
+                    try:
+                        api.cancel_directive(self.name)
+                    except Exception:
+                        pass
+                    api.chat(self.name, f"Standing by.")
+                    print(f"[{self.name}/nav] Direct stop (shortcut)")
+                return
+
             # Player commands always override current work
             if not from_bot:
                 if self._plan_steps and self._plan_step_idx < len(self._plan_steps):
@@ -334,6 +388,7 @@ class BotRunner:
                 self._plan_step_idx = 0
                 self._plan_instruction = ""
                 self._l1_failed_steps = set()
+                self._all_failed_steps = set()
                 self._following_player = None
                 if self._current_task_id and _task_board:
                     try:
@@ -373,35 +428,6 @@ class BotRunner:
                 except (ValueError, IndexError):
                     pass
                 text = text.split("for you:", 1)[1].strip()
-
-            # Short-circuit: navigation and control commands → skip planner entirely
-            _follow_phrases = ["follow me", "follow us", "keep following"]
-            _goto_phrases = ["come to me", "come here", "get over here", "come over here",
-                             "get to me", "walk to me", "run to me", "tp to me",
-                             "to my location", "to me", "come to my"]
-            _stop_phrases = ["stop following", "go idle", "stand still", "stay here", "stay put",
-                             "halt", "wait here", "stop what you"]
-            _stop_exact = ["stop"]
-            is_follow = not from_bot and any(p in text_lower for p in _follow_phrases)
-            is_goto = not from_bot and any(p in text_lower for p in _goto_phrases)
-            is_stop = not from_bot and (
-                any(p in text_lower for p in _stop_phrases)
-                or any(text_lower.strip() == p for p in _stop_exact)
-            )
-            if is_follow or is_goto or is_stop:
-                api.stop(self.name)
-                self._consume_message(msg)
-                if is_follow or is_goto:
-                    api.set_directive(self.name, "FOLLOW", target=sender,
-                                     extra={"distance": "3.0"})
-                    self._following_player = sender
-                    api.chat(self.name, f"On my way, {sender}!")
-                    print(f"[{self.name}/nav] FOLLOW directive for {sender} (shortcut)")
-                else:
-                    self._following_player = None
-                    api.chat(self.name, f"Standing by.")
-                    print(f"[{self.name}/nav] Direct stop (shortcut)")
-                return
 
             # Recall relevant memories to give the planner context
             memory_context = ""
@@ -914,13 +940,14 @@ class BotRunner:
             if raw_nospace in _transmute_tags:
                 return _transmute_tags[raw_nospace]
         all_items = _transmute.get_all()
+        input_bare = normalized.split(":", 1)[-1] if ":" in normalized else normalized
         for prefix in ("create:", "minecraft:", "mekanism:", "thermal:", "ae2:"):
-            candidate = prefix + normalized
+            candidate = prefix + input_bare
             if candidate in all_items:
                 return candidate
         for key in all_items:
             bare = key.split(":", 1)[-1] if ":" in key else key
-            if bare == normalized or bare == raw.lower().replace(" ", "_"):
+            if bare == input_bare or bare == normalized or bare == raw.lower().replace(" ", "_"):
                 return key
         return None
 
@@ -1327,6 +1354,10 @@ class BotRunner:
         while not self._stop_event.is_set():
             with self._lock:
                 if self._new_messages:
+                    reset_msgs = [m for m in self._new_messages if "RESET:" in m]
+                    if reset_msgs:
+                        print(f"[{self.name}/L1] Reset signal received, aborting directive")
+                        return {"success": False, "reason": "reset"}
                     new_player_msgs = [
                         m for m in self._new_messages
                         if ": " in m and m.split(": ", 1)[0] not in _all_runners
@@ -1698,6 +1729,11 @@ Respond with ONLY a JSON array. Example:
             inv = "unknown"
 
         failure_ctx = getattr(self, '_last_failure_context', '')
+        all_failed = getattr(self, '_all_failed_steps', set())
+        all_failed.add(failed_step)
+        if all_failed:
+            tried_str = "; ".join(list(all_failed)[-8:])
+            failure_ctx = f"{failure_ctx}\nALREADY TRIED (these approaches failed, do NOT repeat them): {tried_str}"
         prompt = self._build_l3_prompt(failed_step, inv, failure_context=failure_ctx)
 
         try:
@@ -1823,6 +1859,7 @@ Respond with ONLY a JSON array. Example:
                                     self._plan_step_idx = 0
                                     self._plan_instruction = ""
                                     self._l1_failed_steps = set()
+                                    self._all_failed_steps = set()
                                 else:
                                     new_step = self._plan_steps[self._plan_step_idx]
                                     print(f"[{self.name}/planner] L1 step done: \"{old_step}\" -> now: \"{new_step}\" ({self._plan_step_idx+1}/{len(self._plan_steps)})")
@@ -1869,7 +1906,6 @@ Respond with ONLY a JSON array. Example:
                             self._plan_steps = (l4_prims + remaining)[:12]
                             self._plan_step_idx = 0
                             self._l3_retries = 0
-                            self._l1_failed_steps = set()
                             self._last_failure_context = ""
                             api.system_chat(self.name, f"L4: {len(l4_prims)} new steps", "light_purple")
                             l4_resolved = True
@@ -1886,6 +1922,7 @@ Respond with ONLY a JSON array. Example:
                             self._plan_steps = []
                             self._plan_step_idx = 0
                             self._plan_instruction = ""
+                            self._all_failed_steps = set()
                     self._stop_event.wait(TICK_DELAY)
                     continue
 
@@ -1919,6 +1956,7 @@ Respond with ONLY a JSON array. Example:
                         self._fail_task_board_task(f"L3 failed on: {current_step[:80]}")
                         self._plan_steps = []
                         self._plan_step_idx = 0
+                        self._all_failed_steps = set()
                         self._plan_instruction = ""
 
                 self._stop_event.wait(TICK_DELAY)

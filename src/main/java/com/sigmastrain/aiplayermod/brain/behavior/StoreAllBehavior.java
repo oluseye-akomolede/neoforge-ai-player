@@ -19,6 +19,9 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.neoforged.neoforge.capabilities.Capabilities;
+import net.neoforged.neoforge.items.IItemHandler;
+import net.neoforged.neoforge.items.ItemHandlerHelper;
 
 import java.util.*;
 
@@ -130,15 +133,14 @@ public class StoreAllBehavior implements Behavior {
 
         while (candidateIdx < candidates.size()) {
             ContainerRegistry.ContainerEntry entry = candidates.get(candidateIdx);
-            BlockEntity be = level.getBlockEntity(entry.pos());
 
-            if (!(be instanceof Container container)) {
+            if (!isStorageBlock(level, entry.pos())) {
                 ContainerRegistry.get().remove(entry.id());
                 candidateIdx++;
                 continue;
             }
 
-            if (hasAnySpace(container)) {
+            if (hasAnySpace(level, entry.pos())) {
                 currentContainer = entry;
                 player.moveTo(entry.pos().getX() + 0.5, entry.pos().getY(), entry.pos().getZ() + 0.5);
                 phase = Phase.DEPOSITING;
@@ -153,10 +155,10 @@ public class StoreAllBehavior implements Behavior {
 
     private BehaviorResult tickDepositing(BotPlayer bot) {
         ServerPlayer player = bot.getPlayer();
+        ServerLevel level = player.serverLevel();
         BlockPos pos = currentContainer != null ? currentContainer.pos() : placePos;
-        BlockEntity be = player.serverLevel().getBlockEntity(pos);
 
-        if (!(be instanceof Container container)) {
+        if (!isStorageBlock(level, pos)) {
             candidateIdx++;
             phase = Phase.FIND_CONTAINER;
             return BehaviorResult.RUNNING;
@@ -166,40 +168,17 @@ public class StoreAllBehavior implements Behavior {
         int selectedSlot = player.getInventory().selected;
         int deposited = 0;
 
-        for (int invSlot = 0; invSlot < player.getInventory().getContainerSize(); invSlot++) {
-            ItemStack stack = player.getInventory().getItem(invSlot);
-            if (stack.isEmpty() || !stack.is(current.item)) continue;
-            if (isEssential(player, stack, invSlot, selectedSlot)) continue;
-
-            int toMove = stack.getCount();
-            ItemStack toPlace = stack.copy();
-            toPlace.setCount(toMove);
-
-            boolean placed = false;
-            for (int cs = 0; cs < container.getContainerSize(); cs++) {
-                ItemStack existing = container.getItem(cs);
-                if (existing.isEmpty()) {
-                    container.setItem(cs, toPlace);
-                    stack.shrink(toMove);
-                    placed = true;
-                    break;
-                } else if (ItemStack.isSameItemSameComponents(existing, toPlace)
-                        && existing.getCount() + toMove <= existing.getMaxStackSize()) {
-                    existing.grow(toMove);
-                    stack.shrink(toMove);
-                    placed = true;
-                    break;
-                }
-            }
-
-            if (placed) {
-                deposited += toMove;
-            } else {
-                break;
+        IItemHandler handler = level.getCapability(Capabilities.ItemHandler.BLOCK, pos, null);
+        if (handler != null) {
+            deposited = depositViaHandler(player, handler, current.item, selectedSlot);
+        } else {
+            BlockEntity be = level.getBlockEntity(pos);
+            if (be instanceof Container container) {
+                deposited = depositViaContainer(player, container, current.item, selectedSlot);
+                container.setChanged();
             }
         }
 
-        container.setChanged();
         totalStored += deposited;
 
         if (deposited > 0) {
@@ -208,6 +187,60 @@ public class StoreAllBehavior implements Behavior {
 
         phase = Phase.NEXT_ITEM;
         return BehaviorResult.RUNNING;
+    }
+
+    private int depositViaHandler(ServerPlayer player, IItemHandler handler, Item targetItem, int selectedSlot) {
+        int moved = 0;
+        for (int invSlot = 0; invSlot < player.getInventory().getContainerSize(); invSlot++) {
+            ItemStack stack = player.getInventory().getItem(invSlot);
+            if (stack.isEmpty() || !stack.is(targetItem)) continue;
+            if (isEssential(player, stack, invSlot, selectedSlot)) continue;
+
+            ItemStack toInsert = stack.copy();
+            ItemStack leftover = ItemHandlerHelper.insertItemStacked(handler, toInsert, false);
+            int accepted = toInsert.getCount() - leftover.getCount();
+            if (accepted > 0) {
+                stack.shrink(accepted);
+                moved += accepted;
+            }
+            if (!leftover.isEmpty()) break;
+        }
+        return moved;
+    }
+
+    private int depositViaContainer(ServerPlayer player, Container container, Item targetItem, int selectedSlot) {
+        int moved = 0;
+        for (int invSlot = 0; invSlot < player.getInventory().getContainerSize(); invSlot++) {
+            ItemStack stack = player.getInventory().getItem(invSlot);
+            if (stack.isEmpty() || !stack.is(targetItem)) continue;
+            if (isEssential(player, stack, invSlot, selectedSlot)) continue;
+
+            int remaining = stack.getCount();
+
+            for (int cs = 0; cs < container.getContainerSize() && remaining > 0; cs++) {
+                ItemStack existing = container.getItem(cs);
+                if (existing.isEmpty()) {
+                    int toPlace = Math.min(remaining, container.getMaxStackSize());
+                    ItemStack placed = stack.copy();
+                    placed.setCount(toPlace);
+                    container.setItem(cs, placed);
+                    stack.shrink(toPlace);
+                    remaining -= toPlace;
+                    moved += toPlace;
+                } else if (ItemStack.isSameItemSameComponents(existing, stack)) {
+                    int canFit = Math.min(remaining, existing.getMaxStackSize() - existing.getCount());
+                    if (canFit > 0) {
+                        existing.grow(canFit);
+                        stack.shrink(canFit);
+                        remaining -= canFit;
+                        moved += canFit;
+                    }
+                }
+            }
+
+            if (remaining > 0) break;
+        }
+        return moved;
     }
 
     private BehaviorResult tickNextItem(BotPlayer bot) {
@@ -289,11 +322,30 @@ public class StoreAllBehavior implements Behavior {
         return false;
     }
 
-    private boolean hasAnySpace(Container container) {
-        for (int i = 0; i < container.getContainerSize(); i++) {
-            ItemStack stack = container.getItem(i);
-            if (stack.isEmpty()) return true;
-            if (stack.getCount() < stack.getMaxStackSize()) return true;
+    private boolean isStorageBlock(ServerLevel level, BlockPos pos) {
+        IItemHandler handler = level.getCapability(Capabilities.ItemHandler.BLOCK, pos, null);
+        if (handler != null) return true;
+        BlockEntity be = level.getBlockEntity(pos);
+        return be instanceof Container;
+    }
+
+    private boolean hasAnySpace(ServerLevel level, BlockPos pos) {
+        IItemHandler handler = level.getCapability(Capabilities.ItemHandler.BLOCK, pos, null);
+        if (handler != null) {
+            for (int i = 0; i < handler.getSlots(); i++) {
+                ItemStack stack = handler.getStackInSlot(i);
+                if (stack.isEmpty()) return true;
+                if (stack.getCount() < handler.getSlotLimit(i)) return true;
+            }
+            return false;
+        }
+        BlockEntity be = level.getBlockEntity(pos);
+        if (be instanceof Container container) {
+            for (int i = 0; i < container.getContainerSize(); i++) {
+                ItemStack stack = container.getItem(i);
+                if (stack.isEmpty()) return true;
+                if (stack.getCount() < stack.getMaxStackSize()) return true;
+            }
         }
         return false;
     }

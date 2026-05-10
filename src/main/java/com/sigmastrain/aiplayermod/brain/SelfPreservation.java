@@ -29,7 +29,7 @@ public class SelfPreservation {
         }
         fleeing = false;
 
-        if (shouldEat(player)) {
+        if (shouldEat(player) && hasFood(player)) {
             eat(bot, player);
             return true;
         }
@@ -83,6 +83,16 @@ public class SelfPreservation {
     private boolean shouldEat(ServerPlayer player) {
         return player.getFoodData().getFoodLevel() < HUNGER_THRESHOLD
                 || player.getHealth() < player.getMaxHealth() - 2;
+    }
+
+    private boolean hasFood(ServerPlayer player) {
+        for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+            ItemStack stack = player.getInventory().getItem(i);
+            if (!stack.isEmpty() && stack.getItem().getFoodProperties(stack, player) != null) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void eat(BotPlayer bot, ServerPlayer player) {

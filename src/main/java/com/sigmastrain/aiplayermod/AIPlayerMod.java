@@ -17,10 +17,13 @@ import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
 import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
-import com.sigmastrain.aiplayermod.bot.BotInventoryMenu;
+import com.sigmastrain.aiplayermod.bot.BotEquipmentMenu;
+import com.sigmastrain.aiplayermod.bot.BotSelectionMenu;
 import com.sigmastrain.aiplayermod.bot.BotPlayer;
 import net.minecraft.world.SimpleMenuProvider;
 import net.minecraft.network.chat.Component;
+import java.util.ArrayList;
+import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -42,6 +45,7 @@ public class AIPlayerMod {
 
     public AIPlayerMod(IEventBus modEventBus, ModContainer modContainer) {
         NeoForge.EVENT_BUS.register(this);
+        ModMenuTypes.MENUS.register(modEventBus);
         LOGGER.info("AI Player Mod initializing");
     }
 
@@ -113,16 +117,27 @@ public class AIPlayerMod {
     public void onRightClickItem(PlayerInteractEvent.RightClickItem event) {
         if (!(event.getEntity() instanceof net.minecraft.server.level.ServerPlayer clicker)) return;
         if (clicker.isShiftKeyDown()) {
+            List<BotPlayer> visible = new ArrayList<>();
             for (var bot : BotManager.getAllBots().values()) {
                 if (bot.isLookingAt(clicker, 5.0)) {
-                    String botName = bot.getPlayer().getName().getString();
-                    clicker.openMenu(new SimpleMenuProvider(
-                            (id, inv, p) -> new BotInventoryMenu(id, inv, bot.getPlayer().getInventory()),
-                            Component.literal(botName + "'s Inventory")
-                    ));
-                    event.setCanceled(true);
-                    return;
+                    visible.add(bot);
                 }
+            }
+            if (visible.size() == 1) {
+                BotPlayer bot = visible.get(0);
+                String botName = bot.getPlayer().getName().getString();
+                int entityId = bot.getPlayer().getId();
+                clicker.openMenu(new SimpleMenuProvider(
+                        (id, inv, p) -> new BotEquipmentMenu(id, inv, bot.getPlayer().getInventory(), entityId),
+                        Component.literal(botName + "'s Inventory")
+                ), buf -> buf.writeInt(entityId));
+                event.setCanceled(true);
+            } else if (visible.size() > 1) {
+                clicker.openMenu(new SimpleMenuProvider(
+                        (id, inv, p) -> new BotSelectionMenu(id, inv, visible),
+                        Component.literal("Select Bot (" + visible.size() + " nearby)")
+                ));
+                event.setCanceled(true);
             }
         }
     }

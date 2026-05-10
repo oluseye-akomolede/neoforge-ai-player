@@ -6,14 +6,20 @@ import com.sigmastrain.aiplayermod.brain.BotBrain;
 import com.sigmastrain.aiplayermod.shop.EnchantmentRegistry;
 import com.sigmastrain.aiplayermod.shop.TransmuteRegistry;
 import com.mojang.authlib.GameProfile;
+import com.google.gson.*;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.HolderLookup;
 import net.minecraft.ChatFormatting;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.TagParser;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.network.chat.Style;
 import net.minecraft.network.protocol.game.*;
 import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.network.CommonListenerCookie;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ClientInformation;
@@ -30,11 +36,14 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.registries.Registries;
 
 import net.minecraft.world.SimpleContainer;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 
+import java.io.*;
+import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
@@ -78,17 +87,21 @@ public class BotPlayer {
 
         new BotPacketListener(server, connection, botPlayer, cookie);
 
-        // Do NOT add the bot to the level or PlayerList — any method of registering
-        // a ServerPlayer entity with the level causes it to appear in level.players(),
-        // which FTB Chunks iterates on real player login (NPE on missing team data).
-        // Instead, handle all client visibility via manual packet sending.
+        // Add bot to PlayerList.playersByUUID (but NOT the players list) so mods
+        // like FTB Chunks can find the player via getPlayer(uuid) without the bot
+        // appearing in getPlayers() iterations or triggering login events.
+        addToPlayerLookup(server, botPlayer);
+
         BotPlayer bot = new BotPlayer(botPlayer);
         bot.broadcastSpawn();
 
         // Grant starting XP pool (10,000 points ≈ 53 levels)
         botPlayer.giveExperiencePoints(10000);
 
-        server.execute(() -> PmmoCompat.setupBotSkills(botPlayer));
+        server.execute(() -> {
+            PmmoCompat.setupBotSkills(botPlayer);
+            com.sigmastrain.aiplayermod.compat.FtbCompat.registerBotPlayer(botPlayer);
+        });
 
         return bot;
     }
@@ -193,9 +206,166 @@ public class BotPlayer {
         if (!alive) return;
         alive = false;
         actionQueue.clear();
+        removeFromPlayerLookup(player.getServer(), player);
         PlayerList playerList = player.getServer().getPlayerList();
         playerList.broadcastAll(new ClientboundRemoveEntitiesPacket(player.getId()));
         playerList.broadcastAll(new ClientboundPlayerInfoRemovePacket(List.of(player.getUUID())));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void addToPlayerLookup(MinecraftServer server, ServerPlayer botPlayer) {
+        try {
+            PlayerList pl = server.getPlayerList();
+            java.lang.reflect.Field field = PlayerList.class.getDeclaredField("playersByUUID");
+            field.setAccessible(true);
+            Map<UUID, ServerPlayer> map = (Map<UUID, ServerPlayer>) field.get(pl);
+            map.put(botPlayer.getUUID(), botPlayer);
+            AIPlayerMod.LOGGER.info("Added bot {} to PlayerList.playersByUUID", botPlayer.getName().getString());
+        } catch (Exception e) {
+            AIPlayerMod.LOGGER.warn("Could not add bot to PlayerList.playersByUUID: {}", e.getMessage());
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void removeFromPlayerLookup(MinecraftServer server, ServerPlayer botPlayer) {
+        try {
+            PlayerList pl = server.getPlayerList();
+            java.lang.reflect.Field field = PlayerList.class.getDeclaredField("playersByUUID");
+            field.setAccessible(true);
+            Map<UUID, ServerPlayer> map = (Map<UUID, ServerPlayer>) field.get(pl);
+            map.remove(botPlayer.getUUID());
+        } catch (Exception e) {
+            AIPlayerMod.LOGGER.debug("Could not remove bot from PlayerList.playersByUUID: {}", e.getMessage());
+        }
+    }
+
+    // ── Persistence ──
+
+    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+
+    public void saveState(Path dir) {
+        try {
+            Files.createDirectories(dir);
+            String name = player.getName().getString();
+            HolderLookup.Provider registries = player.getServer().registryAccess();
+
+            JsonObject root = new JsonObject();
+            root.addProperty("name", name);
+            root.addProperty("uuid", player.getUUID().toString());
+
+            String dimension = player.serverLevel().dimension().location().toString();
+            root.addProperty("dimension", dimension);
+            root.addProperty("x", player.getX());
+            root.addProperty("y", player.getY());
+            root.addProperty("z", player.getZ());
+            root.addProperty("yRot", player.getYRot());
+            root.addProperty("xRot", player.getXRot());
+            root.addProperty("xp", player.totalExperience);
+            root.addProperty("health", player.getHealth());
+
+            JsonArray inventory = new JsonArray();
+            for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+                ItemStack stack = player.getInventory().getItem(i);
+                if (stack.isEmpty()) continue;
+                CompoundTag tag = (CompoundTag) stack.save(registries);
+                JsonObject entry = new JsonObject();
+                entry.addProperty("slot", i);
+                entry.addProperty("nbt", tag.toString());
+                inventory.add(entry);
+            }
+            root.add("inventory", inventory);
+
+            JsonArray extended = new JsonArray();
+            for (int i = 0; i < extendedInventory.getContainerSize(); i++) {
+                ItemStack stack = extendedInventory.getItem(i);
+                if (stack.isEmpty()) continue;
+                CompoundTag tag = (CompoundTag) stack.save(registries);
+                JsonObject entry = new JsonObject();
+                entry.addProperty("slot", i);
+                entry.addProperty("nbt", tag.toString());
+                extended.add(entry);
+            }
+            root.add("extendedInventory", extended);
+
+            Path file = dir.resolve(name + ".json");
+            try (Writer w = Files.newBufferedWriter(file)) {
+                GSON.toJson(root, w);
+            }
+            AIPlayerMod.LOGGER.info("Saved bot state: {} ({} items)", name, inventory.size() + extended.size());
+        } catch (Exception e) {
+            AIPlayerMod.LOGGER.error("Failed to save bot state for {}", player.getName().getString(), e);
+        }
+    }
+
+    public void loadState(Path dir) {
+        String name = player.getName().getString();
+        Path file = dir.resolve(name + ".json");
+        if (!Files.exists(file)) return;
+
+        try (Reader r = Files.newBufferedReader(file)) {
+            JsonObject root = JsonParser.parseReader(r).getAsJsonObject();
+            HolderLookup.Provider registries = player.getServer().registryAccess();
+
+            if (root.has("dimension")) {
+                String dimStr = root.get("dimension").getAsString();
+                ResourceKey<Level> dimKey = ResourceKey.create(Registries.DIMENSION, ResourceLocation.parse(dimStr));
+                ServerLevel targetLevel = player.getServer().getLevel(dimKey);
+                if (targetLevel != null) {
+                    try {
+                        var levelField = net.minecraft.world.entity.Entity.class.getDeclaredField("level");
+                        levelField.setAccessible(true);
+                        levelField.set(player, targetLevel);
+                    } catch (Exception e) {
+                        AIPlayerMod.LOGGER.warn("Failed to set bot dimension on load", e);
+                    }
+                }
+            }
+
+            double x = root.get("x").getAsDouble();
+            double y = root.get("y").getAsDouble();
+            double z = root.get("z").getAsDouble();
+            float yRot = root.has("yRot") ? root.get("yRot").getAsFloat() : 0;
+            float xRot = root.has("xRot") ? root.get("xRot").getAsFloat() : 0;
+            player.moveTo(x, y, z, yRot, xRot);
+
+            if (root.has("xp")) {
+                player.giveExperiencePoints(root.get("xp").getAsInt() - player.totalExperience);
+            }
+            if (root.has("health")) {
+                player.setHealth(root.get("health").getAsFloat());
+            }
+
+            player.getInventory().clearContent();
+            if (root.has("inventory")) {
+                for (JsonElement el : root.getAsJsonArray("inventory")) {
+                    JsonObject entry = el.getAsJsonObject();
+                    int slot = entry.get("slot").getAsInt();
+                    CompoundTag tag = TagParser.parseTag(entry.get("nbt").getAsString());
+                    ItemStack stack = ItemStack.parse(registries, tag).orElse(ItemStack.EMPTY);
+                    if (!stack.isEmpty()) {
+                        player.getInventory().setItem(slot, stack);
+                    }
+                }
+            }
+
+            if (root.has("extendedInventory")) {
+                extendedInventory.clearContent();
+                for (JsonElement el : root.getAsJsonArray("extendedInventory")) {
+                    JsonObject entry = el.getAsJsonObject();
+                    int slot = entry.get("slot").getAsInt();
+                    CompoundTag tag = TagParser.parseTag(entry.get("nbt").getAsString());
+                    ItemStack stack = ItemStack.parse(registries, tag).orElse(ItemStack.EMPTY);
+                    if (!stack.isEmpty()) {
+                        extendedInventory.setItem(slot, stack);
+                    }
+                }
+            }
+
+            AIPlayerMod.LOGGER.info("Loaded bot state: {} at ({}, {}, {}) in {}", name, (int) x, (int) y, (int) z,
+                    root.has("dimension") ? root.get("dimension").getAsString() : "overworld");
+        } catch (Exception e) {
+            AIPlayerMod.LOGGER.error("Failed to load bot state for {}", name, e);
+        }
     }
 
     public boolean isAlive() {
@@ -221,15 +391,8 @@ public class BotPlayer {
             if (!brain.hasActiveDirective()) {
                 actionQueue.tick();
             }
-        } catch (UnsupportedOperationException e) {
-            if (e.getMessage() != null && e.getMessage().contains("may not be sent to the client")) {
-                AIPlayerMod.LOGGER.debug("Suppressed mod packet error for bot {}: {}", player.getName().getString(), e.getMessage());
-            } else {
-                AIPlayerMod.LOGGER.error("Action error for bot {}: {}", player.getName().getString(), e.getMessage());
-            }
         } catch (Exception e) {
-            AIPlayerMod.LOGGER.error("Action error for bot {}: {}", player.getName().getString(), e.getMessage(), e);
-            actionQueue.clear();
+            AIPlayerMod.LOGGER.error("Action error for bot {}: {} ({})", player.getName().getString(), e.getMessage(), e.getClass().getSimpleName(), e);
         }
         scanInventoryForTransmutables();
         tickCounter++;
@@ -364,6 +527,7 @@ public class BotPlayer {
         float pitch = (float) (Math.atan2(-dy, dist) * (180.0 / Math.PI));
         player.setYRot(yaw);
         player.setXRot(pitch);
+        player.setYHeadRot(yaw);
     }
 
     // ── World observation ──

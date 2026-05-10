@@ -38,7 +38,8 @@ public class BotBrain {
         activeDirective = null;
         lastDirective = null;
         activeBehavior = idleBehavior;
-        pendingDirective = null;
+        // Don't null pendingDirective — if a new directive was set between the
+        // cancel being queued and executing, it should still be applied next tick.
     }
 
     public boolean hasActiveDirective() {

@@ -13,6 +13,9 @@ Exposes an HTTP REST API for LLM integration (Ollama, etc.) to control
 the bot's actions: mining, combat, building, navigation, and chat.
 '''
 
+[[mixins]]
+config = "aiplayermod.mixins.json"
+
 [[dependencies.${mod_id}]]
     modId="neoforge"
     type="required"

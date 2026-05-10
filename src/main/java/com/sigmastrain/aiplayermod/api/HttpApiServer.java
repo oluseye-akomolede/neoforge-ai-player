@@ -456,7 +456,10 @@ public class HttpApiServer {
                         "hostile_only", hostileOnly, "target", target != null ? target : "any hostile"));
             }
             case "stop" -> {
-                BotManager.getServer().execute(() -> bot.getActionQueue().clear());
+                BotManager.getServer().execute(() -> {
+                    bot.getBrain().cancelDirective();
+                    bot.getActionQueue().clear();
+                });
                 sendJson(exchange, 200, Map.of("status", "stopped"));
             }
             case "anvil" -> {

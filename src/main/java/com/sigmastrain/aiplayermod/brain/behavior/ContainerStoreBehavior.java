@@ -18,6 +18,9 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.neoforged.neoforge.capabilities.Capabilities;
+import net.neoforged.neoforge.items.IItemHandler;
+import net.neoforged.neoforge.items.ItemHandlerHelper;
 
 import java.util.*;
 
@@ -84,8 +87,7 @@ public class ContainerStoreBehavior implements Behavior {
 
         if (directive.hasLocation()) {
             BlockPos targetPos = new BlockPos((int) directive.getX(), (int) directive.getY(), (int) directive.getZ());
-            var be = player.serverLevel().getBlockEntity(targetPos);
-            if (be instanceof Container) {
+            if (isStorageBlock(player.serverLevel(), targetPos)) {
                 currentTarget = ContainerRegistry.get().getByPos(targetPos);
                 if (currentTarget == null) {
                     int id = ContainerRegistry.get().register(targetPos, dimension, player.getName().getString());
@@ -125,16 +127,15 @@ public class ContainerStoreBehavior implements Behavior {
 
         while (candidateIdx < candidates.size()) {
             ContainerRegistry.ContainerEntry entry = candidates.get(candidateIdx);
-            BlockEntity be = level.getBlockEntity(entry.pos());
 
-            if (!(be instanceof Container container)) {
+            if (!isStorageBlock(level, entry.pos())) {
                 ContainerRegistry.get().remove(entry.id());
                 progress.logEvent("Container #" + entry.id() + " missing — removed");
                 candidateIdx++;
                 continue;
             }
 
-            if (hasSpace(container)) {
+            if (hasSpace(level, entry.pos())) {
                 currentTarget = entry;
                 phase = Phase.PATHING;
                 return BehaviorResult.RUNNING;
@@ -160,10 +161,10 @@ public class ContainerStoreBehavior implements Behavior {
 
     private BehaviorResult tickDepositing(BotPlayer bot) {
         ServerPlayer player = bot.getPlayer();
+        ServerLevel level = player.serverLevel();
         BlockPos pos = phase == Phase.PLACE_DEPOSIT ? placePos : currentTarget.pos();
-        BlockEntity be = player.serverLevel().getBlockEntity(pos);
 
-        if (!(be instanceof Container container)) {
+        if (!isStorageBlock(level, pos)) {
             if (phase == Phase.PLACE_DEPOSIT) {
                 progress.setFailureReason("Placed container disappeared");
                 return BehaviorResult.FAILED;
@@ -175,6 +176,66 @@ public class ContainerStoreBehavior implements Behavior {
         }
 
         int remaining = requested - deposited;
+
+        IItemHandler handler = level.getCapability(Capabilities.ItemHandler.BLOCK, pos, null);
+        if (handler != null) {
+            deposited += depositViaHandler(player, handler, remaining);
+        } else {
+            BlockEntity be = level.getBlockEntity(pos);
+            if (be instanceof Container container) {
+                deposited += depositViaContainer(player, container, remaining);
+                container.setChanged();
+            }
+        }
+
+        if (deposited >= requested) {
+            progress.increment("items_stored", deposited);
+            progress.logEvent("Stored " + deposited + "x " + itemId);
+            bot.systemChat("Stored " + deposited + "x " + itemId, "green");
+            return BehaviorResult.SUCCESS;
+        }
+
+        if (phase == Phase.PLACE_DEPOSIT || candidateIdx >= candidates.size() - 1) {
+            if (deposited > 0) {
+                progress.increment("items_stored", deposited);
+                progress.logEvent("Stored " + deposited + "/" + requested + "x " + itemId + " (containers full)");
+                bot.systemChat("Stored " + deposited + "/" + requested + "x " + itemId, "yellow");
+                return BehaviorResult.SUCCESS;
+            }
+            enterPlacing(bot);
+            return BehaviorResult.RUNNING;
+        }
+
+        candidateIdx++;
+        phase = Phase.FIND_CONTAINER;
+        return BehaviorResult.RUNNING;
+    }
+
+    private int depositViaHandler(ServerPlayer player, IItemHandler handler, int remaining) {
+        int moved = 0;
+        for (int invSlot = 0; invSlot < player.getInventory().getContainerSize() && remaining > 0; invSlot++) {
+            ItemStack stack = player.getInventory().getItem(invSlot);
+            if (stack.isEmpty() || !stack.is(item)) continue;
+
+            int toMove = Math.min(remaining, stack.getCount());
+            ItemStack toInsert = stack.copy();
+            toInsert.setCount(toMove);
+
+            ItemStack leftover = ItemHandlerHelper.insertItemStacked(handler, toInsert, false);
+            int accepted = toMove - leftover.getCount();
+            if (accepted > 0) {
+                stack.shrink(accepted);
+                moved += accepted;
+                remaining -= accepted;
+            } else {
+                break;
+            }
+        }
+        return moved;
+    }
+
+    private int depositViaContainer(ServerPlayer player, Container container, int remaining) {
+        int moved = 0;
         for (int invSlot = 0; invSlot < player.getInventory().getContainerSize() && remaining > 0; invSlot++) {
             ItemStack stack = player.getInventory().getItem(invSlot);
             if (stack.isEmpty() || !stack.is(item)) continue;
@@ -201,36 +262,13 @@ public class ContainerStoreBehavior implements Behavior {
             }
 
             if (placed) {
-                deposited += toMove;
+                moved += toMove;
                 remaining -= toMove;
             } else {
                 break;
             }
         }
-
-        container.setChanged();
-
-        if (deposited >= requested) {
-            progress.increment("items_stored", deposited);
-            progress.logEvent("Stored " + deposited + "x " + itemId);
-            bot.systemChat("Stored " + deposited + "x " + itemId, "green");
-            return BehaviorResult.SUCCESS;
-        }
-
-        if (phase == Phase.PLACE_DEPOSIT || candidateIdx >= candidates.size() - 1) {
-            if (deposited > 0) {
-                progress.increment("items_stored", deposited);
-                progress.logEvent("Stored " + deposited + "/" + requested + "x " + itemId + " (containers full)");
-                bot.systemChat("Stored " + deposited + "/" + requested + "x " + itemId, "yellow");
-                return BehaviorResult.SUCCESS;
-            }
-            enterPlacing(bot);
-            return BehaviorResult.RUNNING;
-        }
-
-        candidateIdx++;
-        phase = Phase.FIND_CONTAINER;
-        return BehaviorResult.RUNNING;
+        return moved;
     }
 
     private BehaviorResult tickPlacing(BotPlayer bot) {
@@ -279,11 +317,30 @@ public class ContainerStoreBehavior implements Behavior {
         bot.systemChat("No container with space — conjuring one", "light_purple");
     }
 
-    private boolean hasSpace(Container container) {
-        for (int i = 0; i < container.getContainerSize(); i++) {
-            ItemStack stack = container.getItem(i);
-            if (stack.isEmpty()) return true;
-            if (stack.is(item) && stack.getCount() < stack.getMaxStackSize()) return true;
+    private boolean isStorageBlock(ServerLevel level, BlockPos pos) {
+        IItemHandler handler = level.getCapability(Capabilities.ItemHandler.BLOCK, pos, null);
+        if (handler != null) return true;
+        BlockEntity be = level.getBlockEntity(pos);
+        return be instanceof Container;
+    }
+
+    private boolean hasSpace(ServerLevel level, BlockPos pos) {
+        IItemHandler handler = level.getCapability(Capabilities.ItemHandler.BLOCK, pos, null);
+        if (handler != null) {
+            for (int i = 0; i < handler.getSlots(); i++) {
+                ItemStack stack = handler.getStackInSlot(i);
+                if (stack.isEmpty()) return true;
+                if (stack.is(item) && stack.getCount() < handler.getSlotLimit(i)) return true;
+            }
+            return false;
+        }
+        BlockEntity be = level.getBlockEntity(pos);
+        if (be instanceof Container container) {
+            for (int i = 0; i < container.getContainerSize(); i++) {
+                ItemStack stack = container.getItem(i);
+                if (stack.isEmpty()) return true;
+                if (stack.is(item) && stack.getCount() < stack.getMaxStackSize()) return true;
+            }
         }
         return false;
     }

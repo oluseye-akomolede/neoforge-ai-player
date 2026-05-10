@@ -18,6 +18,7 @@ public class GotoBehavior implements Behavior {
     private int ticksStuck;
     private Vec3 lastPos;
     private int totalTicks;
+    private boolean flying;
 
     private static final int MAX_TICKS = 600;
     private static final double SPRINT_SPEED = 0.4;
@@ -34,12 +35,12 @@ public class GotoBehavior implements Behavior {
         this.targetY = directive.getY();
         this.targetZ = directive.getZ();
 
-        // Adjust Y upward if target is inside a solid block
         Level level = bot.getPlayer().level();
         BlockPos targetBlock = BlockPos.containing(targetX, targetY, targetZ);
-        while (targetY < level.getMaxBuildHeight() - 1
-                && !level.getBlockState(targetBlock).isAir()
-                && !level.getBlockState(targetBlock).canBeReplaced()) {
+        while (targetY < level.getMaxBuildHeight() - 2) {
+            boolean feetClear = level.getBlockState(targetBlock).isAir() || level.getBlockState(targetBlock).canBeReplaced();
+            boolean headClear = level.getBlockState(targetBlock.above()).isAir() || level.getBlockState(targetBlock.above()).canBeReplaced();
+            if (feetClear && headClear) break;
             targetY += 1.0;
             targetBlock = targetBlock.above();
         }
@@ -51,6 +52,7 @@ public class GotoBehavior implements Behavior {
         this.ticksStuck = 0;
         this.lastPos = null;
         this.totalTicks = 0;
+        this.flying = false;
     }
 
     @Override
@@ -73,13 +75,21 @@ public class GotoBehavior implements Behavior {
         if (distance > TELEPORT_THRESHOLD) {
             Vec3 dir = target.subtract(currentPos).normalize();
             player.moveTo(targetX - dir.x * arriveDistance, targetY, targetZ - dir.z * arriveDistance);
+            flying = false;
+            yVelocity = 0;
             return BehaviorResult.RUNNING;
         }
 
         double heightDiff = Math.abs(targetY - currentPos.y);
+
         if (heightDiff > 4.0) {
+            flying = true;
+        }
+
+        if (flying) {
             Vec3 dir = target.subtract(currentPos).normalize();
-            double moveSpeed = Math.min(FLY_SPEED, distance);
+            double moveSpeed = Math.min(FLY_SPEED, distance - arriveDistance + 0.5);
+            if (moveSpeed < 0.1) moveSpeed = 0.1;
             player.moveTo(
                     currentPos.x + dir.x * moveSpeed,
                     currentPos.y + dir.y * moveSpeed,
@@ -103,13 +113,9 @@ public class GotoBehavior implements Behavior {
         if (lastPos != null && currentPos.distanceTo(lastPos) < 0.01) {
             ticksStuck++;
             if (ticksStuck > 20) {
-                player.moveTo(
-                        currentPos.x + direction.x * 2.0,
-                        currentPos.y + 1.0,
-                        currentPos.z + direction.z * 2.0
-                );
-                yVelocity = 0;
+                flying = true;
                 ticksStuck = 0;
+                return BehaviorResult.RUNNING;
             }
         } else {
             ticksStuck = 0;

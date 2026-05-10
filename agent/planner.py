@@ -32,7 +32,7 @@ IF the player gives a vague or high-level goal (e.g. "get me iron gear" or "set 
 - For combat vs specific mob: "Attack zombie 120s" or "Kill creeper 60s"
 - IMPORTANT: If prior steps involved mining or digging underground, add "Mine upward to surface" BEFORE any combat or hunting step — mobs spawn on the surface at night, not in lit caves
 - For following: "Follow <player_name>" or "goto_player <player_name>" (replace <player_name> with the actual player name from the instruction)
-- For channeling: "Channel modid:item_name" or "Channel 3x modid:item_name" — only for items listed in the transmute registry below
+- For channeling: "Channel cataclysm:void_forge" or "Channel 3x thermal:machine_frame" — copy the EXACT item ID from the transmute registry below (do NOT substitute "modid", use the real namespace)
 - For sending items: "Send 10 minecraft:iron_ingot to Scout" (transfers items between bots instantly)
 - For building: "Build shelter" or "Build wall with minecraft:stone_bricks" (available: shelter, wall, tower, platform)
 - For farming: "Farm wheat" or "Farm carrot with minecraft:stone_bricks" (available crops: wheat, carrot, potato, beetroot) — builds a bordered farm, plants, grows with XP, and harvests

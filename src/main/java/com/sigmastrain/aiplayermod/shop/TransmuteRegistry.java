@@ -192,6 +192,7 @@ public class TransmuteRegistry {
             case UNCOMMON -> 5;
             case RARE -> 10;
             case EPIC -> 20;
+            default -> 20;
         };
 
         if (item.getDefaultMaxStackSize() == 1) {
@@ -223,6 +224,7 @@ public class TransmuteRegistry {
             case UNCOMMON -> 8;
             case RARE -> 15;
             case EPIC -> 30;
+            default -> 30;
         };
 
         if (item.getDefaultMaxStackSize() == 1) {

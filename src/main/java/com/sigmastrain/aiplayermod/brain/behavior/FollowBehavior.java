@@ -13,7 +13,6 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.MoverType;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
@@ -22,13 +21,9 @@ public class FollowBehavior implements Behavior {
     private String targetName;
     private double followDistance = 3.0;
     private double searchRadius = 64.0;
-    private double yVelocity;
     private int searchTicks = 0;
 
-    private static final double SPRINT_SPEED = 0.4;
     private static final double FLY_SPEED = 0.8;
-    private static final double GRAVITY = 0.08;
-    private static final double JUMP_VELOCITY = 0.42;
     private static final double TELEPORT_THRESHOLD = 32.0;
     private static final int CROSS_DIM_SEARCH_DELAY = 40;
 
@@ -40,7 +35,6 @@ public class FollowBehavior implements Behavior {
         if (directive.getExtra().containsKey("distance")) {
             this.followDistance = Double.parseDouble(directive.getExtra().get("distance"));
         }
-        this.yVelocity = 0;
         this.searchTicks = 0;
     }
 
@@ -76,34 +70,19 @@ public class FollowBehavior implements Behavior {
             Vec3 dir = targetPos.subtract(currentPos).normalize();
             double tx = targetPos.x - dir.x * followDistance;
             double tz = targetPos.z - dir.z * followDistance;
-            player.moveTo(tx, safeY(player, tx, targetPos.y, tz), tz);
+            player.moveTo(tx, targetPos.y, tz);
             return BehaviorResult.RUNNING;
         }
 
         Vec3 direction = targetPos.subtract(currentPos).normalize();
-        double heightDiff = Math.abs(targetPos.y - currentPos.y);
+        double moveSpeed = Math.min(FLY_SPEED, distance - followDistance + 0.5);
+        if (moveSpeed < 0.1) moveSpeed = 0.1;
 
-        if (heightDiff > 4.0) {
-            double moveSpeed = Math.min(FLY_SPEED, distance);
-            player.moveTo(
-                    currentPos.x + direction.x * moveSpeed,
-                    currentPos.y + direction.y * moveSpeed,
-                    currentPos.z + direction.z * moveSpeed
-            );
-            bot.lookAt(targetPos.x, targetPos.y + 1.0, targetPos.z);
-            return BehaviorResult.RUNNING;
-        }
+        double newX = currentPos.x + direction.x * moveSpeed;
+        double newY = currentPos.y + direction.y * moveSpeed;
+        double newZ = currentPos.z + direction.z * moveSpeed;
+        player.moveTo(newX, newY, newZ);
 
-        if (player.onGround()) {
-            yVelocity = 0;
-            if (com.sigmastrain.aiplayermod.actions.GoToAction.shouldJump(player, direction)) {
-                yVelocity = JUMP_VELOCITY;
-            }
-        } else {
-            yVelocity -= GRAVITY;
-        }
-
-        player.move(MoverType.SELF, new Vec3(direction.x * SPRINT_SPEED, yVelocity, direction.z * SPRINT_SPEED));
         bot.lookAt(targetPos.x, targetPos.y + 1.0, targetPos.z);
         return BehaviorResult.RUNNING;
     }
@@ -254,9 +233,10 @@ public class FollowBehavior implements Behavior {
     private static double safeY(ServerPlayer player, double x, double y, double z) {
         var level = player.level();
         BlockPos pos = BlockPos.containing(x, y, z);
-        while (y < level.getMaxBuildHeight() - 1
-                && !level.getBlockState(pos).isAir()
-                && !level.getBlockState(pos).canBeReplaced()) {
+        while (y < level.getMaxBuildHeight() - 2) {
+            boolean feetClear = level.getBlockState(pos).isAir() || level.getBlockState(pos).canBeReplaced();
+            boolean headClear = level.getBlockState(pos.above()).isAir() || level.getBlockState(pos.above()).canBeReplaced();
+            if (feetClear && headClear) break;
             y += 1.0;
             pos = pos.above();
         }

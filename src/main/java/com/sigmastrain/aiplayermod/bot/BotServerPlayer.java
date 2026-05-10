@@ -5,6 +5,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ClientInformation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.Entity;
 
 public class BotServerPlayer extends ServerPlayer {
 
@@ -14,9 +15,18 @@ public class BotServerPlayer extends ServerPlayer {
 
     @Override
     public boolean canBeSeenByAnyone() {
-        // Prevents TargetingConditions from reaching mod predicates that crash
-        // on fake players (e.g. rctmod's PlayerState.get() returning null).
-        // Does NOT affect client-side rendering — visibility is based on entity tracking.
         return false;
+    }
+
+    @Override
+    public boolean isAlliedTo(Entity other) {
+        // Bot players aren't registered with FTB Teams/Chunks, so mod-level
+        // alliance checks (e.g. Ars Nouveau summons → FTB Chunks getOrCreateData)
+        // throw NPE. Wrap the call to prevent server crashes.
+        try {
+            return super.isAlliedTo(other);
+        } catch (NullPointerException e) {
+            return false;
+        }
     }
 }

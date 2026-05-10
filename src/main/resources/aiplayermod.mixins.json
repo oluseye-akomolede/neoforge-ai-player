@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "priority": 500,
+  "package": "com.sigmastrain.aiplayermod.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "EntityTickCrashMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
