@@ -42,6 +42,7 @@ public class StoreAllBehavior implements Behavior {
     private List<ContainerRegistry.ContainerEntry> candidates;
     private int candidateIdx;
     private ContainerRegistry.ContainerEntry currentContainer;
+    private BlockPos targetedContainer;
 
     private BlockPos placePos;
     private int placeTicks;
@@ -56,6 +57,11 @@ public class StoreAllBehavior implements Behavior {
         totalStored = 0;
         currentItemIdx = 0;
         candidateIdx = 0;
+        targetedContainer = null;
+
+        if (directive.hasLocation()) {
+            targetedContainer = BlockPos.containing(directive.getX(), directive.getY(), directive.getZ());
+        }
 
         Map<String, String> extra = directive.getExtra();
         if (extra != null) {
@@ -120,7 +126,11 @@ public class StoreAllBehavior implements Behavior {
         bot.systemChat("Storing " + itemsToStore.size() + " item types", "aqua");
 
         String dimension = player.serverLevel().dimension().location().toString();
-        candidates = ContainerRegistry.get().getByDimension(dimension);
+        if (targetedContainer == null) {
+            candidates = ContainerRegistry.get().getByDimension(dimension);
+        } else {
+            candidates = List.of();
+        }
         candidateIdx = 0;
         currentItemIdx = 0;
         phase = Phase.FIND_CONTAINER;
@@ -130,6 +140,24 @@ public class StoreAllBehavior implements Behavior {
     private BehaviorResult tickFindContainer(BotPlayer bot) {
         ServerPlayer player = bot.getPlayer();
         ServerLevel level = player.serverLevel();
+
+        // User picked a specific container in the dashboard — use only that one.
+        // If it can't hold any more, fail rather than wandering off to another container.
+        if (targetedContainer != null) {
+            if (!isStorageBlock(level, targetedContainer)) {
+                bot.systemChat("Targeted container at " + targetedContainer.toShortString() + " is no longer a container", "red");
+                return BehaviorResult.FAILED;
+            }
+            if (!hasAnySpace(level, targetedContainer)) {
+                bot.systemChat("Targeted container at " + targetedContainer.toShortString() + " is full", "yellow");
+                return BehaviorResult.FAILED;
+            }
+            currentContainer = null;
+            placePos = targetedContainer;
+            player.moveTo(targetedContainer.getX() + 0.5, targetedContainer.getY(), targetedContainer.getZ() + 0.5);
+            phase = Phase.DEPOSITING;
+            return BehaviorResult.RUNNING;
+        }
 
         while (candidateIdx < candidates.size()) {
             ContainerRegistry.ContainerEntry entry = candidates.get(candidateIdx);

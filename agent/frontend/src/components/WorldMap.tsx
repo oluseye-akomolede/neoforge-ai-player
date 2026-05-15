@@ -971,8 +971,9 @@ function WorldMapInner({
                 <button onClick={() => sendGoto(selectedBot, containerPanel.container.x, containerPanel.container.y, containerPanel.container.z)}
                   className="text-[9px] px-2 py-0.5 rounded bg-mc-green text-black">Send {selectedBot}</button>
                 <button onClick={() => {
+                  const c = containerPanel.container
                   fetch('/api/directive', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ bot: selectedBot, directive_type: 'STORE_ALL' }) })
+                    body: JSON.stringify({ bot: selectedBot, directive_type: 'STORE_ALL', x: c.x, y: c.y, z: c.z }) })
                 }} className="text-[9px] px-2 py-0.5 rounded bg-purple-600 text-white">Store All</button>
                 <button onClick={() => setStorePickerOpen(!storePickerOpen)}
                   className={`text-[9px] px-2 py-0.5 rounded ${storePickerOpen ? 'bg-mc-gold text-black' : 'bg-yellow-600 text-black'}`}>
