@@ -512,6 +512,37 @@ def create_app() -> FastAPI:
                 return FileResponse(file_path)
             return FileResponse(STATIC_DIR / "index.html")
 
+    # ── L3 spec-driven planning (v1) ───────────────────────────────────────
+
+    @app.get("/api/plans")
+    async def list_plans():
+        try:
+            import plan_store
+            return {"plans": plan_store.list_active()}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"plan store unavailable: {e}")
+
+    @app.get("/api/plans/archive")
+    async def list_plan_archive(limit: int = Query(50)):
+        try:
+            import plan_store
+            return {"plans": plan_store.list_archive(limit=limit)}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"plan store unavailable: {e}")
+
+    @app.get("/api/plans/{bot}")
+    async def get_plan(bot: str):
+        try:
+            import plan_store
+            plan = plan_store.get_full(bot)
+            if plan is None:
+                raise HTTPException(status_code=404, detail="no active plan for bot")
+            return plan
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"plan store unavailable: {e}")
+
     return app
 
 
