@@ -500,19 +500,9 @@ def create_app() -> FastAPI:
     async def get_events(since: float = Query(0)):
         return {"events": shared_state.events_since(since)}
 
-    # ── SPA: serve frontend ──
-
-    if STATIC_DIR.exists():
-        app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
-
-        @app.get("/{full_path:path}")
-        async def serve_spa(full_path: str):
-            file_path = STATIC_DIR / full_path
-            if file_path.exists() and file_path.is_file():
-                return FileResponse(file_path)
-            return FileResponse(STATIC_DIR / "index.html")
-
     # ── L3 spec-driven planning (v1) ───────────────────────────────────────
+    # Registered BEFORE the SPA catch-all so /api/plans/* routes don't fall
+    # through to index.html.
 
     @app.get("/api/plans")
     async def list_plans():
@@ -542,6 +532,18 @@ def create_app() -> FastAPI:
             raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"plan store unavailable: {e}")
+
+    # ── SPA: serve frontend (must be registered LAST) ──
+
+    if STATIC_DIR.exists():
+        app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
+
+        @app.get("/{full_path:path}")
+        async def serve_spa(full_path: str):
+            file_path = STATIC_DIR / full_path
+            if file_path.exists() and file_path.is_file():
+                return FileResponse(file_path)
+            return FileResponse(STATIC_DIR / "index.html")
 
     return app
 
