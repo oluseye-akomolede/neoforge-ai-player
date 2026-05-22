@@ -463,6 +463,41 @@ class BotRunner:
                 except Exception as e:
                     print(f"[{self.name}/planner] memory recall error: {e}")
 
+            # L3 spec-driven planning bypass: when the flag is on, every addressed
+            # bot independently spawns its own plan_orchestrator worker. No central
+            # coordinator picking — the priority queue in llm-gateway serializes GPU
+            # access, and per-bot plan files isolate execution state. Players can
+            # tell "all bots do X" and every bot runs its own plan in parallel; or
+            # "@Forge build Y" and only Forge proceeds.
+            if USE_L3_PLAN_LAYER and not from_bot and not self._following_player:
+                text_lower = text.lower()
+                addressed_by_name = self.name.lower() in text_lower
+                applies_to_all = bool(_ALL_BOTS_RE.search(text))
+                # If no specific bot is named AND no all-bots pattern, only the bot
+                # the chat was directly aimed at responds. Single-bot direct
+                # addressing is handled by Minecraft's chat target system, so if
+                # we're seeing this message at all and no other bot is named, we
+                # assume it's for us.
+                other_bot_named = any(
+                    n.lower() in text_lower and n != self.name
+                    for n in _all_runners
+                )
+                if applies_to_all or addressed_by_name or (not other_bot_named):
+                    print(f"[{self.name}/orchestrator] L3 plan layer accepting: {text[:80]}")
+                    self._plan_instruction = text
+                    shared_state.push_event({"bot": self.name, "type": "l3_plan_dispatched", "instruction": text[:100]})
+                    t = threading.Thread(
+                        target=self._run_orchestrator,
+                        args=(text, sender),
+                        name=f"orch:{self.name}",
+                        daemon=True,
+                    )
+                    t.start()
+                else:
+                    print(f"[{self.name}/orchestrator] L3 plan layer: {text[:60]} — not addressed to me, skipping")
+                self._consume_message(msg)
+                return
+
             # Bot-to-bot messages: NEVER orchestrate (prevents delegation loops).
             # Only use orchestrator for real player instructions when multiple bots available.
             # Skip orchestration entirely if following — the follow shortcut already
