@@ -25,6 +25,18 @@ import openai_brain
 import waypoints
 import mc_items
 import terrain_db
+
+# L3 spec-driven planning (shadow-persistence). Plans are written alongside
+# the existing decompose flow so the dashboard can surface them. Full Phase 1
+# / Phase 2 orchestration is opt-in via plan_orchestrator.execute_task — not
+# wired into the think loop yet.
+try:
+    import plan_store as _plan_store
+    from plan_schema import Plan as _Plan, Subtask as _Subtask
+    _PLAN_PERSIST_OK = True
+except Exception as _plan_import_err:
+    print(f"[plan-layer] disabled: {_plan_import_err}")
+    _PLAN_PERSIST_OK = False
 from config import (
     TICK_DELAY, BUSY_POLL_DELAY,
     OBSERVE_ENTITY_RADIUS, OBSERVE_BLOCK_RADIUS,
@@ -174,6 +186,9 @@ class BotRunner:
     def reset(self):
         """Clear all planning state, cancel directives, and stop actions."""
         print(f"[{self.name}/reset] Clearing all state")
+        # If there was an active plan, mark it failed on disk before clearing
+        if self._plan_steps:
+            self._shadow_plan_finalize(success=False)
         self._plan_steps = []
         self._plan_step_idx = 0
         self._plan_instruction = ""
@@ -311,6 +326,19 @@ class BotRunner:
         """If new messages contain a player instruction, run the planner."""
         if not new_messages:
             return
+
+        _follow_phrases = ["follow me", "follow us", "keep following"]
+        _goto_phrases = ["come to me", "come here", "get over here", "come over here",
+                         "get to me", "walk to me", "run to me", "tp to me",
+                         "to my location", "to me", "come to my"]
+        _stop_phrases = ["stop following", "go idle", "stand still", "stay here", "stay put",
+                         "halt", "wait here", "stop what you"]
+        _stop_exact = ["stop"]
+
+        # ── Pre-scan: find the newest nav shortcut in the batch ──
+        # Must run BEFORE any non-shortcut processing, because non-shortcut
+        # paths call cancel_directive/stop which queue async server tasks
+        # that race with set_directive and wipe the new FOLLOW.
         for msg in reversed(new_messages):
             parts = msg.split(": ", 1)
             if len(parts) < 2:
@@ -318,32 +346,14 @@ class BotRunner:
             sender, text = parts
             if sender == self.name:
                 continue
-            text_lower = text.lower().strip()
-            if len(text_lower) < 5:
-                continue
-            skip_words = ["hello", "hi ", "hey", "thanks", "thank you", "yes", "no", "ok"]
-            if any(text_lower.startswith(w) for w in skip_words):
-                continue
-
-            # Determine if this came from another bot (not a real player)
             from_bot = sender in _all_runners
-
-            # Short-circuit: navigation and control commands → skip planner entirely.
-            # Check BEFORE cancel_directive to avoid a race where cancel (queued on
-            # server thread) fires after set_directive (immediate), wiping the new directive.
-            _follow_phrases = ["follow me", "follow us", "keep following"]
-            _goto_phrases = ["come to me", "come here", "get over here", "come over here",
-                             "get to me", "walk to me", "run to me", "tp to me",
-                             "to my location", "to me", "come to my"]
-            _stop_phrases = ["stop following", "go idle", "stand still", "stay here", "stay put",
-                             "halt", "wait here", "stop what you"]
-            _stop_exact = ["stop"]
-            is_follow = not from_bot and any(p in text_lower for p in _follow_phrases)
-            is_goto = not from_bot and any(p in text_lower for p in _goto_phrases)
-            is_stop = not from_bot and (
-                any(p in text_lower for p in _stop_phrases)
-                or any(text_lower.strip() == p for p in _stop_exact)
-            )
+            if from_bot:
+                continue
+            text_lower = text.lower().strip()
+            is_follow = any(p in text_lower for p in _follow_phrases)
+            is_goto = any(p in text_lower for p in _goto_phrases)
+            is_stop = (any(p in text_lower for p in _stop_phrases)
+                       or any(text_lower.strip() == p for p in _stop_exact))
             if is_follow or is_goto or is_stop:
                 if self._plan_steps and self._plan_step_idx < len(self._plan_steps):
                     self._store_plan_outcome(success=False, failure_reason=f"Overridden by player: {text[:60]}")
@@ -361,9 +371,6 @@ class BotRunner:
                 self._awaiting_taskboard = False
                 self._consume_message(msg)
                 if is_follow or is_goto:
-                    # Don't call api.stop() here — applyDirective already
-                    # cleans up old state, and the async cancel races with
-                    # set_directive, wiping the new FOLLOW directive.
                     api.set_directive(self.name, "FOLLOW", target=sender,
                                      extra={"distance": "3.0"})
                     self._following_player = sender
@@ -380,8 +387,27 @@ class BotRunner:
                     print(f"[{self.name}/nav] Direct stop (shortcut)")
                 return
 
-            # Player commands always override current work
-            if not from_bot:
+        # ── Normal message processing (no shortcut in this batch) ──
+        for msg in reversed(new_messages):
+            parts = msg.split(": ", 1)
+            if len(parts) < 2:
+                continue
+            sender, text = parts
+            if sender == self.name:
+                continue
+            text_lower = text.lower().strip()
+            if len(text_lower) < 5:
+                continue
+            skip_words = ["hello", "hi ", "hey", "thanks", "thank you", "yes", "no", "ok"]
+            if any(text_lower.startswith(w) for w in skip_words):
+                continue
+
+            from_bot = sender in _all_runners
+
+            # Player commands always override current work — but not an
+            # active follow.  Only explicit shortcuts (follow/goto/stop,
+            # handled in the pre-scan above) should break out of follow mode.
+            if not from_bot and not self._following_player:
                 if self._plan_steps and self._plan_step_idx < len(self._plan_steps):
                     self._store_plan_outcome(success=False, failure_reason=f"Overridden by player: {text[:60]}")
                 self._plan_steps = []
@@ -389,7 +415,6 @@ class BotRunner:
                 self._plan_instruction = ""
                 self._l1_failed_steps = set()
                 self._all_failed_steps = set()
-                self._following_player = None
                 if self._current_task_id and _task_board:
                     try:
                         _task_board.release(self._current_task_id)
@@ -439,7 +464,10 @@ class BotRunner:
 
             # Bot-to-bot messages: NEVER orchestrate (prevents delegation loops).
             # Only use orchestrator for real player instructions when multiple bots available.
-            if not from_bot and len(_all_runners) > 1 and _task_board:
+            # Skip orchestration entirely if following — the follow shortcut already
+            # handled the nav command; entering orchestration here would call api.stop()
+            # on non-coordinator bots and race-cancel the FOLLOW directive.
+            if not from_bot and not self._following_player and len(_all_runners) > 1 and _task_board:
                 # Only ONE bot orchestrates per player message — the rest wait for task board.
                 # If the message addresses a bot by name, that bot MUST be coordinator.
                 msg_key = text.strip().lower()[:100]
@@ -624,6 +652,7 @@ class BotRunner:
                 step_list = "\n".join(f"  {i+1}. {s}" for i, s in enumerate(steps))
                 print(f"[{self.name}/planner] Plan ({len(steps)} steps):\n{step_list}")
                 shared_state.push_event({"bot": self.name, "type": "plan_created", "instruction": text[:100], "steps": [s[:80] for s in steps]})
+                self._shadow_plan_write()
                 self._consume_message(msg)
             return
 
@@ -679,6 +708,7 @@ class BotRunner:
                     pass
                 shared_state.push_event({"bot": self.name, "type": "plan_complete", "steps": len(self._plan_steps)})
                 self._store_plan_outcome(success=True)
+                self._shadow_plan_finalize(success=True)
                 if self._current_task_id:
                     self._complete_task_board_task()
                 else:
@@ -697,7 +727,60 @@ class BotRunner:
                     api.system_chat(self.name, f"Step {self._plan_step_idx}/{len(self._plan_steps)}: {new_step[:50]}", "dark_aqua")
                 except Exception:
                     pass
+                self._shadow_plan_write()
                 self.conversation_history.clear()
+
+    # ── shadow-plan persistence (L3 spec-driven planning visibility) ───────
+
+    def _shadow_plan_write(self):
+        """Mirror the current _plan_* state to a Plan file on disk so the
+        dashboard /api/plans endpoint surfaces it. No behavior change — this
+        is read-only from the agent's perspective."""
+        if not _PLAN_PERSIST_OK or not self._plan_steps:
+            return
+        try:
+            import datetime
+            subtasks = []
+            for i, step in enumerate(self._plan_steps):
+                if i < self._plan_step_idx:
+                    status = "complete"
+                elif i == self._plan_step_idx:
+                    status = "executing"
+                else:
+                    status = "pending"
+                subtasks.append(_Subtask(
+                    id=i + 1,
+                    description=str(step),
+                    criteria="",
+                    status=status,
+                ))
+            plan = _Plan(
+                task=self._plan_instruction,
+                bot=self.name,
+                created_at=datetime.datetime.utcnow().isoformat(),
+                status="executing",
+                subtasks=subtasks,
+                current_subtask_id=min(self._plan_step_idx + 1, max(len(subtasks), 1)),
+            )
+            _plan_store.write(plan)
+        except Exception as e:
+            print(f"[{self.name}/plan-shadow] write failed: {e}")
+
+    def _shadow_plan_finalize(self, success: bool):
+        """Mark the current plan complete/failed and archive it."""
+        if not _PLAN_PERSIST_OK:
+            return
+        try:
+            plan = _plan_store.read(self.name)
+            if plan is None:
+                return
+            plan.status = "complete" if success else "failed"
+            for s in plan.subtasks:
+                if s.status == "executing":
+                    s.status = "complete" if success else "failed"
+            _plan_store.archive(plan)
+        except Exception as e:
+            print(f"[{self.name}/plan-shadow] finalize failed: {e}")
 
     def _store_plan_outcome(self, success, failure_reason=""):
         """Store plan outcome in semantic memory for future planning."""
