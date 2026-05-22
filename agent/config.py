@@ -28,6 +28,12 @@ PG_DSN = os.getenv("PG_DSN", "host=pgvector.minecraft-test.svc.cluster.local por
 DASHBOARD_ENABLED = os.getenv("DASHBOARD_ENABLED", "true").lower() in ("true", "1", "yes")
 DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "5000"))
 
+# Opt-in: route new tasks through the L3 spec-driven planning layer
+# (plan_orchestrator.execute_task) instead of the legacy decompose path.
+# Default off so prod aibot-agent keeps its proven behavior. Enable on the
+# test agent (minecraft-test ns) to exercise the new flow.
+USE_L3_PLAN_LAYER = os.getenv("USE_L3_PLAN_LAYER", "false").lower() in ("true", "1", "yes")
+
 
 def load_profile():
     with open(PROFILE_PATH) as f:

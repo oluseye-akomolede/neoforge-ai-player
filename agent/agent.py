@@ -42,6 +42,7 @@ from config import (
     OBSERVE_ENTITY_RADIUS, OBSERVE_BLOCK_RADIUS,
     MAX_CHAT_HISTORY, MAX_CONVERSATION, OLLAMA_URL, PG_DSN,
     DASHBOARD_ENABLED, DASHBOARD_PORT,
+    USE_L3_PLAN_LAYER,
 )
 from dashboard import start_dashboard
 from dashboard.state import shared_state
@@ -638,6 +639,23 @@ class BotRunner:
                     print(f"[{self.name}/orchestrator] All steps delegated to other bots")
                 self._consume_message(msg)
             else:
+                # L3 spec-driven planning path (opt-in via USE_L3_PLAN_LAYER).
+                # Spawns a worker thread that drives plan_orchestrator.execute_task
+                # to completion using this bot's mod API for dispatch.
+                if USE_L3_PLAN_LAYER:
+                    print(f"[{self.name}/orchestrator] dispatching to L3 plan layer: {text[:80]}")
+                    self._plan_instruction = text
+                    shared_state.push_event({"bot": self.name, "type": "l3_plan_dispatched", "instruction": text[:100]})
+                    t = threading.Thread(
+                        target=self._run_orchestrator,
+                        args=(text, sender),
+                        name=f"orch:{self.name}",
+                        daemon=True,
+                    )
+                    t.start()
+                    self._consume_message(msg)
+                    return
+
                 print(f"[{self.name}/planner] Decomposing: {text[:80]}")
                 if memory_context and memory_context != "No relevant memories.":
                     print(f"[{self.name}/planner] Using {memory_context.count(chr(10))+1} memories as context")
@@ -729,6 +747,84 @@ class BotRunner:
                     pass
                 self._shadow_plan_write()
                 self.conversation_history.clear()
+
+    # ── L3 spec-driven planning: orchestrator entry point + adapters ──────
+
+    def _l3_orchestrator_dispatch(self, directive: dict):
+        """dispatch_fn for plan_orchestrator: send a directive via api, wait
+        for completion, return a result string. Directive shape from L3:
+        {"kind": "MINE", "target": "iron_ore", "count": 16, ...}.
+        Maps "kind" → "type" for _run_directive, which expects the existing
+        BotRunner directive contract.
+        """
+        if not isinstance(directive, dict) or "kind" not in directive:
+            return f"FAILED bad_directive {directive}"
+        params = dict(directive)
+        params["type"] = params.pop("kind")
+        try:
+            res = self._run_directive(params)
+        except Exception as e:
+            return f"FAILED dispatch_error {e}"
+        if res.get("success"):
+            counters = (res.get("progress") or {}).get("counters", {})
+            return f"COMPLETED {params['type']} {counters}"
+        return f"FAILED {params['type']} {res.get('reason', 'unknown')}"
+
+    def _l3_orchestrator_world_state(self) -> str:
+        """world_state_fn for plan_orchestrator: short observable summary."""
+        parts = []
+        try:
+            st = api.status(self.name)
+            pos = st.get("position", {})
+            parts.append(f"pos=({int(pos.get('x',0))},{int(pos.get('y',0))},{int(pos.get('z',0))})")
+            parts.append(f"hp={st.get('health','?')}/20")
+        except Exception:
+            pass
+        try:
+            inv = api.inventory(self.name) or {}
+            items = inv.get("items", [])
+            top = sorted([(i.get("count", 0), i.get("id", "")) for i in items if i.get("count", 0) > 0],
+                          reverse=True)[:6]
+            if top:
+                parts.append("inv=[" + ", ".join(f"{n}x{i}" for n, i in top) + "]")
+        except Exception:
+            pass
+        return "  ".join(parts) or "(no state)"
+
+    def _run_orchestrator(self, task_text: str, sender: str = ""):
+        """Worker target: drives plan_orchestrator.execute_task for a single task.
+        Runs in its own daemon thread so the existing tick loop is unaffected.
+        """
+        try:
+            import plan_orchestrator
+        except ImportError as e:
+            print(f"[{self.name}/orchestrator] disabled (import failed): {e}")
+            return
+        print(f"[{self.name}/orchestrator] starting plan for: {task_text[:80]}")
+        try:
+            plan = plan_orchestrator.execute_task(
+                bot_name=self.name,
+                model=self.model,
+                task=task_text,
+                dispatch_fn=self._l3_orchestrator_dispatch,
+                world_state_fn=self._l3_orchestrator_world_state,
+            )
+            ok = (plan.status == "complete")
+            try:
+                api.system_chat(
+                    self.name,
+                    f"Plan {plan.status}: {sum(1 for s in plan.subtasks if s.status == 'complete')}/{len(plan.subtasks)} subtasks",
+                    "green" if ok else "red",
+                )
+            except Exception:
+                pass
+            shared_state.push_event({
+                "bot": self.name, "type": "l3_plan_finalized",
+                "status": plan.status, "subtask_count": len(plan.subtasks),
+            })
+        except Exception as e:
+            print(f"[{self.name}/orchestrator] crashed: {e}")
+            shared_state.push_event({"bot": self.name, "type": "l3_plan_error", "error": str(e)[:200]})
 
     # ── shadow-plan persistence (L3 spec-driven planning visibility) ───────
 
