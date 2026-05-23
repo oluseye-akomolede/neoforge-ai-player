@@ -456,6 +456,7 @@ public class HttpApiServer {
                         "hostile_only", hostileOnly, "target", target != null ? target : "any hostile"));
             }
             case "stop" -> {
+                AIPlayerMod.LOGGER.warn("[{}] HTTP /stop called", bot.getPlayer().getName().getString());
                 BotManager.getServer().execute(() -> {
                     bot.getBrain().cancelDirective();
                     bot.getActionQueue().clear();
@@ -580,6 +581,7 @@ public class HttpApiServer {
             }
             case "directive" -> {
                 if ("DELETE".equals(exchange.getRequestMethod())) {
+                    AIPlayerMod.LOGGER.warn("[{}] HTTP DELETE /directive called", bot.getPlayer().getName().getString());
                     BotManager.getServer().execute(() -> bot.getBrain().cancelDirective());
                     sendJson(exchange, 200, Map.of("status", "cancelled"));
                 } else if ("GET".equals(exchange.getRequestMethod())) {

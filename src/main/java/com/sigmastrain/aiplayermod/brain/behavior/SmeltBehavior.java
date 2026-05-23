@@ -85,7 +85,21 @@ public class SmeltBehavior implements Behavior {
         Map.entry("minecraft:raw_cod", "minecraft:cooked_cod"),
         Map.entry("minecraft:salmon", "minecraft:cooked_salmon"),
         Map.entry("minecraft:raw_salmon", "minecraft:cooked_salmon"),
-        Map.entry("minecraft:potato", "minecraft:baked_potato")
+        Map.entry("minecraft:potato", "minecraft:baked_potato"),
+        // Stone family — vanilla smelting variants
+        Map.entry("minecraft:cobbled_deepslate", "minecraft:deepslate"),
+        Map.entry("minecraft:basalt", "minecraft:smooth_basalt"),
+        Map.entry("minecraft:sandstone", "minecraft:smooth_sandstone"),
+        Map.entry("minecraft:red_sandstone", "minecraft:smooth_red_sandstone"),
+        Map.entry("minecraft:quartz_block", "minecraft:smooth_quartz"),
+        Map.entry("minecraft:nether_bricks", "minecraft:cracked_nether_bricks"),
+        Map.entry("minecraft:polished_blackstone_bricks", "minecraft:cracked_polished_blackstone_bricks"),
+        Map.entry("minecraft:stone_bricks", "minecraft:cracked_stone_bricks"),
+        Map.entry("minecraft:chorus_fruit", "minecraft:popped_chorus_fruit"),
+        // Additional ore variants (raw + deepslate)
+        Map.entry("minecraft:raw_iron_block", "minecraft:iron_block"),
+        Map.entry("minecraft:raw_gold_block", "minecraft:gold_block"),
+        Map.entry("minecraft:raw_copper_block", "minecraft:copper_block")
     );
 
     private final ProgressReport progress = new ProgressReport();

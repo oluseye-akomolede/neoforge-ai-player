@@ -1757,8 +1757,16 @@ class BotRunner:
             if "invalid item" in reason_lower or "no recipe" in reason_lower:
                 return None  # Unrecoverable
 
-        # Smelting: if furnace issues, L1 handles. Nothing to adjust here.
+        # Smelting: if no recipe exists for the requested target, fall back to
+        # CHANNEL (transmute the desired output directly). Per user principle:
+        # directives should never fail at L1 unless completely impossible.
         if dtype == "SMELT":
+            if "no smelting recipe" in reason_lower or "no recipe" in reason_lower:
+                target = params.get("target", "")
+                count = params.get("count", 1)
+                if target:
+                    print(f"[{self.name}/L2] SMELT {target} has no recipe — falling back to CHANNEL")
+                    return {"type": "CHANNEL", "target": target, "count": count}
             return None
 
         # Enchanting: L1 handles lapis channeling + meditation.

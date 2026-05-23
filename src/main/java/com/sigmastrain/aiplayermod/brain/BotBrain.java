@@ -29,6 +29,10 @@ public class BotBrain {
     }
 
     public void cancelDirective() {
+        AIPlayerMod.LOGGER.warn("[{}] cancelDirective called — active={}, caller={}",
+                bot.getPlayer().getName().getString(),
+                activeDirective != null ? activeDirective.getType() : "none",
+                Thread.currentThread().getStackTrace()[2]);
         if (activeDirective != null && activeDirective.getStatus() == DirectiveStatus.ACTIVE) {
             activeDirective.cancel();
         }
@@ -38,8 +42,6 @@ public class BotBrain {
         activeDirective = null;
         lastDirective = null;
         activeBehavior = idleBehavior;
-        // Don't null pendingDirective — if a new directive was set between the
-        // cancel being queued and executing, it should still be applied next tick.
     }
 
     public boolean hasActiveDirective() {
