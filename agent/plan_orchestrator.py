@@ -18,6 +18,7 @@ import logging
 import time
 from typing import Any, Callable
 
+import api
 import l3_planner
 import plan_store
 from criteria_eval import evaluate as evaluate_criteria
@@ -63,9 +64,13 @@ def execute_task(
     on_subtask_done = on_subtask_done or noop
     on_finalized = on_finalized or noop
 
+    # Fetch the live dimension list so L3 prompts use exact registered ids.
+    # Cached for the rest of this task — dims rarely change mid-task.
+    dim_list = _safe_get_dimensions()
+
     # Phase 1: plan
     try:
-        plan = l3_planner.call_plan(model, bot_name, task, world_state_fn())
+        plan = l3_planner.call_plan(model, bot_name, task, world_state_fn(), dimensions=dim_list)
     except PlanValidationError as e:
         log.warning("[%s] planning failed: %s", bot_name, e)
         # Synthetic failure plan so the caller has something to log
@@ -104,7 +109,7 @@ def execute_task(
                 log.exception("[%s] on_subtask_start hook raised", bot_name)
             last_subtask_id = subtask.id
         prev_status = subtask.status
-        if not _step(plan, subtask, model, dispatch_fn, world_state_fn):
+        if not _step(plan, subtask, model, dispatch_fn, world_state_fn, dim_list):
             # _step returns False when the plan needs to abort
             break
         # Fire "subtask done" hook when this subtask reached terminal state
@@ -124,8 +129,31 @@ def execute_task(
     return plan
 
 
+def _safe_get_dimensions() -> list[str]:
+    """Best-effort fetch of registered dimension ids from the mod API.
+    Falls back to the default trio if the API isn't reachable."""
+    try:
+        resp = api.dimensions()
+        dims = resp.get("dimensions") or []
+        # Normalize: accept either list of strings or list of {id, ...} dicts
+        cleaned: list[str] = []
+        for d in dims:
+            if isinstance(d, str):
+                cleaned.append(d)
+            elif isinstance(d, dict):
+                v = d.get("id") or d.get("name")
+                if v:
+                    cleaned.append(v)
+        if cleaned:
+            return cleaned
+    except Exception as e:
+        log.debug("dimension fetch failed: %s", e)
+    return list(l3_planner._DEFAULT_DIMENSIONS)
+
+
 def _step(plan: Plan, subtask: Subtask, model: str,
-          dispatch_fn: DispatchFn, world_state_fn: WorldStateFn) -> bool:
+          dispatch_fn: DispatchFn, world_state_fn: WorldStateFn,
+          dim_list: list[str] | None = None) -> bool:
     """Drive one subtask through one attempt. Returns False if the plan must abort."""
     # Phase 2 exec
     try:
@@ -133,6 +161,7 @@ def _step(plan: Plan, subtask: Subtask, model: str,
             model=model, plan=plan, subtask=subtask,
             world_state_summary=world_state_fn(),
             previous_error=subtask.error,
+            dimensions=dim_list,
         )
     except Exception as e:
         log.warning("[%s] subtask %d exec failed: %s", plan.bot, subtask.id, e)
@@ -144,6 +173,9 @@ def _step(plan: Plan, subtask: Subtask, model: str,
                 plan.status = "failed"
                 return False
         return True
+
+    # Validate / repair directives BEFORE dispatch (TELEPORT especially).
+    directives = [_repair_directive(d, plan.bot, dim_list) for d in directives]
 
     subtask.status = "executing"
     subtask.directives = list(directives)
@@ -187,6 +219,54 @@ def _step(plan: Plan, subtask: Subtask, model: str,
         return True
 
     return _replan(plan, subtask, model)
+
+
+# Loose aliases the LLM might emit that map to canonical dim ids.
+_DIM_ALIASES = {
+    "nether": "minecraft:the_nether",
+    "the nether": "minecraft:the_nether",
+    "the_nether": "minecraft:the_nether",
+    "end": "minecraft:the_end",
+    "the end": "minecraft:the_end",
+    "the_end": "minecraft:the_end",
+    "overworld": "minecraft:overworld",
+    "minecraft:nether": "minecraft:the_nether",
+    "minecraft:end": "minecraft:the_end",
+}
+
+
+def _repair_directive(d: dict[str, Any], bot_name: str, dim_list: list[str] | None) -> dict[str, Any]:
+    """Patch common L3 directive mistakes before dispatch. Idempotent."""
+    if not isinstance(d, dict):
+        return d
+    kind = str(d.get("kind", "")).upper()
+
+    if kind == "TELEPORT":
+        extra = d.get("extra")
+        if not isinstance(extra, dict):
+            extra = {}
+            d["extra"] = extra
+        # Coerce dimension to a known id
+        dim = extra.get("dimension") or d.get("dimension")
+        if dim:
+            key = str(dim).strip().lower()
+            canonical = _DIM_ALIASES.get(key, dim)
+            if dim_list and canonical not in dim_list:
+                # Try matching by suffix (e.g. LLM wrote "the_nether" we have "minecraft:the_nether")
+                suffix = canonical.rsplit(":", 1)[-1]
+                match = next((d2 for d2 in dim_list if d2.endswith(":" + suffix) or d2 == suffix), None)
+                if match:
+                    canonical = match
+            extra["dimension"] = canonical
+        # Reject 0,0,0 with no dimension change — coerce y to surface height
+        x = int(d.get("x", 0) or 0)
+        y = int(d.get("y", 0) or 0)
+        z = int(d.get("z", 0) or 0)
+        if x == 0 and z == 0 and y == 0:
+            # Safer default: spawn-ish coords above surface
+            d["y"] = 70
+            log.info("[%s] TELEPORT had 0,0,0 — coerced y to 70", bot_name)
+    return d
 
 
 def _replan(plan: Plan, failed_subtask: Subtask, model: str) -> bool:

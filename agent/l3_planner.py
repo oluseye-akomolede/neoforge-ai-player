@@ -33,6 +33,14 @@ BOT_PERSONAS = {
     "tiller": "farmer; plans around crop cycles, soil, water, harvest sequences",
 }
 
+# Default dimension list if the mod API isn't reachable / hasn't been queried.
+# Real list is fetched at orchestrator-call time and overrides this.
+_DEFAULT_DIMENSIONS = [
+    "minecraft:overworld",
+    "minecraft:the_nether",
+    "minecraft:the_end",
+]
+
 
 # ── Phase 1: plan ──────────────────────────────────────────────────────────
 
@@ -42,16 +50,21 @@ Persona: {persona}.
 
 Your job RIGHT NOW is NOT to execute the task — it is to plan it.
 
+Available dimensions on this server (you can subtask any of these; use exact ids):
+{dimensions}
+
 Decompose the task below into ordered atomic subtasks. For each subtask:
 - A clear `description` of what to do
 - An explicit `criteria` string — a condition observable in world state that
   proves this subtask is done (e.g. "inventory has 16 wheat", "bot at 100,64,-200",
-  "block at 5,64,7 is oak_log")
+  "block at 5,64,7 is oak_log", "bot in dimension minecraft:the_nether")
 
 Constraints:
 - Output ONLY JSON. No prose. No markdown fences.
 - 1 to 6 subtasks. Break larger jobs into multiple submissions instead.
 - Each subtask should map to 1-3 directives maximum.
+- If the task involves a dimension change (e.g. "to the nether"), the FIRST
+  subtask MUST be a teleport to that dimension. Use the exact dimension id.
 
 Output schema:
 {{
@@ -69,10 +82,13 @@ Output schema:
 
 
 def call_plan(model: str, bot_name: str, task: str,
-              world_state_summary: str = "") -> Plan:
+              world_state_summary: str = "",
+              dimensions: list[str] | None = None) -> Plan:
     persona = BOT_PERSONAS.get(bot_name, "generalist")
     log.info("[%s] L3 PLAN call — task: %s", bot_name, task[:60])
-    sys_prompt = _PLAN_SYSTEM_PROMPT.format(bot_name=bot_name, persona=persona)
+    dim_lines = "\n".join(f"  - {d}" for d in (dimensions or _DEFAULT_DIMENSIONS))
+    sys_prompt = _PLAN_SYSTEM_PROMPT.format(
+        bot_name=bot_name, persona=persona, dimensions=dim_lines)
     user = f"World state: {world_state_summary}\n\nTask: {task}" if world_state_summary else task
 
     with ollama_lock:
@@ -118,6 +134,10 @@ Current subtask:
 {subtask_json}
 
 World state: {world_state}
+
+Active dimensions on this server (use these EXACT ids when teleporting):
+{dimensions}
+
 Previous attempt error (if any): {error}
 
 Emit one or more directives that, when executed, will satisfy the subtask's criteria.
@@ -131,21 +151,49 @@ Output ONLY a JSON object (no prose, no fences):
   ]
 }}
 
-Directive kinds available: MINE, CRAFT, SMELT, ENCHANT, BREW, CHANNEL, FARM,
-BUILD, COMBAT, FOLLOW, GOTO, TELEPORT, SEND_ITEM, CONTAINER_STORE,
-CONTAINER_WITHDRAW, CONTAINER_PLACE, CONTAINER_SEARCH, WIDE_SEARCH, IDLE.
+DIRECTIVE PARAM REFERENCE (use these shapes EXACTLY):
+
+  MINE             — {{ "kind":"MINE", "target":"minecraft:iron_ore", "count":16 }}
+  CRAFT            — {{ "kind":"CRAFT", "target":"minecraft:torch", "count":16 }}
+  SMELT            — {{ "kind":"SMELT", "target":"minecraft:raw_iron", "count":16 }}
+  CHANNEL          — {{ "kind":"CHANNEL", "target":"minecraft:diamond", "count":4 }}
+                     (use when no recipe exists OR item must be transmuted via EMC)
+  ENCHANT          — {{ "kind":"ENCHANT", "target":"minecraft:iron_pickaxe", "extra":{{"tier":"max"}} }}
+  BREW             — {{ "kind":"BREW", "target":"minecraft:potion_of_healing", "count":1 }}
+  FARM             — {{ "kind":"FARM", "target":"minecraft:wheat", "count":32 }}
+  BUILD            — {{ "kind":"BUILD", "x":<int>, "y":<int>, "z":<int>, "extra":{{"shape":"platform","material":"minecraft:oak_planks","size":5}} }}
+  COMBAT           — {{ "kind":"COMBAT", "target":"minecraft:zombie", "extra":{{"radius":16}} }}
+  FOLLOW           — {{ "kind":"FOLLOW", "target":"<player_name>" }}
+  GOTO             — {{ "kind":"GOTO", "x":<int>, "y":<int>, "z":<int> }}
+                     (intra-dimension only; uses current dimension)
+  TELEPORT         — {{ "kind":"TELEPORT", "x":<int>, "y":<int>, "z":<int>, "extra":{{"dimension":"<dim_id>"}} }}
+                     CROSS-DIMENSION: dimension is REQUIRED. If you only know the
+                     destination is "the nether", set dimension="minecraft:the_nether"
+                     and use safe default coords like x=0,y=70,z=0 — the L1 layer
+                     will land the bot on solid ground near those coords. NEVER
+                     emit a TELEPORT with x=0,y=0,z=0 AND no dimension change.
+  SEND_ITEM        — {{ "kind":"SEND_ITEM", "target":"<player>", "extra":{{"item":"minecraft:diamond","count":4}} }}
+  CONTAINER_STORE  — {{ "kind":"CONTAINER_STORE", "target":"minecraft:iron_ingot", "count":64 }}
+  CONTAINER_WITHDRAW — {{ "kind":"CONTAINER_WITHDRAW", "target":"minecraft:iron_ingot", "count":64 }}
+  CONTAINER_PLACE  — {{ "kind":"CONTAINER_PLACE", "target":"minecraft:chest", "x":<int>, "y":<int>, "z":<int> }}
+  CONTAINER_SEARCH — {{ "kind":"CONTAINER_SEARCH", "target":"minecraft:diamond", "count":5 }}
+  WIDE_SEARCH      — {{ "kind":"WIDE_SEARCH", "target":"village" }}
+  IDLE             — {{ "kind":"IDLE" }}
 """
 
 
 def call_exec(model: str, plan: Plan, subtask: Subtask,
               world_state_summary: str = "",
-              previous_error: str | None = None) -> list[dict[str, Any]]:
+              previous_error: str | None = None,
+              dimensions: list[str] | None = None) -> list[dict[str, Any]]:
     log.info("[%s] L3 EXEC call — subtask %d/%d", plan.bot, subtask.id, len(plan.subtasks))
+    dim_lines = "\n".join(f"  - {d}" for d in (dimensions or _DEFAULT_DIMENSIONS))
     sys_prompt = _EXEC_SYSTEM_PROMPT.format(
         bot_name=plan.bot,
         plan_json=json.dumps(plan.to_dict(), indent=2),
         subtask_json=json.dumps(subtask.to_dict(), indent=2),
         world_state=world_state_summary or "(none provided)",
+        dimensions=dim_lines,
         error=previous_error or "(none)",
     )
     with ollama_lock:
