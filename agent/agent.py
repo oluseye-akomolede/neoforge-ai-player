@@ -829,6 +829,7 @@ class BotRunner:
     def _run_orchestrator(self, task_text: str, sender: str = ""):
         """Worker target: drives plan_orchestrator.execute_task for a single task.
         Runs in its own daemon thread so the existing tick loop is unaffected.
+        Chat callbacks announce each phase to the player so the bot isn't silent.
         """
         try:
             import plan_orchestrator
@@ -836,29 +837,86 @@ class BotRunner:
             print(f"[{self.name}/orchestrator] disabled (import failed): {e}")
             return
         print(f"[{self.name}/orchestrator] starting plan for: {task_text[:80]}")
+
+        def on_plan_created(plan):
+            try:
+                # Header
+                api.system_chat(self.name, f"Plan: {plan.task[:50]}", "gold")
+                # Subtask list
+                for s in plan.subtasks:
+                    marker = "[1]" if s.id == plan.current_subtask_id else f"[{s.id}]"
+                    api.system_chat(self.name, f"  {marker} {s.description[:60]}", "gray")
+                shared_state.push_event({
+                    "bot": self.name, "type": "l3_plan_created",
+                    "task": plan.task[:120],
+                    "subtasks": [{"id": s.id, "description": s.description[:80], "criteria": s.criteria[:80]} for s in plan.subtasks],
+                })
+            except Exception as e:
+                print(f"[{self.name}/orchestrator] plan-created chat error: {e}")
+
+        def on_subtask_start(plan, subtask):
+            try:
+                tag = f"step {subtask.id}/{len(plan.subtasks)}"
+                api.system_chat(self.name, f"{tag}: {subtask.description[:60]}", "dark_aqua")
+                shared_state.push_event({
+                    "bot": self.name, "type": "l3_subtask_start",
+                    "subtask_id": subtask.id, "description": subtask.description[:120],
+                })
+            except Exception as e:
+                print(f"[{self.name}/orchestrator] subtask-start chat error: {e}")
+
+        def on_subtask_done(plan, subtask, ok):
+            try:
+                color = "green" if ok else "red"
+                status = "done" if ok else "failed"
+                api.system_chat(
+                    self.name,
+                    f"step {subtask.id}/{len(plan.subtasks)} {status}" +
+                    (f" — {subtask.error[:50]}" if (subtask.error and not ok) else ""),
+                    color,
+                )
+                shared_state.push_event({
+                    "bot": self.name, "type": "l3_subtask_done",
+                    "subtask_id": subtask.id, "ok": ok,
+                    "error": subtask.error if not ok else None,
+                })
+            except Exception as e:
+                print(f"[{self.name}/orchestrator] subtask-done chat error: {e}")
+
+        def on_finalized(plan):
+            try:
+                ok = (plan.status == "complete")
+                done_count = sum(1 for s in plan.subtasks if s.status == "complete")
+                api.system_chat(
+                    self.name,
+                    f"Plan {plan.status}: {done_count}/{len(plan.subtasks)} steps",
+                    "green" if ok else "red",
+                )
+                shared_state.push_event({
+                    "bot": self.name, "type": "l3_plan_finalized",
+                    "status": plan.status, "subtask_count": len(plan.subtasks),
+                })
+            except Exception as e:
+                print(f"[{self.name}/orchestrator] finalize chat error: {e}")
+
         try:
-            plan = plan_orchestrator.execute_task(
+            plan_orchestrator.execute_task(
                 bot_name=self.name,
                 model=self.model,
                 task=task_text,
                 dispatch_fn=self._l3_orchestrator_dispatch,
                 world_state_fn=self._l3_orchestrator_world_state,
+                on_plan_created=on_plan_created,
+                on_subtask_start=on_subtask_start,
+                on_subtask_done=on_subtask_done,
+                on_finalized=on_finalized,
             )
-            ok = (plan.status == "complete")
-            try:
-                api.system_chat(
-                    self.name,
-                    f"Plan {plan.status}: {sum(1 for s in plan.subtasks if s.status == 'complete')}/{len(plan.subtasks)} subtasks",
-                    "green" if ok else "red",
-                )
-            except Exception:
-                pass
-            shared_state.push_event({
-                "bot": self.name, "type": "l3_plan_finalized",
-                "status": plan.status, "subtask_count": len(plan.subtasks),
-            })
         except Exception as e:
             print(f"[{self.name}/orchestrator] crashed: {e}")
+            try:
+                api.system_chat(self.name, f"Orchestrator crashed: {str(e)[:60]}", "red")
+            except Exception:
+                pass
             shared_state.push_event({"bot": self.name, "type": "l3_plan_error", "error": str(e)[:200]})
 
     # ── shadow-plan persistence (L3 spec-driven planning visibility) ───────

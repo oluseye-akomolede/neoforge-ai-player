@@ -30,6 +30,10 @@ MAX_REPLANS_PER_SUBTASK = 2
 
 DispatchFn = Callable[[dict[str, Any]], str]
 WorldStateFn = Callable[[], str]
+OnPlanCreated = Callable[[Plan], None]
+OnSubtaskStart = Callable[[Plan, Subtask], None]
+OnSubtaskDone = Callable[[Plan, Subtask, bool], None]
+OnFinalized = Callable[[Plan], None]
 
 
 def execute_task(
@@ -38,14 +42,26 @@ def execute_task(
     task: str,
     dispatch_fn: DispatchFn,
     world_state_fn: WorldStateFn | None = None,
+    on_plan_created: OnPlanCreated | None = None,
+    on_subtask_start: OnSubtaskStart | None = None,
+    on_subtask_done: OnSubtaskDone | None = None,
+    on_finalized: OnFinalized | None = None,
 ) -> Plan:
     """
     Run a full task end-to-end: plan → exec subtasks → return Plan.
 
     Returns the final Plan with status set to complete or failed. The plan
     file is also archived on disk.
+
+    The four optional callbacks let the caller surface progress to chat,
+    dashboard, or anywhere else without coupling the orchestrator to UI.
     """
     world_state_fn = world_state_fn or (lambda: "")
+    noop = lambda *_a, **_kw: None
+    on_plan_created = on_plan_created or noop
+    on_subtask_start = on_subtask_start or noop
+    on_subtask_done = on_subtask_done or noop
+    on_finalized = on_finalized or noop
 
     # Phase 1: plan
     try:
@@ -63,24 +79,48 @@ def execute_task(
         )
         plan_store.write(plan)
         plan_store.archive(plan)
+        on_finalized(plan)
         return plan
 
     plan_store.write(plan)
     log.info("[%s] plan written with %d subtasks", bot_name, len(plan.subtasks))
+    try:
+        on_plan_created(plan)
+    except Exception:
+        log.exception("[%s] on_plan_created hook raised", bot_name)
 
     # Phase 2: drive subtasks
+    last_subtask_id = -1
     while plan.status == "executing":
         subtask = plan.current_subtask()
         if subtask is None or plan.all_complete():
             plan.status = "complete"
             break
+        # Fire "subtask started" hook on transitions only
+        if subtask.id != last_subtask_id:
+            try:
+                on_subtask_start(plan, subtask)
+            except Exception:
+                log.exception("[%s] on_subtask_start hook raised", bot_name)
+            last_subtask_id = subtask.id
+        prev_status = subtask.status
         if not _step(plan, subtask, model, dispatch_fn, world_state_fn):
             # _step returns False when the plan needs to abort
             break
+        # Fire "subtask done" hook when this subtask reached terminal state
+        if subtask.status in ("complete", "failed") and prev_status not in ("complete", "failed"):
+            try:
+                on_subtask_done(plan, subtask, subtask.status == "complete")
+            except Exception:
+                log.exception("[%s] on_subtask_done hook raised", bot_name)
 
     plan_store.write(plan)
     plan_store.archive(plan)
     log.info("[%s] plan finalized: %s", bot_name, plan.status)
+    try:
+        on_finalized(plan)
+    except Exception:
+        log.exception("[%s] on_finalized hook raised", bot_name)
     return plan
 
 
