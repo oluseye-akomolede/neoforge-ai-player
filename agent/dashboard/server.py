@@ -571,6 +571,10 @@ def create_app() -> FastAPI:
     async def hive_pois():
         return await _hive_proxy("/v1/pois")
 
+    @app.get("/api/hive/plans/{lieutenant}/{conversation_id}")
+    async def hive_plan_detail(lieutenant: str, conversation_id: str):
+        return await _hive_proxy(f"/v1/plans/{lieutenant}/{conversation_id}")
+
     # ── SPA: serve frontend (must be registered LAST) ──
 
     if STATIC_DIR.exists():
