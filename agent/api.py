@@ -103,6 +103,11 @@ def craft(bot, item, count=1):
 def equip(bot, slot):
     return _post(f"/bot/{bot}/equip", {"slot": slot})
 
+def equip_all(bot):
+    """Smart bulk equip: bot scans inventory and puts each equippable piece
+    into its proper armor/offhand slot. No slot number needed."""
+    return _post(f"/bot/{bot}/equip_all", {})
+
 def use_item(bot):
     return _post(f"/bot/{bot}/use")
 

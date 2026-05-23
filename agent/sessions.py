@@ -211,6 +211,17 @@ Respond ONLY with a JSON object:
                         self.results.append(f"OK equipped {item_id}")
                         print(f"  [{self.bot_name}/session] equip {item_id}: ok")
 
+            elif name == "equip_all":
+                resp = api.equip_all(self.bot_name)
+                error = resp.get("error") if isinstance(resp, dict) else None
+                if error:
+                    self.results.append(f"FAILED equip_all: {error}")
+                    print(f"  [{self.bot_name}/session] equip_all: FAILED {error}")
+                else:
+                    desc = resp.get("description", "")
+                    self.results.append(f"OK equip_all {desc}")
+                    print(f"  [{self.bot_name}/session] equip_all: {desc}")
+
             else:
                 self.results.append(f"Unknown session action: {name}")
 
@@ -360,6 +371,17 @@ Respond ONLY with a JSON object:
                     else:
                         self.results.append(f"OK equipped {item_id}")
                         print(f"  [{self.bot_name}/session] equip {item_id}: ok")
+
+            elif name == "equip_all":
+                resp = api.equip_all(self.bot_name)
+                error = resp.get("error") if isinstance(resp, dict) else None
+                if error:
+                    self.results.append(f"FAILED equip_all: {error}")
+                    print(f"  [{self.bot_name}/session] equip_all: FAILED {error}")
+                else:
+                    desc = resp.get("description", "")
+                    self.results.append(f"OK equip_all {desc}")
+                    print(f"  [{self.bot_name}/session] equip_all: {desc}")
 
             else:
                 self.results.append(f"Unknown session action: {name}")

@@ -10,6 +10,7 @@ import TaskBoard, { useTasks } from './components/TaskBoard'
 import WorldMap from './components/WorldMap'
 import DataBrowser from './components/DataBrowser'
 import PlanPanel from './components/PlanPanel'
+import HivePanel from './components/HivePanel'
 
 class AppErrorBoundary extends Component<
   { children: ReactNode },
@@ -106,10 +107,11 @@ function AppInner() {
             <EventLog events={events} />
           </div>
 
-          {/* Right: Directives + Plans + Tasks + Data */}
+          {/* Right: Directives + Plans + Hive + Tasks + Data */}
           <div className="lg:w-80 shrink-0 space-y-4">
             <DirectivePanel selectedBot={selectedBot} botData={activeBotData} allBots={bots} />
             <PlanPanel />
+            <HivePanel />
             <TaskBoard tasks={tasks} onRefresh={refreshTasks} />
             <DataBrowser selectedBot={selectedBot} />
           </div>

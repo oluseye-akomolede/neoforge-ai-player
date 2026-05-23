@@ -533,6 +533,44 @@ def create_app() -> FastAPI:
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"plan store unavailable: {e}")
 
+    # ── Hive proxy endpoints (forward to hive-service inside the cluster) ──
+
+    import os
+    HIVE_BASE = os.getenv(
+        "HIVE_SERVICE_URL",
+        "http://hive-service.minecraft-test.svc.cluster.local:8080",
+    )
+
+    async def _hive_proxy(path: str):
+        import urllib.request, json
+        url = f"{HIVE_BASE}{path}"
+        try:
+            req = urllib.request.Request(url, headers={"Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read())
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"hive-service unreachable: {e}")
+
+    @app.get("/api/hive/status")
+    async def hive_status():
+        return await _hive_proxy("/v1/status")
+
+    @app.get("/api/hive/plans")
+    async def hive_plans():
+        return await _hive_proxy("/v1/plans")
+
+    @app.get("/api/hive/drones")
+    async def hive_drones():
+        return await _hive_proxy("/v1/drones")
+
+    @app.get("/api/hive/catalog")
+    async def hive_catalog():
+        return await _hive_proxy("/v1/catalog")
+
+    @app.get("/api/hive/pois")
+    async def hive_pois():
+        return await _hive_proxy("/v1/pois")
+
     # ── SPA: serve frontend (must be registered LAST) ──
 
     if STATIC_DIR.exists():

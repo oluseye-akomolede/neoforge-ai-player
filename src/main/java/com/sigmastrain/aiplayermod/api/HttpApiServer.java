@@ -305,6 +305,23 @@ public class HttpApiServer {
                     sendJson(exchange, 200, Map.of("status", "equipped", "slot", slot));
                 }
             }
+            case "equip_all" -> {
+                var equipAllFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    EquipAllAction equipAllAction = new EquipAllAction();
+                    equipAllAction.tick(bot);
+                    var equip = bot.getEquipment();
+                    equipAllFuture.complete(Map.of(
+                            "status", "equipped_all",
+                            "description", equipAllAction.describe(),
+                            "equipment", equip));
+                });
+                try {
+                    sendJson(exchange, 200, equipAllFuture.get(5, java.util.concurrent.TimeUnit.SECONDS));
+                } catch (Exception e) {
+                    sendJson(exchange, 200, Map.of("status", "equipped_all"));
+                }
+            }
             case "use" -> {
                 BotManager.getServer().execute(() ->
                         bot.getActionQueue().enqueue(new UseItemAction()));
