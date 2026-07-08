@@ -58,6 +58,59 @@ _CMD_FORGET = re.compile(
     r"@(all|\w+)\s+forget:\s*(.+)", re.IGNORECASE | re.DOTALL
 )
 
+# ── L2 translation layer (l2-mcp) — fail-open helpers ──────────────────────
+# Persona render runs on the CPU model (Phase B); error humanization is a
+# deterministic table (Phase A). Both degrade to identity/raw on any failure.
+
+_L2_MCP_URL = os.getenv("L2_MCP_URL", "").rstrip("/")
+
+# Chat-voice archetypes (surface form only — facts are preserved by l2-mcp's
+# prompt constraints). Distinct from l3_planner.BOT_PERSONAS, which describe
+# planning style.
+_BOT_VOICES = {
+    "axiom": "a precise, logical android",
+    "forge": "a terse, no-nonsense dwarven smith",
+    "mystic": "an eloquent arcane scholar",
+    "scout": "an eager, upbeat explorer",
+    "tiller": "a calm, homely farmer",
+}
+
+
+def _l2_persona(text: str, persona: str) -> str:
+    """Persona-voice a chat line via l2-mcp. Identity on any failure."""
+    if not (_L2_MCP_URL and persona):
+        return text
+    try:
+        import requests as _rq
+        r = _rq.post(f"{_L2_MCP_URL}/render/persona",
+                     json={"text": text, "persona": persona}, timeout=8)
+        r.raise_for_status()
+        rendered = r.json().get("rendered", {})
+        out = rendered.get("text")
+        if out and not rendered.get("fallback"):
+            return out
+    except Exception:
+        pass
+    return text
+
+
+def _l2_humanize_error(raw: str) -> str:
+    """Plain-cause error line via l2-mcp's table. Raw text on any failure."""
+    if not _L2_MCP_URL:
+        return raw
+    try:
+        import requests as _rq
+        r = _rq.post(f"{_L2_MCP_URL}/render/error",
+                     json={"error": raw}, timeout=3)
+        r.raise_for_status()
+        msg = r.json().get("rendered", {}).get("message")
+        if msg:
+            return msg
+    except Exception:
+        pass
+    return raw
+
+
 # Shared state across all bot runners (set in run())
 _task_board = None
 _transmute = None  # TransmuteDB instance
@@ -869,10 +922,13 @@ class BotRunner:
             try:
                 color = "green" if ok else "red"
                 status = "done" if ok else "failed"
+                err_part = ""
+                if subtask.error and not ok:
+                    # L2 Phase A render: known failure codes → plain cause line
+                    err_part = f" — {_l2_humanize_error(subtask.error)[:80]}"
                 api.system_chat(
                     self.name,
-                    f"step {subtask.id}/{len(plan.subtasks)} {status}" +
-                    (f" — {subtask.error[:50]}" if (subtask.error and not ok) else ""),
+                    f"step {subtask.id}/{len(plan.subtasks)} {status}{err_part}",
                     color,
                 )
                 shared_state.push_event({
@@ -887,11 +943,12 @@ class BotRunner:
             try:
                 ok = (plan.status == "complete")
                 done_count = sum(1 for s in plan.subtasks if s.status == "complete")
-                api.system_chat(
-                    self.name,
-                    f"Plan {plan.status}: {done_count}/{len(plan.subtasks)} steps",
-                    "green" if ok else "red",
-                )
+                summary = f"Plan {plan.status}: {done_count}/{len(plan.subtasks)} steps"
+                if ok:
+                    # L2 Phase B render: same facts, this bot's voice. Identity
+                    # fallback if the CPU model is slow/down — never blocks facts.
+                    summary = _l2_persona(summary, _BOT_VOICES.get(self.name.lower(), ""))
+                api.system_chat(self.name, summary, "green" if ok else "red")
                 shared_state.push_event({
                     "bot": self.name, "type": "l3_plan_finalized",
                     "status": plan.status, "subtask_count": len(plan.subtasks),

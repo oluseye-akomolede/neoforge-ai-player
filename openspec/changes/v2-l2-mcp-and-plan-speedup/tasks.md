@@ -16,7 +16,7 @@
 - [x] Diff narration renderer (world snapshot delta)
 - [x] Error humanization table (known L1 failure strings → cause lines)
 - [x] Agent: L2_MCP_URL wiring with fail-open bypass
-- [ ] Phase B (blocked on hardware/CPU decision): L2_MODEL on CPU-Ollama or RTX 3050; persona/voice + result verbalization renders
+- [x] Phase B via CPU: qwen2.5:1.5b-instruct on dedicated ollama-cpu; persona/voice + result verbalization live (RTX 3050 takes over when the V100 rig frees it)
 - [x] Manifests: l2-mcp deployment + service (minecraft-test first)
 
 ## Plan-template memory (follow-up)
