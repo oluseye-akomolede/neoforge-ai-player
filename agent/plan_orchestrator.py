@@ -19,6 +19,7 @@ import time
 from typing import Any, Callable
 
 import api
+import fast_planner
 import l3_planner
 import plan_store
 from criteria_eval import evaluate as evaluate_criteria
@@ -68,24 +69,32 @@ def execute_task(
     # Cached for the rest of this task — dims rarely change mid-task.
     dim_list = _safe_get_dimensions()
 
-    # Phase 1: plan
-    try:
-        plan = l3_planner.call_plan(model, bot_name, task, world_state_fn(), dimensions=dim_list)
-    except PlanValidationError as e:
-        log.warning("[%s] planning failed: %s", bot_name, e)
-        # Synthetic failure plan so the caller has something to log
-        import datetime
-        plan = Plan(
-            task=task, bot=bot_name,
-            created_at=datetime.datetime.utcnow().isoformat(),
-            status="failed",
-            subtasks=[],
-            current_subtask_id=0,
-        )
-        plan_store.write(plan)
-        plan_store.archive(plan)
-        on_finalized(plan)
-        return plan
+    # Phase 0: deterministic fast path. Recognized command shapes ("mine 16
+    # iron ore", "goto x y z", "teleport to the nether") skip L3 planning
+    # entirely — the Plan arrives with pre-baked directives on subtask 1.
+    plan = fast_planner.try_plan(bot_name, task)
+    if plan is not None:
+        log.info("[%s] fast-path plan (0 LLM calls): %s",
+                 bot_name, plan.subtasks[0].description)
+    else:
+        # Phase 1: L3 plan
+        try:
+            plan = l3_planner.call_plan(model, bot_name, task, world_state_fn(), dimensions=dim_list)
+        except PlanValidationError as e:
+            log.warning("[%s] planning failed: %s", bot_name, e)
+            # Synthetic failure plan so the caller has something to log
+            import datetime
+            plan = Plan(
+                task=task, bot=bot_name,
+                created_at=datetime.datetime.utcnow().isoformat(),
+                status="failed",
+                subtasks=[],
+                current_subtask_id=0,
+            )
+            plan_store.write(plan)
+            plan_store.archive(plan)
+            on_finalized(plan)
+            return plan
 
     plan_store.write(plan)
     log.info("[%s] plan written with %d subtasks", bot_name, len(plan.subtasks))
@@ -155,24 +164,32 @@ def _step(plan: Plan, subtask: Subtask, model: str,
           dispatch_fn: DispatchFn, world_state_fn: WorldStateFn,
           dim_list: list[str] | None = None) -> bool:
     """Drive one subtask through one attempt. Returns False if the plan must abort."""
-    # Phase 2 exec
-    try:
-        directives = l3_planner.call_exec(
-            model=model, plan=plan, subtask=subtask,
-            world_state_summary=world_state_fn(),
-            previous_error=subtask.error,
-            dimensions=dim_list,
-        )
-    except Exception as e:
-        log.warning("[%s] subtask %d exec failed: %s", plan.bot, subtask.id, e)
-        subtask.attempts += 1
-        subtask.error = f"exec_call_failed: {e}"
-        plan_store.write(plan)
-        if subtask.attempts >= MAX_ATTEMPTS:
-            if not _replan(plan, subtask, model):
-                plan.status = "failed"
-                return False
-        return True
+    # Fast path: subtask arrived with pre-baked directives (fast_planner) and
+    # this is the first attempt — skip the L3 exec call entirely. Retries
+    # (attempts > 0) fall through to L3 so failures get intelligent handling.
+    if subtask.directives and subtask.attempts == 0 and not subtask.error:
+        directives = list(subtask.directives)
+        log.info("[%s] subtask %d dispatching pre-baked directives (0 LLM calls)",
+                 plan.bot, subtask.id)
+    else:
+        # Phase 2 exec
+        try:
+            directives = l3_planner.call_exec(
+                model=model, plan=plan, subtask=subtask,
+                world_state_summary=world_state_fn(),
+                previous_error=subtask.error,
+                dimensions=dim_list,
+            )
+        except Exception as e:
+            log.warning("[%s] subtask %d exec failed: %s", plan.bot, subtask.id, e)
+            subtask.attempts += 1
+            subtask.error = f"exec_call_failed: {e}"
+            plan_store.write(plan)
+            if subtask.attempts >= MAX_ATTEMPTS:
+                if not _replan(plan, subtask, model):
+                    plan.status = "failed"
+                    return False
+            return True
 
     # Validate / repair directives BEFORE dispatch (TELEPORT especially).
     directives = [_repair_directive(d, plan.bot, dim_list) for d in directives]

@@ -101,6 +101,7 @@ def call_plan(model: str, bot_name: str, task: str,
                     {"role": "user", "content": user},
                 ],
                 "stream": False,
+                "format": "json",
                 "options": {"temperature": 0.2, "num_predict": 1024},
             },
             timeout=120,
@@ -190,8 +191,8 @@ def call_exec(model: str, plan: Plan, subtask: Subtask,
     dim_lines = "\n".join(f"  - {d}" for d in (dimensions or _DEFAULT_DIMENSIONS))
     sys_prompt = _EXEC_SYSTEM_PROMPT.format(
         bot_name=plan.bot,
-        plan_json=json.dumps(plan.to_dict(), indent=2),
-        subtask_json=json.dumps(subtask.to_dict(), indent=2),
+        plan_json=json.dumps(_compact_plan(plan), indent=2),
+        subtask_json=json.dumps(_compact_subtask(subtask), indent=2),
         world_state=world_state_summary or "(none provided)",
         dimensions=dim_lines,
         error=previous_error or "(none)",
@@ -206,6 +207,7 @@ def call_exec(model: str, plan: Plan, subtask: Subtask,
                     {"role": "user", "content": f"Execute subtask {subtask.id}: {subtask.description}"},
                 ],
                 "stream": False,
+                "format": "json",
                 "options": {"temperature": 0.2, "num_predict": 768},
             },
             timeout=120,
@@ -255,8 +257,8 @@ def call_replan(model: str, plan: Plan, failed_subtask: Subtask) -> Subtask:
     sys_prompt = _REPLAN_SYSTEM_PROMPT.format(
         bot_name=plan.bot,
         persona=persona,
-        plan_json=json.dumps(plan.to_dict(), indent=2),
-        subtask_json=json.dumps(failed_subtask.to_dict(), indent=2),
+        plan_json=json.dumps(_compact_plan(plan), indent=2),
+        subtask_json=json.dumps(_compact_subtask(failed_subtask), indent=2),
         error=failed_subtask.error or "(unknown)",
         attempts=failed_subtask.attempts,
         subtask_id=failed_subtask.id,
@@ -271,6 +273,7 @@ def call_replan(model: str, plan: Plan, failed_subtask: Subtask) -> Subtask:
                     {"role": "user", "content": "Revise the failed subtask."},
                 ],
                 "stream": False,
+                "format": "json",
                 "options": {"temperature": 0.3, "num_predict": 384},
             },
             timeout=120,
@@ -293,6 +296,31 @@ def call_replan(model: str, plan: Plan, failed_subtask: Subtask) -> Subtask:
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
+
+
+def _compact_plan(plan: Plan) -> dict[str, Any]:
+    """Prompt-sized plan outline. Full to_dict() re-embeds every subtask's
+    emitted directives on every EXEC call — pure token bloat. L3 only needs
+    the shape of the plan for context."""
+    return {
+        "task": plan.task,
+        "bot": plan.bot,
+        "current_subtask_id": plan.current_subtask_id,
+        "subtasks": [
+            {"id": s.id, "status": s.status, "description": s.description}
+            for s in plan.subtasks
+        ],
+    }
+
+
+def _compact_subtask(subtask: Subtask) -> dict[str, Any]:
+    """Current subtask in full, but cap previously-emitted directives to the
+    last 2 (enough for retry context, not the whole history)."""
+    d = subtask.to_dict()
+    dirs = d.get("directives") or []
+    if len(dirs) > 2:
+        d["directives"] = dirs[-2:]
+    return d
 
 
 def _strip_codefence(s: str) -> str:
