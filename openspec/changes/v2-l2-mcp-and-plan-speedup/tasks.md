@@ -11,15 +11,15 @@
 - [ ] Measure: log-derived before/after latency for a fast-path vs L3-path command
 
 ## L2 MCP (follow-up change, spec: l2-mcp-translation-layer)
-- [ ] Scaffold `l2-mcp` service (FastAPI + MCP tool registry), Phase A renderers only
-- [ ] Extract `_repair_directive`, dimension aliases, item normalization into l2-mcp with in-process bypass copies retained
-- [ ] Diff narration renderer (world snapshot delta)
-- [ ] Error humanization table (known L1 failure strings → cause lines)
-- [ ] Agent: L2_MCP_URL wiring with fail-open bypass
+- [x] Scaffold `l2-mcp` service (FastAPI + MCP tool registry), Phase A renderers only
+- [x] Extract `_repair_directive`, dimension aliases, item normalization into l2-mcp with in-process bypass copies retained
+- [x] Diff narration renderer (world snapshot delta)
+- [x] Error humanization table (known L1 failure strings → cause lines)
+- [x] Agent: L2_MCP_URL wiring with fail-open bypass
 - [ ] Phase B (blocked on hardware/CPU decision): L2_MODEL on CPU-Ollama or RTX 3050; persona/voice + result verbalization renders
-- [ ] Manifests: l2-mcp deployment + service (minecraft-test first)
+- [x] Manifests: l2-mcp deployment + service (minecraft-test first)
 
 ## Plan-template memory (follow-up)
-- [ ] Normalize task text (numbers → N, item names canonical) and store with archived plans
-- [ ] On new task: exact-normalized match against successful archives → clone plan, reset statuses, re-substitute count
+- [x] Normalize task text (numbers → N, item names canonical) and store with archived plans
+- [x] On new task: exact-normalized match against successful archives → clone plan, reset statuses, re-substitute count
 - [ ] pgvector similarity variant behind a confidence threshold

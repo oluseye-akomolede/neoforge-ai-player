@@ -15,15 +15,24 @@ dependencies.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Any, Callable
+
+import requests
 
 import api
 import fast_planner
 import l3_planner
+import plan_memory
 import plan_store
 from criteria_eval import evaluate as evaluate_criteria
 from plan_schema import Plan, PlanValidationError, Subtask
+
+# Optional L2 translation layer (spec: l2-mcp-translation-layer). When set,
+# directive normalization is delegated to the shared l2-mcp service; any
+# failure falls back to the in-process copy below. Fail-open by design.
+_L2_MCP_URL = os.getenv("L2_MCP_URL", "").rstrip("/")
 
 log = logging.getLogger("aibot.orchestrator")
 
@@ -76,7 +85,13 @@ def execute_task(
     if plan is not None:
         log.info("[%s] fast-path plan (0 LLM calls): %s",
                  bot_name, plan.subtasks[0].description)
-    else:
+    if plan is None:
+        # Phase 0.5: plan-template memory — replay a proven plan for a
+        # near-identical past task (exact normalized match, count substituted).
+        plan = plan_memory.lookup(bot_name, task)
+        if plan is not None:
+            log.info("[%s] plan-memory reuse (0 LLM planning calls)", bot_name)
+    if plan is None:
         # Phase 1: L3 plan
         try:
             plan = l3_planner.call_plan(model, bot_name, task, world_state_fn(), dimensions=dim_list)
@@ -130,6 +145,11 @@ def execute_task(
 
     plan_store.write(plan)
     plan_store.archive(plan)
+    if plan.status == "complete":
+        try:
+            plan_memory.record(plan)
+        except Exception:
+            log.exception("[%s] plan-memory record failed (non-fatal)", bot_name)
     log.info("[%s] plan finalized: %s", bot_name, plan.status)
     try:
         on_finalized(plan)
@@ -253,9 +273,30 @@ _DIM_ALIASES = {
 
 
 def _repair_directive(d: dict[str, Any], bot_name: str, dim_list: list[str] | None) -> dict[str, Any]:
-    """Patch common L3 directive mistakes before dispatch. Idempotent."""
+    """Patch common L3 directive mistakes before dispatch. Idempotent.
+
+    Delegates to l2-mcp when L2_MCP_URL is set (authoritative vocabulary
+    tables live there); the local logic below is the fail-open bypass."""
     if not isinstance(d, dict):
         return d
+
+    if _L2_MCP_URL:
+        try:
+            r = requests.post(
+                f"{_L2_MCP_URL}/render/normalize_directive",
+                json={"directive": d, "dimensions": dim_list},
+                timeout=1.5,
+            )
+            r.raise_for_status()
+            rendered = r.json().get("rendered", {})
+            nd = rendered.get("directive")
+            if isinstance(nd, dict) and nd.get("kind"):
+                flags = rendered.get("flags") or []
+                if flags:
+                    log.info("[%s] l2-mcp flags on %s: %s", bot_name, nd.get("kind"), flags)
+                return nd
+        except Exception as e:
+            log.debug("l2-mcp normalize bypass (%s)", e)
     kind = str(d.get("kind", "")).upper()
 
     if kind == "TELEPORT":
