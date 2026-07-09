@@ -151,11 +151,22 @@ directive's specific target type when one is named, otherwise of generic
 hostiles. Target-type matching MUST ignore the `minecraft:` namespace
 (entity short strings carry no namespace).
 
+If the directive's target does not resolve to a registered entity type
+(e.g. a pseudo-target like "hostile_entity"), COMBAT MUST degrade to a
+hostile-only sweep rather than filter on the unresolvable name — the
+matcher and the spawner MUST always agree on what counts as a target.
+
 #### Scenario: Specific-target sweep in an empty area
 - GIVEN a COMBAT directive with target "minecraft:zombified_piglin" and no matching mobs in radius
 - WHEN NO_TARGET_THRESHOLD ticks elapse without a target
 - THEN a wave of zombified piglins is spawned near the bot
 - AND the bot engages them (namespace stripped before matching)
+
+#### Scenario: Pseudo-target degrades to hostile-only
+- GIVEN a COMBAT directive with target "hostile_entity"
+- WHEN the behavior starts and EntityType.byString finds no such type
+- THEN the sweep runs in hostile-only mode (any Monster/Enemy matches)
+- AND spawned waves are engageable rather than invisible to the matcher
 
 ### Requirement: Ceiling-Dimension Ground Placement
 Any behavior that repositions a bot or spawns entities via terrain height

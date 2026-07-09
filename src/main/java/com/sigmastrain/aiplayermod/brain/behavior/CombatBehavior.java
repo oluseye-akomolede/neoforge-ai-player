@@ -88,6 +88,17 @@ public class CombatBehavior implements Behavior {
         duration = directive.getCount() > 0 ? directive.getCount() * 20 : DEFAULT_DURATION;
         searchRadius = directive.getRadius() > 0 ? directive.getRadius() : 256;
         specificTarget = directive.getTarget();
+        // L3 sometimes emits pseudo-targets ("hostile_entity") that resolve to no
+        // entity type: the spawner then falls back to generic hostiles while the
+        // matcher keeps filtering for the pseudo-name and matches nothing (war-test
+        // round 3, Scout: 0 kills amid 69 spawned mobs). If the target isn't a real
+        // entity type, fight all hostiles instead.
+        if (specificTarget != null && !specificTarget.isEmpty()
+                && EntityType.byString(specificTarget.toLowerCase()).isEmpty()) {
+            AIPlayerMod.LOGGER.info("[{}] COMBAT target '{}' is not an entity type — treating as hostile-only sweep",
+                    bot.getPlayer().getName().getString(), specificTarget);
+            specificTarget = null;
+        }
         hostileOnly = specificTarget == null || specificTarget.isEmpty();
 
         equipBestWeapon(bot);
