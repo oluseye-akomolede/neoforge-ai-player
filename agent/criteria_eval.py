@@ -69,23 +69,67 @@ def evaluate(bot_name: str, subtask: Subtask,
 # ── Strategy 1: world-state ────────────────────────────────────────────────
 
 
+_CLAUSE_SPLIT = re.compile(r"\s+(?:AND|and)\s+|\s*&&\s*")
+
+
 def _strategy_world_state(bot_name: str, subtask: Subtask) -> tuple[bool, str] | None:
+    """Evaluate EVERY checkable clause of the criterion against the mod API
+    (war-game findings B2/B3: the old paths 404'd so this never ran, and
+    compound AND criteria were judged by their first clause only).
+
+    Any checkable clause failing -> False. All clauses checkable and passing
+    -> True. Otherwise (nothing checkable / a passing subset) -> None so the
+    remaining strategies can weigh in.
+    """
     criterion = subtask.criteria or ""
+    clauses = [c.strip() for c in _CLAUSE_SPLIT.split(criterion) if c.strip()]
+    if not clauses:
+        return None
+
+    results: list[tuple[bool, str]] = []
+    unchecked = 0
+    for clause in clauses:
+        r = _eval_clause(bot_name, clause)
+        if r is None:
+            unchecked += 1
+        else:
+            results.append(r)
+            if not r[0]:
+                return False, r[1]
+
+    if results and unchecked == 0:
+        return True, "; ".join(reason for _, reason in results)
+    return None
+
+
+def _eval_clause(bot_name: str, clause: str) -> tuple[bool, str] | None:
+    # Block-at check (before position: "block at (x,y,z)" also matches
+    # the position pattern)
+    m = _BLOCK_PATTERN.search(clause)
+    if m:
+        bx, by, bz = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        want = m.group(4)
+        if ":" not in want:
+            want = f"minecraft:{want}"
+        try:
+            got = api.block_at(bot_name, bx, by, bz).get("block", "")
+            return (got == want, f"block at ({bx},{by},{bz}) is {got} (wanted {want})")
+        except Exception as e:
+            log.debug("block query failed: %s", e)
+            return None
 
     # Inventory check
-    m = _INVENTORY_PATTERN.search(criterion)
+    m = _INVENTORY_PATTERN.search(clause)
     if m:
         need = int(m.group(1))
         item_id = m.group(2)
         if ":" not in item_id:
             item_id = f"minecraft:{item_id}"
         try:
-            r = requests.get(f"{MOD_API_URL}/inventory", params={"bot": bot_name}, timeout=8)
-            r.raise_for_status()
-            data = r.json()
+            data = api.inventory(bot_name)
             count = 0
-            for slot in data.get("items", []):
-                if slot.get("id") == item_id:
+            for slot in data.get("inventory", []):
+                if slot.get("item") == item_id:
                     count += int(slot.get("count", 0))
             ok = count >= need
             return ok, f"inventory has {count}/{need} of {item_id}"
@@ -94,40 +138,31 @@ def _strategy_world_state(bot_name: str, subtask: Subtask) -> tuple[bool, str] |
             return None
 
     # Position check
-    m = _POSITION_PATTERN.search(criterion)
-    if m and "block at" not in criterion.lower():
+    m = _POSITION_PATTERN.search(clause)
+    if m and "block at" not in clause.lower():
         tx, ty, tz = int(m.group(1)), int(m.group(2)), int(m.group(3))
         try:
-            r = requests.get(f"{MOD_API_URL}/position", params={"bot": bot_name}, timeout=8)
-            r.raise_for_status()
-            pos = r.json()
+            pos = api.status(bot_name).get("position", {})
             dx = abs(int(pos.get("x", 0)) - tx)
             dy = abs(int(pos.get("y", 0)) - ty)
             dz = abs(int(pos.get("z", 0)) - tz)
             ok = (dx + dy + dz) <= 3   # tolerance
-            return ok, f"bot at ({pos.get('x')},{pos.get('y')},{pos.get('z')}) vs target ({tx},{ty},{tz})"
+            return ok, f"bot at ({pos.get('x'):.0f},{pos.get('y'):.0f},{pos.get('z'):.0f}) vs target ({tx},{ty},{tz})"
         except Exception as e:
             log.debug("position query failed: %s", e)
             return None
 
-    # Block-at check
-    m = _BLOCK_PATTERN.search(criterion)
+    # Dimension check
+    m = re.search(r"in\s+dimension\s+([a-z0-9_:]+)", clause, re.IGNORECASE)
     if m:
-        bx, by, bz = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        want = m.group(4)
-        if ":" not in want:
-            want = f"minecraft:{want}"
+        want_dim = m.group(1)
+        if ":" not in want_dim:
+            want_dim = f"minecraft:{want_dim}"
         try:
-            r = requests.get(
-                f"{MOD_API_URL}/block",
-                params={"x": bx, "y": by, "z": bz},
-                timeout=8,
-            )
-            r.raise_for_status()
-            got = r.json().get("id", "")
-            return (got == want, f"block at ({bx},{by},{bz}) is {got} (wanted {want})")
+            got_dim = api.status(bot_name).get("dimension", "")
+            return (got_dim == want_dim, f"bot in {got_dim} (wanted {want_dim})")
         except Exception as e:
-            log.debug("block query failed: %s", e)
+            log.debug("dimension query failed: %s", e)
             return None
 
     return None

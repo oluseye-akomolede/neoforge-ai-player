@@ -23,9 +23,12 @@ import java.util.*;
 
 /**
  * Places blocks from inventory following a predefined blueprint.
- * Directive target = blueprint name (shelter, wall, farm, tower, platform).
+ * Directive target = blueprint name (shelter, wall, farm, tower, platform);
+ * extra "shape" is accepted as a fallback, and common synonyms (pillar,
+ * gate, cube, keep, ...) map onto the real blueprints.
  * Directive extra "material" = block registry ID (default: cobblestone).
- * Uses the bot's current position as the build origin.
+ * Directive x/y/z (if non-zero) = build origin; otherwise the bot's position.
+ * Extra "size"/"length"/"width" and "height" parameterize wall/tower/platform.
  */
 public class BuildBehavior implements Behavior {
     private final ProgressReport progress = new ProgressReport();
@@ -42,16 +45,40 @@ public class BuildBehavior implements Behavior {
     private static final int PLACE_INTERVAL = 4; // ticks between placements
     private static final int MAX_REACH = 6;
 
+    // L3 vocabulary → real blueprints (war-game finding B1: L3 invents shapes)
+    private static final Map<String, String> BLUEPRINT_ALIASES = Map.of(
+            "pillar", "tower",
+            "watchtower", "tower",
+            "gate", "wall",
+            "door", "wall",
+            "cube", "shelter",
+            "keep", "shelter",
+            "house", "shelter",
+            "fortress", "shelter");
+
     @Override
     public void start(BotPlayer bot, Directive directive) {
         progress.reset();
         progress.setPhase("preparing");
 
-        blueprintName = directive.getTarget() != null ? directive.getTarget().toLowerCase() : "shelter";
+        // Blueprint name: target field, else extra "shape" (the form L3 tends
+        // to emit), else default shelter. Resolve synonyms onto real blueprints.
+        String rawName = directive.getTarget() != null && !directive.getTarget().isEmpty()
+                ? directive.getTarget()
+                : directive.getExtra().getOrDefault("shape", "shelter");
+        blueprintName = rawName.toLowerCase();
+        if (BLUEPRINT_ALIASES.containsKey(blueprintName)) {
+            AIPlayerMod.LOGGER.info("[{}] BUILD blueprint '{}' aliased to '{}'",
+                    bot.getPlayer().getName().getString(), blueprintName,
+                    BLUEPRINT_ALIASES.get(blueprintName));
+            blueprintName = BLUEPRINT_ALIASES.get(blueprintName);
+        }
         materialId = directive.getExtra().getOrDefault("material", "minecraft:cobblestone");
         if (!materialId.contains(":")) materialId = "minecraft:" + materialId;
 
-        blueprint = getBlueprint(blueprintName);
+        int size = parseIntExtra(directive, 0, "size", "length", "width");
+        int height = parseIntExtra(directive, 0, "height");
+        blueprint = getBlueprint(blueprintName, size, height);
         if (blueprint == null) {
             progress.setFailureReason("Unknown blueprint: " + blueprintName
                     + ". Available: shelter, wall, farm, tower, platform");
@@ -59,17 +86,38 @@ public class BuildBehavior implements Behavior {
         }
 
         ServerPlayer player = bot.getPlayer();
-        origin = player.blockPosition().relative(Direction.fromYRot(player.getYRot()), 2);
+        // Explicit directive coordinates win; all-zero means "build here".
+        double dx = directive.getX(), dy = directive.getY(), dz = directive.getZ();
+        if (dx != 0 || dy != 0 || dz != 0) {
+            origin = new BlockPos((int) dx, (int) dy, (int) dz);
+            // Stand adjacent to the origin so the build is attended.
+            bot.teleport(dx - 2, dy, dz - 2);
+        } else {
+            origin = player.blockPosition().relative(Direction.fromYRot(player.getYRot()), 2);
+        }
         placeIndex = 0;
         placeCooldown = 0;
         blocksPlaced = 0;
         totalBlocks = blueprint.size();
 
-        progress.logEvent("Building " + blueprintName + " with " + materialId
-                + " (" + totalBlocks + " blocks)");
+        progress.logEvent("Building " + blueprintName + " at " + origin.toShortString()
+                + " with " + materialId + " (" + totalBlocks + " blocks)");
         bot.systemChat("Building " + blueprintName + " (" + totalBlocks + " blocks)", "aqua");
         AIPlayerMod.LOGGER.info("[{}] BUILD {} at {} with {} ({} blocks)",
                 player.getName().getString(), blueprintName, origin, materialId, totalBlocks);
+    }
+
+    private static int parseIntExtra(Directive directive, int fallback, String... keys) {
+        for (String key : keys) {
+            String v = directive.getExtra().get(key);
+            if (v != null) {
+                try {
+                    return Integer.parseInt(v.trim());
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+        return fallback;
     }
 
     @Override
@@ -153,15 +201,20 @@ public class BuildBehavior implements Behavior {
         return -1;
     }
 
-    private static List<int[]> getBlueprint(String name) {
+    private static List<int[]> getBlueprint(String name, int size, int height) {
         return switch (name) {
             case "shelter" -> buildShelter();
-            case "wall" -> buildWall();
+            case "wall" -> buildWall(clamp(size, 3, 64, 9), clamp(height, 1, 16, 3));
             case "farm" -> buildFarm();
-            case "tower" -> buildTower();
-            case "platform" -> buildPlatform();
+            case "tower" -> buildTower(clamp(height > 0 ? height : size, 3, 32, 8));
+            case "platform" -> buildPlatform(clamp(size, 3, 32, 7));
             default -> null;
         };
+    }
+
+    private static int clamp(int v, int min, int max, int fallback) {
+        if (v <= 0) return fallback;
+        return Math.max(min, Math.min(max, v));
     }
 
     // 5x5x4 enclosed shelter with door gap
@@ -191,11 +244,11 @@ public class BuildBehavior implements Behavior {
         return blocks;
     }
 
-    // 9-long, 3-high wall
-    private static List<int[]> buildWall() {
+    // Parametric wall: length blocks long, height blocks high
+    private static List<int[]> buildWall(int length, int height) {
         List<int[]> blocks = new ArrayList<>();
-        for (int x = 0; x < 9; x++)
-            for (int y = 0; y < 3; y++)
+        for (int x = 0; x < length; x++)
+            for (int y = 0; y < height; y++)
                 blocks.add(new int[]{x, y, 0});
         return blocks;
     }
@@ -219,10 +272,10 @@ public class BuildBehavior implements Behavior {
         return blocks;
     }
 
-    // 3x3 tower, 8 high with interior ladder space
-    private static List<int[]> buildTower() {
+    // 3x3 tower, parametric height, with interior ladder space
+    private static List<int[]> buildTower(int height) {
         List<int[]> blocks = new ArrayList<>();
-        for (int y = 0; y < 8; y++) {
+        for (int y = 0; y < height; y++) {
             for (int x = 0; x < 3; x++) {
                 for (int z = 0; z < 3; z++) {
                     if (x == 1 && z == 1) continue; // hollow interior
@@ -233,15 +286,15 @@ public class BuildBehavior implements Behavior {
         // Cap
         for (int x = 0; x < 3; x++)
             for (int z = 0; z < 3; z++)
-                blocks.add(new int[]{x, 8, z});
+                blocks.add(new int[]{x, height, z});
         return blocks;
     }
 
-    // 7x7 flat platform
-    private static List<int[]> buildPlatform() {
+    // Parametric flat platform (size x size)
+    private static List<int[]> buildPlatform(int size) {
         List<int[]> blocks = new ArrayList<>();
-        for (int x = 0; x < 7; x++)
-            for (int z = 0; z < 7; z++)
+        for (int x = 0; x < size; x++)
+            for (int z = 0; z < size; z++)
                 blocks.add(new int[]{x, 0, z});
         return blocks;
     }

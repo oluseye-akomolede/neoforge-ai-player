@@ -143,6 +143,29 @@ EnchantBehavior MUST support deterministic enchanting by accepting a specific en
 - THEN it uses `EnchantmentHelper.selectEnchantment()` with the specified tier option (0=basic, 1=mid, 2=max)
 - AND all selected enchantments are applied to the item
 
+### Requirement: BUILD Blueprint Contract
+BuildBehavior MUST read the blueprint name from the directive's `target`
+field, accepting `extra.shape` as a fallback, and MUST map common
+blueprint synonyms onto the real set (pillar/watchtower→tower,
+gate/door→wall, cube/keep/house/fortress→shelter). The real blueprints
+are: shelter, wall, farm, tower, platform. Wall accepts
+`extra.size|length|width` (length) and `extra.height`; tower accepts
+`extra.height`; platform accepts `extra.size`. When the directive
+carries non-zero x/y/z, they are the world-space build origin and the
+bot teleports adjacent before placing; otherwise the bot's position is
+the origin.
+
+#### Scenario: L3 emits shape in extra
+- GIVEN a BUILD directive `{"x":-9,"y":67,"z":-9,"extra":{"shape":"wall","material":"netherrack","size":21,"height":8}}`
+- WHEN the behavior starts
+- THEN it builds a 21-long, 8-high netherrack wall with origin (-9,67,-9)
+- AND not a default shelter at the bot's position
+
+#### Scenario: Invented blueprint name
+- GIVEN a BUILD directive with target "pillar"
+- WHEN the behavior starts
+- THEN the tower blueprint is used and the alias is logged
+
 ### Requirement: Combat Target Provisioning
 Fake players do not trigger natural mob spawning, so CombatBehavior MUST
 provision its own targets: when no matching target is found for

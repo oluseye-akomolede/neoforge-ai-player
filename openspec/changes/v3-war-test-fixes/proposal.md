@@ -52,6 +52,23 @@ had been masked by round 1's fictional victories:
 | 10 | Specific-target COMBAT could never fight — (a) fake players trigger no natural mob spawning (user-confirmed), and the wave-spawner only ran in `hostileOnly` mode, so target-specific sweeps starved; (b) namespaced targets (`minecraft:zombified_piglin`) never substring-matched `toShortString()`, so even present mobs were invisible | Wave-spawning now runs for specific targets too and spawns the requested type (`EntityType.byString`); target matching strips the namespace before comparing. Wave rate raised (6 mobs / 5 s cooldown) so kill-count tests complete in bounded time | `CombatBehavior` |
 | 11 | Pseudo-target starvation (round 3, Scout: 0 kills amid 69 spawned mobs, honest plan failure) — L3 emitted `target: "hostile_entity"`, which resolves to no entity type; the spawner fell back to generic hostiles while the matcher kept filtering for the pseudo-name and matched nothing | If the directive's target does not resolve via `EntityType.byString`, COMBAT logs it and degrades to a hostile-only sweep, so matcher and spawner always agree | `CombatBehavior.start` |
 
+## Build-Task Findings → Fixes (2026-07-09 stronghold war-game)
+
+A fuzzy build order ("stronghold, ~21 square, walls 8 high, local
+materials, near (0,60,0)") produced excellent plans — full clause
+coverage, machine-checkable criteria, correct geometry — and zero
+fortress. Three faults:
+
+| # | Finding | Fix | Where |
+|---|---------|-----|-------|
+| 12 | BUILD contract mismatch — L3 puts the shape in `extra.shape` (as our own EXEC reference documented); the mod reads the blueprint from `target` and used the bot's position as origin, ignoring directive x/y/z. Every wall/gate/tower became a default shelter at the bot's feet | Mod: blueprint from `target` with `extra.shape` fallback, alias map for invented shapes (pillar→tower, gate/door→wall, cube/keep→shelter), parametric wall/tower/platform sizes, directive x/y/z honored as build origin (bot teleports adjacent). Agent + l2-mcp: `extra.shape`→`target` normalization with the same aliases. EXEC prompt: BUILD row documents the real contract and the closed blueprint list | `BuildBehavior`, `plan_orchestrator._repair_directive`, `l2-mcp renderers`, `l3_planner` |
+| 13 | Criteria evaluator never checked the world — strategy 1 queried `/inventory?bot=`, `/position?bot=`, `/block` (all 404; real paths are `/bot/{name}/...`) and expected the wrong response schema. Every inventory/position/block criterion silently degraded to result-text tokens; two bots "completed" phantom fortresses | `criteria_eval` rewritten onto `api.py` wrappers (correct paths + schema); new mod endpoint `POST /bot/{name}/block_at` for exact block assertions; dimension clauses now also checkable | `criteria_eval`, `api.py`, `HttpApiServer`, `BotPlayer.blockAt` |
+| 14 | Compound criteria judged by first clause only — "inventory has 64 netherrack AND 32 basalt AND 16 blackstone" passed on the last directive's success token while netherrack was 0 (basalt-deltas biome has none) | Strategy 1 splits on AND/&&, evaluates every clause; any checkable clause failing ⇒ fail with that reason; all checkable and passing ⇒ pass; otherwise abstain to later strategies | `criteria_eval._strategy_world_state` |
+
+Deferred: replan criteria immutability blocked one *legitimate* adaptation
+(material swap when blackstone_wall was uncraftable). Future: criteria
+changes allowed only via full plan replan, never a subtask splice.
+
 ## Non-Goals
 
 - No new decision-making in L2 (translation-layer purity holds).

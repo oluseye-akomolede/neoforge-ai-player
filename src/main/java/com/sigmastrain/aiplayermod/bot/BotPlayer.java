@@ -476,6 +476,20 @@ public class BotPlayer {
         return true;
     }
 
+    /** Exact block lookup for criteria verification (must run on server thread). */
+    public Map<String, Object> blockAt(int x, int y, int z) {
+        BlockPos pos = new BlockPos(x, y, z);
+        var state = player.level().getBlockState(pos);
+        String id = net.minecraft.core.registries.BuiltInRegistries.BLOCK
+                .getKey(state.getBlock()).toString();
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("block", id);
+        out.put("x", x);
+        out.put("y", y);
+        out.put("z", z);
+        return out;
+    }
+
     private void refreshCache() {
         cachedStatus = getStatus();
         cachedInventory = getInventory();

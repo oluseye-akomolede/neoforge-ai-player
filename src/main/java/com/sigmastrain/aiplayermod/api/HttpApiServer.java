@@ -276,6 +276,17 @@ public class HttpApiServer {
             }
             case "entities" -> sendJson(exchange, 200, Map.of("entities", bot.getCachedEntities()));
             case "blocks" -> sendJson(exchange, 200, Map.of("blocks", bot.getCachedBlocks()));
+            case "block_at" -> {
+                int bx = body.get("x").getAsInt();
+                int by = body.get("y").getAsInt();
+                int bz = body.get("z").getAsInt();
+                var blockAtFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    try { blockAtFuture.complete(bot.blockAt(bx, by, bz)); }
+                    catch (Exception e) { blockAtFuture.complete(Map.of("error", String.valueOf(e.getMessage()))); }
+                });
+                sendJson(exchange, 200, blockAtFuture.join());
+            }
             case "actions" -> {
                 String lastResult = bot.getActionQueue().consumeLastResult();
                 var actionMap = new LinkedHashMap<String, Object>();

@@ -186,7 +186,7 @@ kills.)
 ### Requirement: Criteria Evaluation Strategies
 L2 MUST evaluate subtask completion criteria using these strategies, in this order:
 
-1. **Deterministic world-state query** — if the criterion is structural (e.g. "block placed at X,Y,Z", "inventory has 16 wheat"), L2 queries world state via the mod API directly
+1. **Deterministic world-state query** — if the criterion is structural (e.g. "block placed at X,Y,Z", "inventory has 16 wheat", "bot in dimension D"), L2 queries world state via the mod API directly (`/bot/{name}/inventory`, `/bot/{name}/status`, `/bot/{name}/block_at`). Compound criteria joined by AND/&& MUST be split and EVERY clause evaluated: any checkable clause failing fails the criterion; all clauses checkable and passing passes it; anything less abstains to the later strategies. (War-game finding 13/14: wrong endpoint paths meant this strategy never ran, and compound criteria were judged by their first clause via result-text tokens — two bots "completed" fortresses that did not exist.)
 2. **Kill-stat delta** — if the criterion names a kill count (e.g. "killed 200 enemies", "slay 200", "200 kills"), L2 compares the bot's current `mob_kills` stat against `plan.meta["kills_at_start"]`; satisfied iff `current − baseline ≥ target`. If no baseline was captured, the strategy MUST fail conservatively (reporting the lifetime count) rather than defer to LLM judgment. If the mod does not expose the stat, the strategy abstains.
 3. **L1 result check** — L1 directive returns a result with status / context; L2 checks the result against the criterion string heuristically
 4. **L3 evaluation fallback** — if none of (1)–(3) is conclusive, L2 calls L3 with criterion + evidence and asks for a boolean

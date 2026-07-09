@@ -283,6 +283,18 @@ _DIM_ALIASES = {
 
 
 # Renamed/wrong mob ids the LLM emits from stale training data.
+# L3-invented BUILD shapes → the mod's real blueprints
+_BUILD_SHAPE_ALIASES = {
+    "pillar": "tower",
+    "watchtower": "tower",
+    "gate": "wall",
+    "door": "wall",
+    "cube": "shelter",
+    "keep": "shelter",
+    "house": "shelter",
+    "fortress": "shelter",
+}
+
 _MOB_SYNONYMS = {
     "minecraft:pig_zombie": "minecraft:zombified_piglin",
     "minecraft:zombie_pigman": "minecraft:zombified_piglin",
@@ -329,6 +341,16 @@ def _repair_directive(d: dict[str, Any], bot_name: str, dim_list: list[str] | No
         if tgt in _MOB_SYNONYMS:
             log.info("[%s] mob synonym: %s -> %s", bot_name, tgt, _MOB_SYNONYMS[tgt])
             d["target"] = _MOB_SYNONYMS[tgt]
+
+    if kind == "BUILD":
+        # The mod reads the blueprint from `target`; L3 tends to put it in
+        # extra.shape (finding B1). Move it over and map invented shapes.
+        extra = d.get("extra") if isinstance(d.get("extra"), dict) else {}
+        if not d.get("target") and extra.get("shape"):
+            d["target"] = str(extra["shape"]).lower()
+        if d.get("target"):
+            d["target"] = _BUILD_SHAPE_ALIASES.get(
+                str(d["target"]).lower(), str(d["target"]).lower())
 
     if kind == "TELEPORT":
         extra = d.get("extra")

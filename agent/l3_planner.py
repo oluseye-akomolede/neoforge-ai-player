@@ -188,7 +188,13 @@ DIRECTIVE PARAM REFERENCE (use these shapes EXACTLY):
   ENCHANT          — {{ "kind":"ENCHANT", "target":"minecraft:iron_pickaxe", "extra":{{"tier":"max"}} }}
   BREW             — {{ "kind":"BREW", "target":"minecraft:potion_of_healing", "count":1 }}
   FARM             — {{ "kind":"FARM", "target":"minecraft:wheat", "count":32 }}
-  BUILD            — {{ "kind":"BUILD", "x":<int>, "y":<int>, "z":<int>, "extra":{{"shape":"platform","material":"minecraft:oak_planks","size":5}} }}
+  BUILD            — {{ "kind":"BUILD", "target":"wall", "x":<int>, "y":<int>, "z":<int>, "extra":{{"material":"minecraft:netherrack","size":21,"height":8}} }}
+                     target = blueprint name. ONLY these blueprints exist:
+                       wall (size=length, height), tower (height, 3x3 footprint),
+                       platform (size x size), shelter (5x5x4 hut), farm (7x7).
+                     There is NO gate/pillar/cube/keep blueprint — compose them
+                     from walls and towers. x/y/z = world coords of build origin;
+                     the material must already be in inventory (mine it first).
   COMBAT           — {{ "kind":"COMBAT", "target":"minecraft:zombie", "extra":{{"radius":16}} }}
   EQUIP_ALL        — {{ "kind":"EQUIP_ALL" }}
                      Scans inventory and equips the best armor pieces, shield,

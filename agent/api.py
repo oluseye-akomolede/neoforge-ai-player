@@ -61,6 +61,9 @@ def blocks(bot, radius=8):
 def find_blocks(bot, block, radius=32, max_count=10):
     return _post(f"/bot/{bot}/find_blocks", {"block": block, "radius": radius, "max": max_count})
 
+def block_at(bot, x, y, z):
+    return _post(f"/bot/{bot}/block_at", {"x": x, "y": y, "z": z})
+
 def find_entities(bot, target, radius=32.0):
     return _post(f"/bot/{bot}/find_entities", {"target": target, "radius": radius})
 
