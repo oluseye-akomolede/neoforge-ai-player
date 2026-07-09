@@ -64,9 +64,9 @@ public class CombatBehavior implements Behavior {
     private static final float RETREAT_HEALTH = 4.0f;
     private static final int EAT_HUNGER_THRESHOLD = 14;
     private static final int DEFAULT_DURATION = 6000;
-    private static final int SPAWN_COOLDOWN_TICKS = 200;
+    private static final int SPAWN_COOLDOWN_TICKS = 100;
     private static final int NO_TARGET_THRESHOLD = 100;
-    private static final int MOBS_PER_WAVE = 3;
+    private static final int MOBS_PER_WAVE = 6;
 
     @SuppressWarnings("unchecked")
     private static final EntityType<? extends Monster>[] HOSTILE_TYPES = new EntityType[]{
@@ -141,7 +141,9 @@ public class CombatBehavior implements Behavior {
 
         if (target == null) {
             noTargetTicks++;
-            if (hostileOnly && noTargetTicks >= NO_TARGET_THRESHOLD && spawnCooldown <= 0) {
+            // Fake players never trigger natural spawning, so an empty battlefield
+            // stays empty — provision targets for specific-target sweeps too.
+            if (noTargetTicks >= NO_TARGET_THRESHOLD && spawnCooldown <= 0) {
                 spawnHostileMobs(player);
                 spawnCooldown = SPAWN_COOLDOWN_TICKS;
                 noTargetTicks = 0;
@@ -263,9 +265,14 @@ public class CombatBehavior implements Behavior {
             totalScanned++;
 
             if (specificTarget != null && !specificTarget.isEmpty()) {
+                // toShortString() has no namespace — "minecraft:zombified_piglin"
+                // can never substring-match it. Compare on the bare path.
+                String want = specificTarget.toLowerCase();
+                int colon = want.indexOf(':');
+                if (colon >= 0) want = want.substring(colon + 1);
                 String type = e.getType().toShortString().toLowerCase();
                 String name = e.getName().getString().toLowerCase();
-                if (!type.contains(specificTarget.toLowerCase()) && !name.contains(specificTarget.toLowerCase()))
+                if (!type.contains(want) && !name.contains(want))
                     continue;
             } else if (hostileOnly) {
                 boolean isHostile = (e instanceof Monster) || (e instanceof Enemy)
@@ -312,8 +319,9 @@ public class CombatBehavior implements Behavior {
         double radius = PATROL_RADIUS * (0.3 + random.nextDouble() * 0.7);
         double tx = player.getX() + Math.cos(angle) * radius;
         double tz = player.getZ() + Math.sin(angle) * radius;
-        int surfaceY = player.level().getHeight(Heightmap.Types.MOTION_BLOCKING, (int) tx, (int) tz);
-        teleportBot(player, tx, surfaceY + 1, tz);
+        if (!(player.level() instanceof ServerLevel serverLevel)) return;
+        int surfaceY = BotPlayer.safeGroundY(serverLevel, (int) tx, (int) tz, (int) player.getY());
+        teleportBot(player, tx, surfaceY, tz);
     }
 
     private void teleportBot(ServerPlayer player, double x, double y, double z) {
@@ -451,16 +459,23 @@ public class CombatBehavior implements Behavior {
 
     private void spawnHostileMobs(ServerPlayer player) {
         if (!(player.level() instanceof ServerLevel serverLevel)) return;
+        // Directive named a target type? Spawn that, so the sweep can actually match.
+        EntityType<?> requested = null;
+        if (specificTarget != null && !specificTarget.isEmpty()) {
+            requested = EntityType.byString(specificTarget.toLowerCase()).orElse(null);
+        }
         int spawned = 0;
         for (int i = 0; i < MOBS_PER_WAVE; i++) {
-            EntityType<? extends Monster> type = HOSTILE_TYPES[random.nextInt(HOSTILE_TYPES.length)];
+            EntityType<?> type = requested != null
+                    ? requested
+                    : HOSTILE_TYPES[random.nextInt(HOSTILE_TYPES.length)];
             double angle = random.nextDouble() * Math.PI * 2;
             double dist = 10 + random.nextDouble() * 20;
             double sx = player.getX() + Math.cos(angle) * dist;
             double sz = player.getZ() + Math.sin(angle) * dist;
-            int sy = serverLevel.getHeight(Heightmap.Types.MOTION_BLOCKING, (int) sx, (int) sz);
-            Monster mob = type.create(serverLevel);
-            if (mob == null) continue;
+            int sy = BotPlayer.safeGroundY(serverLevel, (int) sx, (int) sz, (int) player.getY());
+            Entity created = type.create(serverLevel);
+            if (!(created instanceof net.minecraft.world.entity.Mob mob)) continue;
             mob.moveTo(sx, sy, sz, random.nextFloat() * 360, 0);
             mob.finalizeSpawn(serverLevel, serverLevel.getCurrentDifficultyAt(mob.blockPosition()),
                     MobSpawnType.MOB_SUMMONED, null);

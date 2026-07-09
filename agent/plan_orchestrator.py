@@ -372,6 +372,14 @@ def _replan(plan: Plan, failed_subtask: Subtask, model: str) -> bool:
         plan.status = "failed"
         return False
     new_subtask.replans = failed_subtask.replans + 1
+    # A replan may change the approach, never the goalposts: L3 rewrote kill
+    # criteria into verifier-dodging synonyms in war-test round 2. Carry the
+    # original criterion through verbatim.
+    if (failed_subtask.criteria or "").strip():
+        if (new_subtask.criteria or "").strip() != failed_subtask.criteria.strip():
+            log.info("[%s] replan tried to rewrite criteria (%r -> %r) — keeping original",
+                     plan.bot, failed_subtask.criteria, new_subtask.criteria)
+        new_subtask.criteria = failed_subtask.criteria
     for i, s in enumerate(plan.subtasks):
         if s.id == failed_subtask.id:
             plan.subtasks[i] = new_subtask

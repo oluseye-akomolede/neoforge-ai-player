@@ -420,11 +420,44 @@ public class BotPlayer {
 
     // ── Dimension travel ──
 
+    /**
+     * Standable Y at (x,z). In ceiling dimensions (the nether) the MOTION_BLOCKING
+     * heightmap returns the top of the bedrock roof — a mob-free void that stranded
+     * the entire war party in test round 2. Scan downward from below the ceiling
+     * for a 2-block air pocket over solid, non-lava ground instead.
+     */
+    public static int safeGroundY(ServerLevel level, int x, int z, int preferredY) {
+        if (!level.dimensionType().hasCeiling()) {
+            return level.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING, x, z);
+        }
+        int ceiling = level.getMinBuildHeight() + level.getLogicalHeight();
+        int start = Math.min(preferredY > 0 ? preferredY : ceiling - 8, ceiling - 8);
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos(x, start, z);
+        int airRun = 0;
+        for (int y = start; y > level.getMinBuildHeight() + 4; y--) {
+            pos.setY(y);
+            var state = level.getBlockState(pos);
+            if (state.isAir()) {
+                airRun++;
+                continue;
+            }
+            if (airRun >= 2 && state.isSolid() && level.getFluidState(pos).isEmpty()) {
+                return y + 1;
+            }
+            airRun = 0;
+        }
+        // No pocket found (unloaded / solid column) — mid-height beats the roof.
+        return Math.max(level.getMinBuildHeight() + 32, 32);
+    }
+
     public boolean teleportToDimension(ResourceKey<Level> dimension, double x, double y, double z) {
         if (!isAlive()) return false;
         MinecraftServer server = player.getServer();
         ServerLevel targetLevel = server.getLevel(dimension);
         if (targetLevel == null) return false;
+
+        targetLevel.getChunkSource().getChunk((int) x >> 4, (int) z >> 4, true);
+        y = safeGroundY(targetLevel, (int) x, (int) z, (int) y);
 
         remove();
 

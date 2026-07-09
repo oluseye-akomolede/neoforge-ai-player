@@ -140,9 +140,11 @@ def _strategy_world_state(bot_name: str, subtask: Subtask) -> tuple[bool, str] |
 # were passing via lax LLM judgment.
 
 _KILLS_PATTERNS = [
-    re.compile(r"(?:kill|slay|slain|defeat)\w*\s+(?:at\s+least\s+)?(\d+)", re.IGNORECASE),
+    re.compile(r"(?:kill|slay|slain|defeat|eliminat|dispatch|vanquish|destroy)\w*"
+               r"(?:\s+\w+){0,3}?\s+(?:at\s+least\s+)?(\d+)", re.IGNORECASE),
     re.compile(r"kills?\s+(?:has\s+value|reach(?:es)?|count(?:\s+of)?|[:=><]+)\s*(\d+)", re.IGNORECASE),
-    re.compile(r"(\d+)\s+(?:kills|enemies|mobs|hostiles)\b", re.IGNORECASE),
+    re.compile(r"(\d+)\s+(?:combat\s+)?(?:kills|eliminations|enem(?:y|ies)|mobs?|hostiles?|foes)\b",
+               re.IGNORECASE),
 ]
 
 

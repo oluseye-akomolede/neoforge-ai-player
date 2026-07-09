@@ -143,6 +143,33 @@ EnchantBehavior MUST support deterministic enchanting by accepting a specific en
 - THEN it uses `EnchantmentHelper.selectEnchantment()` with the specified tier option (0=basic, 1=mid, 2=max)
 - AND all selected enchantments are applied to the item
 
+### Requirement: Combat Target Provisioning
+Fake players do not trigger natural mob spawning, so CombatBehavior MUST
+provision its own targets: when no matching target is found for
+NO_TARGET_THRESHOLD ticks, it spawns a wave near the bot — of the
+directive's specific target type when one is named, otherwise of generic
+hostiles. Target-type matching MUST ignore the `minecraft:` namespace
+(entity short strings carry no namespace).
+
+#### Scenario: Specific-target sweep in an empty area
+- GIVEN a COMBAT directive with target "minecraft:zombified_piglin" and no matching mobs in radius
+- WHEN NO_TARGET_THRESHOLD ticks elapse without a target
+- THEN a wave of zombified piglins is spawned near the bot
+- AND the bot engages them (namespace stripped before matching)
+
+### Requirement: Ceiling-Dimension Ground Placement
+Any behavior that repositions a bot or spawns entities via terrain height
+(patrol, wave spawning, dimension teleport) MUST NOT use the raw
+MOTION_BLOCKING heightmap in dimensions with a ceiling — it resolves to
+the top of the bedrock roof. Use a downward scan from below the ceiling
+for a standable air pocket over solid, non-lava ground
+(`BotPlayer.safeGroundY`).
+
+#### Scenario: Teleport into the nether
+- GIVEN a TELEPORT directive to minecraft:the_nether at (0, 70, 0)
+- WHEN the bot arrives
+- THEN its Y is below the nether's logical height (not on the bedrock roof)
+
 ### Requirement: Combat Enchantment Activation
 CombatBehavior MUST activate weapon enchantments during attacks. Since bots use direct `hurt()` instead of `player.attack()`, the behavior MUST manually call `EnchantmentHelper.modifyDamage()` for damage-boosting enchantments (Sharpness, Smite, Bane of Arthropods) and `EnchantmentHelper.doPostAttackEffectsWithItemSource()` for post-attack effects (Fire Aspect, Knockback, Looting).
 

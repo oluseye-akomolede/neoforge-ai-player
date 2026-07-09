@@ -158,13 +158,25 @@ failed (attempts >= MAX_ATTEMPTS) → triggers replan
 ### Requirement: Replan on Repeated Failure
 When a subtask has failed MAX_ATTEMPTS times, L2 MUST call L3 with a replan prompt providing the failed subtask + accumulated error.
 
+A replan MAY change the subtask's description and approach but MUST NOT
+change its completion criterion: L2 carries the original criterion through
+the splice verbatim. (War-test round 2: L3 reworded failed kill criteria
+into verifier-dodging synonyms and every plan finalized "complete" at 0
+kills.)
+
 #### Scenario: Replan splices new subtask
 - GIVEN subtask 2 has attempts=3 and is failed
 - WHEN L2 calls L3 with the replan prompt
 - THEN L3 returns a single replacement subtask object
 - AND L2 validates it (schema valid, same id, status=pending)
-- AND L2 replaces subtask 2 in-place
+- AND L2 replaces subtask 2 in-place, restoring the ORIGINAL criteria string
 - AND attempts is reset to 0
+
+#### Scenario: Replan attempts to weaken criteria
+- GIVEN subtask 4 with criterion "killed 200 enemies" has failed 3 attempts
+- WHEN L3's replacement subtask carries criterion "dispatched 200 hostile entities"
+- THEN L2 keeps "killed 200 enemies" as the spliced subtask's criterion
+- AND logs the rejected rewrite
 
 #### Scenario: Replan refused
 - GIVEN L3's replan response is invalid or L3 returns `{"error": "..."}`

@@ -39,6 +39,18 @@ loop so the same command is machine-verifiable end to end.
   targets through `MOB_SYNONYMS`. All translation-only — flags, never
   resolves, ambiguity.
 
+## Round-2 Findings → Fixes (2026-07-09 rerun)
+
+The rerun proved fixes 1–7 worked (kill_stat gated honestly, EQUIP_ALL
+clean, clauses covered, ids valid) and exposed three deeper faults that
+had been masked by round 1's fictional victories:
+
+| # | Finding | Fix | Where |
+|---|---------|-----|-------|
+| 8 | Bots stranded on the nether bedrock roof (4/5 at Y=129) — `patrol()` and mob-wave placement used the MOTION_BLOCKING heightmap, which in ceiling dimensions returns the roof top; dimension teleports trusted the given Y blindly. Nothing spawns there; every COMBAT sweep found empty air | `BotPlayer.safeGroundY()`: in `hasCeiling` dimensions, scan downward from below the ceiling for a 2-air pocket over solid non-lava ground. Used by `patrol()`, `spawnHostileMobs()`, and `teleportToDimension()` | `BotPlayer`, `CombatBehavior` |
+| 9 | Replan criteria laundering — after kill_stat failed a subtask 3×, L3's replacement subtasks reworded criteria into verifier-dodging synonyms ("dispatched 200 hostile entities", "accumulated 200 enemy eliminations") or dropped the kill clause; the L3-fallback judge passed them and all 5 plans finalized "complete" at 0 kills | Replans may change the approach, never the criterion: `_replan` carries the original criterion through verbatim. Kill patterns also widened (eliminate/dispatch/vanquish verbs; eliminations/foes nouns) as defense in depth | `plan_orchestrator._replan`, `criteria_eval._KILLS_PATTERNS` |
+| 10 | Specific-target COMBAT could never fight — (a) fake players trigger no natural mob spawning (user-confirmed), and the wave-spawner only ran in `hostileOnly` mode, so target-specific sweeps starved; (b) namespaced targets (`minecraft:zombified_piglin`) never substring-matched `toShortString()`, so even present mobs were invisible | Wave-spawning now runs for specific targets too and spawns the requested type (`EntityType.byString`); target matching strips the namespace before comparing. Wave rate raised (6 mobs / 5 s cooldown) so kill-count tests complete in bounded time | `CombatBehavior` |
+
 ## Non-Goals
 
 - No new decision-making in L2 (translation-layer purity holds).
