@@ -111,6 +111,15 @@ def execute_task(
             on_finalized(plan)
             return plan
 
+    # Baseline combat stats so "killed N enemies" criteria can be checked as
+    # a delta instead of a lifetime total (war-test finding #1).
+    try:
+        st = api.status(bot_name)
+        if isinstance(st, dict) and isinstance(st.get("mob_kills"), int) and st["mob_kills"] >= 0:
+            plan.meta["kills_at_start"] = st["mob_kills"]
+    except Exception as e:
+        log.debug("[%s] kills baseline unavailable: %s", bot_name, e)
+
     plan_store.write(plan)
     log.info("[%s] plan written with %d subtasks", bot_name, len(plan.subtasks))
     try:
@@ -233,6 +242,7 @@ def _step(plan: Plan, subtask: Subtask, model: str,
         subtask=subtask,
         last_result_text=last_result,
         model=model,
+        plan=plan,
     )
     log.info("[%s] subtask %d criteria: %s (%s) — %s",
              plan.bot, subtask.id, satisfied, strategy, reason)
@@ -272,6 +282,18 @@ _DIM_ALIASES = {
 }
 
 
+# Renamed/wrong mob ids the LLM emits from stale training data.
+_MOB_SYNONYMS = {
+    "minecraft:pig_zombie": "minecraft:zombified_piglin",
+    "minecraft:zombie_pigman": "minecraft:zombified_piglin",
+    "pig_zombie": "minecraft:zombified_piglin",
+    "zombie_pigman": "minecraft:zombified_piglin",
+    "minecraft:wither_boss": "minecraft:wither",
+    "minecraft:snowman": "minecraft:snow_golem",
+    "minecraft:villager_golem": "minecraft:iron_golem",
+}
+
+
 def _repair_directive(d: dict[str, Any], bot_name: str, dim_list: list[str] | None) -> dict[str, Any]:
     """Patch common L3 directive mistakes before dispatch. Idempotent.
 
@@ -298,6 +320,15 @@ def _repair_directive(d: dict[str, Any], bot_name: str, dim_list: list[str] | No
         except Exception as e:
             log.debug("l2-mcp normalize bypass (%s)", e)
     kind = str(d.get("kind", "")).upper()
+    d["kind"] = kind
+    if kind == "EQUIP":
+        d["kind"] = "EQUIP_ALL"
+
+    if kind == "COMBAT":
+        tgt = str(d.get("target", "")).strip().lower()
+        if tgt in _MOB_SYNONYMS:
+            log.info("[%s] mob synonym: %s -> %s", bot_name, tgt, _MOB_SYNONYMS[tgt])
+            d["target"] = _MOB_SYNONYMS[tgt]
 
     if kind == "TELEPORT":
         extra = d.get("extra")

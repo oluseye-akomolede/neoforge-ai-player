@@ -60,14 +60,27 @@ Plan files MUST conform to this schema:
       "error": null
     }
   ],
-  "current_subtask_id": 1
+  "current_subtask_id": 1,
+  "meta": "object — free-form execution metadata (optional, defaults to {})"
 }
 ```
+
+`meta` carries values captured at plan creation that criteria evaluation
+needs later. Known keys: `kills_at_start` (int — the bot's lifetime
+`mob_kills` stat when the plan was created; baseline for kill-count
+criteria).
 
 ### Requirement: Phase 1 — Planning Call
 L2 MUST call L3 once at task receipt with a planning prompt. The prompt MUST instruct L3 to:
 - Decompose the task into ordered, atomic subtasks
 - Define an explicit, observable completion criterion per subtask
+- Prefer the machine-checkable criteria forms: "inventory has N item",
+  "bot at (x, y, z)", "bot in dimension D", "killed N enemies",
+  "block at (x,y,z) is B" — free-text criteria cannot be verified
+- Cover EVERY action clause of the task (prepare AND travel AND fight ⇒
+  all three appear as subtasks; trailing clauses MUST NOT be dropped)
+- Treat non-primary dimensions (anything beyond overworld/nether/end) as
+  special-purpose: do not stage work there unless the task names them
 - Output ONLY valid JSON matching the plan schema (no prose, no fences)
 - Keep each subtask small enough to map to 1–3 directives maximum
 - Respect bot persona
@@ -86,6 +99,30 @@ For each pending subtask, L2 MUST call L3 with an execution prompt providing:
 - The previous error if this is a retry
 
 L3's output for Phase 2 MUST be one or more directives in the existing directive format.
+
+### Requirement: Directive Normalization
+Before dispatching a Phase 2 directive, L2 MUST normalize it (translation
+only — no judgment):
+- Uppercase `kind` and resolve known aliases: `EQUIP` → `EQUIP_ALL`
+  (there is no per-item equip directive; the mod exposes bulk equip only)
+- Canonicalize COMBAT targets through the mob-synonym table (e.g.
+  `minecraft:pig_zombie` / `zombie_pigman` → `minecraft:zombified_piglin`,
+  `wither_boss` → `wither`, `snowman` → `snow_golem`,
+  `villager_golem` → `iron_golem`)
+- A `kind` outside the known vocabulary MUST be surfaced to the retry
+  prompt as `unknown_kind:<KIND>` so L3 can correct it, rather than
+  failing silently
+
+#### Scenario: Invented EQUIP directive
+- GIVEN L3 emits `{"kind": "EQUIP", "target": "armor_set"}`
+- WHEN L2 normalizes the directive
+- THEN it dispatches as `EQUIP_ALL` via the mod's bulk-equip endpoint
+- AND the subtask does not burn an attempt on an unknown kind
+
+#### Scenario: Renamed mob id
+- GIVEN L3 emits `{"kind": "COMBAT", "target": "minecraft:pig_zombie"}`
+- WHEN L2 normalizes the directive
+- THEN the target is rewritten to `minecraft:zombified_piglin`
 
 #### Scenario: Execution call labeling
 - GIVEN a bot executing subtask N of M
@@ -138,8 +175,9 @@ When a subtask has failed MAX_ATTEMPTS times, L2 MUST call L3 with a replan prom
 L2 MUST evaluate subtask completion criteria using these strategies, in this order:
 
 1. **Deterministic world-state query** — if the criterion is structural (e.g. "block placed at X,Y,Z", "inventory has 16 wheat"), L2 queries world state via the mod API directly
-2. **L1 result check** — L1 directive returns a result with status / context; L2 checks the result against the criterion string heuristically
-3. **L3 evaluation fallback** — if neither (1) nor (2) is conclusive, L2 calls L3 with criterion + evidence and asks for a boolean
+2. **Kill-stat delta** — if the criterion names a kill count (e.g. "killed 200 enemies", "slay 200", "200 kills"), L2 compares the bot's current `mob_kills` stat against `plan.meta["kills_at_start"]`; satisfied iff `current − baseline ≥ target`. If no baseline was captured, the strategy MUST fail conservatively (reporting the lifetime count) rather than defer to LLM judgment. If the mod does not expose the stat, the strategy abstains.
+3. **L1 result check** — L1 directive returns a result with status / context; L2 checks the result against the criterion string heuristically
+4. **L3 evaluation fallback** — if none of (1)–(3) is conclusive, L2 calls L3 with criterion + evidence and asks for a boolean
 
 #### Scenario: Inventory check (strategy 1)
 - GIVEN a subtask with criterion "inventory has 16 wheat"
@@ -151,9 +189,20 @@ L2 MUST evaluate subtask completion criteria using these strategies, in this ord
 - WHEN L2 queries the bot's position
 - THEN strategy 1 evaluates immediately
 
-#### Scenario: L3 fallback (strategy 3)
+#### Scenario: Kill-count check (strategy 2)
+- GIVEN a plan with `meta.kills_at_start = 57` and a subtask with criterion "killed 200 enemies"
+- WHEN L2 queries `/bot status` and reads `mob_kills = 260`
+- THEN the delta is 203 ≥ 200 and the subtask is marked complete without an L3 call
+
+#### Scenario: Kill-count check without baseline
+- GIVEN a plan whose `meta` lacks `kills_at_start` and a subtask with criterion "killed 200 enemies"
+- WHEN L2 queries the kill stat
+- THEN the strategy returns NOT satisfied with the lifetime count in the reason
+- AND does NOT fall through to L3 judgment
+
+#### Scenario: L3 fallback (strategy 4)
 - GIVEN a subtask with criterion "the structure looks well-built"
-- WHEN neither strategy 1 nor 2 can decide
+- WHEN no earlier strategy can decide
 - THEN L2 calls L3 with `{criterion, evidence, world_state_summary}` at priority=4
 - AND L3 returns `{satisfied: bool, reason: str}`
 

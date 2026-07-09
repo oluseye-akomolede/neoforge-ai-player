@@ -544,6 +544,19 @@ public class BotPlayer {
         status.put("alive", isAlive());
         status.put("xp_level", player.experienceLevel);
         status.put("xp_points", player.totalExperience);
+        // Lifetime combat stats — lets L2 verify "killed N enemies" criteria
+        // deterministically (delta vs a plan-start baseline) instead of a lax
+        // LLM judgment. Vanilla stat counters accrue through the normal
+        // kill-attribution path, which bot melee/ranged attacks use.
+        try {
+            status.put("mob_kills", player.getStats().getValue(
+                    net.minecraft.stats.Stats.CUSTOM.get(net.minecraft.stats.Stats.MOB_KILLS)));
+            status.put("deaths", player.getStats().getValue(
+                    net.minecraft.stats.Stats.CUSTOM.get(net.minecraft.stats.Stats.DEATHS)));
+        } catch (Exception e) {
+            status.put("mob_kills", -1);
+            status.put("deaths", -1);
+        }
         return status;
     }
 

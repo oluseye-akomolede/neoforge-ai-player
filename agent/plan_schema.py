@@ -50,6 +50,9 @@ class Plan:
     status: PlanStatus
     subtasks: list[Subtask]
     current_subtask_id: int
+    # Free-form execution metadata (e.g. kills_at_start baseline for
+    # "killed N enemies" criteria). Persisted with the plan.
+    meta: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -59,6 +62,7 @@ class Plan:
             "status": self.status,
             "subtasks": [s.to_dict() for s in self.subtasks],
             "current_subtask_id": self.current_subtask_id,
+            "meta": self.meta,
         }
 
     @classmethod
@@ -70,6 +74,7 @@ class Plan:
             status=d.get("status", "executing"),
             subtasks=[Subtask.from_dict(s) for s in d.get("subtasks", [])],
             current_subtask_id=int(d.get("current_subtask_id", 1)),
+            meta=dict(d.get("meta") or {}),
         )
 
     def current_subtask(self) -> Subtask | None:

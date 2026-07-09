@@ -61,11 +61,18 @@ GET /bot/{name}/status MUST return:
 | biome | string | Current biome |
 | held_item | string | Main hand item ID |
 | xp_level | int | Current XP level |
+| mob_kills | int | Lifetime mob-kill count (vanilla Stats.MOB_KILLS); -1 if the stat is unavailable |
+| deaths | int | Lifetime death count (vanilla Stats.DEATHS); -1 if the stat is unavailable |
 
 #### Scenario: Agent retrieves bot status
 - GIVEN a bot named Axiom is spawned in the world
 - WHEN the agent sends GET /bot/Axiom/status
-- THEN the response MUST contain name, health, food, x, y, z, dimension, gameMode, biome, held_item, and xp_level fields
+- THEN the response MUST contain name, health, food, x, y, z, dimension, gameMode, biome, held_item, xp_level, mob_kills, and deaths fields
+
+#### Scenario: Kill-stat baseline for planning
+- GIVEN the L2 planning layer creates a plan whose criteria include a kill count
+- WHEN it reads mob_kills from /bot/{name}/status
+- THEN a non-negative integer MUST reflect the bot's cumulative kills, monotonically non-decreasing across the bot's life
 
 ### Requirement: Dashboard API
 The dashboard MUST expose a FastAPI server with REST and WebSocket endpoints on a configurable port (default: 5000).

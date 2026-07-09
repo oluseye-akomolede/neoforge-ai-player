@@ -16,6 +16,7 @@ from typing import Any
 
 import requests
 
+import api
 from brain import ollama_lock
 from config import MOD_API_URL, OLLAMA_URL
 from plan_schema import Subtask
@@ -39,7 +40,8 @@ _BLOCK_PATTERN = re.compile(
 
 def evaluate(bot_name: str, subtask: Subtask,
              last_result_text: str = "",
-             model: str | None = None) -> tuple[bool, str, str]:
+             model: str | None = None,
+             plan=None) -> tuple[bool, str, str]:
     """
     Return (satisfied, strategy, reason).
       strategy ∈ {"world_state", "result_text", "l3_fallback", "inconclusive"}
@@ -47,6 +49,10 @@ def evaluate(bot_name: str, subtask: Subtask,
     s1 = _strategy_world_state(bot_name, subtask)
     if s1 is not None:
         return s1[0], "world_state", s1[1]
+
+    sk = _strategy_kills(bot_name, subtask, plan)
+    if sk is not None:
+        return sk[0], "kill_stat", sk[1]
 
     s2 = _strategy_result_text(subtask, last_result_text)
     if s2 is not None:
@@ -125,6 +131,50 @@ def _strategy_world_state(bot_name: str, subtask: Subtask) -> tuple[bool, str] |
             return None
 
     return None
+
+
+# ── Strategy 1b: kill-count check ──────────────────────────────────────────
+# "slay 200 enemies", "killed 200 enemies", "kills has value 200", "200 kills".
+# Checked as a DELTA against plan.meta["kills_at_start"] using the mod's
+# lifetime mob_kills stat. War-test finding #1: unverifiable kill criteria
+# were passing via lax LLM judgment.
+
+_KILLS_PATTERNS = [
+    re.compile(r"(?:kill|slay|slain|defeat)\w*\s+(?:at\s+least\s+)?(\d+)", re.IGNORECASE),
+    re.compile(r"kills?\s+(?:has\s+value|reach(?:es)?|count(?:\s+of)?|[:=><]+)\s*(\d+)", re.IGNORECASE),
+    re.compile(r"(\d+)\s+(?:kills|enemies|mobs|hostiles)\b", re.IGNORECASE),
+]
+
+
+def _strategy_kills(bot_name: str, subtask: Subtask, plan) -> tuple[bool, str] | None:
+    criterion = subtask.criteria or ""
+    target = None
+    for pat in _KILLS_PATTERNS:
+        m = pat.search(criterion)
+        if m:
+            target = int(m.group(1))
+            break
+    if target is None:
+        return None
+    baseline = None
+    if plan is not None and isinstance(getattr(plan, "meta", None), dict):
+        baseline = plan.meta.get("kills_at_start")
+    try:
+        st = api.status(bot_name)
+        current = st.get("mob_kills")
+        if not isinstance(current, int) or current < 0:
+            return None  # mod without the stat — let other strategies decide
+    except Exception as e:
+        log.debug("kill-stat query failed: %s", e)
+        return None
+    if baseline is None:
+        # No baseline captured (old plan / API blip at start): can only report
+        # progress against lifetime count — too ambiguous to auto-pass. Fail
+        # conservatively with the observed number so retries/replans see it.
+        return False, f"kill target {target}: no baseline; lifetime mob_kills={current}"
+    delta = current - int(baseline)
+    ok = delta >= target
+    return ok, f"kills this plan: {delta}/{target} (lifetime {current})"
 
 
 # ── Strategy 2: result text heuristic ──────────────────────────────────────

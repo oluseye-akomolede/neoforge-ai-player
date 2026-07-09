@@ -41,6 +41,20 @@ _DEFAULT_DIMENSIONS = [
     "minecraft:the_end",
 ]
 
+_PRIMARY_DIMS = {"minecraft:overworld", "minecraft:the_nether", "minecraft:the_end"}
+
+
+def _dim_lines(dimensions: list[str] | None) -> str:
+    """Render the dimension list with usage annotations. War-test finding #4:
+    an unannotated list led L3 to stage crafting inside ae2:spatial_storage."""
+    dims = dimensions or _DEFAULT_DIMENSIONS
+    primary = [d for d in dims if d in _PRIMARY_DIMS]
+    exotic = [d for d in dims if d not in _PRIMARY_DIMS]
+    lines = [f"  - {d}" for d in primary]
+    lines += [f"  - {d} (special-purpose — do NOT travel here unless the task names it)"
+              for d in exotic]
+    return "\n".join(lines)
+
 
 # ── Phase 1: plan ──────────────────────────────────────────────────────────
 
@@ -59,10 +73,22 @@ Decompose the task below into ordered atomic subtasks. For each subtask:
   proves this subtask is done (e.g. "inventory has 16 wheat", "bot at 100,64,-200",
   "block at 5,64,7 is oak_log", "bot in dimension minecraft:the_nether")
 
+Criteria MUST use one of these machine-checkable forms whenever possible:
+  - "inventory has <N> <item_id>"          (item possession)
+  - "bot at (<x>, <y>, <z>)"               (position)
+  - "bot in dimension <dimension_id>"       (dimension)
+  - "killed <N> enemies"                    (combat kill count — verified
+                                             against the bot's kill statistic)
+  - "block at (<x>,<y>,<z>) is <block_id>"  (placed/changed block)
+Free-text criteria cannot be verified and will be judged loosely — avoid them.
+
 Constraints:
 - Output ONLY JSON. No prose. No markdown fences.
 - 1 to 6 subtasks. Break larger jobs into multiple submissions instead.
 - Each subtask should map to 1-3 directives maximum.
+- Your subtasks together MUST cover EVERY action clause in the task. If the
+  task says prepare AND travel AND fight, all three must appear as subtasks —
+  do not drop trailing clauses.
 - If the task involves a dimension change (e.g. "to the nether"), the FIRST
   subtask MUST be a teleport to that dimension. Use the exact dimension id.
 
@@ -86,7 +112,7 @@ def call_plan(model: str, bot_name: str, task: str,
               dimensions: list[str] | None = None) -> Plan:
     persona = BOT_PERSONAS.get(bot_name, "generalist")
     log.info("[%s] L3 PLAN call — task: %s", bot_name, task[:60])
-    dim_lines = "\n".join(f"  - {d}" for d in (dimensions or _DEFAULT_DIMENSIONS))
+    dim_lines = _dim_lines(dimensions)
     sys_prompt = _PLAN_SYSTEM_PROMPT.format(
         bot_name=bot_name, persona=persona, dimensions=dim_lines)
     user = f"World state: {world_state_summary}\n\nTask: {task}" if world_state_summary else task
@@ -164,6 +190,10 @@ DIRECTIVE PARAM REFERENCE (use these shapes EXACTLY):
   FARM             — {{ "kind":"FARM", "target":"minecraft:wheat", "count":32 }}
   BUILD            — {{ "kind":"BUILD", "x":<int>, "y":<int>, "z":<int>, "extra":{{"shape":"platform","material":"minecraft:oak_planks","size":5}} }}
   COMBAT           — {{ "kind":"COMBAT", "target":"minecraft:zombie", "extra":{{"radius":16}} }}
+  EQUIP_ALL        — {{ "kind":"EQUIP_ALL" }}
+                     Scans inventory and equips the best armor pieces, shield,
+                     and weapon automatically. Use whenever the task says
+                     "equip". There is NO per-item EQUIP directive.
   FOLLOW           — {{ "kind":"FOLLOW", "target":"<player_name>" }}
   GOTO             — {{ "kind":"GOTO", "x":<int>, "y":<int>, "z":<int> }}
                      (intra-dimension only; uses current dimension)
@@ -188,7 +218,7 @@ def call_exec(model: str, plan: Plan, subtask: Subtask,
               previous_error: str | None = None,
               dimensions: list[str] | None = None) -> list[dict[str, Any]]:
     log.info("[%s] L3 EXEC call — subtask %d/%d", plan.bot, subtask.id, len(plan.subtasks))
-    dim_lines = "\n".join(f"  - {d}" for d in (dimensions or _DEFAULT_DIMENSIONS))
+    dim_lines = _dim_lines(dimensions)
     sys_prompt = _EXEC_SYSTEM_PROMPT.format(
         bot_name=plan.bot,
         plan_json=json.dumps(_compact_plan(plan), indent=2),

@@ -44,6 +44,14 @@ from config import (
     DASHBOARD_ENABLED, DASHBOARD_PORT,
     USE_L3_PLAN_LAYER,
 )
+import logging as _logging
+_logging.basicConfig(
+    level=_logging.INFO,
+    format="[%(name)s] %(message)s",
+)
+_logging.getLogger("urllib3").setLevel(_logging.WARNING)
+_logging.getLogger("httpx").setLevel(_logging.WARNING)
+
 from dashboard import start_dashboard
 from dashboard.state import shared_state
 
@@ -847,6 +855,18 @@ class BotRunner:
         """
         if not isinstance(directive, dict) or "kind" not in directive:
             return f"FAILED bad_directive {directive}"
+        kind = str(directive.get("kind", "")).upper()
+        # EQUIP/EQUIP_ALL are not mod directives — they map to the mod's
+        # synchronous equip_all action (scans inventory, fills armor +
+        # offhand slots with best candidates). War-test finding: L3 kept
+        # inventing "EQUIP" because tasks say "equip"; now it's vocabulary.
+        if kind in ("EQUIP", "EQUIP_ALL"):
+            try:
+                resp = api.equip_all(self.name)
+                desc = resp.get("description", "") if isinstance(resp, dict) else ""
+                return f"COMPLETED EQUIP_ALL {desc}"
+            except Exception as e:
+                return f"FAILED EQUIP_ALL {e}"
         params = dict(directive)
         params["type"] = params.pop("kind")
         try:
