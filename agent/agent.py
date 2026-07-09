@@ -867,6 +867,31 @@ class BotRunner:
                 return f"COMPLETED EQUIP_ALL {desc}"
             except Exception as e:
                 return f"FAILED EQUIP_ALL {e}"
+        # DROP is an L1 action, not a mod directive — resolve the item to
+        # slots here and shed it. Lets L3 clear a war-loot-stuffed inventory
+        # (stronghold finding C1) without a new mod-side behavior.
+        if kind in ("DROP", "DISCARD"):
+            want = str(directive.get("target", "")).strip().lower()
+            want_count = int(directive.get("count", 0) or 0) or 10 ** 6
+            if not want:
+                return "FAILED DROP requires target item id"
+            try:
+                inv = api.inventory(self.name) or {}
+                dropped = 0
+                for slot in inv.get("inventory", []):
+                    item_id = str(slot.get("item", "")).lower()
+                    if want not in item_id:
+                        continue
+                    n = min(int(slot.get("count", 0)), want_count - dropped)
+                    if n <= 0:
+                        break
+                    api.drop(self.name, int(slot.get("slot", 0)), n)
+                    dropped += n
+                if dropped == 0:
+                    return f"FAILED DROP no {want} in inventory"
+                return f"COMPLETED DROP {dropped}x {want}"
+            except Exception as e:
+                return f"FAILED DROP {e}"
         params = dict(directive)
         params["type"] = params.pop("kind")
         try:
@@ -890,9 +915,17 @@ class BotRunner:
             pass
         try:
             inv = api.inventory(self.name) or {}
-            items = inv.get("items", [])
-            top = sorted([(i.get("count", 0), i.get("id", "")) for i in items if i.get("count", 0) > 0],
-                          reverse=True)[:6]
+            # Real schema: {"inventory": [{"slot","item","count",...}]} — the old
+            # "items"/"id" read returned nothing, so L3 never saw inventories at
+            # all (stronghold finding C1: nobody knew they were full of war loot).
+            items = inv.get("inventory", inv.get("items", []))
+            used_slots = sum(1 for i in items if i.get("count", 0) > 0)
+            top = sorted([(i.get("count", 0), i.get("item", i.get("id", "")))
+                          for i in items if i.get("count", 0) > 0], reverse=True)[:6]
+            fullness = f"inv_slots={used_slots}/36"
+            if used_slots >= 34:
+                fullness += " (FULL — DROP junk before mining/channeling)"
+            parts.append(fullness)
             if top:
                 parts.append("inv=[" + ", ".join(f"{n}x{i}" for n, i in top) + "]")
         except Exception:

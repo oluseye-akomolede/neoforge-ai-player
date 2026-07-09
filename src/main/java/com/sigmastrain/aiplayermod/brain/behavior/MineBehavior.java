@@ -76,19 +76,18 @@ public class MineBehavior implements Behavior {
         this.useColumnScan = false;
         progress.reset();
 
-        // Inventory pre-check: skip mining if we already have enough of the drop item
+        // NOTE: no "already have enough" early-exit. L3 computes incremental
+        // counts ("have 64, mine 36 more"), so ensure-ownership semantics
+        // deadlocked topping up a stack (stronghold finding C1: bots pinned at
+        // 64/100 forever). MINE count=N now always means "mine N more".
         String dropId = resolveDropItem(targetBlock);
         if (dropId != null) {
             ServerPlayer player = bot.getPlayer();
             Item dropItem = BuiltInRegistries.ITEM.get(ResourceLocation.parse(dropId));
             if (dropItem != Items.AIR) {
                 int owned = countInInventory(player, dropItem);
-                if (owned >= targetCount) {
-                    progress.logEvent("Already have " + owned + "x " + dropId + " (need " + targetCount + ")");
-                    bot.systemChat("Already have " + owned + "x " + dropId, "green");
-                    this.preCheckPassed = true;
-                    return;
-                }
+                progress.logEvent("Owned at start: " + owned + "x " + dropId
+                        + " (mining " + targetCount + " more)");
             }
         }
 
@@ -321,9 +320,26 @@ public class MineBehavior implements Behavior {
         ItemStack stack = new ItemStack(item, channelTotal);
         player.giveExperienceLevels(-channelXpCost);
         player.getInventory().add(stack);
+        // Inventory.add consumes what fits and leaves the rest in the stack.
+        // Silently discarding the remainder was finding C1: full-of-war-loot
+        // bots "channeled 64 netherrack" and received nothing. Drop the
+        // overflow at the bot's feet and say so.
+        int delivered = channelTotal - stack.getCount();
+        if (!stack.isEmpty()) {
+            player.drop(stack.copy(), false);
+            progress.logEvent("Inventory full: " + stack.getCount() + "x " + channelItemId
+                    + " dropped at feet");
+            bot.systemChat("Inventory full — " + stack.getCount() + "x dropped at my feet", "yellow");
+        }
         totalMined += channelTotal;
-        progress.increment("items_channeled", channelTotal);
-        progress.logEvent("Channeled " + channelTotal + "x " + channelItemId + " (cost " + channelXpCost + " levels)");
+        progress.increment("items_channeled", delivered);
+        progress.logEvent("Channeled " + channelTotal + "x " + channelItemId
+                + " (" + delivered + " into inventory, cost " + channelXpCost + " levels)");
+        if (delivered == 0) {
+            progress.setFailureReason("Inventory full: channeled " + channelTotal + "x "
+                    + channelItemId + " but none fit — drop junk items first");
+            return BehaviorResult.FAILED;
+        }
 
         level.sendParticles(ParticleTypes.END_ROD,
                 pos.x, pos.y + 1.0, pos.z, 15, 0.5, 0.8, 0.5, 0.1);

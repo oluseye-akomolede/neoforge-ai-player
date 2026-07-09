@@ -65,6 +65,18 @@ fortress. Three faults:
 | 13 | Criteria evaluator never checked the world — strategy 1 queried `/inventory?bot=`, `/position?bot=`, `/block` (all 404; real paths are `/bot/{name}/...`) and expected the wrong response schema. Every inventory/position/block criterion silently degraded to result-text tokens; two bots "completed" phantom fortresses | `criteria_eval` rewritten onto `api.py` wrappers (correct paths + schema); new mod endpoint `POST /bot/{name}/block_at` for exact block assertions; dimension clauses now also checkable | `criteria_eval`, `api.py`, `HttpApiServer`, `BotPlayer.blockAt` |
 | 14 | Compound criteria judged by first clause only — "inventory has 64 netherrack AND 32 basalt AND 16 blackstone" passed on the last directive's success token while netherrack was 0 (basalt-deltas biome has none) | Strategy 1 splits on AND/&&, evaluates every clause; any checkable clause failing ⇒ fail with that reason; all checkable and passing ⇒ pass; otherwise abstain to later strategies | `criteria_eval._strategy_world_state` |
 
+### Stronghold round 2 (post-B-fix rerun): findings 15–17
+
+The rerun failed honestly at the quarry phase — the fixed evaluator
+worked perfectly and exposed the next layer: every bot entered the task
+with an inventory stuffed by 200+ kills of war loot.
+
+| # | Finding | Fix | Where |
+|---|---------|-----|-------|
+| 15 | MINE ensure-ownership semantics deadlock — L3 computes incremental counts ("have 64, mine 36 more") but MINE's pre-check ("already have 36") exited instantly; bots pinned at 64/100 forever | MINE count=N now always means "mine N more"; owned count logged instead of short-circuiting | `MineBehavior` |
+| 16 | Channel-into-full-inventory silently discarded items — `Inventory.add` leftovers evaporated while `totalMined` counted them as delivered ("channeled 64, received 0, SUCCESS") | Overflow dropped at the bot's feet and reported; zero-delivered channels FAIL with "inventory full — drop junk first" | `MineBehavior.tickChanneling` |
+| 17 | L3 blind to inventory — the world-state summary read the wrong schema (`items`/`id`), so the `inv=` section was always empty and no plan could know space was exhausted | Summary fixed to real schema, plus `inv_slots=N/36` with an explicit FULL warning; new DROP directive (agent-side intercept over the existing DropAction) documented in the EXEC reference so L3 can shed junk | `agent._l3_orchestrator_world_state`, `agent._l3_orchestrator_dispatch`, `l3_planner`, `l2-mcp KNOWN_KINDS` |
+
 Deferred: replan criteria immutability blocked one *legitimate* adaptation
 (material swap when blackstone_wall was uncraftable). Future: criteria
 changes allowed only via full plan replan, never a subtask splice.

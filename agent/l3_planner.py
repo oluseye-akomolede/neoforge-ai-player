@@ -196,6 +196,11 @@ DIRECTIVE PARAM REFERENCE (use these shapes EXACTLY):
                      from walls and towers. x/y/z = world coords of build origin;
                      the material must already be in inventory (mine it first).
   COMBAT           — {{ "kind":"COMBAT", "target":"minecraft:zombie", "extra":{{"radius":16}} }}
+  DROP             — {{ "kind":"DROP", "target":"minecraft:rotten_flesh", "count":64 }}
+                     Sheds items from inventory. If world state says the
+                     inventory is FULL, DROP junk (combat drops, excess food)
+                     BEFORE mining or channeling — a full inventory cannot
+                     receive new items.
   EQUIP_ALL        — {{ "kind":"EQUIP_ALL" }}
                      Scans inventory and equips the best armor pieces, shield,
                      and weapon automatically. Use whenever the task says
