@@ -609,8 +609,10 @@ public class HttpApiServer {
             }
             case "directive" -> {
                 if ("DELETE".equals(exchange.getRequestMethod())) {
-                    AIPlayerMod.LOGGER.warn("[{}] HTTP DELETE /directive called", bot.getPlayer().getName().getString());
-                    BotManager.getServer().execute(() -> bot.getBrain().cancelDirective());
+                    long expectedId = body != null && body.has("id") ? body.get("id").getAsLong() : -1;
+                    AIPlayerMod.LOGGER.warn("[{}] HTTP DELETE /directive called (id={})",
+                            bot.getPlayer().getName().getString(), expectedId);
+                    BotManager.getServer().execute(() -> bot.getBrain().cancelDirective(expectedId));
                     sendJson(exchange, 200, Map.of("status", "cancelled"));
                 } else if ("GET".equals(exchange.getRequestMethod())) {
                     var dirFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();

@@ -1693,7 +1693,8 @@ class BotRunner:
             try:
                 resp = api.set_directive(self.name, dtype, **params)
                 status_msg = resp.get('status', 'unknown')
-                print(f"[{self.name}/L1] Directive sent: {dtype} {params} -> {status_msg}")
+                directive_id = (resp.get('directive') or {}).get('id')
+                print(f"[{self.name}/L1] Directive sent: {dtype} {params} -> {status_msg} (id={directive_id})")
                 shared_state.push_event({"bot": self.name, "type": "directive_started", "directive": dtype, "target": params.get("target", ""), "count": params.get("count", ""), "retry": retries})
                 if retries == 0:
                     api.system_chat(self.name, f"L1: {dtype} {params.get('target', '')}", "dark_aqua")
@@ -1701,7 +1702,7 @@ class BotRunner:
                 print(f"[{self.name}/L1] Failed to send directive: {e}")
                 return {"success": False, "reason": str(e)}
 
-            result = self._poll_directive(dtype=dtype)
+            result = self._poll_directive(dtype=dtype, directive_id=directive_id)
             if result.get("reason") == "interrupted_by_chat":
                 return result
             if result["success"]:
@@ -1727,8 +1728,12 @@ class BotRunner:
 
         return {"success": False, "reason": result.get("reason", "unknown")}
 
-    def _poll_directive(self, dtype=""):
-        """Poll the brain until directive completes, fails, or is interrupted."""
+    def _poll_directive(self, dtype="", directive_id=None):
+        """Poll the brain until directive completes, fails, or is interrupted.
+
+        directive_id (from the set_directive response) pins polling to THE
+        directive we set — a stale read of the previous directive's terminal
+        status gave phantom instant completions (finding D3)."""
         self._directive_missing_count = 0
         _last_poll_error_time = 0
         _ever_saw_directive = False
@@ -1747,7 +1752,7 @@ class BotRunner:
                     if new_player_msgs:
                         print(f"[{self.name}/L1] Interrupted by chat, cancelling directive")
                         try:
-                            api.cancel_directive(self.name)
+                            api.cancel_directive(self.name, directive_id)
                         except Exception:
                             pass
                         return {"success": False, "reason": "interrupted_by_chat"}
@@ -1761,6 +1766,16 @@ class BotRunner:
                 continue
 
             directive_info = brain_state.get("directive")
+            # A directive with a different id is not ours: either the
+            # predecessor's terminal state (not started yet — treat as
+            # missing) or a successor (we've been superseded).
+            if directive_info and directive_id is not None:
+                seen_id = directive_info.get("id")
+                if seen_id is not None and seen_id != directive_id:
+                    if seen_id > directive_id:
+                        print(f"[{self.name}/L1] Superseded by directive id={seen_id}, abandoning poll")
+                        return {"success": False, "reason": "superseded"}
+                    directive_info = None
             if not directive_info:
                 self._directive_missing_count += 1
                 recently_had_errors = (time.time() - _last_poll_error_time) < 30
@@ -1795,7 +1810,7 @@ class BotRunner:
                 print(f"[{self.name}/L1] Directive COMPLETED: {progress.get('counters', {})}")
                 shared_state.push_event({"bot": self.name, "type": "directive_done", "status": "completed", "counters": progress.get("counters", {})})
                 try:
-                    api.cancel_directive(self.name)
+                    api.cancel_directive(self.name, directive_id)
                 except Exception:
                     pass
                 return {"success": True, "progress": progress}
@@ -1804,7 +1819,7 @@ class BotRunner:
                 print(f"[{self.name}/L1] Directive {status}: {reason}")
                 shared_state.push_event({"bot": self.name, "type": "directive_done", "status": status.lower(), "reason": reason[:100]})
                 try:
-                    api.cancel_directive(self.name)
+                    api.cancel_directive(self.name, directive_id)
                 except Exception:
                     pass
                 return {"success": False, "reason": reason}

@@ -92,9 +92,27 @@ def execute_task(
         if plan is not None:
             log.info("[%s] plan-memory reuse (0 LLM planning calls)", bot_name)
     if plan is None:
-        # Phase 1: L3 plan
+        # Phase 1: L3 plan — with one retry if criteria geometry is provably
+        # impossible (finding D1: PLAN-time criteria pointed below the world
+        # floor / into unbuilt space and pinned execution to unpassable checks).
         try:
             plan = l3_planner.call_plan(model, bot_name, task, world_state_fn(), dimensions=dim_list)
+            violations = _validate_criteria_geometry(plan)
+            if violations:
+                log.info("[%s] plan criteria geometry invalid, re-planning once: %s",
+                         bot_name, "; ".join(violations)[:200])
+                feedback = (world_state_fn() + "\n\nPREVIOUS PLAN REJECTED — invalid criteria "
+                            "coordinates: " + "; ".join(violations) +
+                            ". Criteria block coordinates MUST be inside the world and "
+                            "within the volume your subtasks will actually build.")
+                retry = l3_planner.call_plan(model, bot_name, task, feedback, dimensions=dim_list)
+                retry_violations = _validate_criteria_geometry(retry)
+                if not retry_violations:
+                    plan = retry
+                elif len(retry_violations) < len(violations):
+                    log.info("[%s] retry plan still has %d geometry issue(s) — using it anyway",
+                             bot_name, len(retry_violations))
+                    plan = retry
         except PlanValidationError as e:
             log.warning("[%s] planning failed: %s", bot_name, e)
             # Synthetic failure plan so the caller has something to log
@@ -223,6 +241,15 @@ def _step(plan: Plan, subtask: Subtask, model: str,
     # Validate / repair directives BEFORE dispatch (TELEPORT especially).
     directives = [_repair_directive(d, plan.bot, dim_list) for d in directives]
 
+    # Ground block-at criteria in the actual BUILD orders (finding D1):
+    # deterministic derivation, not an LLM rewrite, so the anti-laundering
+    # guarantee is untouched.
+    derived = _derive_build_criteria(subtask, directives)
+    if derived and derived != subtask.criteria:
+        log.info("[%s] criteria grounded from BUILD directives: %r -> %r",
+                 plan.bot, subtask.criteria, derived)
+        subtask.criteria = derived
+
     subtask.status = "executing"
     subtask.directives = list(directives)
     plan_store.write(plan)
@@ -283,6 +310,67 @@ _DIM_ALIASES = {
 
 
 # Renamed/wrong mob ids the LLM emits from stale training data.
+from criteria_eval import _BLOCK_PATTERN, _CLAUSE_SPLIT  # shared criterion grammar
+
+
+def _probe_block(bot_name: str, x: int, y: int, z: int) -> str | None:
+    """Block id at (x,y,z), or None if unavailable (fail-open)."""
+    try:
+        got = api.block_at(bot_name, x, y, z)
+        return got.get("block") if isinstance(got, dict) else None
+    except Exception:
+        return None
+
+
+def _validate_criteria_geometry(plan: Plan) -> list[str]:
+    """Find block-at criteria that target provably impossible coordinates —
+    positions outside the generated world (void_air). Returns violations."""
+    out: list[str] = []
+    for st in plan.subtasks:
+        for clause in _CLAUSE_SPLIT.split(st.criteria or ""):
+            m = _BLOCK_PATTERN.search(clause)
+            if not m:
+                continue
+            bx, by, bz = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            block = _probe_block(plan.bot, bx, by, bz)
+            if block == "minecraft:void_air":
+                out.append(f"subtask {st.id} targets ({bx},{by},{bz}) which is outside the world")
+    return out
+
+
+def _criterion_impossible(bot_name: str, criteria: str) -> str | None:
+    """Reason string if any block-at clause targets a void position, else None."""
+    for clause in _CLAUSE_SPLIT.split(criteria or ""):
+        m = _BLOCK_PATTERN.search(clause)
+        if m:
+            bx, by, bz = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            if _probe_block(bot_name, bx, by, bz) == "minecraft:void_air":
+                return f"({bx},{by},{bz}) is outside the world"
+    return None
+
+
+def _derive_build_criteria(subtask: Subtask, directives: list[dict]) -> str | None:
+    """Ground a block-at criterion in the ACTUAL build orders (finding D1):
+    PLAN-time criteria imagine coordinates; the emitted BUILD directives are
+    the truth about where material will be placed. Every blueprint places its
+    origin block, so 'block at (origin) is (material)' is exact."""
+    if not _BLOCK_PATTERN.search(subtask.criteria or ""):
+        return None
+    clauses = []
+    for d in directives:
+        if str(d.get("kind", "")).upper() != "BUILD":
+            continue
+        x, y, z = int(d.get("x", 0) or 0), int(d.get("y", 0) or 0), int(d.get("z", 0) or 0)
+        if x == 0 and y == 0 and z == 0:
+            continue  # build-at-bot: origin unknown at dispatch time
+        extra = d.get("extra") if isinstance(d.get("extra"), dict) else {}
+        material = str(extra.get("material", "minecraft:cobblestone"))
+        if ":" not in material:
+            material = "minecraft:" + material
+        clauses.append(f"block at ({x},{y},{z}) is {material}")
+    return " AND ".join(clauses) if clauses else None
+
+
 # L3-invented BUILD shapes → the mod's real blueprints
 _BUILD_SHAPE_ALIASES = {
     "pillar": "tower",
@@ -396,12 +484,23 @@ def _replan(plan: Plan, failed_subtask: Subtask, model: str) -> bool:
     new_subtask.replans = failed_subtask.replans + 1
     # A replan may change the approach, never the goalposts: L3 rewrote kill
     # criteria into verifier-dodging synonyms in war-test round 2. Carry the
-    # original criterion through verbatim.
+    # original criterion through verbatim — with ONE evidence-gated exception
+    # (finding D2): if the original criterion is PROVABLY impossible (targets
+    # a position outside the generated world) and the replacement is not,
+    # accept the replacement. Scout burned a whole plan on "air at y=-43".
     if (failed_subtask.criteria or "").strip():
-        if (new_subtask.criteria or "").strip() != failed_subtask.criteria.strip():
-            log.info("[%s] replan tried to rewrite criteria (%r -> %r) — keeping original",
-                     plan.bot, failed_subtask.criteria, new_subtask.criteria)
-        new_subtask.criteria = failed_subtask.criteria
+        proposed = (new_subtask.criteria or "").strip()
+        if proposed and proposed != failed_subtask.criteria.strip():
+            impossible = _criterion_impossible(plan.bot, failed_subtask.criteria)
+            if impossible and not _criterion_impossible(plan.bot, proposed):
+                log.info("[%s] replan criteria replacement ACCEPTED — original impossible: %s (%r -> %r)",
+                         plan.bot, impossible, failed_subtask.criteria, proposed)
+            else:
+                log.info("[%s] replan tried to rewrite criteria (%r -> %r) — keeping original",
+                         plan.bot, failed_subtask.criteria, new_subtask.criteria)
+                new_subtask.criteria = failed_subtask.criteria
+        else:
+            new_subtask.criteria = failed_subtask.criteria
     for i, s in enumerate(plan.subtasks):
         if s.id == failed_subtask.id:
             plan.subtasks[i] = new_subtask

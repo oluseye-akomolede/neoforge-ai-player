@@ -29,6 +29,21 @@ public class BotBrain {
     }
 
     public void cancelDirective() {
+        cancelDirective(-1);
+    }
+
+    /**
+     * Cancel only if the active directive matches the given id (-1 = any).
+     * Guards against the D3 race: a poller's post-completion cleanup cancel
+     * arriving after the NEXT directive has already been set killed fresh
+     * work mid-flight.
+     */
+    public void cancelDirective(long expectedId) {
+        if (expectedId > 0 && activeDirective != null && activeDirective.getId() != expectedId) {
+            AIPlayerMod.LOGGER.info("[{}] cancelDirective({}) ignored — active id is {}",
+                    bot.getPlayer().getName().getString(), expectedId, activeDirective.getId());
+            return;
+        }
         AIPlayerMod.LOGGER.warn("[{}] cancelDirective called — active={}, caller={}",
                 bot.getPlayer().getName().getString(),
                 activeDirective != null ? activeDirective.getType() : "none",

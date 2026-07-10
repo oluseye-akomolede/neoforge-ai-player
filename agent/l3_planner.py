@@ -82,6 +82,13 @@ Criteria MUST use one of these machine-checkable forms whenever possible:
   - "block at (<x>,<y>,<z>) is <block_id>"  (placed/changed block)
 Free-text criteria cannot be verified and will be judged loosely — avoid them.
 
+Criteria geometry rules (checked against the real world — violations fail):
+- Block coordinates MUST be inside the world. The nether's build range is
+  y 0..127; the overworld's is y -64..319. Never use negative y in the nether.
+- A "block at" criterion must name a position INSIDE the volume a subtask
+  actually builds, at the SAME y-level as the build origin — do not invent
+  positions above, below, or beside the structure.
+
 Constraints:
 - Output ONLY JSON. No prose. No markdown fences.
 - 1 to 6 subtasks. Break larger jobs into multiple submissions instead.

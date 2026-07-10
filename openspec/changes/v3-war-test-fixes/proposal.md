@@ -77,9 +77,21 @@ with an inventory stuffed by 200+ kills of war loot.
 | 16 | Channel-into-full-inventory silently discarded items — `Inventory.add` leftovers evaporated while `totalMined` counted them as delivered ("channeled 64, received 0, SUCCESS") | Overflow dropped at the bot's feet and reported; zero-delivered channels FAIL with "inventory full — drop junk first" | `MineBehavior.tickChanneling` |
 | 17 | L3 blind to inventory — the world-state summary read the wrong schema (`items`/`id`), so the `inv=` section was always empty and no plan could know space was exhausted | Summary fixed to real schema, plus `inv_slots=N/36` with an explicit FULL warning; new DROP directive (agent-side intercept over the existing DropAction) documented in the EXEC reference so L3 can shed junk | `agent._l3_orchestrator_world_state`, `agent._l3_orchestrator_dispatch`, `l3_planner`, `l2-mcp KNOWN_KINDS` |
 
-Deferred: replan criteria immutability blocked one *legitimate* adaptation
-(material swap when blackstone_wall was uncraftable). Future: criteria
-changes allowed only via full plan replan, never a subtask splice.
+### Stronghold round 3 (post-C-fix rerun): findings 18–20
+
+Round 3 built real fortress architecture at the ordered coordinates —
+walls, towers, gate platforms, all world-verified — and still finalized
+0/5 complete. The remaining failures were all criteria-shaped:
+
+| # | Finding | Fix | Where |
+|---|---------|-----|-------|
+| 18 | PLAN-time criteria hallucinate geometry — gate check inside a lava lake at y=15, wall check at y=78 above a y=60 build, clear-space check at y=-43 (below the world, `void_air` forever). Real construction failed imaginary checks | (a) Plan-time geometry validation: every block-at criterion coordinate probed via `block_at`; `void_air` ⇒ plan rejected and re-planned once with the violation named. (b) EXEC-time criteria grounding: when a subtask's directives include BUILDs with explicit origins, its block-at criterion is REPLACED by exact derived checks ("block at (origin) is (material)") — deterministic translation from the plan's own build orders, not an LLM rewrite. (c) PLAN prompt geometry rules (world y-ranges; criteria must sit inside the built volume) | `plan_orchestrator._validate_criteria_geometry` / `_derive_build_criteria`, `l3_planner._PLAN_SYSTEM_PROMPT` |
+| 19 | Criteria immutability pinned bots to malformed originals — Mystic's legitimate y78→y60 self-correction was blocked; Scout died on an unreachable void check | Evidence-gated replacement: a replan may change the criterion IFF the original is PROVABLY impossible (targets `void_air`) and the replacement is not. Everything else still carries through verbatim | `plan_orchestrator._replan`, `_criterion_impossible` |
+| 20 | Directive-identity race — `set_directive` is async (enqueued to the server thread); the poller's first read could see the PREVIOUS directive's COMPLETED status (phantom instant MINE successes, Tiller's basalt famine), and the post-completion cleanup cancel could kill the NEXT directive on another HTTP pool thread (`cancelDirective — active=MINE`) | Directives carry a monotonically increasing `id` (returned by set, present in `/brain`); the poller pins to its own id — older id ⇒ "not started yet", newer ⇒ "superseded"; cancels are id-scoped and the mod ignores a cancel for a non-active id | `Directive`, `BotBrain.cancelDirective(long)`, `HttpApiServer`, `agent._poll_directive`, `api.cancel_directive` |
+
+Deferred: replan criteria immutability for *possible-but-wrong* criteria
+(Mystic's y=78 was reachable by building up — and he tried). Full-plan
+replan with world evidence remains the future path for those.
 
 ## Non-Goals
 

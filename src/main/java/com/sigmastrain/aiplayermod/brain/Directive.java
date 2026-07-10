@@ -4,6 +4,13 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 public class Directive {
+    // Unique per-directive id so HTTP pollers can tell "the directive I set"
+    // from a predecessor's terminal state (finding D3: stale-status race gave
+    // phantom instant completions; cross-directive cancels killed fresh work).
+    private static final java.util.concurrent.atomic.AtomicLong SEQ =
+            new java.util.concurrent.atomic.AtomicLong(0);
+
+    private final long id = SEQ.incrementAndGet();
     private final DirectiveType type;
     private final String target;
     private final int radius;
@@ -27,6 +34,7 @@ public class Directive {
         this.extra = builder.extra;
     }
 
+    public long getId() { return id; }
     public DirectiveType getType() { return type; }
     public String getTarget() { return target; }
     public int getRadius() { return radius; }
@@ -50,6 +58,7 @@ public class Directive {
 
     public Map<String, Object> toMap() {
         Map<String, Object> map = new LinkedHashMap<>();
+        map.put("id", id);
         map.put("type", type.name());
         map.put("status", status.name());
         if (target != null) map.put("target", target);

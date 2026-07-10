@@ -260,8 +260,11 @@ def set_directive(bot, directive_type, target=None, count=None, radius=None, x=N
 def get_brain(bot):
     return _get(f"/bot/{bot}/brain")
 
-def cancel_directive(bot):
-    return _delete(f"/bot/{bot}/directive")
+def cancel_directive(bot, directive_id=None):
+    # Pass the id of the directive you own — the mod ignores the cancel if a
+    # NEWER directive is already active (D3 race guard).
+    data = {"id": directive_id} if directive_id else None
+    return _delete(f"/bot/{bot}/directive", data)
 
 
 def me_status(bot):
