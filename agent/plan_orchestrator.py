@@ -364,6 +364,11 @@ def _derive_build_criteria(subtask: Subtask, directives: list[dict]) -> str | No
         if x == 0 and y == 0 and z == 0:
             continue  # build-at-bot: origin unknown at dispatch time
         extra = d.get("extra") if isinstance(d.get("extra"), dict) else {}
+        if str(d.get("target", "")).lower() in ("clear", "excavate", "dig"):
+            # Excavation is verified by air at the pocket's center
+            size = int(extra.get("size", 23) or 23)
+            clauses.append(f"block at ({x + size // 2},{y + 1},{z + size // 2}) is minecraft:air")
+            continue
         material = str(extra.get("material", "minecraft:cobblestone"))
         if ":" not in material:
             material = "minecraft:" + material
@@ -381,6 +386,8 @@ _BUILD_SHAPE_ALIASES = {
     "keep": "shelter",
     "house": "shelter",
     "fortress": "shelter",
+    "excavate": "clear",
+    "dig": "clear",
 }
 
 _MOB_SYNONYMS = {

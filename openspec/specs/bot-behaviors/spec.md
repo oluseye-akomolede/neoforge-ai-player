@@ -166,6 +166,22 @@ the origin.
 - WHEN the behavior starts
 - THEN the tower blueprint is used and the alias is logged
 
+### Requirement: Visible, Verifiable Construction
+Fortress/stronghold construction MUST use `minecraft:quartz_block` as the
+build material — never a terrain-native material (user directive,
+2026-07-10). Terrain-native construction is invisible to players and
+unfalsifiable to block criteria (natural blocks auto-pass). Structures
+MUST be built in a cleared pocket: the `clear` blueprint excavates a
+size×height×size volume (skipping unbreakable blocks, no item drops)
+before walls go up.
+
+#### Scenario: Quartz fortress in the nether
+- GIVEN a stronghold build task in the nether
+- WHEN L3 plans construction
+- THEN the first build subtask clears a pocket larger than the footprint
+- AND all wall/tower/keep materials are minecraft:quartz_block
+- AND the derived excavation criterion checks air at the pocket's center
+
 ### Requirement: Combat Target Provisioning
 Fake players do not trigger natural mob spawning, so CombatBehavior MUST
 provision its own targets: when no matching target is found for

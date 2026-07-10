@@ -82,6 +82,15 @@ Criteria MUST use one of these machine-checkable forms whenever possible:
   - "block at (<x>,<y>,<z>) is <block_id>"  (placed/changed block)
 Free-text criteria cannot be verified and will be judged loosely — avoid them.
 
+Construction rules (MANDATORY for fortresses, strongholds, bases):
+- Build from minecraft:quartz_block ONLY. Terrain-native materials
+  (netherrack, stone, dirt) are indistinguishable from the landscape —
+  invisible to players and unverifiable by block checks. Acquire quartz by
+  mining nether quartz ore and crafting, or by channeling quartz blocks.
+- FIRST subtask after arrival MUST clear a pocket: excavate an open volume
+  larger than the structure (BUILD blueprint "clear") — never embed walls
+  inside solid terrain.
+
 Criteria geometry rules (checked against the real world — violations fail):
 - Block coordinates MUST be inside the world. The nether's build range is
   y 0..127; the overworld's is y -64..319. Never use negative y in the nether.
@@ -198,10 +207,14 @@ DIRECTIVE PARAM REFERENCE (use these shapes EXACTLY):
   BUILD            — {{ "kind":"BUILD", "target":"wall", "x":<int>, "y":<int>, "z":<int>, "extra":{{"material":"minecraft:netherrack","size":21,"height":8}} }}
                      target = blueprint name. ONLY these blueprints exist:
                        wall (size=length, height), tower (height, 3x3 footprint),
-                       platform (size x size), shelter (5x5x4 hut), farm (7x7).
+                       platform (size x size), shelter (5x5x4 hut), farm (7x7),
+                       clear (EXCAVATES a size x height x size pocket — use FIRST
+                       when building in solid terrain; no material needed).
                      There is NO gate/pillar/cube/keep blueprint — compose them
                      from walls and towers. x/y/z = world coords of build origin;
                      the material must already be in inventory (mine it first).
+                     Fortress construction material MUST be minecraft:quartz_block
+                     (terrain-native materials are invisible and unverifiable).
   COMBAT           — {{ "kind":"COMBAT", "target":"minecraft:zombie", "extra":{{"radius":16}} }}
   DROP             — {{ "kind":"DROP", "target":"minecraft:rotten_flesh", "count":64 }}
                      Sheds items from inventory. If world state says the

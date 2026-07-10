@@ -89,6 +89,12 @@ walls, towers, gate platforms, all world-verified — and still finalized
 | 19 | Criteria immutability pinned bots to malformed originals — Mystic's legitimate y78→y60 self-correction was blocked; Scout died on an unreachable void check | Evidence-gated replacement: a replan may change the criterion IFF the original is PROVABLY impossible (targets `void_air`) and the replacement is not. Everything else still carries through verbatim | `plan_orchestrator._replan`, `_criterion_impossible` |
 | 20 | Directive-identity race — `set_directive` is async (enqueued to the server thread); the poller's first read could see the PREVIOUS directive's COMPLETED status (phantom instant MINE successes, Tiller's basalt famine), and the post-completion cleanup cancel could kill the NEXT directive on another HTTP pool thread (`cancelDirective — active=MINE`) | Directives carry a monotonically increasing `id` (returned by set, present in `/brain`); the poller pins to its own id — older id ⇒ "not started yet", newer ⇒ "superseded"; cancels are id-scoped and the mod ignores a cancel for a non-active id | `Directive`, `BotBrain.cancelDirective(long)`, `HttpApiServer`, `agent._poll_directive`, `api.cancel_directive` |
 
+### Round-3 field inspection: finding 21
+
+| # | Finding | Fix | Where |
+|---|---------|-----|-------|
+| 21 | Terrain-camouflaged construction — the round-3 walls were netherrack in a netherrack cave: invisible to the player standing on them (user-confirmed in-world) and unfalsifiable to block checks (natural terrain auto-passes a netherrack criterion; only the wall's 21-block continuity and one oak-planks patch proved placement). Walls were also embedded in solid rock rather than open space | (a) Standing rule (user directive): strongholds are built from `minecraft:quartz_block` ONLY — visually and verifiably distinct from all terrain. (b) New `clear` BUILD blueprint excavates a size×height×size pocket (16 blocks/tick, bedrock-safe, no drops) so structures stand in open space; plans MUST clear before building; excavation verified by "block at pocket-center is air" derived criterion | `BuildBehavior` (clear mode), `l3_planner` prompts, `plan_orchestrator._derive_build_criteria`, aliases in agent + l2-mcp |
+
 Deferred: replan criteria immutability for *possible-but-wrong* criteria
 (Mystic's y=78 was reachable by building up — and he tried). Full-plan
 replan with world evidence remains the future path for those.

@@ -54,7 +54,14 @@ public class BuildBehavior implements Behavior {
             "cube", "shelter",
             "keep", "shelter",
             "house", "shelter",
-            "fortress", "shelter");
+            "fortress", "shelter",
+            "excavate", "clear",
+            "dig", "clear");
+
+    // "clear" excavates instead of placing (finding 21 follow-up: structures
+    // must be built in a cleared pocket, not embedded in solid terrain).
+    private boolean clearMode;
+    private static final int CLEAR_BLOCKS_PER_TICK = 16;
 
     @Override
     public void start(BotPlayer bot, Directive directive) {
@@ -78,10 +85,13 @@ public class BuildBehavior implements Behavior {
 
         int size = parseIntExtra(directive, 0, "size", "length", "width");
         int height = parseIntExtra(directive, 0, "height");
-        blueprint = getBlueprint(blueprintName, size, height);
+        clearMode = "clear".equals(blueprintName);
+        blueprint = clearMode
+                ? buildClearVolume(clamp(size, 3, 32, 23), clamp(height, 3, 24, 12))
+                : getBlueprint(blueprintName, size, height);
         if (blueprint == null) {
             progress.setFailureReason("Unknown blueprint: " + blueprintName
-                    + ". Available: shelter, wall, farm, tower, platform");
+                    + ". Available: shelter, wall, farm, tower, platform, clear");
             return;
         }
 
@@ -127,8 +137,10 @@ public class BuildBehavior implements Behavior {
         }
 
         if (placeIndex >= blueprint.size()) {
-            progress.logEvent("Build complete: " + blocksPlaced + "/" + totalBlocks + " placed");
-            bot.systemChat("Built " + blueprintName + " (" + blocksPlaced + " blocks)", "green");
+            String verb = clearMode ? "cleared" : "placed";
+            progress.logEvent("Build complete: " + blocksPlaced + "/" + totalBlocks + " " + verb);
+            bot.systemChat((clearMode ? "Cleared " : "Built ") + blueprintName
+                    + " (" + blocksPlaced + " blocks)", "green");
             return BehaviorResult.SUCCESS;
         }
 
@@ -137,9 +149,29 @@ public class BuildBehavior implements Behavior {
             return BehaviorResult.RUNNING;
         }
 
+        ServerPlayer player = bot.getPlayer();
+
+        if (clearMode) {
+            progress.setPhase("clearing (" + placeIndex + "/" + totalBlocks + ")");
+            var level = player.serverLevel();
+            int processed = 0;
+            while (placeIndex < blueprint.size() && processed < CLEAR_BLOCKS_PER_TICK) {
+                int[] off = blueprint.get(placeIndex);
+                BlockPos pos = origin.offset(off[0], off[1], off[2]);
+                BlockState st = level.getBlockState(pos);
+                if (!st.isAir() && st.getDestroySpeed(level, pos) >= 0) {
+                    level.destroyBlock(pos, false);
+                    blocksPlaced++;
+                }
+                placeIndex++;
+                processed++;
+            }
+            placeCooldown = 1;
+            return BehaviorResult.RUNNING;
+        }
+
         progress.setPhase("building (" + placeIndex + "/" + totalBlocks + ")");
 
-        ServerPlayer player = bot.getPlayer();
         int[] offset = blueprint.get(placeIndex);
         BlockPos target = origin.offset(offset[0], offset[1], offset[2]);
 
@@ -287,6 +319,16 @@ public class BuildBehavior implements Behavior {
         for (int x = 0; x < 3; x++)
             for (int z = 0; z < 3; z++)
                 blocks.add(new int[]{x, height, z});
+        return blocks;
+    }
+
+    // Excavation volume: size x height x size, bottom-up from origin
+    private static List<int[]> buildClearVolume(int size, int height) {
+        List<int[]> blocks = new ArrayList<>();
+        for (int y = 0; y < height; y++)
+            for (int x = 0; x < size; x++)
+                for (int z = 0; z < size; z++)
+                    blocks.add(new int[]{x, y, z});
         return blocks;
     }
 
