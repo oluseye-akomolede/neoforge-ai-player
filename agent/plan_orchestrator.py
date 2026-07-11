@@ -241,8 +241,9 @@ def _step(plan: Plan, subtask: Subtask, model: str,
     # Validate / repair directives BEFORE dispatch (TELEPORT especially).
     directives = [_repair_directive(d, plan.bot, dim_list) for d in directives]
 
-    # Prepend CHANNEL directives for any BUILD material shortfall.
-    directives = _provision_materials(plan.bot, directives)
+    # Prepend CHANNEL directives for any material shortfall (BUILD needs
+    # and inventory criteria alike).
+    directives = _provision_materials(plan.bot, directives, subtask.criteria or "")
 
     # Ground block-at criteria in the actual BUILD orders (finding D1):
     # deterministic derivation, not an LLM rewrite, so the anti-laundering
@@ -371,7 +372,8 @@ def _blueprint_block_count(target: str, extra: dict) -> int:
     return 0  # clear and unknowns consume nothing
 
 
-def _provision_materials(bot_name: str, directives: list[dict]) -> list[dict]:
+def _provision_materials(bot_name: str, directives: list[dict],
+                         criteria: str = "") -> list[dict]:
     """Deterministic dependency resolution (round-5 finding: L3 issues quartz
     BUILD orders with empty hands, or hallucinates acquisition recipes like
     smelting netherrack into quartz). Sum each BUILD's material need, check
@@ -392,6 +394,18 @@ def _provision_materials(bot_name: str, directives: list[dict]) -> list[dict]:
         if ":" not in material:
             material = "minecraft:" + material
         needs[material] = needs.get(material, 0) + n
+    # Inventory criteria are material requirements too (round-6 finding 26:
+    # "collect 64 quartz_block" subtasks carry no BUILD directive, so the
+    # BUILD-keyed provisioning never fired and Forge/Mystic starved).
+    from criteria_eval import _INVENTORY_PATTERN
+    for clause in _CLAUSE_SPLIT.split(criteria or ""):
+        m = _INVENTORY_PATTERN.search(clause)
+        if not m:
+            continue
+        need, item = int(m.group(1)), m.group(2)
+        if ":" not in item:
+            item = "minecraft:" + item
+        needs[item] = max(needs.get(item, 0), need)
     if not needs:
         return directives
     try:

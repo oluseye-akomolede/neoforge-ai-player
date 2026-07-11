@@ -177,8 +177,18 @@ public class BuildBehavior implements Behavior {
 
         BlockState existing = player.level().getBlockState(target);
         if (!existing.isAir() && !existing.canBeReplaced()) {
-            placeIndex++;
-            return BehaviorResult.RUNNING;
+            String existingId = BuiltInRegistries.BLOCK.getKey(existing.getBlock()).toString();
+            if (existingId.equals(materialId)) {
+                placeIndex++;   // already correct — skip
+                return BehaviorResult.RUNNING;
+            }
+            // Wrong block inside our own blueprint footprint (debris from an
+            // earlier round pinned Tiller's quartz wall forever): replace it.
+            if (existing.getDestroySpeed(player.level(), target) < 0) {
+                placeIndex++;   // unbreakable — skip
+                return BehaviorResult.RUNNING;
+            }
+            player.serverLevel().destroyBlock(target, false);
         }
 
         int slot = findMaterialSlot(player);
