@@ -356,7 +356,9 @@ def _derive_build_criteria(subtask: Subtask, directives: list[dict]) -> str | No
     origin block, so 'block at (origin) is (material)' is exact."""
     if not _BLOCK_PATTERN.search(subtask.criteria or ""):
         return None
-    clauses = []
+    # keyed by coordinate: overlapping builds (tower on wall corner) would
+    # otherwise demand two different blocks at one position — last build wins
+    clauses: dict[tuple, str] = {}
     for d in directives:
         if str(d.get("kind", "")).upper() != "BUILD":
             continue
@@ -367,13 +369,14 @@ def _derive_build_criteria(subtask: Subtask, directives: list[dict]) -> str | No
         if str(d.get("target", "")).lower() in ("clear", "excavate", "dig"):
             # Excavation is verified by air at the pocket's center
             size = int(extra.get("size", 23) or 23)
-            clauses.append(f"block at ({x + size // 2},{y + 1},{z + size // 2}) is minecraft:air")
+            cx, cy, cz = x + size // 2, y + 1, z + size // 2
+            clauses[(cx, cy, cz)] = f"block at ({cx},{cy},{cz}) is minecraft:air"
             continue
         material = str(extra.get("material", "minecraft:cobblestone"))
         if ":" not in material:
             material = "minecraft:" + material
-        clauses.append(f"block at ({x},{y},{z}) is {material}")
-    return " AND ".join(clauses) if clauses else None
+        clauses[(x, y, z)] = f"block at ({x},{y},{z}) is {material}"
+    return " AND ".join(clauses.values()) if clauses else None
 
 
 # L3-invented BUILD shapes → the mod's real blueprints

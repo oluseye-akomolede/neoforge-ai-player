@@ -70,21 +70,27 @@ public class ChannelBehavior implements Behavior {
             itemId = "minecraft:" + itemId;
         }
 
+        Item item = BuiltInRegistries.ITEM.get(ResourceLocation.parse(itemId));
+        if (item == Items.AIR) {
+            progress.setFailureReason("Unknown item ID: " + itemId);
+            return BehaviorResult.FAILED;
+        }
+
         if (!TransmuteRegistry.isKnown(itemId)) {
             int vanillaCost = ConjureAction.getVanillaCost(itemId);
             if (vanillaCost > 0) {
                 TransmuteRegistry.register(itemId, vanillaCost, "auto_channel", 0);
                 AIPlayerMod.LOGGER.info("Auto-registered {} in transmute registry (cost={})", itemId, vanillaCost);
             } else {
-                progress.setFailureReason("Item not in transmute registry: " + itemId);
-                return BehaviorResult.FAILED;
+                // Exhaustive-search-then-channel must never dead-end on a REAL
+                // item just because no one priced it (stronghold round 4:
+                // quartz_block had no registry entry and the whole material
+                // chain stalled). Default-cost it, loudly.
+                int fallbackCost = ConjureAction.getDefaultCost();
+                TransmuteRegistry.register(itemId, fallbackCost, "auto_channel_default", 0);
+                AIPlayerMod.LOGGER.info("Auto-registered {} at DEFAULT cost {} (no vanilla price)",
+                        itemId, fallbackCost);
             }
-        }
-
-        Item item = BuiltInRegistries.ITEM.get(ResourceLocation.parse(itemId));
-        if (item == Items.AIR) {
-            progress.setFailureReason("Unknown item ID: " + itemId);
-            return BehaviorResult.FAILED;
         }
 
         int perItemCost = TransmuteRegistry.getCost(itemId);

@@ -95,6 +95,17 @@ walls, towers, gate platforms, all world-verified — and still finalized
 |---|---------|-----|-------|
 | 21 | Terrain-camouflaged construction — the round-3 walls were netherrack in a netherrack cave: invisible to the player standing on them (user-confirmed in-world) and unfalsifiable to block checks (natural terrain auto-passes a netherrack criterion; only the wall's 21-block continuity and one oak-planks patch proved placement). Walls were also embedded in solid rock rather than open space | (a) Standing rule (user directive): strongholds are built from `minecraft:quartz_block` ONLY — visually and verifiably distinct from all terrain. (b) New `clear` BUILD blueprint excavates a size×height×size pocket (16 blocks/tick, bedrock-safe, no drops) so structures stand in open space; plans MUST clear before building; excavation verified by "block at pocket-center is air" derived criterion | `BuildBehavior` (clear mode), `l3_planner` prompts, `plan_orchestrator._derive_build_criteria`, aliases in agent + l2-mcp |
 
+### Stronghold round 4: findings 22–24
+
+Round 4 excavated the pocket (verified: 24/25 center positions air) and
+emitted well-formed quartz build orders — then stalled on materials:
+
+| # | Finding | Fix | Where |
+|---|---------|-----|-------|
+| 22 | Channel dead-end on unpriced items — quartz_block had no transmute-registry or vanilla-cost entry, so the exhaustive-search→channel chain (which fired correctly) failed at its last link: "Item not in transmute registry" | Quartz family priced in the conjure cost table (block=12, 4×quartz); ChannelBehavior now auto-registers any REAL item at DEFAULT_COST rather than dead-ending — search-then-channel can always complete for legitimate materials (user directive) | `ConjureAction.COST_TABLE`/`getDefaultCost`, `ChannelBehavior` |
+| 23 | Non-ASCII hallucinated item id — L3 emitted `minecraft:nether_quartz_叶修`; search matched nothing and the channel fallback failed on the unknown drop, killing the plan | `normalize_item` strips non-ASCII bytes and dangling separators — the remainder substring-matches the real id (`nether_quartz` → nether_quartz_ore) | `l2-mcp renderers.normalize_item` |
+| 24 | Derived-criteria coordinate collision — a quartz wall and a basalt tower sharing an origin produced contradictory clauses ("quartz AND basalt at (-10,60,-10)") | Derivation dedupes by coordinate; the LAST build order at a position wins | `plan_orchestrator._derive_build_criteria` |
+
 Deferred: replan criteria immutability for *possible-but-wrong* criteria
 (Mystic's y=78 was reachable by building up — and he tried). Full-plan
 replan with world evidence remains the future path for those.

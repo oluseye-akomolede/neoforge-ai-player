@@ -62,6 +62,10 @@ public class ConjureAction implements BotAction {
         Map.entry("minecraft:lapis_lazuli", 3),
         Map.entry("minecraft:redstone", 3),
         Map.entry("minecraft:quartz", 3),
+        Map.entry("minecraft:quartz_block", 12),
+        Map.entry("minecraft:smooth_quartz", 12),
+        Map.entry("minecraft:quartz_bricks", 12),
+        Map.entry("minecraft:quartz_pillar", 12),
         Map.entry("minecraft:amethyst_shard", 3),
         Map.entry("minecraft:emerald", 5),
         Map.entry("minecraft:slime_ball", 3),
@@ -231,6 +235,8 @@ public class ConjureAction implements BotAction {
         Integer cost = COST_TABLE.get(itemId);
         return cost != null ? cost : -1;
     }
+
+    public static int getDefaultCost() { return DEFAULT_COST; }
 
     @Override
     public String getResult() { return result; }
