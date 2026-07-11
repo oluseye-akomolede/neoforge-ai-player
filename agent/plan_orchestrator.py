@@ -241,6 +241,9 @@ def _step(plan: Plan, subtask: Subtask, model: str,
     # Validate / repair directives BEFORE dispatch (TELEPORT especially).
     directives = [_repair_directive(d, plan.bot, dim_list) for d in directives]
 
+    # Prepend CHANNEL directives for any BUILD material shortfall.
+    directives = _provision_materials(plan.bot, directives)
+
     # Ground block-at criteria in the actual BUILD orders (finding D1):
     # deterministic derivation, not an LLM rewrite, so the anti-laundering
     # guarantee is untouched.
@@ -347,6 +350,65 @@ def _criterion_impossible(bot_name: str, criteria: str) -> str | None:
             if _probe_block(bot_name, bx, by, bz) == "minecraft:void_air":
                 return f"({bx},{by},{bz}) is outside the world"
     return None
+
+
+def _blueprint_block_count(target: str, extra: dict) -> int:
+    """Approximate blocks a blueprint consumes (for material pre-provisioning)."""
+    size = int(extra.get("size", extra.get("length", extra.get("width", 0)) or 0) or 0)
+    height = int(extra.get("height", 0) or 0)
+    t = target.lower()
+    if t == "wall":
+        return max(size, 9) * max(height, 3)
+    if t == "tower":
+        h = height or size or 8
+        return max(h, 3) * 8 + 9
+    if t == "platform":
+        return max(size, 7) ** 2
+    if t == "shelter":
+        return 96
+    if t == "farm":
+        return 49
+    return 0  # clear and unknowns consume nothing
+
+
+def _provision_materials(bot_name: str, directives: list[dict]) -> list[dict]:
+    """Deterministic dependency resolution (round-5 finding: L3 issues quartz
+    BUILD orders with empty hands, or hallucinates acquisition recipes like
+    smelting netherrack into quartz). Sum each BUILD's material need, check
+    inventory, and prepend a CHANNEL for any shortfall — search-then-channel
+    enforced by L2, not hoped for from L3."""
+    needs: dict[str, int] = {}
+    for d in directives:
+        if str(d.get("kind", "")).upper() != "BUILD":
+            continue
+        target = str(d.get("target", "")).lower()
+        extra = d.get("extra") if isinstance(d.get("extra"), dict) else {}
+        n = _blueprint_block_count(target, extra)
+        if n <= 0:
+            continue
+        material = str(extra.get("material", "")).strip()
+        if not material:
+            continue
+        if ":" not in material:
+            material = "minecraft:" + material
+        needs[material] = needs.get(material, 0) + n
+    if not needs:
+        return directives
+    try:
+        inv = api.inventory(bot_name) or {}
+        owned: dict[str, int] = {}
+        for slot in inv.get("inventory", []):
+            owned[slot.get("item", "")] = owned.get(slot.get("item", ""), 0) + int(slot.get("count", 0))
+    except Exception:
+        return directives  # can't check — don't guess
+    prepend = []
+    for material, needed in needs.items():
+        short = needed - owned.get(material, 0)
+        if short > 0:
+            log.info("[%s] material pre-provision: %d more %s needed for BUILDs — channeling",
+                     bot_name, short, material)
+            prepend.append({"kind": "CHANNEL", "target": material, "count": short})
+    return prepend + directives
 
 
 def _derive_build_criteria(subtask: Subtask, directives: list[dict]) -> str | None:
