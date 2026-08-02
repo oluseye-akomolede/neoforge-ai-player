@@ -419,9 +419,16 @@ def _provision_materials(bot_name: str, directives: list[dict],
     for material, needed in needs.items():
         short = needed - owned.get(material, 0)
         if short > 0:
-            log.info("[%s] material pre-provision: %d more %s needed for BUILDs — channeling",
+            log.info("[%s] material pre-provision: %d more %s needed — channeling in chunks",
                      bot_name, short, material)
-            prepend.append({"kind": "CHANNEL", "target": material, "count": short})
+            # Chunked: one 240-block channel is ~12 minutes of uninterruptible
+            # ritual (round-8 finding: killed Mystic's plan through attempt
+            # timeouts). 64-block chunks complete in ~1 min each and partial
+            # progress survives a failed attempt.
+            while short > 0:
+                chunk = min(short, 64)
+                prepend.append({"kind": "CHANNEL", "target": material, "count": chunk})
+                short -= chunk
     return prepend + directives
 
 

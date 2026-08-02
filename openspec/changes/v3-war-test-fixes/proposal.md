@@ -106,6 +106,16 @@ emitted well-formed quartz build orders — then stalled on materials:
 | 23 | Non-ASCII hallucinated item id — L3 emitted `minecraft:nether_quartz_叶修`; search matched nothing and the channel fallback failed on the unknown drop, killing the plan | `normalize_item` strips non-ASCII bytes and dangling separators — the remainder substring-matches the real id (`nether_quartz` → nether_quartz_ore) | `l2-mcp renderers.normalize_item` |
 | 24 | Derived-criteria coordinate collision — a quartz wall and a basalt tower sharing an origin produced contradictory clauses ("quartz AND basalt at (-10,60,-10)") | Derivation dedupes by coordinate; the LAST build order at a position wins | `plan_orchestrator._derive_build_criteria` |
 
+### Round 8 (V100 era begins): findings 25–26
+
+Round 8 (first campaign on the V100 pair): Axiom and Tiller complete
+6/6 verified quartz strongholds in a single round; Scout 5/6.
+
+| # | Finding | Fix | Where |
+|---|---|---|---|
+| 25 | Invented material ids — "soul sand gravel" (round 8), "quartz_ore" (round 4): nonexistent blocks that no search or channel can satisfy | Material synonym table in `normalize_item` maps L3's inventions to the nearest real id (soul_sand_gravel→soul_sand, quartz_ore→nether_quartz_ore, nether_stone→netherrack, ...) | `l2-mcp renderers.ITEM_SYNONYMS` |
+| 26 | Monolithic channel rituals — a 240-block quartz criterion provisioned one CHANNEL of 2,880 XP levels ≈ 12 minutes uninterruptible; attempts exhausted, plan dead (Mystic) | Provisioning chunks channels to ≤64 blocks (~1 min each); partial progress survives failed attempts | `plan_orchestrator._provision_materials` |
+
 Deferred: replan criteria immutability for *possible-but-wrong* criteria
 (Mystic's y=78 was reachable by building up — and he tried). Full-plan
 replan with world evidence remains the future path for those.
