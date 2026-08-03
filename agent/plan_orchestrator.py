@@ -405,6 +405,8 @@ def _provision_materials(bot_name: str, directives: list[dict],
         need, item = int(m.group(1)), m.group(2)
         if ":" not in item:
             item = "minecraft:" + item
+        from criteria_eval import ITEM_SYNONYMS
+        item = ITEM_SYNONYMS.get(item, item)
         needs[item] = max(needs.get(item, 0), need)
     if not needs:
         return directives

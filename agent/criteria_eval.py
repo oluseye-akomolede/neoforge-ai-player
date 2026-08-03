@@ -71,6 +71,23 @@ def evaluate(bot_name: str, subtask: Subtask,
 
 _CLAUSE_SPLIT = re.compile(r"\s+(?:AND|and)\s+|\s*&&\s*")
 
+# Fail-open copy of l2-mcp's material synonyms: criteria written with
+# invented ids must check the REAL item the (normalized) directives deliver
+# (round-8 redemption finding: criterion "quartz_ore" vs delivered
+# "nether_quartz_ore" could never match).
+ITEM_SYNONYMS = {
+    "minecraft:quartz_ore": "minecraft:nether_quartz_ore",
+    "minecraft:soul_sand_gravel": "minecraft:soul_sand",
+    "minecraft:soul_gravel": "minecraft:soul_sand",
+    "minecraft:nether_gravel": "minecraft:gravel",
+    "minecraft:nether_stone": "minecraft:netherrack",
+    "minecraft:nether_rock": "minecraft:netherrack",
+    "minecraft:quartz_stone": "minecraft:quartz_block",
+    "minecraft:smooth_quartz_block": "minecraft:smooth_quartz",
+    "minecraft:basalt_stone": "minecraft:basalt",
+    "minecraft:blackstone_block": "minecraft:blackstone",
+}
+
 
 def _strategy_world_state(bot_name: str, subtask: Subtask) -> tuple[bool, str] | None:
     """Evaluate EVERY checkable clause of the criterion against the mod API
@@ -125,6 +142,7 @@ def _eval_clause(bot_name: str, clause: str) -> tuple[bool, str] | None:
         item_id = m.group(2)
         if ":" not in item_id:
             item_id = f"minecraft:{item_id}"
+        item_id = ITEM_SYNONYMS.get(item_id, item_id)
         try:
             data = api.inventory(bot_name)
             count = 0
