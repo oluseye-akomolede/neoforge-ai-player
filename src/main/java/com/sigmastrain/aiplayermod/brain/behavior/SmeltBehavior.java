@@ -176,7 +176,7 @@ public class SmeltBehavior implements Behavior {
         }
 
         Item item = BuiltInRegistries.ITEM.get(ResourceLocation.parse(inputItemId));
-        player.getInventory().add(new ItemStack(item, needed));
+        BotPlayer.deliverTo(player, new ItemStack(item, needed));
         player.giveExperienceLevels(-channelCost);
         progress.increment("items_channeled", needed);
         bot.systemChat("Channeled " + needed + "x " + inputItemId, "light_purple");
@@ -219,7 +219,7 @@ public class SmeltBehavior implements Behavior {
 
         // Give output
         Item outputItem = BuiltInRegistries.ITEM.get(ResourceLocation.parse(outputItemId));
-        player.getInventory().add(new ItemStack(outputItem, consumed));
+        BotPlayer.deliverTo(player, new ItemStack(outputItem, consumed));
         totalSmelted += consumed;
         progress.increment("items_smelted", consumed);
 

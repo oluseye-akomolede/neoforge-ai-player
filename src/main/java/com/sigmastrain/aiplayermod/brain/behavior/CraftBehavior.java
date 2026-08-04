@@ -647,7 +647,7 @@ public class CraftBehavior implements Behavior {
             for (var entry : slotUsage.entrySet()) {
                 player.getInventory().getItem(entry.getKey()).shrink(entry.getValue());
             }
-            player.getInventory().add(result);
+            BotPlayer.deliverTo(player, result);
             crafted += result.getCount();
         }
         return true;

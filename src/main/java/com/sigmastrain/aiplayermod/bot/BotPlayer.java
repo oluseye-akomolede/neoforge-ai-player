@@ -1058,6 +1058,23 @@ public class BotPlayer {
         return extendedInventory;
     }
 
+    /**
+     * Central delivery helper. ANY code path that gives items to a bot must
+     * route through here — a raw {@code inventory.add()} silently discards
+     * overflow, which is the bug class this vault exists to eliminate
+     * (findings 16, 27, and the ConjureAction gap caught in v4 verification).
+     * Falls back to a plain add for non-bot players.
+     */
+    public static int deliverTo(ServerPlayer player, ItemStack stack) {
+        if (stack == null || stack.isEmpty()) return 0;
+        BotPlayer bot = BotManager.getBot(player.getName().getString());
+        if (bot != null) return bot.deliver(stack);
+        int n = stack.getCount();
+        player.getInventory().add(stack);
+        if (!stack.isEmpty()) player.drop(stack.copy(), false);
+        return n;
+    }
+
     public BotVault getVault() {
         return vault;
     }

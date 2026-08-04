@@ -166,7 +166,8 @@ public class ContainerWithdrawBehavior implements Behavior {
 
             int toTake = Math.min(remaining, stack.getCount());
             ItemStack extracted = stack.split(toTake);
-            if (!player.getInventory().add(extracted)) {
+            BotPlayer.deliverTo(player, extracted);
+            if (false) {
                 stack.grow(extracted.getCount());
                 if (collected > 0) {
                     container.setChanged();

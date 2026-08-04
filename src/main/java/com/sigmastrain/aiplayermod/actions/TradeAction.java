@@ -77,13 +77,13 @@ public class TradeAction implements BotAction {
             if (!consumeFromInventory(player, costA)) break;
             if (!costB.isEmpty() && !consumeFromInventory(player, costB)) {
                 // Return costA since we already took it
-                player.getInventory().add(costA);
+                BotPlayer.deliverTo(player, costA);
                 break;
             }
 
             // Execute trade
             ItemStack tradeResult = offer.getResult().copy();
-            player.getInventory().add(tradeResult);
+            BotPlayer.deliverTo(player, tradeResult);
             offer.increaseUses();
 
             // Award villager trading XP

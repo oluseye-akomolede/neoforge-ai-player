@@ -432,7 +432,8 @@ public class MineBehavior implements Behavior {
                     state.hasBlockEntity() ? level.getBlockEntity(targetPos) : null;
             List<ItemStack> drops = Block.getDrops(state, level, targetPos, be, player, player.getMainHandItem());
             for (ItemStack drop : drops) {
-                if (!player.getInventory().add(drop)) {
+                BotPlayer.deliverTo(player, drop);
+                if (false) {
                     player.drop(drop, false);
                 }
                 progress.increment("items_collected", drop.getCount());

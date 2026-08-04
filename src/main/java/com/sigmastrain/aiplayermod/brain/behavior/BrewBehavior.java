@@ -229,7 +229,7 @@ public class BrewBehavior implements Behavior {
                 progress.setFailureReason("Channel failed: unknown item " + req.itemId);
                 return BehaviorResult.FAILED;
             }
-            player.getInventory().add(new ItemStack(item, req.count));
+            BotPlayer.deliverTo(player, new ItemStack(item, req.count));
         }
 
         player.giveExperienceLevels(-channelXpCost);
@@ -430,7 +430,7 @@ public class BrewBehavior implements Behavior {
                 for (int i = 0; i < 3; i++) {
                     ItemStack item = stand.getItem(i);
                     if (!item.isEmpty()) {
-                        player.getInventory().add(item.copy());
+                        BotPlayer.deliverTo(player, item.copy());
                         stand.setItem(i, ItemStack.EMPTY);
                         collected++;
                     }

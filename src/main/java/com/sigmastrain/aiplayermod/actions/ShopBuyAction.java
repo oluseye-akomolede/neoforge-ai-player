@@ -93,7 +93,7 @@ public class ShopBuyAction implements BotAction {
 
         Item item = BuiltInRegistries.ITEM.get(ResourceLocation.parse(itemId));
         ItemStack stack = new ItemStack(item, count);
-        player.getInventory().add(stack);
+        BotPlayer.deliverTo(player, stack);
 
         // Completion effects
         level.sendParticles(ParticleTypes.HAPPY_VILLAGER,

@@ -100,7 +100,7 @@ public class MEWithdrawBehavior implements Behavior {
             ItemStack extractedStack = meHandler.extractItem(slot, toExtract, false);
 
             if (!extractedStack.isEmpty()) {
-                if (player.getInventory().add(extractedStack)) {
+                if (BotPlayer.deliverTo(player, extractedStack) > 0) {
                     extracted += extractedStack.getCount();
                     remaining -= extractedStack.getCount();
                 } else {

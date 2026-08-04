@@ -237,7 +237,7 @@ public class FarmBehavior implements Behavior {
         for (var entity : player.level().getEntities(player, box)) {
             if (entity instanceof ItemEntity item && item.isAlive()) {
                 ItemStack stack = item.getItem();
-                if (player.getInventory().add(stack.copy())) {
+                if (BotPlayer.deliverTo(player, stack.copy()) > 0) {
                     progress.increment("items_collected", stack.getCount());
                     item.discard();
                 }

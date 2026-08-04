@@ -96,7 +96,7 @@ public class CraftAction implements BotAction {
                 }
             }
 
-            player.getInventory().add(result);
+            BotPlayer.deliverTo(player, result);
             crafted += result.getCount();
         }
 

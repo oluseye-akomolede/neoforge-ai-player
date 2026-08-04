@@ -154,7 +154,7 @@ public class ContainerSearchBehavior implements Behavior {
                     // Collect the items
                     ItemStack taken = stack.copy();
                     container.setItem(i, ItemStack.EMPTY);
-                    player.getInventory().add(taken);
+                    BotPlayer.deliverTo(player, taken);
                     itemsCollected += taken.getCount();
                 }
             }

@@ -196,7 +196,7 @@ public class ConjureAction implements BotAction {
             player.giveExperienceLevels(-xpCost);
         }
 
-        player.getInventory().add(stack);
+        BotPlayer.deliverTo(player, stack);
 
         level.sendParticles(ParticleTypes.END_ROD,
                 pos.x, pos.y + 1.0, pos.z,
