@@ -62,3 +62,26 @@ paged the results away — the exact bug class of findings 13/25/27.
 - Physical container infrastructure (`CONTAINER_*`, `ContainerRegistry`)
   is untouched — it remains the shared/base storage layer. The vault is
   personal and always-available.
+
+## Verification (2026-08-04)
+
+Live on the test server:
+
+- **Overflow paging** — five item types delivered into a full 36-slot pack
+  landed at `carried=0, vault=64`; zero loss.
+- **Persistence** — vault contents survived a full server restart.
+- **The critical seam** — criterion `inventory has 60 minecraft:dirt`
+  passed on *0 carried + 64 vault*, reported as
+  `holdings 64/60 (0 carried + 64 vault)`.
+- **Gap caught by verification** — `ConjureAction` bypassed the vault
+  entirely (a full pack ate a 64-item delivery). An audit found 20 raw
+  `inventory.add()` sites; all item-gaining paths now route through the
+  single `BotPlayer.deliverTo()` helper.
+
+**Campaign result**: with the vault active, Forge (6/6) and Mystic (5/5)
+completed world-verified quartz strongholds — all five bots have now
+built one. Mystic's long-standing failure mode (invented material ids,
+then a criterion no delivery could satisfy) is closed by the synonym
+tables on both the directive and criteria sides: his criterion
+`inventory has 196 minecraft:quartz_ore` passed against real
+`nether_quartz_ore` holdings.
