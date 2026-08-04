@@ -1302,6 +1302,9 @@ class BotRunner:
     )
 
     DIRECTIVE_POLL_INTERVAL = 2.0
+    # Hard ceiling per directive. Long jobs (200-kill sweeps, big excavations)
+    # legitimately run several minutes; nothing legitimately runs 15.
+    DIRECTIVE_MAX_SECONDS = 900
 
     @staticmethod
     def _resolve_transmute_target(raw):
@@ -1733,12 +1736,31 @@ class BotRunner:
 
         directive_id (from the set_directive response) pins polling to THE
         directive we set — a stale read of the previous directive's terminal
-        status gave phantom instant completions (finding D3)."""
+        status gave phantom instant completions (finding D3).
+
+        A wall-clock deadline bounds every directive: a wedged L1 behavior
+        (Forge's CraftBehavior spun for HOURS re-channeling into a full
+        inventory) otherwise hangs the orchestrator forever — attempts never
+        increment, criteria never evaluate, the plan never fails. Timing out
+        converts an infinite hang into an honest failure the plan layer can
+        retry or replan."""
+        deadline = time.time() + self.DIRECTIVE_MAX_SECONDS
         self._directive_missing_count = 0
         _last_poll_error_time = 0
         _ever_saw_directive = False
         _seen_events = set()
         while not self._stop_event.is_set():
+            if time.time() > deadline:
+                mins = int(self.DIRECTIVE_MAX_SECONDS / 60)
+                print(f"[{self.name}/L1] Directive {dtype} exceeded {mins}m — cancelling as stuck")
+                shared_state.push_event({"bot": self.name, "type": "directive_done",
+                                         "status": "timeout", "directive": dtype})
+                try:
+                    api.cancel_directive(self.name, directive_id)
+                except Exception:
+                    pass
+                return {"success": False,
+                        "reason": f"directive_timeout after {mins}m (L1 behavior stuck)"}
             with self._lock:
                 if self._new_messages:
                     reset_msgs = [m for m in self._new_messages if "RESET:" in m]

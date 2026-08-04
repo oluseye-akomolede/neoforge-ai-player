@@ -65,6 +65,11 @@ public class CraftBehavior implements Behavior {
     private int ticksStuck;
     private Vec3 lastPos;
 
+    // Loop guards for the channel→re-resolve cycle
+    private int resolveCycles;
+    private int lastResolveOwned = -1;
+    private static final int MAX_RESOLVE_CYCLES = 8;
+
     private static final double REACH = 4.5;
     private static final int TICKS_PER_LEVEL = 1; // snappier rituals (user, 2026-08-04)
 
@@ -73,6 +78,8 @@ public class CraftBehavior implements Behavior {
         progress.reset();
         this.targetItemId = directive.getTarget();
         this.targetCount = directive.getCount() > 0 ? directive.getCount() : 1;
+        this.resolveCycles = 0;
+        this.lastResolveOwned = -1;
         this.craftSteps = new ArrayList<>();
         this.currentCraftStep = 0;
         this.channelQueue = new ArrayList<>();
@@ -179,8 +186,18 @@ public class CraftBehavior implements Behavior {
         }
 
         player.giveExperienceLevels(-channelXpCost);
-        player.getInventory().add(new ItemStack(item, req.count));
-        progress.increment("items_channeled", req.count);
+        ItemStack delivered = new ItemStack(item, req.count);
+        player.getInventory().add(delivered);
+        // Inventory.add consumes what fits and leaves the rest. Silently
+        // discarding the remainder made CraftBehavior channel the same 64
+        // blocks 366 times into a void (Forge, round-8 redemption): the
+        // re-resolve saw no inventory growth and looped forever.
+        if (!delivered.isEmpty()) {
+            player.drop(delivered.copy(), false);
+            progress.logEvent("Inventory full: " + delivered.getCount() + "x "
+                    + req.itemId + " dropped at feet");
+        }
+        progress.increment("items_channeled", req.count - delivered.getCount());
         progress.logEvent("Channeled " + req.count + "x " + req.itemId);
 
         level.sendParticles(ParticleTypes.END_ROD,
@@ -197,7 +214,24 @@ public class CraftBehavior implements Behavior {
         // All materials channeled — proceed to crafting
         bot.systemChat("Materials channeled, crafting " + targetItemId, "light_purple");
         if (craftSteps.isEmpty() || currentCraftStep >= craftSteps.size()) {
-            // No craft steps queued — re-resolve (shouldn't happen normally)
+            // No craft steps queued — re-resolve, but only if the last cycle
+            // actually increased our holdings. Otherwise we are in the loop
+            // described above and must fail honestly.
+            Item targetItem = BuiltInRegistries.ITEM.get(ResourceLocation.parse(targetItemId));
+            int owned = countInInventory(player, targetItem);
+            if (resolveCycles > 0 && owned <= lastResolveOwned) {
+                progress.setFailureReason("Craft loop detected: " + targetItemId
+                        + " stuck at " + owned + "/" + targetCount
+                        + " after " + resolveCycles + " channel cycles");
+                return BehaviorResult.FAILED;
+            }
+            if (resolveCycles >= MAX_RESOLVE_CYCLES) {
+                progress.setFailureReason("Craft exceeded " + MAX_RESOLVE_CYCLES
+                        + " resolve cycles for " + targetItemId);
+                return BehaviorResult.FAILED;
+            }
+            lastResolveOwned = owned;
+            resolveCycles++;
             enterPhase(Phase.RESOLVING);
         } else {
             needsTable = checkNeedsTable(player);

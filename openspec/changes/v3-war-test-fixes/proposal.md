@@ -116,6 +116,19 @@ Round 8 (first campaign on the V100 pair): Axiom and Tiller complete
 | 25 | Invented material ids — "soul sand gravel" (round 8), "quartz_ore" (round 4): nonexistent blocks that no search or channel can satisfy | Material synonym table in `normalize_item` maps L3's inventions to the nearest real id (soul_sand_gravel→soul_sand, quartz_ore→nether_quartz_ore, nether_stone→netherrack, ...) | `l2-mcp renderers.ITEM_SYNONYMS` |
 | 26 | Monolithic channel rituals — a 240-block quartz criterion provisioned one CHANNEL of 2,880 XP levels ≈ 12 minutes uninterruptible; attempts exhausted, plan dead (Mystic) | Provisioning chunks channels to ≤64 blocks (~1 min each); partial progress survives failed attempts | `plan_orchestrator._provision_materials` |
 
+### Round-8 redemption: findings 27–29 (the "Forge worked for hours" bug)
+
+Forge sat at 3/6 for hours with `attempts=0` — not retrying, *wedged
+inside a single dispatch*. Counters told the story: `items_channeled:
+23424` against 64 quartz actually held — the same 64 blocks channeled
+366 times into a void.
+
+| # | Finding | Fix | Where |
+|---|---------|-----|-------|
+| 27 | CraftBehavior channel-into-full-inventory silently discarded the delivery (same class as finding 16, different behavior): `Inventory.add` leftovers evaporated, so the re-resolve saw no growth | Overflow dropped at the bot's feet and logged; `items_channeled` counts only what was actually delivered | `CraftBehavior.tickChanneling` |
+| 28 | Unbounded channel→re-resolve cycle — with no progress check, "channel materials → craft steps empty → re-resolve" spun forever | Loop guard: re-resolve only if holdings grew since the last cycle; otherwise FAIL with the stuck count. Hard cap of 8 cycles | `CraftBehavior` |
+| 29 | **Systemic**: `_poll_directive` had no wall-clock bound, so any wedged L1 behavior hung the orchestrator indefinitely — attempts never incremented, criteria never evaluated, the plan never failed or replanned. Hours of silence look identical to progress | `DIRECTIVE_MAX_SECONDS = 900` deadline per directive; on expiry the directive is cancelled (id-scoped) and returns an honest `directive_timeout` failure the plan layer can retry or replan | `agent._poll_directive` |
+
 Deferred: replan criteria immutability for *possible-but-wrong* criteria
 (Mystic's y=78 was reachable by building up — and he tried). Full-plan
 replan with world evidence remains the future path for those.
