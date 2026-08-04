@@ -64,6 +64,33 @@ def find_blocks(bot, block, radius=32, max_count=10):
 def block_at(bot, x, y, z):
     return _post(f"/bot/{bot}/block_at", {"x": x, "y": y, "z": z})
 
+# ── Vault: unbounded per-bot storage behind the 36 carried slots ──────────
+
+def vault(bot):
+    """Full vault manifest (merged by item id)."""
+    return _get(f"/bot/{bot}/vault")
+
+def vault_search(bot, query):
+    """Substring search across vault contents."""
+    return _post(f"/bot/{bot}/vault_search", {"query": query})
+
+def effective_inventory(bot):
+    """Carried + vault, merged — the bot's REAL holdings. Criteria and
+    provisioning must use this, not the carried-only view."""
+    return _post(f"/bot/{bot}/effective_inventory", {})
+
+def vault_store(bot, item=None, count=None):
+    """Page carried items into the vault. item=None flushes everything evictable."""
+    data = {}
+    if item:
+        data["item"] = item
+    if count is not None:
+        data["count"] = count
+    return _post(f"/bot/{bot}/vault_store", data)
+
+def vault_withdraw(bot, item, count=1):
+    return _post(f"/bot/{bot}/vault_withdraw", {"item": item, "count": count})
+
 def find_entities(bot, target, radius=32.0):
     return _post(f"/bot/{bot}/find_entities", {"target": target, "radius": radius})
 

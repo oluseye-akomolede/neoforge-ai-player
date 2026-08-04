@@ -144,15 +144,21 @@ def _eval_clause(bot_name: str, clause: str) -> tuple[bool, str] | None:
             item_id = f"minecraft:{item_id}"
         item_id = ITEM_SYNONYMS.get(item_id, item_id)
         try:
-            data = api.inventory(bot_name)
-            count = 0
-            for slot in data.get("inventory", []):
-                if slot.get("item") == item_id:
-                    count += int(slot.get("count", 0))
+            # Effective holdings = carried + vault. The vault is the bot's real
+            # storage; checking only the 36 carried slots would fail bots that
+            # correctly did the work and paged the results away.
+            data = api.effective_inventory(bot_name)
+            carried = vaulted = 0
+            for row in data.get("inventory", []):
+                if row.get("item") == item_id:
+                    carried += int(row.get("carried", 0))
+                    vaulted += int(row.get("vault", 0))
+            count = carried + vaulted
             ok = count >= need
-            return ok, f"inventory has {count}/{need} of {item_id}"
+            where = f"{carried} carried" + (f" + {vaulted} vault" if vaulted else "")
+            return ok, f"holdings {count}/{need} of {item_id} ({where})"
         except Exception as e:
-            log.debug("inventory query failed: %s", e)
+            log.debug("effective inventory query failed: %s", e)
             return None
 
     # Position check

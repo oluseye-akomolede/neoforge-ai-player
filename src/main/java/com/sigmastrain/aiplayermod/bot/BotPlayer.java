@@ -30,7 +30,9 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
@@ -54,6 +56,8 @@ public class BotPlayer {
     private boolean alive = true;
 
     private final SimpleContainer extendedInventory = new SimpleContainer(54);
+    /** Unbounded backing store — carried inventory is only the working set. */
+    private final BotVault vault = new BotVault();
     private final ConcurrentLinkedQueue<Map<String, String>> chatInbox = new ConcurrentLinkedQueue<>();
     private static final int MAX_INBOX_SIZE = 50;
 
@@ -287,6 +291,14 @@ public class BotPlayer {
             }
             root.add("extendedInventory", extended);
 
+            JsonArray vaultArr = new JsonArray();
+            for (CompoundTag tag : vault.save(registries)) {
+                JsonObject entry = new JsonObject();
+                entry.addProperty("nbt", tag.toString());
+                vaultArr.add(entry);
+            }
+            root.add("vault", vaultArr);
+
             Path file = dir.resolve(name + ".json");
             try (Writer w = Files.newBufferedWriter(file)) {
                 GSON.toJson(root, w);
@@ -358,6 +370,20 @@ public class BotPlayer {
                     if (!stack.isEmpty()) {
                         extendedInventory.setItem(slot, stack);
                     }
+                }
+            }
+
+            if (root.has("vault")) {
+                List<ItemStack> loaded = new ArrayList<>();
+                for (JsonElement el : root.getAsJsonArray("vault")) {
+                    JsonObject entry = el.getAsJsonObject();
+                    CompoundTag tag = TagParser.parseTag(entry.get("nbt").getAsString());
+                    ItemStack stack = ItemStack.parse(registries, tag).orElse(ItemStack.EMPTY);
+                    if (!stack.isEmpty()) loaded.add(stack);
+                }
+                vault.load(loaded);
+                if (!loaded.isEmpty()) {
+                    AIPlayerMod.LOGGER.info("Restored vault for {}: {} stacks", name, loaded.size());
                 }
             }
 
@@ -1030,6 +1056,179 @@ public class BotPlayer {
 
     public SimpleContainer getExtendedInventory() {
         return extendedInventory;
+    }
+
+    public BotVault getVault() {
+        return vault;
+    }
+
+    // ── Vault paging ──────────────────────────────────────────────────────
+    // The carried inventory is a working set; the vault is the backing store.
+    // Behaviors call these instead of letting deliveries evaporate or drop.
+
+    /** Slots free in the carried inventory (main 36 only, not armor/offhand). */
+    public int freeSlots() {
+        int free = 0;
+        for (int i = 0; i < 36; i++) {
+            if (player.getInventory().getItem(i).isEmpty()) free++;
+        }
+        return free;
+    }
+
+    /**
+     * Deliver items to the bot: into carried inventory if there's room,
+     * overflow into the vault. Never drops, never evaporates.
+     * Returns the number delivered (always the full amount).
+     */
+    public int deliver(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) return 0;
+        int total = stack.getCount();
+        ItemStack working = stack.copy();
+        player.getInventory().add(working);
+        if (!working.isEmpty()) {
+            vault.deposit(working);
+        }
+        stack.setCount(0);
+        return total;
+    }
+
+    /**
+     * Free up carried slots by paging evictable items into the vault.
+     * Retention policy: never evict equipped gear, the pinned material of the
+     * active directive, tools, or one stack of food. Largest stacks go first
+     * (biggest space win per transfer). Returns slots freed.
+     */
+    public int flushToVault(int slotsWanted, String pinnedItemId) {
+        if (slotsWanted <= 0) return 0;
+        String pinned = pinnedItemId == null ? "" : pinnedItemId.toLowerCase();
+        boolean keptFood = false;
+        record Candidate(int slot, int count) {}
+        List<Candidate> candidates = new ArrayList<>();
+
+        for (int i = 0; i < 36; i++) {
+            ItemStack stack = player.getInventory().getItem(i);
+            if (stack.isEmpty()) continue;
+            String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString().toLowerCase();
+            if (!pinned.isEmpty() && id.contains(pinned.replace("minecraft:", ""))) continue;
+            if (stack.getItem() instanceof net.minecraft.world.item.TieredItem) continue;   // tools/weapons
+            if (stack.getItem() instanceof net.minecraft.world.item.ArmorItem) continue;
+            if (stack.getItem() instanceof net.minecraft.world.item.ShieldItem) continue;
+            if (stack.getFoodProperties(player) != null) {
+                if (!keptFood) { keptFood = true; continue; }   // keep one food stack
+            }
+            candidates.add(new Candidate(i, stack.getCount()));
+        }
+
+        candidates.sort((a, b) -> Integer.compare(b.count(), a.count()));
+        int freed = 0;
+        for (Candidate c : candidates) {
+            if (freed >= slotsWanted) break;
+            ItemStack stack = player.getInventory().getItem(c.slot());
+            if (stack.isEmpty()) continue;
+            vault.deposit(stack.copy());
+            player.getInventory().setItem(c.slot(), ItemStack.EMPTY);
+            freed++;
+        }
+        if (freed > 0) {
+            AIPlayerMod.LOGGER.info("[{}] Paged {} stack(s) to vault (pinned={})",
+                    player.getName().getString(), freed, pinned.isEmpty() ? "none" : pinned);
+        }
+        return freed;
+    }
+
+    /**
+     * Ensure at least {@code needed} of an item is in the carried inventory,
+     * pulling from the vault if short. Returns the carried count afterwards.
+     */
+    public int ensureCarried(String itemId, int needed) {
+        Item item = BuiltInRegistries.ITEM.get(ResourceLocation.parse(
+                itemId.contains(":") ? itemId : "minecraft:" + itemId));
+        if (item == Items.AIR) return 0;
+        int carried = countCarried(item);
+        if (carried >= needed) return carried;
+        int short_ = needed - carried;
+        if (freeSlots() < 1) flushToVault(2, itemId);
+        int moved = vault.withdrawInto(player.getInventory(), itemId, short_);
+        if (moved > 0) {
+            AIPlayerMod.LOGGER.info("[{}] Withdrew {}x {} from vault",
+                    player.getName().getString(), moved, itemId);
+        }
+        return carried + moved;
+    }
+
+    private int countCarried(Item item) {
+        int total = 0;
+        for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+            ItemStack s = player.getInventory().getItem(i);
+            if (s.is(item)) total += s.getCount();
+        }
+        return total;
+    }
+
+    /**
+     * Store carried items into the vault. A null item flushes everything
+     * evictable (keeping gear + one food stack); a named item stores up to
+     * {@code amount} of it.
+     */
+    public Map<String, Object> storeToVault(String itemId, int amount) {
+        int stored = 0;
+        if (itemId == null || itemId.isEmpty()) {
+            int freed = flushToVault(36, null);
+            return Map.of("stored_stacks", freed, "mode", "flush_all");
+        }
+        Item want = BuiltInRegistries.ITEM.get(ResourceLocation.parse(
+                itemId.contains(":") ? itemId : "minecraft:" + itemId));
+        if (want == Items.AIR) return Map.of("error", "unknown item: " + itemId);
+        int remaining = amount;
+        for (int i = 0; i < 36 && remaining > 0; i++) {
+            ItemStack stack = player.getInventory().getItem(i);
+            if (stack.isEmpty() || !stack.is(want)) continue;
+            int take = Math.min(stack.getCount(), remaining);
+            ItemStack moved = stack.copy();
+            moved.setCount(take);
+            vault.deposit(moved);
+            stack.shrink(take);
+            if (stack.isEmpty()) player.getInventory().setItem(i, ItemStack.EMPTY);
+            stored += take;
+            remaining -= take;
+        }
+        return Map.of("stored", stored, "item", itemId);
+    }
+
+    /** Carried + vault totals, merged by item id — the bot's real holdings. */
+    public List<Map<String, Object>> getEffectiveInventory() {
+        Map<String, Map<String, Object>> merged = new LinkedHashMap<>();
+        for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+            ItemStack stack = player.getInventory().getItem(i);
+            if (stack.isEmpty()) continue;
+            String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+            Map<String, Object> e = merged.computeIfAbsent(id, k -> {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("item", id);
+                m.put("name", stack.getHoverName().getString());
+                m.put("carried", 0);
+                m.put("vault", 0);
+                m.put("count", 0);
+                return m;
+            });
+            e.put("carried", (int) e.get("carried") + stack.getCount());
+            e.put("count", (int) e.get("count") + stack.getCount());
+        }
+        for (Map<String, Object> v : vault.manifest()) {
+            String id = (String) v.get("item");
+            Map<String, Object> e = merged.computeIfAbsent(id, k -> {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("item", id);
+                m.put("name", v.get("name"));
+                m.put("carried", 0);
+                m.put("vault", 0);
+                m.put("count", 0);
+                return m;
+            });
+            e.put("vault", (int) e.get("vault") + (int) v.get("count"));
+            e.put("count", (int) e.get("count") + (int) v.get("count"));
+        }
+        return new ArrayList<>(merged.values());
     }
 
     public Map<String, Object> getEquipment() {

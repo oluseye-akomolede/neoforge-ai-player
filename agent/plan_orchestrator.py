@@ -411,10 +411,12 @@ def _provision_materials(bot_name: str, directives: list[dict],
     if not needs:
         return directives
     try:
-        inv = api.inventory(bot_name) or {}
+        # Effective holdings (carried + vault) — provisioning must not
+        # re-channel material the bot already owns in its vault.
+        inv = api.effective_inventory(bot_name) or {}
         owned: dict[str, int] = {}
-        for slot in inv.get("inventory", []):
-            owned[slot.get("item", "")] = owned.get(slot.get("item", ""), 0) + int(slot.get("count", 0))
+        for row in inv.get("inventory", []):
+            owned[row.get("item", "")] = owned.get(row.get("item", ""), 0) + int(row.get("count", 0))
     except Exception:
         return directives  # can't check — don't guess
     prepend = []

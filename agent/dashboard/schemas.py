@@ -6,6 +6,11 @@ from pydantic import BaseModel
 from typing import Optional
 
 
+class VaultMoveRequest(BaseModel):
+    item: str | None = None
+    count: int | None = None
+
+
 class CommandRequest(BaseModel):
     bot: str
     message: str

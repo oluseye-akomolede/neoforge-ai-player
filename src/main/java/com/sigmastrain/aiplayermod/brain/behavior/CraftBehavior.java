@@ -115,8 +115,8 @@ public class CraftBehavior implements Behavior {
             return BehaviorResult.FAILED;
         }
 
-        // Already have enough?
-        if (countInInventory(player, target) >= targetCount) {
+        // Already have enough? (carried + vault — the vault is real holdings)
+        if (countInInventory(player, target) + bot.getVault().count(targetItemId) >= targetCount) {
             progress.logEvent("Already have " + targetCount + "x " + targetItemId);
             return BehaviorResult.SUCCESS;
         }
@@ -186,18 +186,12 @@ public class CraftBehavior implements Behavior {
         }
 
         player.giveExperienceLevels(-channelXpCost);
+        // Vault-backed delivery. Silently discarding overflow made this
+        // behavior channel the same 64 blocks 366 times into a void (Forge,
+        // round-8): the re-resolve saw no inventory growth and looped forever.
         ItemStack delivered = new ItemStack(item, req.count);
-        player.getInventory().add(delivered);
-        // Inventory.add consumes what fits and leaves the rest. Silently
-        // discarding the remainder made CraftBehavior channel the same 64
-        // blocks 366 times into a void (Forge, round-8 redemption): the
-        // re-resolve saw no inventory growth and looped forever.
-        if (!delivered.isEmpty()) {
-            player.drop(delivered.copy(), false);
-            progress.logEvent("Inventory full: " + delivered.getCount() + "x "
-                    + req.itemId + " dropped at feet");
-        }
-        progress.increment("items_channeled", req.count - delivered.getCount());
+        bot.deliver(delivered);
+        progress.increment("items_channeled", req.count);
         progress.logEvent("Channeled " + req.count + "x " + req.itemId);
 
         level.sendParticles(ParticleTypes.END_ROD,
@@ -218,7 +212,8 @@ public class CraftBehavior implements Behavior {
             // actually increased our holdings. Otherwise we are in the loop
             // described above and must fail honestly.
             Item targetItem = BuiltInRegistries.ITEM.get(ResourceLocation.parse(targetItemId));
-            int owned = countInInventory(player, targetItem);
+            int owned = countInInventory(player, targetItem)
+                    + bot.getVault().count(targetItemId);
             if (resolveCycles > 0 && owned <= lastResolveOwned) {
                 progress.setFailureReason("Craft loop detected: " + targetItemId
                         + " stuck at " + owned + "/" + targetCount

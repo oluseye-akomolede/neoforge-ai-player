@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from .state import shared_state
 from .schemas import (
     CommandRequest, DirectiveRequest, BroadcastRequest,
-    WaypointRequest, WaypointDeleteRequest, DIRECTIVE_CATALOG,
+    WaypointRequest, WaypointDeleteRequest, VaultMoveRequest, DIRECTIVE_CATALOG,
 )
 
 
@@ -113,6 +113,89 @@ def create_app() -> FastAPI:
         if not bot:
             return {"error": "bot not found"}
         return bot
+
+    # ── REST: bot vault (unbounded per-bot storage) ──
+
+    @app.get("/api/bots/{name}/vault")
+    async def get_bot_vault(name: str, query: str = Query("")):
+        """Vault contents. With ?query=, substring-search it."""
+        if not _api_module:
+            return {"error": "agent not connected"}
+        try:
+            if query:
+                res = await asyncio.to_thread(_api_module.vault_search, name, query)
+                return {"bot": name, "query": query, "items": res.get("results", [])}
+            res = await asyncio.to_thread(_api_module.vault, name)
+            return {"bot": name,
+                    "items": res.get("vault", []),
+                    "total_items": res.get("total_items", 0),
+                    "distinct_items": res.get("distinct_items", 0)}
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app.get("/api/bots/{name}/holdings")
+    async def get_bot_holdings(name: str):
+        """Effective holdings: carried + vault, merged. This is what the
+        command UI shows so you can tell a bot to store what it actually has."""
+        if not _api_module:
+            return {"error": "agent not connected"}
+        try:
+            res = await asyncio.to_thread(_api_module.effective_inventory, name)
+            items = res.get("inventory", [])
+            items.sort(key=lambda r: -int(r.get("count", 0)))
+            return {"bot": name, "items": items,
+                    "carried_total": sum(int(i.get("carried", 0)) for i in items),
+                    "vault_total": sum(int(i.get("vault", 0)) for i in items)}
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app.post("/api/bots/{name}/vault/store")
+    async def post_vault_store(name: str, req: VaultMoveRequest):
+        if not _api_module:
+            return {"error": "agent not connected"}
+        try:
+            res = await asyncio.to_thread(_api_module.vault_store, name, req.item, req.count)
+            shared_state.push_event({"type": "vault_store", "bot": name,
+                                     "item": req.item or "all evictable",
+                                     "source": "dashboard"})
+            return res
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app.post("/api/bots/{name}/vault/withdraw")
+    async def post_vault_withdraw(name: str, req: VaultMoveRequest):
+        if not _api_module:
+            return {"error": "agent not connected"}
+        if not req.item:
+            return {"error": "item required"}
+        try:
+            res = await asyncio.to_thread(_api_module.vault_withdraw, name, req.item, req.count or 1)
+            shared_state.push_event({"type": "vault_withdraw", "bot": name,
+                                     "item": req.item, "source": "dashboard"})
+            return res
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app.get("/api/holdings")
+    async def get_all_holdings(query: str = Query("")):
+        """Fleet-wide item search — 'who has quartz?' across every bot."""
+        if not _api_module:
+            return {"error": "agent not connected"}
+        snap = shared_state.snapshot()
+        out = {}
+        for bot_name in snap["bots"].keys():
+            try:
+                res = await asyncio.to_thread(_api_module.effective_inventory, bot_name)
+                items = res.get("inventory", [])
+                if query:
+                    q = query.lower()
+                    items = [i for i in items if q in str(i.get("item", "")).lower()]
+                items.sort(key=lambda r: -int(r.get("count", 0)))
+                if items:
+                    out[bot_name] = items
+            except Exception:
+                continue
+        return {"query": query, "holdings": out}
 
     # ── REST: bot memories (semantic memory) ──
 

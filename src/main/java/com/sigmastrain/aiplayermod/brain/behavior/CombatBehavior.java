@@ -247,11 +247,11 @@ public class CombatBehavior implements Behavior {
                 progress.logEvent("Killed " + targetName + " (" + kills + " total)");
                 bot.systemChat("Killed " + targetName + "! (" + kills + " kills)", "green");
                 teleportBot(player, target.getX(), target.getY(), target.getZ());
-                collectNearbyItems(player);
+                collectNearbyItems(bot, player);
             }
         }
 
-        if (elapsed % 20 == 0) collectNearbyItems(player);
+        if (elapsed % 20 == 0) collectNearbyItems(bot, player);
 
         return BehaviorResult.RUNNING;
     }
@@ -454,7 +454,7 @@ public class CombatBehavior implements Behavior {
         return Math.max((float) (1.0 + weaponBonus), 2.0f);
     }
 
-    private void collectNearbyItems(ServerPlayer player) {
+    private void collectNearbyItems(BotPlayer bot, ServerPlayer player) {
         if (!(player.level() instanceof ServerLevel serverLevel)) return;
         double pickupRadiusSq = 10.0 * 10.0;
         for (Entity e : serverLevel.getAllEntities()) {
@@ -462,9 +462,10 @@ public class CombatBehavior implements Behavior {
             if (!ie.isAlive()) continue;
             if (ie.distanceToSqr(player) > pickupRadiusSq) continue;
             ItemStack stack = ie.getItem().copy();
-            if (player.getInventory().add(stack)) {
-                ie.discard();
-            }
+            // Vault-backed pickup: a full pack no longer means loot is left
+            // on the ground for the entity-cleanup cronjob to destroy.
+            bot.deliver(stack);
+            ie.discard();
         }
     }
 

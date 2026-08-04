@@ -276,6 +276,53 @@ public class HttpApiServer {
             }
             case "entities" -> sendJson(exchange, 200, Map.of("entities", bot.getCachedEntities()));
             case "blocks" -> sendJson(exchange, 200, Map.of("blocks", bot.getCachedBlocks()));
+            case "vault" -> {
+                var vf = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    var v = bot.getVault();
+                    vf.complete(Map.of("vault", v.manifest(),
+                            "total_items", v.totalItems(),
+                            "distinct_items", v.distinctItems()));
+                });
+                sendJson(exchange, 200, vf.join());
+            }
+            case "vault_search" -> {
+                String query = body.has("query") ? body.get("query").getAsString() : "";
+                var vsf = new java.util.concurrent.CompletableFuture<List<Map<String, Object>>>();
+                BotManager.getServer().execute(() -> vsf.complete(bot.getVault().search(query)));
+                sendJson(exchange, 200, Map.of("results", vsf.join()));
+            }
+            case "effective_inventory" -> {
+                var eif = new java.util.concurrent.CompletableFuture<List<Map<String, Object>>>();
+                BotManager.getServer().execute(() -> eif.complete(bot.getEffectiveInventory()));
+                sendJson(exchange, 200, Map.of("inventory", eif.join()));
+            }
+            case "vault_store" -> {
+                // Page carried items into the vault. No item = flush everything
+                // evictable; item = store that item specifically.
+                String item = body.has("item") ? body.get("item").getAsString() : null;
+                int amount = body.has("count") ? body.get("count").getAsInt() : Integer.MAX_VALUE;
+                var vstf = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    try {
+                        vstf.complete(bot.storeToVault(item, amount));
+                    } catch (Exception e) {
+                        vstf.complete(Map.of("error", String.valueOf(e.getMessage())));
+                    }
+                });
+                sendJson(exchange, 200, vstf.join());
+            }
+            case "vault_withdraw" -> {
+                String item = body.get("item").getAsString();
+                int amount = body.has("count") ? body.get("count").getAsInt() : 1;
+                var vwf = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    int moved = bot.getVault().withdrawInto(
+                            bot.getPlayer().getInventory(), item, amount);
+                    vwf.complete(Map.of("withdrawn", moved, "item", item));
+                });
+                sendJson(exchange, 200, vwf.join());
+            }
             case "block_at" -> {
                 int bx = body.get("x").getAsInt();
                 int by = body.get("y").getAsInt();

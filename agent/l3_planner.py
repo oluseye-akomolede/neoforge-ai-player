@@ -91,6 +91,11 @@ Construction rules (MANDATORY for fortresses, strongholds, bases):
   larger than the structure (BUILD blueprint "clear") — never embed walls
   inside solid terrain.
 
+Inventory model: each bot has 36 carried slots plus an UNBOUNDED vault.
+Overflow pages to the vault automatically and BUILD withdraws from it as
+needed, so you never need to plan around running out of space. "inventory
+has N item" criteria count carried + vault together.
+
 Criteria geometry rules (checked against the real world — violations fail):
 - Block coordinates MUST be inside the world. The nether's build range is
   y 0..127; the overworld's is y -64..319. Never use negative y in the nether.
@@ -216,11 +221,17 @@ DIRECTIVE PARAM REFERENCE (use these shapes EXACTLY):
                      Fortress construction material MUST be minecraft:quartz_block
                      (terrain-native materials are invisible and unverifiable).
   COMBAT           — {{ "kind":"COMBAT", "target":"minecraft:zombie", "extra":{{"radius":16}} }}
+  VAULT_STORE      — {{ "kind":"VAULT_STORE", "target":"minecraft:cobblestone", "count":64 }}
+                     Pages carried items into the bot's UNBOUNDED vault. Omit
+                     target to flush everything evictable. The vault is real
+                     storage: items there still count toward "inventory has N
+                     item" criteria, and BUILD pulls from it automatically.
+                     You rarely need this — overflow pages itself.
+  VAULT_WITHDRAW   — {{ "kind":"VAULT_WITHDRAW", "target":"minecraft:quartz_block", "count":64 }}
+                     Pulls items from the vault back into carried inventory.
   DROP             — {{ "kind":"DROP", "target":"minecraft:rotten_flesh", "count":64 }}
-                     Sheds items from inventory. If world state says the
-                     inventory is FULL, DROP junk (combat drops, excess food)
-                     BEFORE mining or channeling — a full inventory cannot
-                     receive new items.
+                     Destroys items permanently. Prefer VAULT_STORE — the vault
+                     is unbounded, so there is almost never a reason to DROP.
   EQUIP_ALL        — {{ "kind":"EQUIP_ALL" }}
                      Scans inventory and equips the best armor pieces, shield,
                      and weapon automatically. Use whenever the task says

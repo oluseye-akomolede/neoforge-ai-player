@@ -870,6 +870,30 @@ class BotRunner:
         # DROP is an L1 action, not a mod directive — resolve the item to
         # slots here and shed it. Lets L3 clear a war-loot-stuffed inventory
         # (stronghold finding C1) without a new mod-side behavior.
+        # Vault directives: unbounded per-bot storage. STORE with no target
+        # flushes everything evictable; WITHDRAW pulls material back to hand.
+        if kind in ("VAULT_STORE", "STORE"):
+            target = str(directive.get("target", "")).strip() or None
+            count = directive.get("count")
+            try:
+                resp = api.vault_store(self.name, target, count)
+                if "error" in resp:
+                    return f"FAILED VAULT_STORE {resp['error']}"
+                if "stored_stacks" in resp:
+                    return f"COMPLETED VAULT_STORE flushed {resp['stored_stacks']} stack(s) to vault"
+                return f"COMPLETED VAULT_STORE {resp.get('stored', 0)}x {resp.get('item','')}"
+            except Exception as e:
+                return f"FAILED VAULT_STORE {e}"
+        if kind in ("VAULT_WITHDRAW", "WITHDRAW"):
+            target = str(directive.get("target", "")).strip()
+            count = int(directive.get("count") or 1)
+            if not target:
+                return "FAILED VAULT_WITHDRAW requires target item id"
+            try:
+                resp = api.vault_withdraw(self.name, target, count)
+                return f"COMPLETED VAULT_WITHDRAW {resp.get('withdrawn', 0)}x {target}"
+            except Exception as e:
+                return f"FAILED VAULT_WITHDRAW {e}"
         if kind in ("DROP", "DISCARD"):
             want = str(directive.get("target", "")).strip().lower()
             want_count = int(directive.get("count", 0) or 0) or 10 ** 6
@@ -922,12 +946,19 @@ class BotRunner:
             used_slots = sum(1 for i in items if i.get("count", 0) > 0)
             top = sorted([(i.get("count", 0), i.get("item", i.get("id", "")))
                           for i in items if i.get("count", 0) > 0], reverse=True)[:6]
-            fullness = f"inv_slots={used_slots}/36"
-            if used_slots >= 34:
-                fullness += " (FULL — DROP junk before mining/channeling)"
-            parts.append(fullness)
+            # Carried is only the working set — overflow pages to the vault
+            # automatically, so a full pack is no longer a failure condition.
+            parts.append(f"inv_slots={used_slots}/36")
             if top:
-                parts.append("inv=[" + ", ".join(f"{n}x{i}" for n, i in top) + "]")
+                parts.append("carried=[" + ", ".join(f"{n}x{i}" for n, i in top) + "]")
+            try:
+                v = api.vault(self.name) or {}
+                rows = sorted(((int(r.get("count", 0)), r.get("item", ""))
+                               for r in v.get("vault", [])), reverse=True)[:6]
+                if rows:
+                    parts.append("vault=[" + ", ".join(f"{n}x{i}" for n, i in rows) + "]")
+            except Exception:
+                pass
         except Exception:
             pass
         return "  ".join(parts) or "(no state)"

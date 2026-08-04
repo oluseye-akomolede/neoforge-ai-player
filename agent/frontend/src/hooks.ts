@@ -97,6 +97,75 @@ export function useSendDirective() {
   }, [])
 }
 
+// ── Vault: unbounded per-bot storage ──────────────────────────────────────
+
+export interface HoldingRow {
+  item: string
+  name?: string
+  carried: number
+  vault: number
+  count: number
+}
+
+/** Effective holdings (carried + vault) for one bot, polled. */
+export function useHoldings(bot: string | null): [HoldingRow[], () => void] {
+  const [rows, setRows] = useState<HoldingRow[]>([])
+  const refresh = useCallback(async () => {
+    if (!bot) { setRows([]); return }
+    try {
+      const res = await fetch(`/api/bots/${bot}/holdings`)
+      const data = await res.json()
+      setRows(data.items || [])
+    } catch { /* transient */ }
+  }, [bot])
+  useEffect(() => {
+    refresh()
+    const t = setInterval(refresh, 5000)
+    return () => clearInterval(t)
+  }, [refresh])
+  return [rows, refresh]
+}
+
+export function useVaultStore() {
+  return useCallback(async (bot: string, item?: string, count?: number) => {
+    const res = await fetch(`/api/bots/${bot}/vault/store`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ item: item ?? null, count: count ?? null }),
+    })
+    return res.json()
+  }, [])
+}
+
+export function useVaultWithdraw() {
+  return useCallback(async (bot: string, item: string, count: number) => {
+    const res = await fetch(`/api/bots/${bot}/vault/withdraw`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ item, count }),
+    })
+    return res.json()
+  }, [])
+}
+
+/** Fleet-wide "who has X?" search. */
+export function useFleetHoldings(query: string) {
+  const [holdings, setHoldings] = useState<Record<string, HoldingRow[]>>({})
+  useEffect(() => {
+    let cancelled = false
+    const run = async () => {
+      try {
+        const res = await fetch(`/api/holdings?query=${encodeURIComponent(query)}`)
+        const data = await res.json()
+        if (!cancelled) setHoldings(data.holdings || {})
+      } catch { /* transient */ }
+    }
+    run()
+    return () => { cancelled = true }
+  }, [query])
+  return holdings
+}
+
 export function useStopBot() {
   return useCallback(async (bot: string) => {
     const res = await fetch(`/api/bots/${bot}/stop`, { method: 'POST' })

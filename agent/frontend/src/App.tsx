@@ -10,6 +10,7 @@ import TaskBoard, { useTasks } from './components/TaskBoard'
 import WorldMap from './components/WorldMap'
 import DataBrowser from './components/DataBrowser'
 import PlanPanel from './components/PlanPanel'
+import VaultPanel from './components/VaultPanel'
 import HivePanel from './components/HivePanel'
 
 class AppErrorBoundary extends Component<
@@ -104,6 +105,7 @@ function AppInner() {
           <div className="flex-1 space-y-4 min-w-0">
             <CommandBar selectedBot={selectedBot} />
             {activeBotData && <BotDetail bot={activeBotData} />}
+            <VaultPanel selectedBot={selectedBot} />
             <EventLog events={events} />
           </div>
 

@@ -110,6 +110,12 @@ public class BuildBehavior implements Behavior {
         blocksPlaced = 0;
         totalBlocks = blueprint.size();
 
+        // Working-set prep: make room and pre-load the build material.
+        if (!clearMode) {
+            if (bot.freeSlots() < 4) bot.flushToVault(4, materialId);
+            bot.ensureCarried(materialId, Math.min(totalBlocks, 64));
+        }
+
         progress.logEvent("Building " + blueprintName + " at " + origin.toShortString()
                 + " with " + materialId + " (" + totalBlocks + " blocks)");
         bot.systemChat("Building " + blueprintName + " (" + totalBlocks + " blocks)", "aqua");
@@ -193,8 +199,20 @@ public class BuildBehavior implements Behavior {
 
         int slot = findMaterialSlot(player);
         if (slot < 0) {
-            progress.setFailureReason("Out of " + materialId + " (" + blocksPlaced + "/" + totalBlocks + " placed)");
-            return BehaviorResult.FAILED;
+            // Carried stock exhausted — page more in from the vault before
+            // giving up. The vault is the bot's real holdings; the 36 slots
+            // are only the working set.
+            int remaining = totalBlocks - placeIndex;
+            int pulled = bot.ensureCarried(materialId, Math.min(remaining, 64));
+            if (pulled > 0) {
+                slot = findMaterialSlot(player);
+                progress.logEvent("Withdrew " + materialId + " from vault to continue");
+            }
+            if (slot < 0) {
+                progress.setFailureReason("Out of " + materialId + " ("
+                        + blocksPlaced + "/" + totalBlocks + " placed, vault empty too)");
+                return BehaviorResult.FAILED;
+            }
         }
 
         int prevSelected = player.getInventory().selected;

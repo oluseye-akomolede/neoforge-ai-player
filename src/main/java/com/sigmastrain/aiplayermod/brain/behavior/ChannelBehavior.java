@@ -162,13 +162,19 @@ public class ChannelBehavior implements Behavior {
         Item item = BuiltInRegistries.ITEM.get(ResourceLocation.parse(itemId));
         int maxStack = item.getDefaultMaxStackSize();
         int remaining = count;
+        int toVault = 0;
         while (remaining > 0) {
             int stackSize = Math.min(remaining, maxStack);
             ItemStack stack = new ItemStack(item, stackSize);
-            if (!player.getInventory().add(stack)) {
-                player.drop(stack, false);
-            }
+            // Vault-backed delivery: carried first, overflow to the vault.
+            // Never dropped (the entity-cleanup cronjob destroys ground items).
+            int before = bot.getVault().totalItems();
+            bot.deliver(stack);
+            toVault += bot.getVault().totalItems() - before;
             remaining -= stackSize;
+        }
+        if (toVault > 0) {
+            progress.logEvent("Inventory full — " + toVault + " routed to vault");
         }
 
         level.sendParticles(ParticleTypes.END_ROD,
