@@ -63,7 +63,7 @@ public class MineBehavior implements Behavior {
 
     private static final double MINE_REACH = 4.5;
     private static final int BLOCKS_PER_TICK = 3;
-    private static final int TICKS_PER_LEVEL = 5;
+    private static final int TICKS_PER_LEVEL = 1; // snappier rituals (user, 2026-08-04)
 
     @Override
     public void start(BotPlayer bot, Directive directive) {

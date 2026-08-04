@@ -219,8 +219,11 @@ public class EnchantBehavior implements Behavior {
         }
 
         if (meditateTicks % TICKS_PER_LEVEL == 0) {
-            player.giveExperienceLevels(1);
-            meditateLevelsGained++;
+            // Snappy meditation (user directive 2026-08-04): 10 levels per
+            // tick — ritual costs unchanged, only the grind is faster.
+            int grant = Math.min(10, meditateTarget - meditateLevelsGained);
+            player.giveExperienceLevels(grant);
+            meditateLevelsGained += grant;
             progress.increment("xp_levels_gained");
 
             if (meditateLevelsGained >= meditateTarget) {

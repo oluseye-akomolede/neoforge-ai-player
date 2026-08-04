@@ -61,7 +61,7 @@ public class BrewBehavior implements Behavior {
 
     private static final double REACH = 4.5;
     private static final int MAX_WAIT_TICKS = 500;
-    private static final int CHANNEL_TICKS_PER_LEVEL = 5;
+    private static final int CHANNEL_TICKS_PER_LEVEL = 1; // snappier rituals (user, 2026-08-04)
 
     private static final Map<String, List<String>> POTION_RECIPES = new LinkedHashMap<>();
     private static final Map<String, String> MODIFIERS = new LinkedHashMap<>();
