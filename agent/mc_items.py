@@ -1,10 +1,78 @@
 """
-Canonical Minecraft vanilla item/block names for L3 primitive validation.
+L3 primitive validation, backed by the server's REAL item registry.
 
-L3 (LLM) generates primitives with item names that may be hallucinated or
-use wrong IDs. This module provides a whitelist of valid names so we can
-reject or correct bad output before it reaches L1.
+L3 generates primitives with item names that may be hallucinated, wrongly
+namespaced, or modded. Validation used to run against a hand-typed VANILLA
+whitelist, which rejected every one of the pack's ~300 mods' items and
+forced a "minecraft:" prefix onto them.
+
+Now the live registry (mod endpoint /server/items) is the source of truth.
+The vanilla sets below are retained only as (a) a fail-open fallback when
+the registry is unreachable, and (b) mineable/craftable/smeltable category
+hints — which are advisory for vanilla and skipped for modded items, since
+we cannot infer a modded item's acquisition method.
 """
+import logging
+import threading
+import time
+
+_log = logging.getLogger("aibot.items")
+
+# ── Live registry cache ───────────────────────────────────────────────────
+
+_REGISTRY: set[str] = set()
+_BY_PATH: dict[str, list[str]] = {}
+_LOADED_AT = 0.0
+_LOCK = threading.Lock()
+_REFRESH_SECONDS = 3600
+
+
+def load_registry(force=False):
+    """Fetch the server's item registry. Returns True if data is available."""
+    global _REGISTRY, _BY_PATH, _LOADED_AT
+    with _LOCK:
+        if _REGISTRY and not force and (time.time() - _LOADED_AT) < _REFRESH_SECONDS:
+            return True
+    try:
+        import api
+        data = api.server_items()
+        ids = [i for i in data.get("items", []) if isinstance(i, str) and ":" in i]
+        if not ids:
+            return bool(_REGISTRY)
+        by_path = {}
+        for full in ids:
+            by_path.setdefault(full.split(":", 1)[1], []).append(full)
+        with _LOCK:
+            _REGISTRY = set(ids)
+            _BY_PATH = by_path
+            _LOADED_AT = time.time()
+        _log.info("item registry loaded: %d items", len(ids))
+        return True
+    except Exception as e:
+        _log.debug("item registry unavailable (%s) — using vanilla fallback", e)
+        return bool(_REGISTRY)
+
+
+def registry_ready():
+    return bool(_REGISTRY)
+
+
+def resolve_registry_item(name):
+    """Resolve a name against the live registry.
+    Returns (full_id, ok). Falls back to (cleaned, False) when unknown."""
+    load_registry()
+    raw = str(name).strip().lower()
+    if not _REGISTRY:
+        return raw, False
+    if raw in _REGISTRY:
+        return raw, True
+    path = raw.split(":", 1)[1] if ":" in raw else raw
+    matches = _BY_PATH.get(path)
+    if matches:
+        vanilla = [m for m in matches if m.startswith("minecraft:")]
+        return (vanilla[0] if vanilla else matches[0]), True
+    return raw, False
+
 
 # Blocks that can be mined
 MINEABLE_BLOCKS = frozenset({
@@ -141,11 +209,21 @@ ALL_VALID_ITEMS = MINEABLE_BLOCKS | CRAFTABLE_ITEMS | SMELTABLE_ITEMS
 
 
 def normalize_item(name):
-    """Strip minecraft: prefix and validate against whitelist.
-    Returns (normalized_name, is_valid)."""
-    clean = name.strip()
+    """Resolve an item name. Returns (name, is_valid).
+
+    Registry-backed: a modded id like mekanism:steel_ingot validates, and a
+    bare 'steel_ingot' resolves to it. Falls back to the vanilla whitelist
+    only when the registry is unreachable.
+    """
+    full, ok = resolve_registry_item(name)
+    if ok:
+        return full, True
+    clean = str(name).strip()
     if clean.startswith("minecraft:"):
         clean = clean[len("minecraft:"):]
+    if registry_ready():
+        # Registry is loaded and does not have it — genuinely unknown.
+        return clean, False
     return clean, clean in ALL_VALID_ITEMS
 
 
@@ -187,25 +265,30 @@ def validate_primitive(primitive):
     if not valid:
         return primitive, False, f"unknown item: {target}"
 
-    if ptype == "MINE" and clean not in MINEABLE_BLOCKS:
-        if clean in CRAFTABLE_ITEMS:
-            return primitive, False, f"{clean} is craftable, not mineable"
-    elif ptype == "CRAFT" and clean not in CRAFTABLE_ITEMS:
-        if clean in MINEABLE_BLOCKS:
-            return primitive, False, f"{clean} is mineable, not craftable"
-    elif ptype == "SMELT" and clean not in SMELTABLE_ITEMS:
-        return primitive, False, f"{clean} is not smeltable"
-    elif ptype not in ("MINE", "CRAFT", "SMELT"):
+    # Category hints are vanilla-only knowledge. A modded id (anything not in
+    # the minecraft namespace) skips them — we cannot infer how a modded item
+    # is acquired, and guessing wrong rejects valid work.
+    bare = clean.split(":", 1)[-1]
+    is_vanilla = (":" not in clean) or clean.startswith("minecraft:")
+    if not is_vanilla:
+        pass
+    elif ptype == "MINE" and bare not in MINEABLE_BLOCKS:
+        if bare in CRAFTABLE_ITEMS:
+            return primitive, False, f"{bare} is craftable, not mineable"
+    elif ptype == "CRAFT" and bare not in CRAFTABLE_ITEMS:
+        if bare in MINEABLE_BLOCKS:
+            return primitive, False, f"{bare} is mineable, not craftable"
+    elif ptype == "SMELT" and bare not in SMELTABLE_ITEMS and registry_ready() is False:
+        return primitive, False, f"{bare} is not smeltable"
+    if ptype not in ("MINE", "CRAFT", "SMELT"):
         return primitive, False, f"unknown primitive type: {ptype}"
 
     count = primitive.get("count", 1)
     if not isinstance(count, (int, float)) or count < 1 or count > 64:
         primitive["count"] = max(1, min(64, int(count) if isinstance(count, (int, float)) else 1))
 
-    if ptype == "CRAFT":
-        primitive["target"] = f"minecraft:{clean}"
-    else:
-        primitive["target"] = clean
+    # `clean` is already a fully-qualified id when the registry resolved it.
+    primitive["target"] = clean if ":" in clean else f"minecraft:{clean}"
 
     return primitive, True, ""
 

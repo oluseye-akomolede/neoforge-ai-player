@@ -48,6 +48,7 @@ public class HttpApiServer {
             server.createContext("/transmute", this::handleTransmute);
             server.createContext("/enchantments", this::handleEnchantments);
             server.createContext("/containers", this::handleContainers);
+            server.createContext("/server/items", this::handleServerItems);
             server.createContext("/server/dimensions", this::handleDimensions);
             server.createContext("/server/players", this::handlePlayers);
 
@@ -806,6 +807,55 @@ public class HttpApiServer {
     }
 
     // ── /transmute ── (GET = list/lookup, POST = register/update, DELETE = remove)
+
+    /**
+     * Full item registry — every item the server actually has, modded
+     * included. The L2 translation layer resolves bot-emitted item names
+     * against this instead of guessing a "minecraft:" namespace.
+     *
+     * ?namespace=<mod>  restrict to one mod
+     * ?query=<substr>   substring filter on id or display name
+     */
+    private void handleServerItems(HttpExchange exchange) throws IOException {
+        if (!checkAuth(exchange)) return;
+        if (!"GET".equals(exchange.getRequestMethod())) {
+            sendJson(exchange, 405, Map.of("error", "Method not allowed"));
+            return;
+        }
+        Map<String, String> params = parseQuery(exchange.getRequestURI().getQuery());
+        String ns = params.getOrDefault("namespace", "").toLowerCase();
+        String query = params.getOrDefault("query", "").toLowerCase();
+
+        List<String> ids = new ArrayList<>();
+        Set<String> namespaces = new java.util.TreeSet<>();
+        for (var key : BuiltInRegistries.ITEM.keySet()) {
+            String id = key.toString();
+            namespaces.add(key.getNamespace());
+            if (!ns.isEmpty() && !key.getNamespace().equalsIgnoreCase(ns)) continue;
+            if (!query.isEmpty() && !id.toLowerCase().contains(query)) continue;
+            ids.add(id);
+        }
+        java.util.Collections.sort(ids);
+        sendJson(exchange, 200, Map.of(
+                "items", ids,
+                "count", ids.size(),
+                "namespaces", new ArrayList<>(namespaces)));
+    }
+
+    private static Map<String, String> parseQuery(String raw) {
+        Map<String, String> out = new LinkedHashMap<>();
+        if (raw == null || raw.isEmpty()) return out;
+        for (String pair : raw.split("&")) {
+            int eq = pair.indexOf('=');
+            if (eq <= 0) continue;
+            try {
+                out.put(java.net.URLDecoder.decode(pair.substring(0, eq), StandardCharsets.UTF_8),
+                        java.net.URLDecoder.decode(pair.substring(eq + 1), StandardCharsets.UTF_8));
+            } catch (Exception ignored) {
+            }
+        }
+        return out;
+    }
 
     private void handleTransmuteNames(HttpExchange exchange) throws IOException {
         if (!checkAuth(exchange)) return;

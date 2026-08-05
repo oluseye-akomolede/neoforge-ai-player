@@ -66,6 +66,17 @@ def block_at(bot, x, y, z):
 
 # ── Vault: unbounded per-bot storage behind the 36 carried slots ──────────
 
+def server_items(namespace=None, query=None):
+    """Full item registry — every item the server has, modded included."""
+    qs = []
+    if namespace:
+        qs.append(f"namespace={namespace}")
+    if query:
+        qs.append(f"query={query}")
+    suffix = ("?" + "&".join(qs)) if qs else ""
+    return _get(f"/server/items{suffix}")
+
+
 def vault(bot):
     """Full vault manifest (merged by item id)."""
     return _get(f"/bot/{bot}/vault")
