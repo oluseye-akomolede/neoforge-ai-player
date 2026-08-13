@@ -100,6 +100,12 @@ public class BotEquipmentMenu extends AbstractContainerMenu {
 
     public static BotEquipmentMenu fromNetwork(int containerId, Inventory playerInventory, RegistryFriendlyByteBuf buf) {
         int entityId = buf.readInt();
+        // The bot name rides the buffer so the CLIENT menu also learns its aux
+        // slots. Without it the client's AuxSlots.providerFor("") is null, the
+        // hardpoints never appear client-side, and the menu's slot list runs
+        // two short of the server's — the full-container sync then indexes a
+        // slot the client doesn't have and drops the connection.
+        setPendingBotName(buf.readUtf());
         return new BotEquipmentMenu(containerId, playerInventory, new SimpleContainer(BOT_SLOT_COUNT), entityId);
     }
 

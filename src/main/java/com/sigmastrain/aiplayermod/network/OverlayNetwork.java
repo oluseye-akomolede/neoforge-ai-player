@@ -242,13 +242,17 @@ public final class OverlayNetwork {
                     BotPlayer bot = resolveBot(payload.bot());
                     if (bot == null || bot.getPlayer() == null) return;
                     int entityId = bot.getPlayer().getId();
+                    String bName = botName(bot);
                     com.sigmastrain.aiplayermod.bot.BotEquipmentMenu
-                            .setPendingBotName(botName(bot));
+                            .setPendingBotName(bName);
                     sp.openMenu(new net.minecraft.world.SimpleMenuProvider(
                             (id, inv, p) -> new com.sigmastrain.aiplayermod.bot.BotEquipmentMenu(
                                     id, inv, bot.getPlayer().getInventory(), entityId),
-                            net.minecraft.network.chat.Component.literal(botName(bot) + "'s Inventory")
-                    ), buf -> buf.writeInt(entityId));
+                            net.minecraft.network.chat.Component.literal(bName + "'s Inventory")
+                    ), buf -> {
+                        buf.writeInt(entityId);
+                        buf.writeUtf(bName);
+                    });
                 }));
 
         registrar.playToServer(

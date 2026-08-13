@@ -141,6 +141,24 @@ public class OverlayScreen extends Screen {
         ddScroll = 0;
     }
 
+    /** The unit picker: every bot (originals, officers, drones) in one
+     *  type-to-search list, so the army scales past a tab-per-unit strip. */
+    private void openUnitPicker() {
+        List<String> names = new java.util.ArrayList<>();
+        for (OverlayPayloads.BotEntry b : snapshot.bots()) names.add(b.name());
+        openDropdown("select unit", names, this::pickUnit);
+    }
+
+    private void pickUnit(String name) {
+        List<OverlayPayloads.BotEntry> bots = snapshot.bots();
+        for (int i = 0; i < bots.size(); i++) {
+            if (bots.get(i).name().equals(name)) {
+                selectUnit(i);
+                return;
+            }
+        }
+    }
+
     private static final int DD_ROWS = 10;
 
     private void renderOverlays(GuiGraphics g, int mouseX, int mouseY) {
@@ -302,29 +320,24 @@ public class OverlayScreen extends Screen {
             tx += ew + 4;
         }
         List<OverlayPayloads.BotEntry> bots = snapshot.bots();
+        // Individual units collapse into ONE searchable dropdown instead of a
+        // tab per bot — the army grows to dozens of officers/drones and a
+        // tab-per-unit strip runs straight off the panel (the "tabs stretch
+        // horizontally off screen" report). Fleet/Inbox/extensions stay as
+        // fixed tabs; every unit is reached through the picker, and the
+        // Drones roster keeps its grouped overview.
+        String unitLabel = (selected >= 0 && selected < bots.size())
+                ? "§b" + bots.get(selected).name() + " ▾" : "Units ▾";
+        int uw = Math.max(48, font.width(stripCodes(unitLabel)) + 14);
+        addRenderableWidget(Button.builder(Component.literal(unitLabel), b -> openUnitPicker())
+                .bounds(tx, ty, uw, 16).build());
+        tx += uw + 4;
         int droneCount = 0;
-        for (int i = 0; i < bots.size(); i++) {
-            if (isDrone(bots.get(i))) {
-                droneCount++;
-                continue;
-            }
-            int w = Math.max(44, font.width(bots.get(i).name()) + 14);
-            addTab(tx, ty, w, bots.get(i).name(), i);
-            tx += w + 4;
-        }
-        // The swarm shares ONE tab however large it grows (design ruling:
-        // the UI must survive 20+ drones). Individuals are reached through
-        // it — and the currently selected drone earns a temporary tab.
+        for (OverlayPayloads.BotEntry b : bots) if (isDrone(b)) droneCount++;
         if (droneCount > 0) {
             String dl = "§fDrones (" + droneCount + ")";
-            int dw = Math.max(44, font.width(dl) + 14);
+            int dw = Math.max(44, font.width(stripCodes(dl)) + 14);
             addTab(tx, ty, dw, dl, VIEW_DRONES);
-            tx += dw + 4;
-        }
-        if (selected >= 0 && selected < bots.size() && isDrone(bots.get(selected))) {
-            String dn = bots.get(selected).name();
-            int dw = Math.max(44, font.width(dn) + 14);
-            addTab(tx, ty, dw, "§b" + dn, selected);
         }
 
         // Interrupt — only meaningful on a bot tab with an ACTIVE directive.
