@@ -18,6 +18,7 @@ from typing import Any
 
 import requests
 
+import trajectory_log
 from brain import ollama_lock
 from config import OLLAMA_URL
 from plan_schema import Plan, PlanValidationError, Subtask, validate_plan_dict, validate_subtask_dict
@@ -161,15 +162,39 @@ def call_plan(model: str, bot_name: str, task: str,
         )
     resp.raise_for_status()
     raw = _strip_codefence(resp.json()["message"]["content"])
+    created_at = datetime.datetime.utcnow().isoformat()
     try:
         data = json.loads(raw)
+        validate_plan_dict(data)
     except json.JSONDecodeError as e:
+        trajectory_log.log_call(
+            phase="plan", bot=bot_name, model=model,
+            prompt_system=sys_prompt, prompt_user=user,
+            response_raw=raw, parsed=None,
+            world_state_summary=world_state_summary,
+            plan_ref=created_at, parse_error=f"non-JSON: {e}",
+        )
         raise PlanValidationError(f"L3 PLAN returned non-JSON: {e}") from e
-    validate_plan_dict(data)
+    except PlanValidationError as e:
+        trajectory_log.log_call(
+            phase="plan", bot=bot_name, model=model,
+            prompt_system=sys_prompt, prompt_user=user,
+            response_raw=raw, parsed=None,
+            world_state_summary=world_state_summary,
+            plan_ref=created_at, parse_error=str(e),
+        )
+        raise
+    trajectory_log.log_call(
+        phase="plan", bot=bot_name, model=model,
+        prompt_system=sys_prompt, prompt_user=user,
+        response_raw=raw, parsed=data,
+        world_state_summary=world_state_summary,
+        plan_ref=created_at,
+    )
     return Plan(
         task=data["task"],
         bot=bot_name,
-        created_at=datetime.datetime.utcnow().isoformat(),
+        created_at=created_at,
         status="executing",
         subtasks=[Subtask.from_dict(s) for s in data["subtasks"]],
         current_subtask_id=min((s["id"] for s in data["subtasks"]), default=1),
@@ -430,7 +455,7 @@ def converse(model: str, bot_name: str, persona: str, text: str,
 def call_exec(model: str, plan: Plan, subtask: Subtask,
               world_state_summary: str = "",
               previous_error: str | None = None,
-              dimensions: list[str] | None = None) -> list[dict[str, Any]]:
+              dimensions: list[str] | None = None) -> tuple[list[dict[str, Any]], str]:
     log.info("[%s] L3 EXEC call — subtask %d/%d", plan.bot, subtask.id, len(plan.subtasks))
     dim_lines = _dim_lines(dimensions)
     sys_prompt = _EXEC_SYSTEM_PROMPT.format(
@@ -441,6 +466,7 @@ def call_exec(model: str, plan: Plan, subtask: Subtask,
         dimensions=dim_lines,
         error=previous_error or "(none)",
     )
+    user = f"Execute subtask {subtask.id}: {subtask.description}"
     with ollama_lock:
         resp = requests.post(
             f"{OLLAMA_URL}/api/chat",
@@ -448,7 +474,7 @@ def call_exec(model: str, plan: Plan, subtask: Subtask,
                 "model": model,
                 "messages": [
                     {"role": "system", "content": sys_prompt},
-                    {"role": "user", "content": f"Execute subtask {subtask.id}: {subtask.description}"},
+                    {"role": "user", "content": user},
                 ],
                 "stream": False,
                 "format": "json",
@@ -458,14 +484,39 @@ def call_exec(model: str, plan: Plan, subtask: Subtask,
         )
     resp.raise_for_status()
     raw = _strip_codefence(resp.json()["message"]["content"])
+    plan_ref = getattr(plan, "created_at", None)
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as e:
+        trajectory_log.log_call(
+            phase="exec", bot=plan.bot, model=model,
+            prompt_system=sys_prompt, prompt_user=user,
+            response_raw=raw, parsed=None,
+            world_state_summary=world_state_summary,
+            plan_ref=plan_ref, subtask_id=subtask.id,
+            parse_error=f"non-JSON: {e}",
+        )
         raise ValueError(f"L3 EXEC returned non-JSON: {e}") from e
     directives = data.get("directives")
     if not isinstance(directives, list) or not directives:
+        trajectory_log.log_call(
+            phase="exec", bot=plan.bot, model=model,
+            prompt_system=sys_prompt, prompt_user=user,
+            response_raw=raw, parsed=data,
+            world_state_summary=world_state_summary,
+            plan_ref=plan_ref, subtask_id=subtask.id,
+            parse_error="no directives",
+        )
         raise ValueError("L3 EXEC returned no directives")
-    return [d for d in directives if isinstance(d, dict) and "kind" in d]
+    parsed = [d for d in directives if isinstance(d, dict) and "kind" in d]
+    call_id = trajectory_log.log_call(
+        phase="exec", bot=plan.bot, model=model,
+        prompt_system=sys_prompt, prompt_user=user,
+        response_raw=raw, parsed=parsed,
+        world_state_summary=world_state_summary,
+        plan_ref=plan_ref, subtask_id=subtask.id,
+    )
+    return parsed, call_id
 
 
 # ── Replan ─────────────────────────────────────────────────────────────────
@@ -507,6 +558,7 @@ def call_replan(model: str, plan: Plan, failed_subtask: Subtask) -> Subtask:
         attempts=failed_subtask.attempts,
         subtask_id=failed_subtask.id,
     )
+    user = "Revise the failed subtask."
     with ollama_lock:
         resp = requests.post(
             f"{OLLAMA_URL}/api/chat",
@@ -514,7 +566,7 @@ def call_replan(model: str, plan: Plan, failed_subtask: Subtask) -> Subtask:
                 "model": model,
                 "messages": [
                     {"role": "system", "content": sys_prompt},
-                    {"role": "user", "content": "Revise the failed subtask."},
+                    {"role": "user", "content": user},
                 ],
                 "stream": False,
                 "format": "json",
@@ -524,15 +576,44 @@ def call_replan(model: str, plan: Plan, failed_subtask: Subtask) -> Subtask:
         )
     resp.raise_for_status()
     raw = _strip_codefence(resp.json()["message"]["content"])
+    plan_ref = getattr(plan, "created_at", None)
+    sid = failed_subtask.id
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as e:
+        trajectory_log.log_call(
+            phase="replan", bot=plan.bot, model=model,
+            prompt_system=sys_prompt, prompt_user=user,
+            response_raw=raw, parsed=None,
+            plan_ref=plan_ref, subtask_id=sid,
+            parse_error=f"non-JSON: {e}",
+        )
         raise PlanValidationError(f"replan returned non-JSON: {e}") from e
     if isinstance(data, dict) and data.get("error"):
+        trajectory_log.log_call(
+            phase="replan", bot=plan.bot, model=model,
+            prompt_system=sys_prompt, prompt_user=user,
+            response_raw=raw, parsed=data,
+            plan_ref=plan_ref, subtask_id=sid,
+            parse_error=f"refused: {data.get('error')}",
+        )
         raise PlanValidationError(f"L3 refused replan: {data.get('error')}")
     validate_subtask_dict(data)
     if data["id"] != failed_subtask.id:
+        trajectory_log.log_call(
+            phase="replan", bot=plan.bot, model=model,
+            prompt_system=sys_prompt, prompt_user=user,
+            response_raw=raw, parsed=data,
+            plan_ref=plan_ref, subtask_id=sid,
+            parse_error=f"id mismatch: got {data['id']}, expected {failed_subtask.id}",
+        )
         raise PlanValidationError(f"replan returned id {data['id']}, expected {failed_subtask.id}")
+    trajectory_log.log_call(
+        phase="replan", bot=plan.bot, model=model,
+        prompt_system=sys_prompt, prompt_user=user,
+        response_raw=raw, parsed=data,
+        plan_ref=plan_ref, subtask_id=sid,
+    )
     return Subtask.from_dict({
         **data, "status": "pending", "attempts": 0,
         "directives": [], "error": None,

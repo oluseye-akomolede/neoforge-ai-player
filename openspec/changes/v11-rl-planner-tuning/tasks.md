@@ -4,16 +4,24 @@ Sequenced R1→R5; R1 runs in parallel with v10.
 
 ## R1 — trajectory capture (agent-side, no mod change)
 
-- [ ] `agent/trajectory_log.py` — JSONL appender on the agent volume.
+- [x] `agent/trajectory_log.py` — JSONL appender on the agent volume.
       Record per L3 call: `{ts, bot, phase(plan|exec|replan), model,
       prompt(full), response(raw), parsed, world_state_summary, outcome}`.
-- [ ] Hook `l3_planner.call_plan`/`call_exec`/`call_replan` to log prompt +
-      raw response + parsed result before returning.
-- [ ] Backfill `outcome` from `criteria_eval` after the subtask settles;
-      write the final `plan_status` (complete/failed) on plan close.
-- [ ] **Proof**: run one endurance task; confirm a JSONL row exists per L3
-      call with non-empty prompt, raw response, and an outcome field that
-      matches `criteria_eval`.
+      Two-record append-only design: a "call" record is written immediately
+      (crash-safe), an "outcome" record is correlated later by `call_id`,
+      and a "plan_close" record carries the terminal status.
+- [x] Hook `l3_planner.call_plan`/`call_exec`/`call_replan` to log prompt +
+      raw response + parsed result before returning. `call_exec` now returns
+      `(directives, call_id)`; schema-invalid output is still logged (with
+      `parse_error`) so R2's format-term has negative examples.
+- [x] Backfill `outcome` from `criteria_eval` after the subtask settles
+      (`plan_orchestrator._step`); write the final `plan_status` on plan
+      close (`execute_task`, both exit paths).
+- [x] **Proof**: headless — monkeypatched `requests.post` and drove
+      `call_plan`/`call_exec`/`call_replan` + `log_outcome`/`log_plan_close`;
+      confirmed one call record per L3 call with non-empty prompt, verbatim
+      raw response, parsed output, and an outcome record joined on `call_id`.
+      Live endurance task still pending (needs the test harness).
 
 ## R2 — reward module
 

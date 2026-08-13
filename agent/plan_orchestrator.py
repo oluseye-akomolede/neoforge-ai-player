@@ -27,6 +27,7 @@ import l3_planner
 import plan_memory
 import plan_store
 import telemetry
+import trajectory_log
 from criteria_eval import evaluate as evaluate_criteria
 from plan_schema import Plan, PlanValidationError, Subtask
 
@@ -127,6 +128,10 @@ def execute_task(
             )
             plan_store.write(plan)
             plan_store.archive(plan)
+            trajectory_log.log_plan_close(
+                bot=bot_name, plan_ref=plan.created_at, status=plan.status,
+                task=task, subtasks_total=0, subtasks_complete=0,
+            )
             on_finalized(plan)
             return plan
 
@@ -178,6 +183,12 @@ def execute_task(
 
     plan_store.write(plan)
     plan_store.archive(plan)
+    trajectory_log.log_plan_close(
+        bot=plan.bot, plan_ref=plan.created_at, status=plan.status,
+        task=plan.task,
+        subtasks_total=len(plan.subtasks),
+        subtasks_complete=sum(1 for s in plan.subtasks if s.status == "complete"),
+    )
     telemetry.push(bot_name, "done" if plan.status == "complete" else "fail",
                    f"plan finalized: {plan.status}")
     if plan.status == "complete":
@@ -224,12 +235,14 @@ def _step(plan: Plan, subtask: Subtask, model: str,
     # (attempts > 0) fall through to L3 so failures get intelligent handling.
     if subtask.directives and subtask.attempts == 0 and not subtask.error:
         directives = list(subtask.directives)
+        exec_call_id = None
         log.info("[%s] subtask %d dispatching pre-baked directives (0 LLM calls)",
                  plan.bot, subtask.id)
     else:
         # Phase 2 exec
+        exec_call_id = None
         try:
-            directives = l3_planner.call_exec(
+            directives, exec_call_id = l3_planner.call_exec(
                 model=model, plan=plan, subtask=subtask,
                 world_state_summary=world_state_fn(),
                 previous_error=subtask.error,
@@ -289,6 +302,15 @@ def _step(plan: Plan, subtask: Subtask, model: str,
     # explained every campaign failure this project, now visible in-game.
     telemetry.push(plan.bot, "criteria" if satisfied else "criteria_fail",
                    f"[{strategy}] {reason}")
+
+    # v11 R1: correlate this deterministic outcome to the exec call that
+    # produced the directives (pre-baked fast-path subtasks had no L3 call).
+    if exec_call_id:
+        trajectory_log.log_outcome(
+            call_id=exec_call_id, bot=plan.bot, phase="exec",
+            plan_ref=plan.created_at, subtask_id=subtask.id,
+            satisfied=satisfied, strategy=strategy, reason=reason,
+        )
 
     if satisfied:
         subtask.status = "complete"
