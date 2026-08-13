@@ -14,10 +14,12 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import time
 from typing import Any
 
 import requests
 
+import api
 import trajectory_log
 from brain import ollama_lock
 from config import OLLAMA_URL
@@ -55,6 +57,47 @@ def _dim_lines(dimensions: list[str] | None) -> str:
     lines += [f"  - {d} (special-purpose — do NOT travel here unless the task names it)"
               for d in exotic]
     return "\n".join(lines)
+
+
+# ── Skill catalog (v10) ─────────────────────────────────────────────────────
+
+_skills_cache: tuple[float, str] | None = None
+_SKILLS_CACHE_TTL = 60.0
+
+
+def _skills_lines() -> str:
+    """Render the registered skill catalog from GET /skills, cached briefly.
+
+    The catalog is server-global and changes only via runtime self-expansion,
+    so a short TTL avoids a GET per subtask while still picking up new skills.
+    Returns "" when the API is unreachable (L3 still emits raw directives)."""
+    global _skills_cache
+    now = time.monotonic()
+    if _skills_cache is not None and now - _skills_cache[0] < _SKILLS_CACHE_TTL:
+        return _skills_cache[1]
+    text = ""
+    try:
+        entries = (api.skills() or {}).get("skills") or []
+        lines = []
+        for s in entries:
+            if not isinstance(s, dict):
+                continue
+            sid = str(s.get("id", "?"))
+            desc = str(s.get("description", "") or "").strip()
+            params = s.get("params") or {}
+            param_str = (", ".join(f"{k}:{v}" for k, v in params.items())
+                         if isinstance(params, dict) else "")
+            line = f"    {sid}"
+            if desc:
+                line += f" — {desc}"
+            if param_str:
+                line += f"  [params: {param_str}]"
+            lines.append(line)
+        text = "\n".join(lines)
+    except Exception as e:  # noqa: BLE001 — best-effort enrichment
+        log.debug("skills fetch failed: %s", e)
+    _skills_cache = (now, text)
+    return text
 
 
 # ── Phase 1: plan ──────────────────────────────────────────────────────────
@@ -374,6 +417,15 @@ INVENTORY TASKS ("store", "clean up", "put away", "organize"):
                      "player says: ..." — plan the NEXT directives with it.
                      Do not ask what you can observe or decide yourself.
   IDLE             — {{ "kind":"IDLE" }}
+  SKILL            — {{ "kind":"SKILL", "target":"<skill_id>", "extra":{{"<param>":"<value>", ...}} }}
+                     Runs a registered skill end-to-end (see SKILL REFERENCE
+                     below). target is the skill id; extra carries the skill's
+                     params as strings. Prefer a matching skill over re-emitting
+                     its directive sequence by hand — skills are deterministic
+                     and post-verified against world state.
+
+SKILL REFERENCE (registered skills — pick one when it covers the subtask):
+{skills}
 """
 
 
@@ -464,6 +516,7 @@ def call_exec(model: str, plan: Plan, subtask: Subtask,
         subtask_json=json.dumps(_compact_subtask(subtask), indent=2),
         world_state=world_state_summary or "(none provided)",
         dimensions=dim_lines,
+        skills=_skills_lines(),
         error=previous_error or "(none)",
     )
     user = f"Execute subtask {subtask.id}: {subtask.description}"

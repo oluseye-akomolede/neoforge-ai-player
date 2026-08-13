@@ -410,6 +410,11 @@ def players():
     return _get("/server/players")
 
 
+def skills():
+    """Registered skill catalog (id, description, params, verify). Server-global."""
+    return _get("/skills")
+
+
 # ── ME fabric (worn wireless terminal; v7 phase 6) ──
 
 def me_status(bot):

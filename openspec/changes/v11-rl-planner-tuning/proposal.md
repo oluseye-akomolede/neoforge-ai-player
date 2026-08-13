@@ -63,3 +63,12 @@ R3 (DPO) can run on the archive as soon as enough captures accumulate. R4
 planner's decision space (pick+parameterize a skill), which makes the
 exploration problem smaller and denser. **Skills first, RL second** is not
 accidental — it is the same lever pulled twice.
+
+## Deferred — larger L3 base model
+
+The two V100 16GB cards (32GB combined) can hold a 32B model at Q4_K_M
+(~20GB), but **the base model stays `qwen2.5:14b` for now** — build features
+first, upgrade the model later. When we do, retarget R5's merge/export to
+`qwen2.5:32b-instruct` and re-run the canary gate before the fleet switch. The
+RL data (trajectory + reward) carries over unchanged; only the base checkpoint
+and the GGUF tag change.

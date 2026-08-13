@@ -38,24 +38,30 @@ aiplayermod only (per testing directive); hive skills arrive after.
 
 ## Phase 2 — L2/L3 surface + self-expansion
 
-- [ ] `l2-mcp` `KNOWN_KINDS` += `SKILL`; add `GET /skills` serving
+- [x] `l2-mcp` `KNOWN_KINDS` += `SKILL`; add `GET /skills` serving
       `SkillRegistry.catalog()`.
-- [ ] `l3_planner._EXEC_SYSTEM_PROMPT`: add `SKILL` to the DIRECTIVE PARAM
+- [x] `l3_planner._EXEC_SYSTEM_PROMPT`: add `SKILL` to the DIRECTIVE PARAM
       REFERENCE and a SKILL REFERENCE section (populated from `/skills`).
-- [ ] Agent `_l3_orchestrator_dispatch`: confirm `kind: SKILL` pass-through
-      (`target`=skill id, `extra`=params).
+- [x] Agent `_l3_orchestrator_dispatch`: confirm `kind: SKILL` pass-through
+      (`target`=skill id, `extra`=params). Verified no change needed — the
+      `kind`→`type` mapping and `api.set_directive(..., extra=...)` already
+      carry SKILL end-to-end; `_l2_adjust` returns None for SKILL so failures
+      fail fast to L3 rather than being mangled.
 - [ ] **Proof — headless**: L3 given "search the area around spawn for
       chests, loot them, and store everything" emits a single
       `{kind:"SKILL", target:"search_and_loot", ...}` directive; the bot
       completes it end-to-end; `criteria_eval` marks the subtask complete
       without an L3 fallback.
-- [ ] Runtime self-expansion: `SkillBehavior` accepts an inline
+- [x] Runtime self-expansion: `SkillBehavior` accepts an inline
       `extra.spec`; `SkillValidator` gates it; `extra.register` (opt-in)
       registers under a generated id; registry cap + LRU eviction.
-- [ ] **Proof — headless**: an L3-proposed inline spec that references only
-      known directives validates and runs; a spec with an unknown directive
-      kind or an unbounded loop is rejected with a logged reason and the
-      directive fails fast.
+- [x] **Proof — headless**: `SkillEngineProof` extended to 35/35 assertions.
+      An inline `extra.spec` over known directives runs (MINE→SMELT); an
+      inline spec with an unknown directive kind fails fast; an unbounded
+      loop is rejected at parse and fails fast; `register:true` with a
+      seed-colliding declared id registers under a generated `gen~…` key and
+      leaves the seed intact; filling past the cap evicts LRU entries while
+      all five seeds survive.
 
 ## Phase 3 — hive contribution + squad note
 

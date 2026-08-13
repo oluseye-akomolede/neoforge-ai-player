@@ -10,10 +10,12 @@ import com.sigmastrain.aiplayermod.brain.skill.SkillNode;
 import com.sigmastrain.aiplayermod.brain.skill.SkillParams;
 import com.sigmastrain.aiplayermod.brain.skill.SkillRegistry;
 import com.sigmastrain.aiplayermod.brain.skill.SkillSpec;
+import com.sigmastrain.aiplayermod.brain.skill.SkillValidator;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -87,10 +89,9 @@ public class SkillBehavior implements Behavior {
         String skillId = directive.getTarget();
         this.params = directive.getExtra() == null ? Map.of()
                 : new LinkedHashMap<>(directive.getExtra());
-        this.spec = SkillRegistry.get(skillId);
+        this.spec = resolveSpec(skillId);
         if (spec == null) {
-            fail("unknown skill: " + skillId);
-            return;
+            return; // resolveSpec already recorded the failure reason
         }
 
         progress.setPhase("skill:" + skillId);
@@ -99,6 +100,47 @@ public class SkillBehavior implements Behavior {
         if (r == EnterResult.EMPTY_SUCCESS) finish(true);
         else if (r == EnterResult.FAILED) { /* reason already set */ }
         // STARTED → child behavior is running; wait for tick()
+    }
+
+    /** Resolve the skill to run: an inline {@code extra.spec} (validated, and
+     *  optionally registered when {@code extra.register} is truthy) takes
+     *  precedence over a registry lookup by {@code skillId}. Returns null after
+     *  calling {@link #fail} on any rejection. */
+    private SkillSpec resolveSpec(String skillId) {
+        String inline = params.get("spec");
+        if (inline == null || inline.isBlank()) {
+            return SkillRegistry.get(skillId);
+        }
+        SkillSpec s;
+        try {
+            s = SkillSpec.parse(inline);
+        } catch (RuntimeException e) {
+            fail("inline spec unparsable: " + e.getMessage());
+            return null;
+        }
+        List<String> errors = SkillValidator.validate(s, SkillRegistry::get);
+        if (!errors.isEmpty()) {
+            fail("inline spec rejected: " + String.join("; ", errors));
+            return null;
+        }
+        if (isTruthy(params.get("register"))) {
+            // Generated key: a proposed spec can never clobber a curated seed.
+            String id = s.id;
+            if (SkillRegistry.has(id)) {
+                id = "gen~" + s.id + "~" + Integer.toHexString(inline.hashCode());
+            }
+            String err = SkillRegistry.register(id, s);
+            if (err != null) {
+                fail(err);
+                return null;
+            }
+            progress.logEvent("skill: registered " + id);
+        }
+        return s;
+    }
+
+    private static boolean isTruthy(String v) {
+        return v != null && ("true".equalsIgnoreCase(v.trim()) || "1".equals(v.trim()));
     }
 
     @Override

@@ -11,6 +11,7 @@ import com.sigmastrain.aiplayermod.bot.BotPlayer;
 import com.sigmastrain.aiplayermod.shop.BotShop;
 import com.sigmastrain.aiplayermod.shop.EnchantmentRegistry;
 import com.sigmastrain.aiplayermod.shop.TransmuteRegistry;
+import com.sigmastrain.aiplayermod.brain.skill.SkillRegistry;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -60,6 +61,7 @@ public class HttpApiServer {
             server.createContext("/server/dimensions", this::handleDimensions);
             server.createContext("/server/me_networks", this::handleMeNetworks);
             server.createContext("/server/players", this::handlePlayers);
+            server.createContext("/skills", this::handleSkills);
 
             for (ApiExtensions.Route r : ApiExtensions.routes()) {
                 server.createContext(r.path(), r.handler());
@@ -101,6 +103,18 @@ public class HttpApiServer {
                 "mod", AIPlayerMod.MOD_ID,
                 "bots", BotManager.getAllBots().size()
         ));
+    }
+
+    // ── /skills ── (GET = catalog of registered skills)
+
+    private void handleSkills(HttpExchange exchange) throws IOException {
+        if (!checkAuth(exchange)) return;
+        if (!"GET".equals(exchange.getRequestMethod())) {
+            sendJson(exchange, 405, Map.of("error", "Method not allowed"));
+            return;
+        }
+        // SkillRegistry is concurrent; no server.execute hop needed.
+        sendJson(exchange, 200, Map.of("skills", SkillRegistry.catalog()));
     }
 
     // ── /bots ── (GET = list, POST = spawn)

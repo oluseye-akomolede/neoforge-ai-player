@@ -70,4 +70,11 @@ public final class SkillSpec {
         entry.put("verify", verify != null ? verify.predicate : null);
         return entry;
     }
+
+    /** A copy of this spec under a different id — used by runtime
+     *  self-expansion, which registers under a generated key so an
+     *  L3-proposed spec can never clobber a curated seed. */
+    public SkillSpec withId(String newId) {
+        return new SkillSpec(newId, description, params, root, verify);
+    }
 }
