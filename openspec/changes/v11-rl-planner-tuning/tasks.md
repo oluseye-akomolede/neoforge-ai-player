@@ -25,10 +25,20 @@ Sequenced R1→R5; R1 runs in parallel with v10.
 
 ## R2 — reward module
 
-- [ ] `agent/rl_reward.py` — `reward(subtask, response, world_state)`:
+- [x] `agent/rl_reward.py` — `reward(subtask, response, world_state)`:
       deterministic `criteria_eval` result + `schema_valid` term + `λ·cost`
-      term. Unit-test against recorded trajectories (reward 1.0 on a known
-      pass, 0.0 on a known fail, -1.0 on schema-invalid output).
+      term (`LAMBDA = 0.05`; cost = #directives when valid, token count when
+      invalid). Accepts a raw string, `{"directives":[...]}` object, or the
+      already-parsed `parsed` list, so R3/R4 replay and live scoring share one
+      path. `reward_plan` aggregates per-subtask rewards (mean, or 1.0 iff all
+      met).
+- [x] **Proof — headless**: `agent/rl_reward_test.py` (17/17, `python3
+      rl_reward_test.py`). Monkeypatched `criteria_eval.evaluate` (no live
+      mod). Known pass → `0.9` (= 1.0 − λ·2, anchor ~1.0); known fail → `−0.1`
+      (= −λ·2, anchor ~0.0); schema-invalid (non-JSON / empty directives /
+      missing `kind`) → `≤ −1.0`. Covers cost, both parsed forms, dict
+      world-state coercion, and the plan aggregator. Live trajectory replay is
+      R3's job (needs recorded trajectories, still pending the endurance run).
 
 ## R3 — offline DPO (archive)
 
