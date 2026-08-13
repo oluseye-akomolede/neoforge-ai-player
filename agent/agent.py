@@ -3257,7 +3257,9 @@ def _drone_adoption_worker():
     discovers them after the fact: poll the roster, wrap unknown Drone<N> /
     Officer<N> bots in a full BotRunner (chat, orders, L3 — every hive unit
     is an AI-controlled fleet member by design ruling), and reap runners
-    whose unit is gone. Ephemeral: no semantic memory, no profile file."""
+    whose unit is gone. Officers persist server-side (re-raised on login), so
+    they keep semantic memory like the five originals; drones stay ephemeral
+    (no semantic memory, no profile file)."""
     base_model = next(iter(_all_runners.values())).model if _all_runners else "qwen2.5:14b-instruct"
     while True:
         time.sleep(20)
@@ -3270,7 +3272,7 @@ def _drone_adoption_worker():
                     runner = BotRunner({
                         "name": n, "model": base_model,
                         "specializations": ["officer" if officer else "drone"],
-                        "ephemeral": True,
+                        "ephemeral": not officer,   # officers persist; drones don't
                         "persona": ("a hive officer — composed, tactical, speaks for its squad"
                                     if officer
                                     else "a silent, efficient hive drone — terse and obedient"),
