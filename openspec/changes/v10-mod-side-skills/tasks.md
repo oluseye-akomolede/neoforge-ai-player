@@ -36,8 +36,10 @@ aiplayermod only (per testing directive); hive skills arrive after.
       extra:{target:"iron_ore", count:16}}` → MINE then SMELT as one directive,
       `COMPLETED`. **Live-verified 2026-08-13**: `goto_and_scan`
       (`TELEPORT`→`WIDE_SEARCH`) issued as one SKILL directive → `COMPLETED` in
-      10s on flat (harness 2/2, incl. wide-search baseline). `mine_and_smelt`/
-      `iron_ore` still pending an ore-bearing world (drop-vs-block ambiguity).
+      10s on flat; `mine_and_smelt`/`iron_ore` on a normal world → 8 iron ingots
+      in 5s (SMELT's internal channel fallback conjures the ore, so MINE's
+      drop-vs-block mismatch is absorbed). Harness 3/3 (wide-search baseline +
+      two SKILL tests).
 
 ## Phase 2 — L2/L3 surface + self-expansion
 

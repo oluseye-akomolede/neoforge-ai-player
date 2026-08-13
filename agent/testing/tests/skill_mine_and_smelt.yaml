@@ -1,0 +1,26 @@
+name: skill-mine-and-smelt
+description: >
+  Validates the mine_and_smelt skill on a normal (ore-bearing) world: one
+  SKILL directive runs MINE then SMELT and yields iron ingots. SMELT is
+  internal (no furnace) and MINE channels its drop as a fallback, so the
+  sequence is deterministic once the world is up.
+
+world:
+  type: normal
+
+bots:
+  - image: null
+
+steps:
+  - instruction: "Run mine_and_smelt skill: mine 8 iron ore then smelt into iron ingots"
+    directive:
+      directive_type: SKILL
+      target: mine_and_smelt
+      extra:
+        target: "minecraft:iron_ore"
+        count: "8"
+    timeout: 600
+    success:
+      inventory_contains:
+        item: minecraft:iron_ingot
+        min_count: 8
