@@ -55,6 +55,7 @@ public class AIPlayerMod {
         BotShop.init(event.getServer().getServerDirectory());
         TransmuteRegistry.init(event.getServer().getServerDirectory());
         EnchantmentRegistry.init(event.getServer());
+        com.sigmastrain.aiplayermod.brain.skill.SkillRegistry.initSeeds();
 
         int port = Integer.parseInt(System.getProperty("aiplayermod.api.port",
                 System.getenv().getOrDefault("AIPLAYER_API_PORT", String.valueOf(DEFAULT_API_PORT))));

@@ -3,7 +3,6 @@ package com.sigmastrain.aiplayermod.brain;
 import com.sigmastrain.aiplayermod.AIPlayerMod;
 import com.sigmastrain.aiplayermod.bot.BotPlayer;
 import com.sigmastrain.aiplayermod.brain.behavior.*;
-import com.sigmastrain.aiplayermod.compat.ModCompat;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -124,44 +123,13 @@ public class BotBrain {
 
         activeDirective = directive;
         lastProgress = null;
-        activeBehavior = createBehavior(directive.getType());
+        activeBehavior = BehaviorFactory.create(directive.getType());
         activeBehavior.start(bot, directive);
 
         AIPlayerMod.LOGGER.info("[{}] New directive: {} target={}",
                 bot.getPlayer().getName().getString(), directive.getType(), directive.getTarget());
         bot.systemChat("Directive: " + directive.getType()
                 + (directive.getTarget() != null ? " → " + directive.getTarget() : ""), "dark_aqua");
-    }
-
-    private Behavior createBehavior(DirectiveType type) {
-        return switch (type) {
-            case MINE -> new MineBehavior();
-            case GOTO -> new GotoBehavior();
-            case FOLLOW -> new FollowBehavior();
-            case CRAFT -> new CraftBehavior();
-            case SMELT -> new SmeltBehavior();
-            case ENCHANT -> new EnchantBehavior();
-            case BREW -> new BrewBehavior();
-            case COMBAT -> new CombatBehavior();
-            case CHANNEL -> new ChannelBehavior();
-            case SEND_ITEM -> new SendItemBehavior();
-            case BUILD -> new BuildBehavior();
-            case FARM -> new FarmBehavior();
-            case CONTAINER_PLACE -> new ContainerPlaceBehavior();
-            case CONTAINER_SEARCH -> new ContainerSearchBehavior();
-            case CONTAINER_STORE -> new ContainerStoreBehavior();
-            case CONTAINER_WITHDRAW -> new ContainerWithdrawBehavior();
-            case TELEPORT -> new TeleportBehavior();
-            case WIDE_SEARCH -> new WideSearchBehavior();
-            case LOCATE -> new LocateBehavior();
-            case STORE_ALL -> new StoreAllBehavior();
-            case ME_STORE -> ModCompat.isAE2Loaded() ? new MEStoreBehavior() : new FailFastBehavior("AE2 not loaded");
-            case ME_WITHDRAW -> ModCompat.isAE2Loaded() ? new MEWithdrawBehavior() : new FailFastBehavior("AE2 not loaded");
-            case CRAFT_REQUEST -> ModCompat.isAE2Loaded() ? new CraftRequestBehavior() : new FailFastBehavior("AE2 not loaded");
-            case MEDITATE -> new MeditateBehavior();
-            case IDLE -> idleBehavior;
-            default -> idleBehavior;
-        };
     }
 
     public Map<String, Object> toMap() {
