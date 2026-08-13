@@ -145,7 +145,7 @@ spec:
         - name: MOD_API_KEY
           value: ""
         - name: OLLAMA_URL
-          value: "http://ollama.mindcraft.svc.cluster.local:11434"
+          value: "http://ollama-l3.minecraft-test.svc.cluster.local:11434"
         - name: PG_DSN
           value: "postgresql://aibot:aibot-memory-2026@pgvector.minecraft-test.svc.cluster.local:5432/botmemory"
         - name: DASHBOARD_ENABLED

@@ -362,7 +362,7 @@ class TestRunner:
                 destroy_world(world)
 
 
-def run_tests(test_paths: list[Path], **runner_kwargs) -> list[TestResult]:
+def run_tests(test_paths: list[Path], show_logs: bool = False, **runner_kwargs) -> list[TestResult]:
     runner = TestRunner(**runner_kwargs)
     results = []
     for path in test_paths:
@@ -396,4 +396,8 @@ def run_tests(test_paths: list[Path], **runner_kwargs) -> list[TestResult]:
             print(f"  [{s}] {step_desc} ({sr.duration:.1f}s)")
         if result.error:
             print(f"  ERROR: {result.error}")
+        if show_logs and result.logs:
+            print(f"  Agent log tail:")
+            for line in result.logs.strip().splitlines()[-20:]:
+                print(f"    | {line}")
     return results

@@ -21,6 +21,7 @@ def cmd_run(args):
         paths,
         registry_url=args.registry_url,
         registry_key=args.registry_key,
+        show_logs=args.show_logs,
     )
 
     print(f"\n{'='*60}")
@@ -86,6 +87,7 @@ def main():
     p_run.add_argument("--registry-url", default=None, help="Bot registry URL")
     p_run.add_argument("--registry-key", default=None, help="Bot registry API key")
     p_run.add_argument("--json", action="store_true", help="JSON output")
+    p_run.add_argument("--show-logs", action="store_true", help="Print agent log tail for each test")
 
     p_list = sub.add_parser("list", help="List running test worlds")
     p_cleanup = sub.add_parser("cleanup", help="Destroy all test world pods")

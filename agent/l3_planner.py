@@ -163,6 +163,16 @@ Constraints:
 - If the task involves a dimension change (e.g. "to the nether"), the FIRST
   subtask MUST be a teleport to that dimension. Use the exact dimension id.
 
+Registered skills (each runs end-to-end as ONE deterministic directive):
+{skills}
+
+When a registered skill above covers the ENTIRE task, plan exactly ONE subtask
+for it: set the description to "Run skill <skill_id> with <param>=<value>, ..."
+and the criteria to what that skill verifies (e.g. "inventory has 8
+minecraft:iron_ingot"). Do NOT split a skill-covered task into its component
+directives — the skill already sequences them. Fall back to raw subtasks only
+when no skill fits.
+
 Output schema:
 {{
   "task": "<echo the task text>",
@@ -185,7 +195,8 @@ def call_plan(model: str, bot_name: str, task: str,
     log.info("[%s] L3 PLAN call — task: %s", bot_name, task[:60])
     dim_lines = _dim_lines(dimensions)
     sys_prompt = _PLAN_SYSTEM_PROMPT.format(
-        bot_name=bot_name, persona=persona, dimensions=dim_lines)
+        bot_name=bot_name, persona=persona, dimensions=dim_lines,
+        skills=_skills_lines())
     user = f"World state: {world_state_summary}\n\nTask: {task}" if world_state_summary else task
 
     with ollama_lock:
