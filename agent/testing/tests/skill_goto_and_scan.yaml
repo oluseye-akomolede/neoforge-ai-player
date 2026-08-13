@@ -1,0 +1,26 @@
+name: skill-goto-and-scan
+description: >
+  Validates the v10 skill engine live: a single SKILL directive runs the
+  goto_and_scan seed (TELEPORT → WIDE_SEARCH) as one declarative unit and
+  reports COMPLETED. Proves HTTP → BotBrain case SKILL → SkillBehavior →
+  BehaviorFactory → two real child behaviors, not the stub path.
+
+world:
+  type: flat
+
+bots:
+  - image: null
+
+steps:
+  - instruction: "Run goto_and_scan skill: teleport to (0,4,0) then wide-search for dirt"
+    directive:
+      directive_type: SKILL
+      target: goto_and_scan
+      extra:
+        x: "0"
+        y: "4"
+        z: "0"
+        target: "dirt"
+    timeout: 120
+    success:
+      directive_completed: true
