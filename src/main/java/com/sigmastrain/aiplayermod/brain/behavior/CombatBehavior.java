@@ -180,6 +180,18 @@ public class CombatBehavior implements Behavior {
             dist = player.distanceTo(target);
         }
 
+        // Gear this mod doesn't understand gets first refusal: a unit
+        // carrying Modular Golems armament fires it here (MG's own weapon
+        // logic is bound to golem entities and never runs for a bot).
+        if (attackCooldown <= 0 && target instanceof LivingEntity ext) {
+            int cd = com.sigmastrain.aiplayermod.brain.CombatExtensions
+                    .tryAll(player, ext, dist);
+            if (cd >= 0) {
+                attackCooldown = cd;
+                return BehaviorResult.RUNNING;
+            }
+        }
+
         // Direct damage — bypasses player attack system which doesn't work for fake players
         if (dist <= MELEE_RANGE && attackCooldown <= 0 && target instanceof LivingEntity le) {
             le.invulnerableTime = 0;

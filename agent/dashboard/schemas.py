@@ -47,6 +47,74 @@ class WaypointDeleteRequest(BaseModel):
 
 DIRECTIVE_CATALOG = [
     {
+        "type": "PROVISION_TERMINAL",
+        "label": "Provision ME terminal",
+        "params": [
+            {"name": "network", "type": "string", "label": "ME network", "required": False,
+             "options": []},  # filled at push time from /server/me_networks
+        ],
+    },
+    {
+        "type": "CRAFT_REQUEST",
+        "label": "ME craft request",
+        "params": [
+            {"name": "target", "type": "string", "label": "Item to craft", "required": True,
+             "options": []},  # filled at push time from me_craftables
+            {"name": "count", "type": "int", "label": "Count", "required": False, "default": 1},
+        ],
+    },
+    {
+        "type": "SPAWN_DRONES",
+        "label": "Hive: gestate drones",
+        "params": [
+            {"name": "count", "type": "int", "label": "How many", "required": False, "default": 1},
+            {"name": "blueprint", "type": "string", "label": "Blueprint (optional)",
+             "required": False, "options": []},  # filled at push time from /hive/units
+        ],
+    },
+    {
+        "type": "SPAWN_GOLEM",
+        "label": "Hive: forge officer golem",
+        "params": [
+            {"name": "count", "type": "int", "label": "How many", "required": False, "default": 1},
+            {"name": "design", "type": "string", "label": "Golem design (optional)",
+             "required": False, "options": []},  # filled at push time
+        ],
+    },
+    {
+        "type": "DESPAWN_DRONES",
+        "label": "Hive: dissolve drones",
+        "params": [
+            {"name": "count", "type": "int", "label": "How many", "required": False, "default": 1},
+        ],
+    },
+    {
+        "type": "MEDITATE",
+        "label": "Meditate (earn XP)",
+        "params": [
+            {"name": "count", "type": "int", "label": "XP levels to gain", "required": False,
+             "default": 10},
+        ],
+    },
+    {
+        "type": "ANCHOR_ON",
+        "label": "Anchor (hold chunks)",
+        "params": [],
+    },
+    {
+        "type": "ANCHOR_OFF",
+        "label": "Release anchor",
+        "params": [],
+    },
+    {
+        "type": "SHARE_LOCATION",
+        "label": "Share location",
+        "params": [
+            {"name": "name", "type": "string", "label": "Waypoint name", "required": False,
+             "default": "Bot location"},
+        ],
+    },
+    {
         "type": "MINE",
         "label": "Mine",
         "params": [
@@ -196,10 +264,32 @@ DIRECTIVE_CATALOG = [
         ],
     },
     {
+        "type": "LOCATE",
+        "label": "Locate Structure",
+        "description": "Ask the world generator where the nearest structure is — the same "
+                       "lookup /locate uses. Answers out to ~1600 blocks in one query. "
+                       "Use this for structures (end city, fortress, village); use Wide "
+                       "Search for blocks and entities.",
+        "params": [
+            {"name": "target", "type": "string", "label": "Structure", "required": True,
+             "hint": "Structure id or tag (end_city, minecraft:fortress, #village). "
+                     "Partial names match — 'village' finds the nearest of any village type."},
+            {"name": "extra", "type": "dict", "label": "Options", "required": False,
+             "fields": [
+                 {"name": "chunk_radius", "type": "string", "label": "Search radius (chunks)",
+                  "hint": "Default 100 chunks (~1600 blocks). Max 256.", "required": False},
+                 {"name": "travel", "type": "string", "label": "Travel there",
+                  "hint": "true = teleport to the structure once found; otherwise just report coordinates.",
+                  "required": False, "options": ["false", "true"]},
+             ]},
+        ],
+    },
+    {
         "type": "WIDE_SEARCH",
         "label": "Wide Search",
         "description": "Expanding-cube search that scans outward from a center point. "
-                       "Multiple bots can divide the area into a checkerboard grid for parallel searching.",
+                       "Multiple bots can divide the area into a checkerboard grid for parallel searching. "
+                       "Scans BLOCKS and ENTITIES — it cannot find a structure by name; use Locate for that.",
         "params": [
             {"name": "target", "type": "string", "label": "Search target",
              "hint": "Block or entity name (e.g. diamond_ore, cow). Fuzzy matching and ore variants supported.",

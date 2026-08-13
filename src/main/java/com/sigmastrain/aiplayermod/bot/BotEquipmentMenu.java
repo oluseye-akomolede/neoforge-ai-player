@@ -15,15 +15,32 @@ public class BotEquipmentMenu extends AbstractContainerMenu {
     private static final int BOT_SLOT_COUNT = 41;
 
     private final Container botContainer;
+    private com.sigmastrain.aiplayermod.bot.AuxSlots.Provider auxProvider;
+    private int auxCount;
+    private final String botName;
+
+    public int getAuxCount() { return auxCount; }
+
+    public java.util.List<String> getAuxLabels() {
+        return auxProvider == null ? java.util.List.of() : auxProvider.labels(botName);
+    }
     private final int botEntityId;
 
     public BotEquipmentMenu(int containerId, Inventory playerInventory, Container botContainer) {
         this(containerId, playerInventory, botContainer, -1);
     }
 
+    /** Bot name resolved from the open request, for aux-slot lookup. */
+    private static String pendingBotName = "";
+
+    public static void setPendingBotName(String name) {
+        pendingBotName = name == null ? "" : name;
+    }
+
     public BotEquipmentMenu(int containerId, Inventory playerInventory, Container botContainer, int botEntityId) {
         super(ModMenuTypes.BOT_EQUIPMENT.get(), containerId);
         this.botContainer = botContainer;
+        this.botName = pendingBotName;
         this.botEntityId = botEntityId;
 
         // Armor slots — left column, matching vanilla inventory.png positions
@@ -34,6 +51,23 @@ public class BotEquipmentMenu extends AbstractContainerMenu {
 
         // Offhand — below player model area
         addSlot(new Slot(botContainer, 40, 77, 62));
+
+        // Aux slots (hive hardpoints): registered by other mods, laid out
+        // down the right edge beside the armor column.
+        this.auxProvider = com.sigmastrain.aiplayermod.bot.AuxSlots.providerFor(botName);
+        if (auxProvider != null) {
+            Container aux = auxProvider.containerFor(botName);
+            this.auxCount = aux.getContainerSize();
+            for (int i = 0; i < auxCount; i++) {
+                final int idx = i;
+                addSlot(new Slot(aux, i, 152, 8 + i * 18) {
+                    @Override
+                    public boolean mayPlace(net.minecraft.world.item.ItemStack stack) {
+                        return auxProvider.accepts(botName, idx, stack);
+                    }
+                });
+            }
+        }
 
         // Main inventory (bot slots 9-35) — 3 rows matching vanilla positions
         for (int row = 0; row < 3; row++) {

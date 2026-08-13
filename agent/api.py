@@ -6,6 +6,9 @@ def _headers():
     h = {"Content-Type": "application/json"}
     if MOD_API_KEY:
         h["X-Api-Key"] = MOD_API_KEY
+    # Presence beacon: the mod's overlay shows "agent down" when requests
+    # with this header stop arriving. Dashboard traffic must NOT set it.
+    h["X-Agent-Id"] = "aibot-agent"
     return h
 
 
@@ -14,14 +17,19 @@ def _get(path):
     return r.json()
 
 
-def _post(path, data=None):
-    r = requests.post(f"{MOD_API_URL}{path}", json=data or {}, headers=_headers(), timeout=5)
+def _post(path, data=None, timeout=5):
+    r = requests.post(f"{MOD_API_URL}{path}", json=data or {}, headers=_headers(), timeout=timeout)
     return r.json()
 
 
 def _delete(path, data=None):
     r = requests.delete(f"{MOD_API_URL}{path}", json=data or {}, headers=_headers(), timeout=5)
     return r.json()
+
+
+def get_directive(bot):
+    """Current or last-completed directive as the mod reports it."""
+    return _get(f"/bot/{bot}/directive")
 
 
 raw_get = _get
@@ -75,6 +83,60 @@ def server_items(namespace=None, query=None):
         qs.append(f"query={query}")
     suffix = ("?" + "&".join(qs)) if qs else ""
     return _get(f"/server/items{suffix}")
+
+
+def server_structures(namespace=None, query=None):
+    """Full structure registry — every structure + structure tag the server has.
+
+    The counterpart to server_items() for reconnaissance: structure names can't
+    be hand-listed for a 300+ mod pack any more than item names could."""
+    qs = []
+    if namespace:
+        qs.append(f"namespace={namespace}")
+    if query:
+        qs.append(f"query={query}")
+    suffix = ("?" + "&".join(qs)) if qs else ""
+    return _get(f"/server/structures{suffix}")
+
+
+def locate(bot, target, chunk_radius=100, timeout=120):
+    """Nearest structure of a given kind, via the world generator.
+
+    One query out to chunk_radius*16 blocks — the same lookup /locate uses.
+    This is what WIDE_SEARCH cannot do: WIDE_SEARCH scans BLOCKS, and a
+    structure is not a block.
+
+    The default 5s HTTP timeout is far too short here: a cold search through
+    ungenerated chunks for a rare structure (mansion, stronghold) runs for
+    seconds. Timing out client-side does not cancel the server-side search —
+    it just loses the answer."""
+    return _post(f"/bot/{bot}/locate",
+                 {"target": target, "chunk_radius": chunk_radius}, timeout=timeout)
+
+
+def tempad_share(bot, player, name="Waypoint", x=None, y=None, z=None,
+                 dimension=None, color=None):
+    """Write a waypoint into a player's TemPad device.
+
+    The bot is the courier — coordinates need not come from LOCATE. Backed by
+    TemPad's own PlayerPointsData (server saved data keyed by player UUID), so
+    it works whether or not the player is online."""
+    data = {"player": player, "name": name}
+    for k, v in (("x", x), ("y", y), ("z", z), ("dimension", dimension), ("color", color)):
+        if v is not None:
+            data[k] = v
+    return _post(f"/bot/{bot}/tempad_share", data)
+
+
+def tempad_locations(player):
+    """Read back a player's TemPad waypoints."""
+    return _get(f"/server/tempad?player={player}")
+
+
+def tempad_remove(bot, player, waypoint_id):
+    """Remove a waypoint by id. A device bots can write to needs a way to
+    take things out of it."""
+    return _post(f"/bot/{bot}/tempad_remove", {"player": player, "id": waypoint_id})
 
 
 def vault(bot):
@@ -346,3 +408,21 @@ def dimensions():
 
 def players():
     return _get("/server/players")
+
+
+# ── ME fabric (worn wireless terminal; v7 phase 6) ──
+
+def me_status(bot):
+    """Wireless ME access state + legacy nearest-interface fields."""
+    return _post(f"/bot/{bot}/me_status", {})
+
+def me_search(bot, query=""):
+    return _post(f"/bot/{bot}/me_search", {"query": query})
+
+def me_push(bot, item, count=64):
+    """Carried → network via the worn terminal."""
+    return _post(f"/bot/{bot}/me_push", {"item": item, "count": count})
+
+def me_pull(bot, item, count=64):
+    """Network → carried (vault overflow) via the worn terminal."""
+    return _post(f"/bot/{bot}/me_pull", {"item": item, "count": count})

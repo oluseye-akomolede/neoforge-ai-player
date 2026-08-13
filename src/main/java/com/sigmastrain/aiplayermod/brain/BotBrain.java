@@ -15,6 +15,12 @@ public class BotBrain {
     private volatile Directive pendingDirective;
     private Directive activeDirective;
     private Directive lastDirective; // Retains completed/failed directive for agent polling
+    // ...and its progress. A finishing behavior is swapped out for idle in the
+    // same tick it returns SUCCESS, so by the time the agent polls (~1s later)
+    // toMap() was reporting the IDLE behavior's empty report. Every directive's
+    // final counters were being dropped on the floor; LOCATE's coordinates
+    // would have been too.
+    private ProgressReport lastProgress;
     private Behavior activeBehavior;
 
     private final IdleBehavior idleBehavior = new IdleBehavior();
@@ -56,6 +62,7 @@ public class BotBrain {
         }
         activeDirective = null;
         lastDirective = null;
+        lastProgress = null;
         activeBehavior = idleBehavior;
     }
 
@@ -85,6 +92,7 @@ public class BotBrain {
                             bot.getPlayer().getName().getString(), activeDirective.getType());
                     bot.systemChat("Directive complete: " + activeDirective.getType(), "green");
                     lastDirective = activeDirective;
+                    lastProgress = activeBehavior.getProgress();
                 }
                 activeBehavior = idleBehavior;
                 activeDirective = null;
@@ -97,6 +105,7 @@ public class BotBrain {
                             bot.getPlayer().getName().getString(), activeDirective.getType(), reason);
                     bot.systemChat("Directive failed: " + reason, "red");
                     lastDirective = activeDirective;
+                    lastProgress = activeBehavior.getProgress();
                 }
                 activeBehavior = idleBehavior;
                 activeDirective = null;
@@ -114,6 +123,7 @@ public class BotBrain {
         }
 
         activeDirective = directive;
+        lastProgress = null;
         activeBehavior = createBehavior(directive.getType());
         activeBehavior.start(bot, directive);
 
@@ -143,9 +153,12 @@ public class BotBrain {
             case CONTAINER_WITHDRAW -> new ContainerWithdrawBehavior();
             case TELEPORT -> new TeleportBehavior();
             case WIDE_SEARCH -> new WideSearchBehavior();
+            case LOCATE -> new LocateBehavior();
             case STORE_ALL -> new StoreAllBehavior();
             case ME_STORE -> ModCompat.isAE2Loaded() ? new MEStoreBehavior() : new FailFastBehavior("AE2 not loaded");
             case ME_WITHDRAW -> ModCompat.isAE2Loaded() ? new MEWithdrawBehavior() : new FailFastBehavior("AE2 not loaded");
+            case CRAFT_REQUEST -> ModCompat.isAE2Loaded() ? new CraftRequestBehavior() : new FailFastBehavior("AE2 not loaded");
+            case MEDITATE -> new MeditateBehavior();
             case IDLE -> idleBehavior;
             default -> idleBehavior;
         };
@@ -157,10 +170,14 @@ public class BotBrain {
         map.put("self_preservation", selfPreservation.isFleeing() ? "fleeing" : "ok");
         if (activeDirective != null) {
             map.put("directive", activeDirective.toMap());
+            if (activeBehavior != null) {
+                map.put("progress", activeBehavior.getProgress().toMap());
+            }
         } else if (lastDirective != null) {
             map.put("directive", lastDirective.toMap());
-        }
-        if (activeBehavior != null) {
+            // Report the progress that BELONGS to that directive, not idle's.
+            map.put("progress", (lastProgress != null ? lastProgress : activeBehavior.getProgress()).toMap());
+        } else if (activeBehavior != null) {
             map.put("progress", activeBehavior.getProgress().toMap());
         }
         return map;
@@ -168,5 +185,25 @@ public class BotBrain {
 
     public void clearLastDirective() {
         this.lastDirective = null;
+        this.lastProgress = null;
+    }
+
+    // ── overlay accessors (server thread) ────────────────────────────────
+
+    /** Active directive, or the retained terminal one — what a viewer means by "current". */
+    public Directive peekDirective() {
+        return activeDirective != null ? activeDirective : lastDirective;
+    }
+
+    public String stateLine() {
+        return activeBehavior != null ? activeBehavior.describeState() : "idle";
+    }
+
+    public String currentPhase() {
+        if (activeBehavior != null && activeBehavior != idleBehavior) {
+            return activeBehavior.getProgress().getPhase();
+        }
+        if (lastProgress != null) return lastProgress.getPhase();
+        return "idle";
     }
 }

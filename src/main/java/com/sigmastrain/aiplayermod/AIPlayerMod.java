@@ -61,6 +61,23 @@ public class AIPlayerMod {
         String apiKey = System.getProperty("aiplayermod.api.key",
                 System.getenv().getOrDefault("AIPLAYER_API_KEY", ""));
 
+        try {
+            java.nio.file.Path f = event.getServer().getServerDirectory()
+                    .resolve("aiplayermod_standing.json");
+            if (java.nio.file.Files.exists(f)) {
+                com.google.gson.Gson gson = new com.google.gson.Gson();
+                java.util.List<java.util.Map<String, Object>> rows = gson.fromJson(
+                        java.nio.file.Files.readString(f),
+                        new com.google.gson.reflect.TypeToken<java.util.List<java.util.Map<String, Object>>>() {}.getType());
+                if (rows != null) {
+                    com.sigmastrain.aiplayermod.telemetry.StandingStore.load(rows);
+                    LOGGER.info("Loaded {} standing orders", rows.size());
+                }
+            }
+        } catch (Exception e) {
+            LOGGER.warn("Standing orders load failed", e);
+        }
+
         apiServer = new HttpApiServer(port, apiKey);
         apiServer.start();
         LOGGER.info("AI Player API server started on port {}", port);
@@ -72,12 +89,38 @@ public class AIPlayerMod {
             apiServer.stop();
         }
         TransmuteRegistry.saveConfig();
+        try {
+            java.nio.file.Path f = event.getServer().getServerDirectory()
+                    .resolve("aiplayermod_standing.json");
+            java.nio.file.Files.writeString(f, new com.google.gson.Gson()
+                    .toJson(com.sigmastrain.aiplayermod.telemetry.StandingStore.save()));
+        } catch (Exception e) {
+            LOGGER.warn("Standing orders save failed", e);
+        }
+        // Order matters: shutdown() SAVES bot state (including the anchored
+        // flag) — releasing anchors first wrote anchored=false every time.
         BotManager.shutdown();
+        com.sigmastrain.aiplayermod.bot.AnchorManager.releaseAll();
+    }
+
+    @SubscribeEvent
+    public void onBotHurt(net.neoforged.neoforge.event.entity.living.LivingIncomingDamageEvent event) {
+        // Bots and drones fight monsters, not their operator: any damage
+        // whose direct or indirect source is a REAL player is void.
+        if (!(event.getEntity() instanceof net.minecraft.server.level.ServerPlayer sp)) return;
+        if (!BotManager.isBot(sp)) return;
+        var src = event.getSource();
+        boolean fromRealPlayer =
+                (src.getEntity() instanceof net.minecraft.server.level.ServerPlayer a && !BotManager.isBot(a))
+                || (src.getDirectEntity() instanceof net.minecraft.server.level.ServerPlayer d && !BotManager.isBot(d));
+        if (fromRealPlayer) event.setCanceled(true);
     }
 
     @SubscribeEvent
     public void onServerTick(ServerTickEvent.Post event) {
         BotManager.tick();
+        com.sigmastrain.aiplayermod.bot.BotAggro.tick();
+        com.sigmastrain.aiplayermod.bot.AnchorManager.tick(event.getServer());
         TransmuteRegistry.tickSave(event.getServer().getTickCount());
 
         long currentTick = event.getServer().getTickCount();
@@ -86,7 +129,12 @@ public class AIPlayerMod {
             pendingSpawns.poll();
             if (pending.joiner().isAlive() && pending.joiner().connection != null) {
                 for (var bot : BotManager.getAllBots().values()) {
-                    bot.sendSpawnPackets(pending.joiner());
+                    // Same-dimension only — cross-dimension spawns render
+                    // phantom copies of the bot in the joiner's world.
+                    if (bot.getPlayer() != null && bot.getPlayer().level().dimension()
+                            .equals(pending.joiner().level().dimension())) {
+                        bot.sendSpawnPackets(pending.joiner());
+                    }
                 }
             }
         }
@@ -102,6 +150,17 @@ public class AIPlayerMod {
         if (event.getEntity() instanceof net.minecraft.server.level.ServerPlayer joiner) {
             long sendAt = joiner.getServer().getTickCount() + SPAWN_PACKET_DELAY_TICKS;
             pendingSpawns.add(new PendingSpawn(joiner, sendAt));
+        }
+    }
+
+    @SubscribeEvent
+    public void onPlayerChangedDimension(PlayerEvent.PlayerChangedDimensionEvent event) {
+        // Re-sync bot visibility for the traveler: bots in the new dimension
+        // spawn in, bots elsewhere are removed (the client would otherwise
+        // keep phantom copies from the old world, or miss bots in the new).
+        if (event.getEntity() instanceof net.minecraft.server.level.ServerPlayer traveler) {
+            long sendAt = traveler.getServer().getTickCount() + SPAWN_PACKET_DELAY_TICKS;
+            pendingSpawns.add(new PendingSpawn(traveler, sendAt));
         }
     }
 

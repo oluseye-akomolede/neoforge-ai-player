@@ -170,7 +170,10 @@ def _eval_clause(bot_name: str, clause: str) -> tuple[bool, str] | None:
             dx = abs(int(pos.get("x", 0)) - tx)
             dy = abs(int(pos.get("y", 0)) - ty)
             dz = abs(int(pos.get("z", 0)) - tz)
-            ok = (dx + dy + dz) <= 3   # tolerance
+            # Horizontal 4 blocks; vertical 6 separately — teleports adjust Y
+            # to safe ground, and GOTO stops adjacent. (Live bug: Mystic at
+            # (-1,62,-1) vs (0,60,0) failed the old Manhattan<=3 forever.)
+            ok = (dx + dz) <= 4 and dy <= 6
             return ok, f"bot at ({pos.get('x'):.0f},{pos.get('y'):.0f},{pos.get('z'):.0f}) vs target ({tx},{ty},{tz})"
         except Exception as e:
             log.debug("position query failed: %s", e)

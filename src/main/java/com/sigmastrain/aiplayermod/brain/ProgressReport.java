@@ -6,6 +6,12 @@ public class ProgressReport {
     private final Map<String, Integer> counters = new LinkedHashMap<>();
     private final List<String> eventLog = new ArrayList<>();
     private final List<Map<String, Object>> scanData = new ArrayList<>();
+    // Structured, non-integer findings a behavior wants the agent to READ back
+    // (coordinates, resolved ids). Counters are ints only, and the event log is
+    // prose — neither survives the trip to L3 as usable data. LOCATE is the
+    // first consumer: a structure position is worthless unless the planner can
+    // feed the exact numbers into the next TELEPORT.
+    private final Map<String, Object> results = new LinkedHashMap<>();
     private String phase = "idle";
     private String failureReason;
 
@@ -52,6 +58,14 @@ public class ProgressReport {
         return copy;
     }
 
+    public void putResult(String key, Object value) {
+        results.put(key, value);
+    }
+
+    public Map<String, Object> getResults() {
+        return results;
+    }
+
     public void setFailureReason(String reason) {
         this.failureReason = reason;
     }
@@ -60,6 +74,7 @@ public class ProgressReport {
         counters.clear();
         eventLog.clear();
         scanData.clear();
+        results.clear();
         phase = "idle";
         failureReason = null;
     }
@@ -68,6 +83,7 @@ public class ProgressReport {
         Map<String, Object> map = new LinkedHashMap<>();
         map.put("phase", phase);
         if (!counters.isEmpty()) map.put("counters", new LinkedHashMap<>(counters));
+        if (!results.isEmpty()) map.put("result", new LinkedHashMap<>(results));
         if (!eventLog.isEmpty()) {
             int start = Math.max(0, eventLog.size() - 10);
             map.put("recent_events", new ArrayList<>(eventLog.subList(start, eventLog.size())));

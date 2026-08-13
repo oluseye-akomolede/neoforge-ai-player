@@ -48,9 +48,22 @@ public class HttpApiServer {
             server.createContext("/transmute", this::handleTransmute);
             server.createContext("/enchantments", this::handleEnchantments);
             server.createContext("/containers", this::handleContainers);
+            server.createContext("/telemetry/event", this::handleTelemetryEvent);
+            server.createContext("/telemetry/escalation", this::handleEscalation);
+            server.createContext("/telemetry/talk", this::handleTalk);
+            server.createContext("/telemetry/schemas", this::handleSchemas);
+            server.createContext("/telemetry/orders", this::handleOrders);
+            server.createContext("/telemetry/standing", this::handleStanding);
             server.createContext("/server/items", this::handleServerItems);
+            server.createContext("/server/structures", this::handleServerStructures);
+            server.createContext("/server/tempad", this::handleTempadList);
             server.createContext("/server/dimensions", this::handleDimensions);
+            server.createContext("/server/me_networks", this::handleMeNetworks);
             server.createContext("/server/players", this::handlePlayers);
+
+            for (ApiExtensions.Route r : ApiExtensions.routes()) {
+                server.createContext(r.path(), r.handler());
+            }
 
             server.start();
         } catch (IOException e) {
@@ -65,6 +78,12 @@ public class HttpApiServer {
     }
 
     private boolean checkAuth(HttpExchange exchange) throws IOException {
+        // Agent-tagged requests (api.py sets X-Agent-Id) feed the overlay's
+        // agent-liveness banner. Dashboard/player traffic never carries the
+        // header, so a dead agent can't hide behind a live dashboard.
+        if (exchange.getRequestHeaders().getFirst("X-Agent-Id") != null) {
+            com.sigmastrain.aiplayermod.telemetry.AgentPresence.touch();
+        }
         if (apiKey == null || apiKey.isEmpty()) return true;
         String provided = exchange.getRequestHeaders().getFirst("X-Api-Key");
         if (!apiKey.equals(provided)) {
@@ -225,8 +244,17 @@ public class HttpApiServer {
             case "inventory" -> {
                 if ("POST".equals(exchange.getRequestMethod())) {
                     var items = body.getAsJsonArray("items");
+                    if (items == null) {
+                        // Refuse loudly. This endpoint RESTORES an inventory —
+                        // clearing first — so a malformed body must never
+                        // reach the clear.
+                        sendJson(exchange, 400, Map.of("error",
+                                "restore requires items:[{slot,item_id,count}]"));
+                        return;
+                    }
                     var future = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
                     BotManager.getServer().execute(() -> {
+                      try {
                         var player = bot.getPlayer();
                         player.getInventory().clearContent();
                         int restored = 0;
@@ -246,6 +274,9 @@ public class HttpApiServer {
                             }
                         }
                         future.complete(Map.of("status", "inventory_restored", "items_set", restored));
+                      } catch (Exception e) {
+                        future.complete(Map.of("error", String.valueOf(e)));
+                      }
                     });
                     sendJson(exchange, 200, future.join());
                 } else {
@@ -254,8 +285,14 @@ public class HttpApiServer {
             }
             case "give" -> {
                 var items = body.getAsJsonArray("items");
+                if (items == null) {
+                    sendJson(exchange, 400, Map.of("error",
+                            "give requires items:[{item_id,count}]"));
+                    return;
+                }
                 var future = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
                 BotManager.getServer().execute(() -> {
+                  try {
                     var player = bot.getPlayer();
                     int given = 0;
                     for (var elem : items) {
@@ -272,6 +309,9 @@ public class HttpApiServer {
                         }
                     }
                     future.complete(Map.of("status", "given", "items_given", given));
+                  } catch (Exception e) {
+                    future.complete(Map.of("error", String.valueOf(e)));
+                  }
                 });
                 sendJson(exchange, 200, future.join());
             }
@@ -334,6 +374,380 @@ public class HttpApiServer {
                     catch (Exception e) { blockAtFuture.complete(Map.of("error", String.valueOf(e.getMessage()))); }
                 });
                 sendJson(exchange, 200, blockAtFuture.join());
+            }
+            case "locate" -> {
+                // Synchronous structure lookup — same query as the LOCATE
+                // directive, without the plan pipeline. Lets L2 resolve a
+                // waypoint directly and keeps the directive verifiable in
+                // isolation.
+                String structure = body.has("target") ? body.get("target").getAsString() : "";
+                int chunkRadius = body.has("chunk_radius") ? body.get("chunk_radius").getAsInt() : 100;
+                final int cr = Math.max(1, Math.min(256, chunkRadius));
+                var locFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    try {
+                        var level = bot.getPlayer().serverLevel();
+                        String dim = level.dimension().location().toString();
+                        var res = com.sigmastrain.aiplayermod.world.StructureLookup
+                                .resolveInDimension(level, structure);
+                        if (!res.ok()) {
+                            locFuture.complete(Map.of("found", false, "error", res.error()));
+                            return;
+                        }
+                        var found = com.sigmastrain.aiplayermod.world.StructureLookup.findNearest(
+                                level, res.holders(), bot.getPlayer().blockPosition(), cr);
+                        if (found == null) {
+                            locFuture.complete(Map.of("found", false,
+                                    "error", "no '" + structure + "' within " + cr + " chunks",
+                                    "candidates", res.matchedIds()));
+                            return;
+                        }
+                        var out = new LinkedHashMap<String, Object>();
+                        out.put("found", true);
+                        out.put("structure", found.structureId());
+                        out.put("x", found.pos().getX());
+                        out.put("y", found.pos().getY());
+                        out.put("z", found.pos().getZ());
+                        out.put("dimension", dim);
+                        out.put("distance", (int) found.distance());
+                        out.put("search_ms", found.elapsedMs());
+                        out.put("resolved_by", res.method());
+                        locFuture.complete(out);
+                    } catch (Exception e) {
+                        locFuture.complete(Map.of("found", false, "error", String.valueOf(e.getMessage())));
+                    }
+                });
+                sendJson(exchange, 200, locFuture.join());
+            }
+            case "tempad_share" -> {
+                // Write an arbitrary waypoint into a player's TemPad. The bot
+                // is the courier; the coordinates need not come from LOCATE.
+                String player = body.has("player") ? body.get("player").getAsString() : "";
+                double wx = body.has("x") ? body.get("x").getAsDouble() : bot.getPlayer().getX();
+                double wy = body.has("y") ? body.get("y").getAsDouble() : bot.getPlayer().getY();
+                double wz = body.has("z") ? body.get("z").getAsDouble() : bot.getPlayer().getZ();
+                String label = body.has("name") ? body.get("name").getAsString() : "Waypoint";
+                String dimStr = body.has("dimension") ? body.get("dimension").getAsString() : null;
+                Integer color = body.has("color") ? body.get("color").getAsInt() : null;
+                var shareFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    try {
+                        var srv = BotManager.getServer();
+                        var profile = com.sigmastrain.aiplayermod.compat.TempadBridge
+                                .resolveProfile(srv, player);
+                        if (profile == null) {
+                            shareFuture.complete(Map.of("ok", false,
+                                    "error", "no player named '" + player + "'"));
+                            return;
+                        }
+                        var dimKey = dimStr != null
+                                ? net.minecraft.resources.ResourceKey.create(
+                                        net.minecraft.core.registries.Registries.DIMENSION,
+                                        net.minecraft.resources.ResourceLocation.parse(dimStr))
+                                : bot.getPlayer().level().dimension();
+                        String err = com.sigmastrain.aiplayermod.compat.TempadBridge.addWaypoint(
+                                profile, label,
+                                new net.minecraft.world.phys.Vec3(wx, wy, wz), dimKey,
+                                color != null ? color
+                                        : com.sigmastrain.aiplayermod.compat.TempadBridge.DEFAULT_COLOR);
+                        if (err == null) {
+                            shareFuture.complete(Map.of("ok", true, "player", profile.getName(),
+                                    "name", label, "x", (int) wx, "y", (int) wy, "z", (int) wz,
+                                    "dimension", dimKey.location().toString()));
+                        } else {
+                            shareFuture.complete(Map.of("ok", false, "error", err));
+                        }
+                    } catch (Exception e) {
+                        shareFuture.complete(Map.of("ok", false, "error", String.valueOf(e.getMessage())));
+                    }
+                });
+                sendJson(exchange, 200, shareFuture.join());
+            }
+            case "tempad_remove" -> {
+                String player = body.has("player") ? body.get("player").getAsString() : "";
+                String wid = body.has("id") ? body.get("id").getAsString() : "";
+                var remFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    try {
+                        var srv = BotManager.getServer();
+                        var profile = com.sigmastrain.aiplayermod.compat.TempadBridge
+                                .resolveProfile(srv, player);
+                        if (profile == null) {
+                            remFuture.complete(Map.of("ok", false,
+                                    "error", "no player named '" + player + "'"));
+                            return;
+                        }
+                        String err = com.sigmastrain.aiplayermod.compat.TempadBridge
+                                .removeWaypoint(profile, java.util.UUID.fromString(wid));
+                        remFuture.complete(err == null
+                                ? Map.of("ok", true, "player", profile.getName(), "id", wid)
+                                : Map.of("ok", false, "error", err));
+                    } catch (Exception e) {
+                        remFuture.complete(Map.of("ok", false, "error", String.valueOf(e.getMessage())));
+                    }
+                });
+                sendJson(exchange, 200, remFuture.join());
+            }
+            case "diag" -> {
+                // v7 Phase 0 probes. Temporary — remove once the answers are
+                // recorded in the proposal.
+                String which = body.has("probe") ? body.get("probe").getAsString() : "all";
+                var diagFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    try {
+                        var p = bot.getPlayer();
+                        Map<String, Object> res = switch (which) {
+                            case "curios" -> com.sigmastrain.aiplayermod.compat.SpikeDiagnostics.probeCurios(p);
+                            case "me" -> com.sigmastrain.aiplayermod.compat.SpikeDiagnostics.probeMEWireless(p);
+                            case "link" -> com.sigmastrain.aiplayermod.compat.SpikeDiagnostics.probeLink(p,
+                                    new net.minecraft.core.BlockPos(
+                                            body.get("x").getAsInt(),
+                                            body.get("y").getAsInt(),
+                                            body.get("z").getAsInt()));
+                            case "access_point" -> com.sigmastrain.aiplayermod.compat.SpikeDiagnostics
+                                    .probeAccessPoint(p, body.has("radius") ? body.get("radius").getAsInt() : 24);
+                            // Husk crash-regression probe: a bot IS a
+                            // ServerPlayer, so it can jack into another bot
+                            // through the real path, leaving a real husk in
+                            // level.players() where TrainerMobs can scan it.
+                            case "husk_in" -> {
+                                String target = body.has("target")
+                                        ? body.get("target").getAsString() : "";
+                                String err = com.sigmastrain.aiplayermod.jack
+                                        .JackInManager.jackIn(p, target);
+                                yield err == null ? Map.of("ok", true, "target", target)
+                                        : Map.of("ok", false, "error", err);
+                            }
+                            case "husk_out" -> {
+                                String err = com.sigmastrain.aiplayermod.jack
+                                        .JackInManager.eject(p, false);
+                                yield err == null ? Map.of("ok", true)
+                                        : Map.of("ok", false, "error", err);
+                            }
+                            default -> com.sigmastrain.aiplayermod.compat.SpikeDiagnostics.runAll(p);
+                        };
+                        diagFuture.complete(res);
+                    } catch (Exception e) {
+                        diagFuture.complete(Map.of("error", String.valueOf(e.getMessage())));
+                    }
+                });
+                sendJson(exchange, 200, diagFuture.join());
+            }
+            case "me_craftables" -> {
+                String q = body.has("query") ? body.get("query").getAsString() : "";
+                var mcFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    try {
+                        mcFuture.complete(Map.of("craftables",
+                                com.sigmastrain.aiplayermod.compat.ae2.WirelessMECrafting
+                                        .listCraftables(bot.getPlayer(), q, 300)));
+                    } catch (Exception e) {
+                        mcFuture.complete(Map.of("craftables", List.of(),
+                                "error", String.valueOf(e.getMessage())));
+                    }
+                });
+                sendJson(exchange, 200, mcFuture.join());
+            }
+            case "anchor_on" -> {
+                var aFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    String err = com.sigmastrain.aiplayermod.bot.AnchorManager.enable(bot);
+                    aFuture.complete(err == null
+                            ? Map.of("ok", true, "xp_per_hour",
+                                    com.sigmastrain.aiplayermod.bot.AnchorManager.xpPerHour())
+                            : Map.of("ok", false, "error", err));
+                });
+                sendJson(exchange, 200, aFuture.join());
+            }
+            case "anchor_off" -> {
+                var aoFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    com.sigmastrain.aiplayermod.bot.AnchorManager.disable(bot);
+                    aoFuture.complete(Map.of("ok", true));
+                });
+                sendJson(exchange, 200, aoFuture.join());
+            }
+            case "provision_terminal" -> {
+                // network: "dim@x,y,z"; empty = first/random available.
+                String network = body.has("network") ? body.get("network").getAsString() : "";
+                var ptFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    try {
+                        String dim = "";
+                        net.minecraft.core.BlockPos pos = null;
+                        if (!network.isEmpty() && network.contains("@")) {
+                            String[] halves = network.split("@", 2);
+                            String[] xyz = halves[1].split(",");
+                            dim = halves[0];
+                            pos = new net.minecraft.core.BlockPos(
+                                    Integer.parseInt(xyz[0].trim()),
+                                    Integer.parseInt(xyz[1].trim()),
+                                    Integer.parseInt(xyz[2].trim()));
+                        } else {
+                            var nets = com.sigmastrain.aiplayermod.compat.ae2.WirelessME.listNetworks();
+                            if (!nets.isEmpty()) {
+                                var pick = nets.get(new java.util.Random().nextInt(nets.size()));
+                                dim = String.valueOf(pick.get("dimension"));
+                                pos = new net.minecraft.core.BlockPos(
+                                        (Integer) pick.get("x"), (Integer) pick.get("y"),
+                                        (Integer) pick.get("z"));
+                            }
+                        }
+                        if (pos == null) {
+                            ptFuture.complete(Map.of("ok", false,
+                                    "error", "no ME network with an access point found"));
+                            return;
+                        }
+                        String err = com.sigmastrain.aiplayermod.compat.ae2.WirelessME
+                                .provision(bot.getPlayer(), dim, pos);
+                        ptFuture.complete(err == null
+                                ? Map.of("ok", true, "network", dim + "@" + pos.toShortString())
+                                : Map.of("ok", false, "error", err));
+                    } catch (Exception e) {
+                        ptFuture.complete(Map.of("ok", false, "error", String.valueOf(e.getMessage())));
+                    }
+                });
+                sendJson(exchange, 200, ptFuture.join());
+            }
+            case "curios_list" -> {
+                var clFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    List<Map<String, Object>> rows = new ArrayList<>();
+                    for (var w : com.sigmastrain.aiplayermod.compat.curios.CuriosCompat
+                            .list(bot.getPlayer())) {
+                        if (w.stack().isEmpty()) continue;
+                        rows.add(Map.of("slot", w.slotType(), "index", w.index(),
+                                "item", net.minecraft.core.registries.BuiltInRegistries.ITEM
+                                        .getKey(w.stack().getItem()).toString(),
+                                "name", w.stack().getHoverName().getString()));
+                    }
+                    clFuture.complete(Map.of(
+                            "available", com.sigmastrain.aiplayermod.compat.curios
+                                    .CuriosCompat.isAvailable(),
+                            "worn", rows));
+                });
+                sendJson(exchange, 200, clFuture.join());
+            }
+            case "curios_equip" -> {
+                String item = body.has("item") ? body.get("item").getAsString() : "";
+                var ceFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    String err = com.sigmastrain.aiplayermod.compat.curios.CuriosCompat
+                            .equip(bot.getPlayer(), item);
+                    ceFuture.complete(err == null
+                            ? Map.of("ok", true, "equipped", item)
+                            : Map.of("ok", false, "error", err));
+                });
+                sendJson(exchange, 200, ceFuture.join());
+            }
+            case "curios_unequip" -> {
+                String slot = body.has("slot") ? body.get("slot").getAsString() : "";
+                int index = body.has("index") ? body.get("index").getAsInt() : 0;
+                var cuFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    String err = com.sigmastrain.aiplayermod.compat.curios.CuriosCompat
+                            .unequip(bot.getPlayer(), slot, index);
+                    cuFuture.complete(err == null
+                            ? Map.of("ok", true, "slot", slot)
+                            : Map.of("ok", false, "error", err));
+                });
+                sendJson(exchange, 200, cuFuture.join());
+            }
+            case "me_status" -> {
+                // Superset of the old interface-scan status: wireless access
+                // state PLUS the legacy nearest-interface fields.
+                var meFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    var result = new LinkedHashMap<String, Object>();
+                    boolean available = com.sigmastrain.aiplayermod.compat.ModCompat.isAE2Loaded();
+                    result.put("ae2_available", available);
+                    var access = com.sigmastrain.aiplayermod.compat.ae2.WirelessME
+                            .resolve(bot.getPlayer());
+                    result.put("online", access.online());
+                    result.put("status", access.status());
+                    result.put("grid", com.sigmastrain.aiplayermod.compat.ae2.WirelessME
+                            .diagnostics(bot.getPlayer()));
+                    if (available) {
+                        var pos = com.sigmastrain.aiplayermod.compat.ae2.AE2Compat.findNearestMEInterfacePos(
+                                bot.getPlayer().serverLevel(), bot.getPlayer().blockPosition(), 16);
+                        result.put("nearest_interface", pos == null ? null
+                                : Map.of("x", pos.getX(), "y", pos.getY(), "z", pos.getZ()));
+                    }
+                    meFuture.complete(result);
+                });
+                sendJson(exchange, 200, meFuture.join());
+            }
+            case "me_search" -> {
+                String q = body.has("query") ? body.get("query").getAsString() : "";
+                var msFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    var access = com.sigmastrain.aiplayermod.compat.ae2.WirelessME
+                            .resolve(bot.getPlayer());
+                    if (!access.online()) {
+                        msFuture.complete(Map.of("online", false, "status", access.status()));
+                        return;
+                    }
+                    msFuture.complete(Map.of("online", true,
+                            "results", com.sigmastrain.aiplayermod.compat.ae2.WirelessME
+                                    .search(access, q, 50)));
+                });
+                sendJson(exchange, 200, msFuture.join());
+            }
+            case "me_push" -> {
+                // Carried → network, via the worn terminal.
+                String item = body.has("item") ? body.get("item").getAsString() : "";
+                int count = body.has("count") ? body.get("count").getAsInt() : 64;
+                var mpFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    var access = com.sigmastrain.aiplayermod.compat.ae2.WirelessME
+                            .resolve(bot.getPlayer());
+                    if (!access.online()) {
+                        mpFuture.complete(Map.of("pushed", 0, "error", access.status()));
+                        return;
+                    }
+                    var p = bot.getPlayer();
+                    var rl = net.minecraft.resources.ResourceLocation.tryParse(
+                            item.contains(":") ? item : "minecraft:" + item);
+                    int pushed = 0;
+                    for (int i = 0; i < p.getInventory().getContainerSize() && pushed < count; i++) {
+                        var stack = p.getInventory().getItem(i);
+                        if (stack.isEmpty() || stack == access.terminal()) continue;
+                        if (rl == null || !BuiltInRegistries.ITEM.getKey(stack.getItem()).equals(rl)) continue;
+                        var take = stack.copy();
+                        take.setCount(Math.min(stack.getCount(), count - pushed));
+                        int in = com.sigmastrain.aiplayermod.compat.ae2.WirelessME.insert(access, take);
+                        if (in > 0) {
+                            stack.shrink(in);
+                            p.getInventory().setItem(i, stack.isEmpty()
+                                    ? net.minecraft.world.item.ItemStack.EMPTY : stack);
+                            pushed += in;
+                        }
+                    }
+                    mpFuture.complete(Map.of("pushed", pushed, "item", item));
+                });
+                sendJson(exchange, 200, mpFuture.join());
+            }
+            case "me_pull" -> {
+                // Network → carried (vault overflow), via the worn terminal.
+                String item = body.has("item") ? body.get("item").getAsString() : "";
+                int count = body.has("count") ? body.get("count").getAsInt() : 64;
+                var mlFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    var access = com.sigmastrain.aiplayermod.compat.ae2.WirelessME
+                            .resolve(bot.getPlayer());
+                    if (!access.online()) {
+                        mlFuture.complete(Map.of("pulled", 0, "error", access.status()));
+                        return;
+                    }
+                    int pulled = 0;
+                    for (var stack : com.sigmastrain.aiplayermod.compat.ae2.WirelessME
+                            .extract(access, item, count)) {
+                        pulled += com.sigmastrain.aiplayermod.bot.BotPlayer
+                                .deliverTo(bot.getPlayer(), stack);
+                    }
+                    mlFuture.complete(Map.of("pulled", pulled, "item", item));
+                });
+                sendJson(exchange, 200, mlFuture.join());
             }
             case "actions" -> {
                 String lastResult = bot.getActionQueue().consumeLastResult();
@@ -737,25 +1151,6 @@ public class HttpApiServer {
                 });
                 sendJson(exchange, 200, future.join());
             }
-            case "me_status" -> {
-                var meFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
-                BotManager.getServer().execute(() -> {
-                    boolean available = com.sigmastrain.aiplayermod.compat.ModCompat.isAE2Loaded();
-                    var result = new LinkedHashMap<String, Object>();
-                    result.put("ae2_available", available);
-                    if (available) {
-                        var pos = com.sigmastrain.aiplayermod.compat.ae2.AE2Compat.findNearestMEInterfacePos(
-                                bot.getPlayer().serverLevel(), bot.getPlayer().blockPosition(), 16);
-                        if (pos != null) {
-                            result.put("nearest_interface", Map.of("x", pos.getX(), "y", pos.getY(), "z", pos.getZ()));
-                        } else {
-                            result.put("nearest_interface", null);
-                        }
-                    }
-                    meFuture.complete(result);
-                });
-                sendJson(exchange, 200, meFuture.join());
-            }
             default -> sendJson(exchange, 400, Map.of("error", "Unknown action: " + action));
         }
         } catch (Exception e) {
@@ -840,6 +1235,393 @@ public class HttpApiServer {
                 "items", ids,
                 "count", ids.size(),
                 "namespaces", new ArrayList<>(namespaces)));
+    }
+
+    /**
+     * Full structure registry — every structure and structure tag the running
+     * server has, modded included.
+     *
+     * <p>Same reasoning as /server/items: a hand-written list of structure
+     * names cannot cover a 300+ mod pack, so L2 resolves against ground truth.
+     *
+     * ?namespace=&lt;mod&gt;  restrict to one mod
+     * ?query=&lt;substr&gt;   substring filter on the id
+     */
+    private void handleServerStructures(HttpExchange exchange) throws IOException {
+        if (!checkAuth(exchange)) return;
+        if (!"GET".equals(exchange.getRequestMethod())) {
+            sendJson(exchange, 405, Map.of("error", "Method not allowed"));
+            return;
+        }
+        var server = BotManager.getServer();
+        if (server == null) {
+            sendJson(exchange, 503, Map.of("error", "Server not ready"));
+            return;
+        }
+        Map<String, String> params = parseQuery(exchange.getRequestURI().getQuery());
+        String ns = params.getOrDefault("namespace", "");
+        String query = params.getOrDefault("query", "");
+
+        var future = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+        server.execute(() -> {
+            try {
+                future.complete(com.sigmastrain.aiplayermod.world.StructureLookup.listAll(
+                        server.overworld(),
+                        ns.isEmpty() ? null : ns,
+                        query.isEmpty() ? null : query));
+            } catch (Exception e) {
+                future.complete(Map.of("error", String.valueOf(e.getMessage())));
+            }
+        });
+        sendJson(exchange, 200, future.join());
+    }
+
+    /**
+     * A player's TemPad waypoints. ?player=&lt;name&gt; required.
+     *
+     * <p>Read-back for verification and the dashboard: whether a bot's waypoint
+     * actually landed in the device is not something to take on faith.
+     */
+    /**
+     * Agent → mod thought stream. The agent pushes plan/criteria/verdict
+     * transitions here; the overlay's Mind tab renders them.
+     *
+     * Body: {"bot": "...", "type": "...", "text": "..."} — type is an open
+     * vocabulary so the agent can add transitions without a mod release.
+     */
+    private void handleTelemetryEvent(HttpExchange exchange) throws IOException {
+        if (!checkAuth(exchange)) return;
+        if ("GET".equals(exchange.getRequestMethod())) {
+            // Read-back for verification and the web dashboard: ?bot=<name>
+            Map<String, String> params = parseQuery(exchange.getRequestURI().getQuery());
+            String qbot = params.getOrDefault("bot", "");
+            List<Map<String, Object>> rows = new ArrayList<>();
+            for (var t : com.sigmastrain.aiplayermod.telemetry.TelemetryStore.recent(qbot, 50)) {
+                rows.add(Map.of("at", t.atMillis(), "type", t.type(), "text", t.text()));
+            }
+            sendJson(exchange, 200, Map.of("bot", qbot, "events", rows, "count", rows.size()));
+            return;
+        }
+        if (!"POST".equals(exchange.getRequestMethod())) {
+            sendJson(exchange, 405, Map.of("error", "Method not allowed"));
+            return;
+        }
+        JsonObject body = readBody(exchange);
+        String bot = body.has("bot") ? body.get("bot").getAsString() : "";
+        String type = body.has("type") ? body.get("type").getAsString() : "event";
+        String text = body.has("text") ? body.get("text").getAsString() : "";
+        if (bot.isEmpty() || text.isEmpty()) {
+            sendJson(exchange, 400, Map.of("error", "bot and text required"));
+            return;
+        }
+        com.sigmastrain.aiplayermod.telemetry.TelemetryStore.push(
+                bot, type, text.length() > 240 ? text.substring(0, 240) : text);
+        sendJson(exchange, 200, Map.of("ok", true));
+    }
+
+    /**
+     * L4 escalation channel.
+     *
+     * POST   — agent submits a question: {"id","bot","kind","question","options":[...]}
+     * GET    — agent polls an answer:   ?id=<id> → {"answered", "action", "text"}
+     *          or lists pending:        (no id) → {"pending": [...]}
+     * DELETE — agent withdraws:         {"id"} (timeout / plan died)
+     */
+    private void handleEscalation(HttpExchange exchange) throws IOException {
+        if (!checkAuth(exchange)) return;
+        switch (exchange.getRequestMethod()) {
+            case "POST" -> {
+                JsonObject body = readBody(exchange);
+                String id = body.has("id") ? body.get("id").getAsString() : "";
+                String bot = body.has("bot") ? body.get("bot").getAsString() : "";
+                String kind = body.has("kind") ? body.get("kind").getAsString() : "ask";
+                String question = body.has("question") ? body.get("question").getAsString() : "";
+                if (id.isEmpty() || question.isEmpty()) {
+                    sendJson(exchange, 400, Map.of("error", "id and question required"));
+                    return;
+                }
+                List<String> options = new ArrayList<>();
+                if (body.has("options")) {
+                    for (var el : body.getAsJsonArray("options")) options.add(el.getAsString());
+                }
+                com.sigmastrain.aiplayermod.telemetry.EscalationStore.submit(
+                        id, bot, kind, question, options,
+                    body.has("directive") ? body.get("directive").toString() : "");
+                AIPlayerMod.LOGGER.info("[L4] escalation from {}: {} ({} options)",
+                        bot, question, options.size());
+                sendJson(exchange, 200, Map.of("ok", true));
+            }
+            case "GET" -> {
+                Map<String, String> params = parseQuery(exchange.getRequestURI().getQuery());
+                String id = params.getOrDefault("id", "");
+                if (id.isEmpty()) {
+                    List<Map<String, Object>> rows = new ArrayList<>();
+                    for (var e : com.sigmastrain.aiplayermod.telemetry.EscalationStore.pending()) {
+                        rows.add(Map.of("id", e.id(), "bot", e.bot(), "kind", e.kind(),
+                                "question", e.question(), "options", e.options(), "at", e.atMillis()));
+                    }
+                    sendJson(exchange, 200, Map.of("pending", rows));
+                    return;
+                }
+                var resp = com.sigmastrain.aiplayermod.telemetry.EscalationStore.takeResponse(id);
+                if (resp == null) {
+                    sendJson(exchange, 200, Map.of("answered", false));
+                } else {
+                    sendJson(exchange, 200, Map.of("answered", true,
+                            "action", resp.action(), "text", resp.text()));
+                }
+            }
+            case "DELETE" -> {
+                JsonObject body = readBody(exchange);
+                String id = body.has("id") ? body.get("id").getAsString() : "";
+                com.sigmastrain.aiplayermod.telemetry.EscalationStore.withdraw(id);
+                sendJson(exchange, 200, Map.of("ok", true));
+            }
+            case "PUT" -> {
+                // The ruling, over HTTP — the web dashboard is the player's
+                // phone, and L4 should be answerable from the couch too.
+                JsonObject body = readBody(exchange);
+                String id = body.has("id") ? body.get("id").getAsString() : "";
+                String action = body.has("action") ? body.get("action").getAsString() : "answer";
+                String text = body.has("text") ? body.get("text").getAsString() : "";
+                boolean ok = com.sigmastrain.aiplayermod.telemetry.EscalationStore
+                        .respond(id, action, text);
+                sendJson(exchange, 200, Map.of("ok", ok));
+            }
+            default -> sendJson(exchange, 405, Map.of("error", "Method not allowed"));
+        }
+    }
+
+    /**
+     * Talk channel.
+     *
+     * POST /telemetry/talk         {"bot","player","text"} — enqueue a message
+     *                              (used by the C2S handler AND the dashboard)
+     * POST /telemetry/talk/reply   {"bot","text"} — agent posts the L3 reply
+     * GET  /telemetry/talk         → {"pending": [...]} (agent poll, consumes)
+     * GET  /telemetry/talk?bot=X   → {"history": [...]}
+     */
+    private void handleTalk(HttpExchange exchange) throws IOException {
+        if (!checkAuth(exchange)) return;
+        String path = exchange.getRequestURI().getPath();
+        if ("POST".equals(exchange.getRequestMethod())) {
+            JsonObject body = readBody(exchange);
+            String bot = body.has("bot") ? body.get("bot").getAsString() : "";
+            String text = body.has("text") ? body.get("text").getAsString() : "";
+            if (bot.isEmpty() || text.isEmpty()) {
+                sendJson(exchange, 400, Map.of("error", "bot and text required"));
+                return;
+            }
+            if (path.endsWith("/reply")) {
+                com.sigmastrain.aiplayermod.telemetry.TalkStore.botReply(bot, text);
+            } else {
+                String player = body.has("player") ? body.get("player").getAsString() : "player";
+                com.sigmastrain.aiplayermod.telemetry.TalkStore.playerMessage(bot, player, text);
+            }
+            sendJson(exchange, 200, Map.of("ok", true));
+            return;
+        }
+        if ("GET".equals(exchange.getRequestMethod())) {
+            Map<String, String> params = parseQuery(exchange.getRequestURI().getQuery());
+            String bot = params.getOrDefault("bot", "");
+            if (!bot.isEmpty()) {
+                List<Map<String, Object>> rows = new ArrayList<>();
+                for (var l : com.sigmastrain.aiplayermod.telemetry.TalkStore.history(bot)) {
+                    rows.add(Map.of("at", l.atMillis(), "who", l.who(), "text", l.text()));
+                }
+                sendJson(exchange, 200, Map.of("bot", bot, "history", rows));
+            } else {
+                List<Map<String, Object>> rows = new ArrayList<>();
+                for (var m : com.sigmastrain.aiplayermod.telemetry.TalkStore.drainPending()) {
+                    rows.add(Map.of("id", m.id(), "bot", m.bot(),
+                            "player", m.player(), "text", m.text()));
+                }
+                sendJson(exchange, 200, Map.of("pending", rows));
+            }
+            return;
+        }
+        sendJson(exchange, 405, Map.of("error", "Method not allowed"));
+    }
+
+    /** Agent pushes its directive schemas at startup; GET is the readback
+     *  (used by the overlay relay indirectly and by headless verification). */
+    private void handleSchemas(HttpExchange exchange) throws IOException {
+        if (!checkAuth(exchange)) return;
+        if ("POST".equals(exchange.getRequestMethod())) {
+            String raw = new String(exchange.getRequestBody().readAllBytes(),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            if (raw.isEmpty()) {
+                sendJson(exchange, 400, Map.of("error", "empty schema document"));
+                return;
+            }
+            try {
+                com.google.gson.JsonParser.parseString(raw); // reject non-JSON loudly
+            } catch (Exception e) {
+                sendJson(exchange, 400, Map.of("error", "not valid JSON"));
+                return;
+            }
+            com.sigmastrain.aiplayermod.telemetry.SchemaStore.put(raw);
+            AIPlayerMod.LOGGER.info("[schemas] agent pushed {} chars, version {}",
+                    raw.length(), com.sigmastrain.aiplayermod.telemetry.SchemaStore.version());
+            sendJson(exchange, 200, Map.of("ok", true,
+                    "version", com.sigmastrain.aiplayermod.telemetry.SchemaStore.version()));
+            return;
+        }
+        if ("GET".equals(exchange.getRequestMethod())) {
+            var out = new LinkedHashMap<String, Object>();
+            out.put("version", com.sigmastrain.aiplayermod.telemetry.SchemaStore.version());
+            out.put("schemas_chars", com.sigmastrain.aiplayermod.telemetry.SchemaStore.json().length());
+            sendJson(exchange, 200, out);
+            return;
+        }
+        sendJson(exchange, 405, Map.of("error", "Method not allowed"));
+    }
+
+    /** Order queue: GET drains pending (agent), POST reports status back. */
+    private void handleOrders(HttpExchange exchange) throws IOException {
+        if (!checkAuth(exchange)) return;
+        if ("GET".equals(exchange.getRequestMethod())) {
+            List<Map<String, Object>> rows = new ArrayList<>();
+            for (var o : com.sigmastrain.aiplayermod.telemetry.OrderStore.drainPending()) {
+                rows.add(Map.of("id", o.id(), "bot", o.bot(), "player", o.player(),
+                        "kind", o.kind(), "params", o.params(),
+                        "fleet", o.fleetId(), "at", o.atMillis()));
+            }
+            sendJson(exchange, 200, Map.of("pending", rows));
+            return;
+        }
+        if ("POST".equals(exchange.getRequestMethod())) {
+            JsonObject body = readBody(exchange);
+            String id = body.has("id") ? body.get("id").getAsString() : "";
+            String bot = body.has("bot") ? body.get("bot").getAsString() : "";
+            String kind = body.has("kind") ? body.get("kind").getAsString() : "";
+            String status = body.has("status") ? body.get("status").getAsString() : "";
+            String detail = body.has("detail") ? body.get("detail").getAsString() : "";
+            if (status.isEmpty()) {
+                // No status = a SUBMISSION (dashboard / headless parity with
+                // the overlay packet).
+                if (bot.isEmpty() || kind.isEmpty()) {
+                    sendJson(exchange, 400, Map.of("error", "bot and kind required"));
+                    return;
+                }
+                String params = body.has("params") ? body.get("params").toString() : "{}";
+                String player = body.has("player") ? body.get("player").getAsString() : "api";
+                String fleet = body.has("fleet") ? body.get("fleet").getAsString() : "";
+                String oid = com.sigmastrain.aiplayermod.telemetry.OrderStore
+                        .submit(bot, player, kind, params, fleet);
+                sendJson(exchange, oid != null ? 200 : 429,
+                        oid != null ? Map.of("ok", true, "id", oid)
+                                    : Map.of("ok", false, "error", "order queue full"));
+                return;
+            }
+            if (id.isEmpty() || bot.isEmpty()) {
+                sendJson(exchange, 400, Map.of("error", "id, bot, status required"));
+                return;
+            }
+            com.sigmastrain.aiplayermod.telemetry.OrderStore.setStatus(
+                    id, bot, kind, status, detail);
+            sendJson(exchange, 200, Map.of("ok", true));
+            return;
+        }
+        sendJson(exchange, 405, Map.of("error", "Method not allowed"));
+    }
+
+    /** Every AP-bearing ME network — the "pick a network" dropdown data. */
+    private void handleMeNetworks(HttpExchange exchange) throws IOException {
+        if (!checkAuth(exchange)) return;
+        var future = new java.util.concurrent.CompletableFuture<List<Map<String, Object>>>();
+        BotManager.getServer().execute(() -> {
+            try {
+                future.complete(com.sigmastrain.aiplayermod.compat.ae2.WirelessME.listNetworks());
+            } catch (Exception e) {
+                future.complete(List.of());
+            }
+        });
+        sendJson(exchange, 200, Map.of("networks", future.join()));
+    }
+
+    /** Standing orders: GET = definitions (agent poll); POST = reading/result
+     *  report; PUT = create (dashboard parity). */
+    private void handleStanding(HttpExchange exchange) throws IOException {
+        if (!checkAuth(exchange)) return;
+        if ("GET".equals(exchange.getRequestMethod())) {
+            List<Map<String, Object>> rows = new ArrayList<>();
+            for (var st : com.sigmastrain.aiplayermod.telemetry.StandingStore.all()) {
+                rows.add(Map.of("id", st.id(), "bot", st.bot(),
+                        "watchType", st.watchType(), "item", st.item(),
+                        "threshold", st.threshold(), "comparator", st.comparator(),
+                        "actionKind", st.actionKind(), "actionParams", st.actionParams(),
+                        "enabled", st.enabled(), "lastFired", st.lastFired()));
+            }
+            sendJson(exchange, 200, Map.of("standing", rows));
+            return;
+        }
+        if ("POST".equals(exchange.getRequestMethod())) {
+            JsonObject body = readBody(exchange);
+            String id = body.has("id") ? body.get("id").getAsString() : "";
+            if (id.isEmpty()) {
+                sendJson(exchange, 400, Map.of("error", "id required"));
+                return;
+            }
+            com.sigmastrain.aiplayermod.telemetry.StandingStore.report(id,
+                    body.has("reading") ? body.get("reading").getAsLong() : -1,
+                    body.has("fired_at") ? body.get("fired_at").getAsLong() : null,
+                    body.has("result") ? body.get("result").getAsString() : null);
+            sendJson(exchange, 200, Map.of("ok", true));
+            return;
+        }
+        if ("PUT".equals(exchange.getRequestMethod())) {
+            JsonObject body = readBody(exchange);
+            String sid = com.sigmastrain.aiplayermod.telemetry.StandingStore.create(
+                    body.get("bot").getAsString(),
+                    body.get("watchType").getAsString(),
+                    body.has("item") ? body.get("item").getAsString() : "",
+                    body.get("threshold").getAsLong(),
+                    body.has("comparator") ? body.get("comparator").getAsString() : "gte",
+                    body.get("actionKind").getAsString(),
+                    body.has("actionParams") ? body.get("actionParams").toString() : "{}");
+            sendJson(exchange, sid != null ? 200 : 429,
+                    sid != null ? Map.of("ok", true, "id", sid)
+                                : Map.of("ok", false, "error", "per-bot cap reached ("
+                                        + com.sigmastrain.aiplayermod.telemetry.StandingStore.PER_BOT_CAP + ")"));
+            return;
+        }
+        sendJson(exchange, 405, Map.of("error", "Method not allowed"));
+    }
+
+    private void handleTempadList(HttpExchange exchange) throws IOException {
+        if (!checkAuth(exchange)) return;
+        var server = BotManager.getServer();
+        if (server == null) {
+            sendJson(exchange, 503, Map.of("error", "Server not ready"));
+            return;
+        }
+        Map<String, String> params = parseQuery(exchange.getRequestURI().getQuery());
+        String player = params.getOrDefault("player", "");
+        if (player.isEmpty()) {
+            sendJson(exchange, 400, Map.of("error", "player query parameter required"));
+            return;
+        }
+        var future = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+        server.execute(() -> {
+            if (!com.sigmastrain.aiplayermod.compat.TempadBridge.isAvailable()) {
+                future.complete(Map.of("available", false,
+                        "reason", com.sigmastrain.aiplayermod.compat.TempadBridge.unavailableReason(),
+                        "waypoints", List.of()));
+                return;
+            }
+            var profile = com.sigmastrain.aiplayermod.compat.TempadBridge
+                    .resolveProfile(server, player);
+            if (profile == null) {
+                future.complete(Map.of("available", true, "error",
+                        "no player named '" + player + "'", "waypoints", List.of()));
+                return;
+            }
+            var rows = com.sigmastrain.aiplayermod.compat.TempadBridge.listWaypoints(profile);
+            future.complete(Map.of("available", true, "player", profile.getName(),
+                    "waypoints", rows, "count", rows.size()));
+        });
+        sendJson(exchange, 200, future.join());
     }
 
     private static Map<String, String> parseQuery(String raw) {

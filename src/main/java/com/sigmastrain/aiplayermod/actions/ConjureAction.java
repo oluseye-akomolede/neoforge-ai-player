@@ -236,6 +236,11 @@ public class ConjureAction implements BotAction {
         return cost != null ? cost : -1;
     }
 
+    /** Per-item cost through the full resolution chain — the overlay's quote. */
+    public static int costFor(String itemId) {
+        return getCostForItem(itemId);
+    }
+
     public static int getDefaultCost() { return DEFAULT_COST; }
 
     @Override

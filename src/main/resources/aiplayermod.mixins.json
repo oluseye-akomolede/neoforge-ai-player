@@ -5,9 +5,13 @@
   "package": "com.sigmastrain.aiplayermod.mixin",
   "compatibilityLevel": "JAVA_21",
   "mixins": [
-    "EntityTickCrashMixin"
+    "EntityTickCrashMixin",
+    "JackedContainerClickMixin"
   ],
   "injectors": {
     "defaultRequire": 1
-  }
+  },
+  "client": [
+    "BotSkinMixin"
+  ]
 }

@@ -33,6 +33,12 @@ public class ActionQueue {
             if (done) {
                 lastResult = current.getResult();
                 current = null;
+                // Anyone watching this bot's vault sees the action's effect
+                // immediately — live test: five channel commits executed
+                // (XP burned, items conjured) while the vault pane sat on
+                // stale totals and read as "nothing happened".
+                com.sigmastrain.aiplayermod.network.OverlayNetwork
+                        .onBotInventoryChanged(bot);
             }
         }
     }

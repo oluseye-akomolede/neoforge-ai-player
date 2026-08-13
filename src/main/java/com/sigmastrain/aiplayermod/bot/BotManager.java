@@ -60,6 +60,14 @@ public class BotManager {
         return bots.get(name);
     }
 
+    /** True if this ServerPlayer is one of ours (bot or hive drone). */
+    public static boolean isBot(net.minecraft.server.level.ServerPlayer p) {
+        for (BotPlayer b : bots.values()) {
+            if (b.getPlayer() == p) return true;
+        }
+        return false;
+    }
+
     public static Map<String, BotPlayer> getAllBots() {
         return bots;
     }

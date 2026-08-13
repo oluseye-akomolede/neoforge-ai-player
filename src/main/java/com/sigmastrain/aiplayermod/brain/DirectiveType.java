@@ -22,7 +22,10 @@ public enum DirectiveType {
     IDLE,
     PATROL,
     WIDE_SEARCH,
+    LOCATE,
     STORE_ALL,
     ME_STORE,
-    ME_WITHDRAW
+    ME_WITHDRAW,
+    CRAFT_REQUEST,
+    MEDITATE
 }

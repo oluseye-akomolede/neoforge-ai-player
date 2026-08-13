@@ -253,6 +253,13 @@ def validate_primitive(primitive):
         "CONTAINER_STORE", "CONTAINER_WITHDRAW",
         "CHANNEL", "COMBAT", "FOLLOW", "ENCHANT", "BREW",
         "STORE_ALL", "ME_STORE", "ME_WITHDRAW", "WIDE_SEARCH",
+        # LOCATE's target is a STRUCTURE id (minecraft:end_city) or tag, not an
+        # item — running it through item normalization would rewrite it into a
+        # guaranteed-invalid item id.
+        "LOCATE",
+        # ASK_PLAYER's target is a QUESTION. It never reaches the mod — the
+        # dispatch layer intercepts it and blocks on the L4 inbox.
+        "ASK_PLAYER",
     }
     if ptype in _PASSTHROUGH_TYPES:
         return primitive, True, ""

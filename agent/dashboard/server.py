@@ -197,6 +197,35 @@ def create_app() -> FastAPI:
                 continue
         return {"query": query, "holdings": out}
 
+    # ── REST: TemPad waypoints ──
+
+    @app.get("/api/tempad/{player}")
+    async def get_tempad(player: str):
+        """A player's TemPad waypoints — what the bots have pinned for them."""
+        if not _api_module:
+            return {"error": "agent not connected"}
+        try:
+            return await asyncio.to_thread(_api_module.tempad_locations, player)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app.post("/api/tempad/{player}/remove")
+    async def remove_tempad(player: str, body: dict):
+        """Drop a waypoint. Bots write to the device; this unwrites."""
+        if not _api_module:
+            return {"error": "agent not connected"}
+        wid = str(body.get("id", "")).strip()
+        if not wid:
+            return {"error": "id required"}
+        snap = shared_state.snapshot()
+        courier = next(iter(snap["bots"].keys()), None)
+        if not courier:
+            return {"error": "no bot available to carry the request"}
+        try:
+            return await asyncio.to_thread(_api_module.tempad_remove, courier, player, wid)
+        except Exception as e:
+            return {"error": str(e)}
+
     # ── REST: bot memories (semantic memory) ──
 
     @app.get("/api/bots/{name}/memories")

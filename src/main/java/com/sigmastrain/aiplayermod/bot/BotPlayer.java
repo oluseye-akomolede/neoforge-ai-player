@@ -113,8 +113,19 @@ public class BotPlayer {
     // ── Packet-based visibility ──
 
     private void broadcastSpawn() {
+        // Dimension-aware: a Minecraft client only models ITS dimension, so
+        // spawn packets sent to a player in another one render a phantom
+        // copy of the bot at the same raw coordinates in the wrong world
+        // (live bug: Mystic in the End appeared to stand in the overworld,
+        // and every order against the "overworld Mystic" looked like a
+        // no-op). Players elsewhere get a remove instead — defensively, so
+        // dimension CHANGES also clear any stale copy.
         for (ServerPlayer online : player.getServer().getPlayerList().getPlayers()) {
-            sendSpawnPackets(online);
+            if (online.level().dimension().equals(player.level().dimension())) {
+                sendSpawnPackets(online);
+            } else {
+                online.connection.send(new ClientboundRemoveEntitiesPacket(player.getId()));
+            }
         }
     }
 
@@ -266,6 +277,7 @@ public class BotPlayer {
             root.addProperty("xRot", player.getXRot());
             root.addProperty("xp", player.totalExperience);
             root.addProperty("health", player.getHealth());
+            root.addProperty("anchored", AnchorManager.isAnchored(name));
 
             JsonArray inventory = new JsonArray();
             for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
@@ -290,6 +302,20 @@ public class BotPlayer {
                 extended.add(entry);
             }
             root.add("extendedInventory", extended);
+
+            // Worn curios — a restart once stripped every bot's wireless
+            // terminal because this section didn't exist.
+            JsonArray curiosArr = new JsonArray();
+            for (var w : com.sigmastrain.aiplayermod.compat.curios.CuriosCompat.list(player)) {
+                if (w.stack().isEmpty()) continue;
+                CompoundTag tag = (CompoundTag) w.stack().save(registries);
+                JsonObject entry = new JsonObject();
+                entry.addProperty("slotType", w.slotType());
+                entry.addProperty("index", w.index());
+                entry.addProperty("nbt", tag.toString());
+                curiosArr.add(entry);
+            }
+            root.add("curios", curiosArr);
 
             JsonArray vaultArr = new JsonArray();
             for (CompoundTag tag : vault.save(registries)) {
@@ -346,6 +372,15 @@ public class BotPlayer {
             if (root.has("health")) {
                 player.setHealth(root.get("health").getAsFloat());
             }
+            if (root.has("anchored") && root.get("anchored").getAsBoolean()) {
+                // A fleet that believed it was anchored must not silently
+                // freeze across a restart.
+                String err = AnchorManager.enable(this);
+                if (err != null) {
+                    AIPlayerMod.LOGGER.warn("[anchor] {} could not re-anchor on load: {}",
+                            name, err);
+                }
+            }
 
             player.getInventory().clearContent();
             if (root.has("inventory")) {
@@ -369,6 +404,25 @@ public class BotPlayer {
                     ItemStack stack = ItemStack.parse(registries, tag).orElse(ItemStack.EMPTY);
                     if (!stack.isEmpty()) {
                         extendedInventory.setItem(slot, stack);
+                    }
+                }
+            }
+
+            if (root.has("curios")) {
+                for (JsonElement el : root.getAsJsonArray("curios")) {
+                    JsonObject entry = el.getAsJsonObject();
+                    CompoundTag tag = TagParser.parseTag(entry.get("nbt").getAsString());
+                    ItemStack stack = ItemStack.parse(registries, tag).orElse(ItemStack.EMPTY);
+                    if (!stack.isEmpty()) {
+                        boolean ok = com.sigmastrain.aiplayermod.compat.curios.CuriosCompat
+                                .putDirect(player, entry.get("slotType").getAsString(),
+                                        entry.get("index").getAsInt(), stack);
+                        if (!ok) {
+                            // Slot layout changed? Never destroy the item.
+                            if (!player.getInventory().add(stack)) {
+                                vault.deposit(stack);
+                            }
+                        }
                     }
                 }
             }
@@ -615,6 +669,8 @@ public class BotPlayer {
         status.put("dimension", player.level().dimension().location().toString());
         status.put("gamemode", player.gameMode.getGameModeForPlayer().getName());
         status.put("alive", isAlive());
+        status.put("anchored", AnchorManager.isAnchored(
+                player.getGameProfile().getName()));
         status.put("xp_level", player.experienceLevel);
         status.put("xp_points", player.totalExperience);
         // Lifetime combat stats — lets L2 verify "killed N enemies" criteria

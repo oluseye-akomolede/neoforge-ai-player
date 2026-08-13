@@ -85,16 +85,69 @@ public class MEStoreBehavior implements Behavior {
         ServerPlayer player = bot.getPlayer();
         ServerLevel level = player.serverLevel();
 
+        // Worn terminal first: real network storage from anywhere (v7 fabric).
+        // The 16-block interface scan becomes the fallback for terminal-less
+        // bots — proximity is a limitation, not the design.
+        var access = com.sigmastrain.aiplayermod.compat.ae2.WirelessME.resolve(player);
+        if (access.online()) {
+            progress.logEvent("Using wireless terminal (" + access.status() + ")");
+            return tickInsertingWireless(bot, access);
+        }
+        progress.logEvent("No wireless access (" + access.status() + ") — scanning for interface");
+
         meHandler = AE2Compat.findNearestMEInterface(level, player.blockPosition(), searchRadius);
         if (meHandler == null) {
-            progress.setFailureReason("No ME Interface found within " + searchRadius + " blocks");
-            bot.systemChat("No ME Interface in range", "red");
+            progress.setFailureReason("No ME access: " + access.status()
+                    + ", and no ME Interface within " + searchRadius + " blocks");
+            bot.systemChat("No ME access (" + access.status() + ")", "red");
             return BehaviorResult.FAILED;
         }
 
         progress.setPhase("inserting");
         phase = Phase.INSERTING;
         return BehaviorResult.RUNNING;
+    }
+
+    /** One-shot wireless insert — no walking, network-wide storage. */
+    private BehaviorResult tickInsertingWireless(BotPlayer bot,
+            com.sigmastrain.aiplayermod.compat.ae2.WirelessME.Access access) {
+        ServerPlayer player = bot.getPlayer();
+        int selectedSlot = player.getInventory().selected;
+        int remaining = requested - stored;
+
+        for (int i = 0; i < player.getInventory().getContainerSize() && remaining > 0; i++) {
+            ItemStack stack = player.getInventory().getItem(i);
+            if (stack.isEmpty()) continue;
+            if (!storeAll) {
+                if (!stack.is(targetItem)) continue;
+            } else {
+                if (isEssential(player, stack, i, selectedSlot)) continue;
+                // Never feed the network the terminal it runs on.
+                if (stack == access.terminal()) continue;
+            }
+            int toInsert = Math.min(remaining, stack.getCount());
+            ItemStack insertStack = stack.copy();
+            insertStack.setCount(toInsert);
+            int inserted = com.sigmastrain.aiplayermod.compat.ae2.WirelessME
+                    .insert(access, insertStack);
+            if (inserted > 0) {
+                stack.shrink(inserted);
+                player.getInventory().setItem(i, stack.isEmpty() ? ItemStack.EMPTY : stack);
+                stored += inserted;
+                remaining -= inserted;
+                progress.increment("stored", inserted);
+            }
+        }
+
+        progress.putResult("stored", stored);
+        progress.putResult("via", "wireless_terminal");
+        if (stored == 0) {
+            progress.setFailureReason("nothing stored — network full or no matching items");
+            return BehaviorResult.FAILED;
+        }
+        bot.systemChat("ME stored " + stored + " via terminal", "green");
+        phase = Phase.COMPLETE;
+        return BehaviorResult.SUCCESS;
     }
 
     private BehaviorResult tickInserting(BotPlayer bot) {

@@ -12,6 +12,7 @@ import threading
 import time
 import sys
 import api
+import telemetry
 import brain
 import memory as mem_module
 import prompts
@@ -193,6 +194,8 @@ class BotRunner:
         self.memory_entries = mem_module.load_from(self._memory_file)
 
         try:
+            if self.profile.get("ephemeral"):
+                raise RuntimeError("ephemeral unit — semantic memory skipped")
             self.semantic_mem = sem.SemanticMemory(self.name, OLLAMA_URL, PG_DSN)
             self.semantic_mem.connect()
             stats = self.semantic_mem.stats()
@@ -860,6 +863,33 @@ class BotRunner:
         # synchronous equip_all action (scans inventory, fills armor +
         # offhand slots with best candidates). War-test finding: L3 kept
         # inventing "EQUIP" because tasks say "equip"; now it's vocabulary.
+        # ASK_PLAYER: L3 stops and asks L4. The dispatch result carries the
+        # ruling back, so the next EXEC call plans WITH the player's answer.
+        import escalation as _esc
+        _esc.record_directive(self.name, directive)
+        if kind == "PROVISION_TERMINAL":
+            # Chat-planned provisioning picks a player network at random (the
+            # design ruling); explicit selection is the Cmd tab's dropdown.
+            try:
+                r = api.raw_post(f"/bot/{self.name}/provision_terminal", {"network": ""})
+                if r.get("ok"):
+                    return f"COMPLETED PROVISION_TERMINAL terminal online on {r.get('network')}"
+                return f"FAILED PROVISION_TERMINAL {r.get('error', 'unknown')}"
+            except Exception as e:
+                return f"FAILED PROVISION_TERMINAL {str(e)[:100]}"
+        if kind == "ASK_PLAYER":
+            question = str(directive.get("target")
+                           or (directive.get("extra") or {}).get("question")
+                           or "").strip()
+            if not question:
+                return "FAILED ASK_PLAYER no question given"
+            import escalation
+            r = escalation.ask(self.name, "ask_player", question, timeout=180)
+            if r.get("answered") and r.get("action") in ("answer", "choose"):
+                return f"COMPLETED ASK_PLAYER player says: {r.get('text', '')}"
+            if r.get("answered") and r.get("action") == "cancel":
+                return "FAILED ASK_PLAYER player dismissed the question"
+            return "FAILED ASK_PLAYER no answer within 180s — proceed with best judgment"
         if kind in ("EQUIP", "EQUIP_ALL"):
             try:
                 resp = api.equip_all(self.name)
@@ -918,14 +948,36 @@ class BotRunner:
                 return f"FAILED DROP {e}"
         params = dict(directive)
         params["type"] = params.pop("kind")
+        # A located structure is only half an answer — the player still has to
+        # get there. Default the waypoint recipient to whoever gave the order
+        # so "find me an end city" ends with a pin in their TemPad. L3 can
+        # override by setting share_with explicitly (including "" to opt out).
+        if params["type"] == "LOCATE":
+            extra = params.get("extra")
+            extra = dict(extra) if isinstance(extra, dict) else {}
+            if "share_with" not in extra and getattr(self, "_task_sender", ""):
+                extra["share_with"] = self._task_sender
+            if extra:
+                params["extra"] = extra
         try:
             res = self._run_directive(params)
         except Exception as e:
             return f"FAILED dispatch_error {e}"
         if res.get("success"):
-            counters = (res.get("progress") or {}).get("counters", {})
-            return f"COMPLETED {params['type']} {counters}"
-        return f"FAILED {params['type']} {res.get('reason', 'unknown')}"
+            prog = res.get("progress") or {}
+            counters = prog.get("counters", {})
+            # Structured findings (LOCATE's coordinates) ride back to L3 here.
+            # Counters are ints only, so a position would vanish without this —
+            # and a structure you can't name the coordinates of is not located.
+            result = prog.get("result") or {}
+            self._record_finding(result)
+            suffix = f" result={result}" if result else ""
+            out = f"COMPLETED {params['type']} {counters}{suffix}"
+            telemetry.push(self.name, "directive", out)
+            return out
+        out = f"FAILED {params['type']} {res.get('reason', 'unknown')}"
+        telemetry.push(self.name, "directive", out)
+        return out
 
     def _l3_orchestrator_world_state(self) -> str:
         """world_state_fn for plan_orchestrator: short observable summary."""
@@ -934,7 +986,21 @@ class BotRunner:
             st = api.status(self.name)
             pos = st.get("position", {})
             parts.append(f"pos=({int(pos.get('x',0))},{int(pos.get('y',0))},{int(pos.get('z',0))})")
+            parts.append(f"dim={st.get('dimension','?')}")
             parts.append(f"hp={st.get('health','?')}/20")
+        except Exception:
+            pass
+        try:
+            # Holdings summary: inventory orders can't classify what they
+            # can't see (live bug: "store non-essentials" planned a teleport
+            # to the spatial-storage DIMENSION with zero holdings context).
+            eff = api.effective_inventory(self.name).get("inventory", [])
+            rows = sorted(eff, key=lambda r: -(int(r.get("carried", 0)) + int(r.get("vault", 0))))[:15]
+            if rows:
+                parts.append("holdings: " + ", ".join(
+                    f"{r.get('item','?')}x{int(r.get('carried',0))+int(r.get('vault',0))}"
+                    + ("(carried)" if int(r.get("carried", 0)) > 0 else "(vault)")
+                    for r in rows))
         except Exception:
             pass
         try:
@@ -961,18 +1027,68 @@ class BotRunner:
                 pass
         except Exception:
             pass
+        # Places this bot has found. Without this the coordinates LOCATE
+        # returns die at the subtask boundary: last_result feeds criteria
+        # evaluation only, and every directive in a subtask is written by one
+        # EXEC call BEFORE any of them run — so a GOTO can never reference a
+        # LOCATE that has not happened yet. Surfacing findings in world state
+        # is what makes "find it, then go there" expressible at all.
+        found = self._recent_findings()
+        if found:
+            parts.append("known_locations=[" + "; ".join(found) + "]")
         return "  ".join(parts) or "(no state)"
 
-    def _run_orchestrator(self, task_text: str, sender: str = ""):
+    MAX_FINDINGS = 8
+
+    def _record_finding(self, result: dict):
+        """Remember a located place so later subtasks can act on it."""
+        if not isinstance(result, dict) or not result.get("found"):
+            return
+        entry = {
+            "what": result.get("structure", "?"),
+            "x": result.get("x"), "y": result.get("y"), "z": result.get("z"),
+            "dimension": result.get("dimension", ""),
+        }
+        if entry["x"] is None or entry["z"] is None:
+            return
+        with self._lock:
+            self._findings = [f for f in getattr(self, "_findings", [])
+                              if not (f["what"] == entry["what"]
+                                      and f["dimension"] == entry["dimension"])]
+            self._findings.append(entry)
+            self._findings = self._findings[-self.MAX_FINDINGS:]
+
+    def _recent_findings(self) -> list:
+        with self._lock:
+            items = list(getattr(self, "_findings", []))
+        return [f"{f['what']} at ({f['x']},{f['y']},{f['z']}) in {f['dimension']}"
+                for f in items]
+
+    def _run_orchestrator(self, task_text: str, sender: str = "", order_id: str = "", order_kind: str = ""):
         """Worker target: drives plan_orchestrator.execute_task for a single task.
         Runs in its own daemon thread so the existing tick loop is unaffected.
         Chat callbacks announce each phase to the player so the bot isn't silent.
+        When driving an overlay order (order_id set), progress is reported back
+        to the mod's order store so the Command tab can answer "did it land".
         """
+        def _order_status(status, detail=""):
+            if not order_id:
+                return
+            try:
+                api.raw_post("/telemetry/orders", {
+                    "id": order_id, "bot": self.name, "kind": order_kind,
+                    "status": status, "detail": detail[:200]})
+            except Exception:
+                pass
         try:
             import plan_orchestrator
         except ImportError as e:
             print(f"[{self.name}/orchestrator] disabled (import failed): {e}")
             return
+        # Who asked. Reconnaissance results go back to this player's TemPad,
+        # so the bot answers the person who sent it rather than relying on L3
+        # to remember a name across a multi-subtask plan.
+        self._task_sender = sender if sender and sender not in _all_runners else ""
         print(f"[{self.name}/orchestrator] starting plan for: {task_text[:80]}")
 
         def on_plan_created(plan):
@@ -1024,6 +1140,9 @@ class BotRunner:
                 print(f"[{self.name}/orchestrator] subtask-done chat error: {e}")
 
         def on_finalized(plan):
+            done = sum(1 for s2 in plan.subtasks if s2.status == "complete")
+            _order_status("COMPLETED" if plan.status == "complete" else "FAILED",
+                          f"{done}/{len(plan.subtasks)} steps")
             try:
                 ok = (plan.status == "complete")
                 done_count = sum(1 for s in plan.subtasks if s.status == "complete")
@@ -1040,6 +1159,7 @@ class BotRunner:
             except Exception as e:
                 print(f"[{self.name}/orchestrator] finalize chat error: {e}")
 
+        _order_status("RUNNING", task_text[:120])
         try:
             plan_orchestrator.execute_task(
                 bot_name=self.name,
@@ -1054,6 +1174,7 @@ class BotRunner:
             )
         except Exception as e:
             print(f"[{self.name}/orchestrator] crashed: {e}")
+            _order_status("FAILED", f"orchestrator crashed: {str(e)[:120]}")
             try:
                 api.system_chat(self.name, f"Orchestrator crashed: {str(e)[:60]}", "red")
             except Exception:
@@ -1757,6 +1878,8 @@ class BotRunner:
 
             directive_params = adjusted
             print(f"[{self.name}/L2] Retry {retries}/{self.L2_MAX_RETRIES}: {adjusted}")
+            telemetry.push(self.name, "l2",
+                           f"L2 retry {retries}/{self.L2_MAX_RETRIES}: {reason[:100]}")
             shared_state.push_event({"bot": self.name, "type": "l2_retry", "retry": retries, "reason": reason[:80]})
             api.system_chat(self.name, f"L2 retry {retries}: {reason[:30]}", "yellow")
 
@@ -1780,9 +1903,25 @@ class BotRunner:
         _last_poll_error_time = 0
         _ever_saw_directive = False
         _seen_events = set()
+        _extended_once = False
         while not self._stop_event.is_set():
             if time.time() > deadline:
                 mins = int(self.DIRECTIVE_MAX_SECONDS / 60)
+                # L4 trigger: a wedged behavior used to be cancelled silently.
+                # Surface it once; the player may grant one extension (a slow
+                # dig is not a hang). Timeout or no answer = cancel, the old
+                # behavior — and a second expiry cancels unconditionally.
+                if not _extended_once:
+                    import escalation
+                    ruling = escalation.ask(
+                        self.name, "directive_timeout",
+                        f"{dtype} has run {mins}m without finishing — cancel as stuck?",
+                        options=["cancel", "wait 5 more minutes"], timeout=60)
+                    if ruling.get("answered") and ruling.get("text") == "wait 5 more minutes":
+                        deadline = time.time() + 300
+                        _extended_once = True
+                        print(f"[{self.name}/L1] L4 granted {dtype} 5 more minutes")
+                        continue
                 print(f"[{self.name}/L1] Directive {dtype} exceeded {mins}m — cancelling as stuck")
                 shared_state.push_event({"bot": self.name, "type": "directive_done",
                                          "status": "timeout", "directive": dtype})
@@ -1843,6 +1982,17 @@ class BotRunner:
                 if not _ever_saw_directive:
                     if self._directive_missing_count >= 5:
                         self._directive_missing_count = 0
+                        # Fast directives (teleport already at target) can
+                        # complete BETWEEN polls — the mod retains the last
+                        # completed directive, so check before declaring death.
+                        try:
+                            last = api.get_directive(self.name).get("directive", {})
+                            if directive_id is not None and last.get("id") == directive_id \
+                                    and str(last.get("status", "")).upper() == "COMPLETED":
+                                print(f"[{self.name}/L1] Directive id={directive_id} completed between polls")
+                                return {"success": True, "reason": "completed_fast"}
+                        except Exception:
+                            pass
                         print(f"[{self.name}/L1] Directive never appeared (rejected or instant-cleared)")
                         return {"success": False, "reason": "directive_never_started"}
                     self._stop_event.wait(1.0)
@@ -2708,6 +2858,25 @@ Respond with ONLY a JSON array. Example:
                     "radius": str(p.get("radius", 512)),
                 }
                 return api.set_directive(bot, "WIDE_SEARCH", target=target, x=sx, y=sy, z=sz, extra=extra)
+            case "locate":
+                target = p.get("target", "")
+                if not target:
+                    return {"error": "locate requires a target structure"}
+                return api.locate(bot, target, p.get("chunk_radius", 100))
+            case "server_structures":
+                return api.server_structures(p.get("namespace"), p.get("query"))
+            case "tempad_share":
+                if not p.get("player"):
+                    return {"error": "tempad_share requires a player"}
+                return api.tempad_share(bot, p["player"], p.get("name", "Waypoint"),
+                                        p.get("x"), p.get("y"), p.get("z"),
+                                        p.get("dimension"), p.get("color"))
+            case "tempad_locations":
+                return api.tempad_locations(p.get("player", ""))
+            case "tempad_remove":
+                if not p.get("player") or not p.get("id"):
+                    return {"error": "tempad_remove requires player and id"}
+                return api.tempad_remove(bot, p["player"], p["id"])
             case "container":
                 return api.container(bot, p["x"], p["y"], p["z"])
             case "container_insert":
@@ -2878,6 +3047,517 @@ def _build_transmute_tags():
     return tags
 
 
+
+def _run_direct_order(runner, oid, kind, params, player=""):
+    import json as _json
+    bot = runner.name
+    def report(status, detail=""):
+        try:
+            api.raw_post("/telemetry/orders", {
+                "id": oid, "bot": bot, "kind": kind,
+                "status": status, "detail": detail[:200]})
+        except Exception:
+            pass
+    try:
+        p = _json.loads(params) if isinstance(params, str) else (params or {})
+    except Exception:
+        p = {}
+    extra = {k: v for k, v in p.items()
+             if k not in ("target", "count", "radius", "x", "y", "z")}
+    if kind == "PROVISION_TERMINAL":
+        try:
+            r = api.raw_post(f"/bot/{bot}/provision_terminal",
+                             {"network": str(p.get("network") or "")})
+            if r.get("ok"):
+                report("COMPLETED", f"terminal online on {r.get('network', 'network')}")
+            else:
+                report("FAILED", str(r.get("error", r))[:150])
+        except Exception as e:
+            report("FAILED", f"provision error: {str(e)[:120]}")
+        return
+    if kind in ("SPAWN_GOLEM", "DISMISS_GOLEM"):
+        try:
+            r = api.raw_post("/hive/units", {
+                "action": "dismiss_golem" if kind == "DISMISS_GOLEM" else "forge_golem",
+                "count": int(p.get("count") or 1),
+                "blueprint": str(p.get("design") or ""),
+                "player": player or "",
+            })
+            made = r.get("units", [])
+            if r.get("ok") and made:
+                report("COMPLETED", f"{len(made)} officer(s) "
+                       + ("dismissed" if kind == "DISMISS_GOLEM" else "forged"))
+            else:
+                report("FAILED", str(r.get("refusal") or r.get("error") or r)[:150])
+        except Exception as e:
+            report("FAILED", f"hive error: {str(e)[:120]}")
+        return
+    if kind in ("SPAWN_DRONES", "DESPAWN_DRONES"):
+        # Hive gestation is an action on the PLAYER's board and reservoir,
+        # not a bot behavior — the hive route does the work; the addressed
+        # bot is irrelevant (any fleet member can relay the order).
+        try:
+            r = api.raw_post("/hive/units", {
+                "action": "despawn" if kind == "DESPAWN_DRONES" else "spawn",
+                "count": int(p.get("count") or 1),
+                "blueprint": str(p.get("blueprint") or ""),
+                "player": player or "",
+            })
+            units = r.get("units", [])
+            if r.get("ok") and units:
+                verb = "dissolved" if kind == "DESPAWN_DRONES" else "gestated"
+                report("COMPLETED", f"{verb}: {', '.join(units)}"
+                       + (f" — then refused: {r['refusal']}" if r.get("refusal") else ""))
+            elif r.get("ok"):
+                report("COMPLETED", "nothing to do")
+            else:
+                report("FAILED", str(r.get("refusal") or r.get("error") or r)[:150])
+        except Exception as e:
+            report("FAILED", f"hive error: {str(e)[:120]}")
+        return
+    if kind in ("ANCHOR_ON", "ANCHOR_OFF"):
+        try:
+            r = api.raw_post(f"/bot/{bot}/{kind.lower()}", {})
+            if r.get("ok"):
+                report("COMPLETED", "anchored — costs "
+                       + str(r.get("xp_per_hour", "?")) + " XP levels/hour"
+                       if kind == "ANCHOR_ON" else "anchor released")
+            else:
+                report("FAILED", str(r.get("error", r))[:150])
+        except Exception as e:
+            report("FAILED", f"anchor error: {str(e)[:120]}")
+        return
+    if kind == "SHARE_LOCATION":
+        # Not an L1 directive at all: one API call writes the bot's CURRENT
+        # position into the orderer's TemPad (player feedback: "no directive
+        # to just drop a teleport from where the bot stands").
+        try:
+            st = api.status(bot)
+            pos = st.get("position", {})
+            dim = st.get("dimension", "minecraft:overworld")
+            r = api.tempad_share(bot, player or "SigmaStrain1",
+                                 name=str(p.get("name") or f"{bot} location"),
+                                 dimension=dim)
+            if r.get("ok", True) and not r.get("error"):
+                report("COMPLETED", f"waypoint at {pos.get('x', '?'):.0f},"
+                       f"{pos.get('y', '?'):.0f},{pos.get('z', '?'):.0f} ({dim})")
+            else:
+                report("FAILED", str(r.get("error", r))[:150])
+        except Exception as e:
+            report("FAILED", f"tempad error: {str(e)[:120]}")
+        return
+    report("RUNNING", f"{kind} dispatched")
+    try:
+        resp = api.set_directive(
+            bot, kind,
+            target=p.get("target"), count=p.get("count"), radius=p.get("radius"),
+            x=p.get("x"), y=p.get("y"), z=p.get("z"),
+            extra=extra or None)
+        directive_id = (resp.get("directive") or {}).get("id")
+        if resp.get("status") != "accepted":
+            report("FAILED", f"mod rejected: {str(resp)[:120]}")
+            return
+        result = runner._poll_directive(dtype=kind, directive_id=directive_id)
+        if result.get("success"):
+            report("COMPLETED", str(result.get("result", ""))[:150] or "done")
+        else:
+            report("FAILED", str(result.get("reason", "unknown"))[:150])
+    except Exception as e:
+        report("FAILED", f"dispatch error: {str(e)[:120]}")
+
+
+
+def _standing_worker():
+    """The hive's homeostasis: evaluate standing-order conditions against
+    the observable world and fire the configured action through the SAME
+    order lane as everything else. The mod owns the definitions; this loop
+    owns the judgment. Backoff on repeated failures lands ONE inbox item,
+    not a nag storm."""
+    import json as _json
+    fail_streak = {}
+    cooldown_until = {}
+    COOLDOWN_S = 120
+    while True:
+        time.sleep(30)
+        try:
+            rows = api.raw_get("/telemetry/standing").get("standing", [])
+        except Exception:
+            continue
+        now = time.time()
+        for st in rows:
+            sid = str(st.get("id"))
+            bot = str(st.get("bot"))
+            if not st.get("enabled") or bot not in _all_runners:
+                continue
+            item = str(st.get("item", ""))
+            try:
+                # observe
+                wt = st.get("watchType")
+                if wt == "me_count":
+                    reading = int(api.raw_post(f"/bot/{bot}/me_search",
+                                               {"query": item}).get("results", {}).get(item, 0))
+                elif wt == "vault_count":
+                    reading = 0
+                    for r in api.effective_inventory(bot).get("inventory", []):
+                        if r.get("item") == item:
+                            reading = int(r.get("carried", 0)) + int(r.get("vault", 0))
+                            break
+                elif wt == "xp_level":
+                    reading = int(api.status(bot).get("xp_level", 0))
+                else:
+                    continue
+                threshold = int(st.get("threshold", 0))
+                breached = reading < threshold if st.get("comparator", "gte") == "gte" \
+                    else reading > threshold
+                api.raw_post("/telemetry/standing", {"id": sid, "reading": reading})
+                if not breached:
+                    fail_streak.pop(sid, None)
+                    continue
+                if now < cooldown_until.get(sid, 0):
+                    continue
+                # only fire on an idle bot — standing orders yield to live work
+                d = (api.get_directive(bot) or {}).get("directive", {})
+                if str(d.get("status", "")).upper() == "ACTIVE":
+                    continue
+                # CRAFT_REQUEST discipline: one job per bot stands
+                kind = str(st.get("actionKind", ""))
+                r = api.raw_post("/telemetry/orders", {
+                    "bot": bot, "kind": kind, "player": f"standing:{sid}",
+                    "params": _json.loads(st.get("actionParams") or "{}")})
+                fired_ok = bool(r.get("ok"))
+                streak = fail_streak.get(sid, 0) if fired_ok else fail_streak.get(sid, 0) + 1
+                fail_streak[sid] = 0 if fired_ok else streak
+                backoff = COOLDOWN_S * (2 ** min(streak, 4))
+                cooldown_until[sid] = now + backoff
+                api.raw_post("/telemetry/standing", {
+                    "id": sid, "reading": reading,
+                    "fired_at": int(now * 1000),
+                    "result": f"fired {kind} (at {reading}/{threshold})" if fired_ok
+                              else f"fire refused: {str(r)[:80]}"})
+                print(f"[{bot}/standing] {sid}: {reading}/{threshold} -> {kind}"
+                      f" ({'ok' if fired_ok else 'refused'})")
+                if streak == 3:
+                    import escalation
+                    threading.Thread(
+                        target=escalation.ask,
+                        args=(bot, "standing_failing",
+                              f"Standing order {sid} ({item} >= {threshold}) has "
+                              f"failed {streak} times: {str(r)[:100]}",
+                              ["keep trying", "disable it"]),
+                        daemon=True).start()
+            except Exception as e:
+                print(f"[{bot}/standing] {sid} evaluate error: {e}")
+
+
+DRONE_RE = __import__("re").compile(r"(Drone|Officer)\d+")
+
+
+def _drone_adoption_worker():
+    """Hive units — drones AND officers — are spawned MOD-SIDE, so the agent
+    discovers them after the fact: poll the roster, wrap unknown Drone<N> /
+    Officer<N> bots in a full BotRunner (chat, orders, L3 — every hive unit
+    is an AI-controlled fleet member by design ruling), and reap runners
+    whose unit is gone. Ephemeral: no semantic memory, no profile file."""
+    base_model = next(iter(_all_runners.values())).model if _all_runners else "qwen2.5:14b-instruct"
+    while True:
+        time.sleep(20)
+        try:
+            names = {b.get("name")
+                     for b in (api.list_bots() or {}).get("bots", [])}
+            for n in sorted(names):
+                if n and DRONE_RE.fullmatch(n) and n not in _all_runners:
+                    officer = n.startswith("Officer")
+                    runner = BotRunner({
+                        "name": n, "model": base_model,
+                        "specializations": ["officer" if officer else "drone"],
+                        "ephemeral": True,
+                        "persona": ("a hive officer — composed, tactical, speaks for its squad"
+                                    if officer
+                                    else "a silent, efficient hive drone — terse and obedient"),
+                    })
+                    _all_runners[n] = runner
+                    runner.start()
+                    print(f"[agent] adopted hive unit {n}")
+            for n in list(_all_runners):
+                if DRONE_RE.fullmatch(n) and n not in names:
+                    runner = _all_runners.pop(n)
+                    try:
+                        runner.stop()
+                    except Exception:
+                        pass
+                    print(f"[agent] released dissolved unit {n}")
+        except Exception as e:
+            print(f"[agent/drones] adoption error: {e}")
+
+
+def _run_fleet_partition(oid, params, player, fleet_id):
+    """One natural-language order for the whole fleet: a single L3 call
+    splits it into per-bot assignments citing each bot's persona and
+    holdings; each assignment then runs through the ordinary per-bot lane.
+    Partition failure falls back to verbatim fan-out — degraded beats dead.
+    Orders that move items out of vaults gate on ONE inbox confirm."""
+    import json as _json
+    try:
+        p = _json.loads(params) if isinstance(params, str) else (params or {})
+    except Exception:
+        p = {}
+    text = str(p.get("text", "")).strip()
+    if not text:
+        return
+    bots = list(_all_runners.keys())
+
+    # destructive-at-scale gate: one confirm, not five
+    lowered = text.lower()
+    if any(w in lowered for w in ("store", "clean", "move", "dump", "clear out")):
+        import escalation
+        ruling = escalation.ask(
+            "fleet", "fleet_confirm",
+            f"Fleet-wide order touches inventories: '{text[:120]}' — dispatch to "
+            f"{len(bots)} bots?", ["dispatch", "cancel"], timeout=60)
+        if ruling.get("answered") and ruling.get("text") == "cancel":
+            return
+        # timeout or dispatch → proceed (the per-bot L4 triggers still stand)
+
+    assignments = {}
+    try:
+        import l3_planner
+        infos = []
+        for b in bots:
+            persona = _BOT_VOICES.get(b.lower(), "generalist")
+            holding = ""
+            try:
+                eff = api.effective_inventory(b).get("inventory", [])
+                rows = sorted(eff, key=lambda r: -(int(r.get("carried", 0))
+                              + int(r.get("vault", 0))))[:6]
+                holding = ", ".join(f"{r.get('item','?')}" for r in rows)
+            except Exception:
+                pass
+            infos.append(f"- {b}: {persona[:80]}" + (f" | holds: {holding}" if holding else ""))
+        assignments = l3_planner.partition_fleet(
+            _all_runners[bots[0]].model, text, "\n".join(infos), bots)
+    except Exception as e:
+        print(f"[fleet] partition failed ({e}) — verbatim fan-out")
+
+    for b in bots:
+        task = str(assignments.get(b, "") or text).strip()
+        if task.lower() in ("skip", "none", "-"):
+            continue
+        try:
+            api.raw_post("/telemetry/orders", {
+                "bot": b, "kind": "TEXT", "player": player,
+                "fleet": fleet_id, "params": {"text": task}})
+        except Exception as e:
+            print(f"[fleet] submit for {b} failed: {e}")
+    print(f"[fleet] {oid}: partitioned '{text[:60]}' across {len(bots)} bots")
+
+
+def _order_text(kind, params):
+    """Render a typed builder order as an unambiguous task line for L3."""
+    import json as _json
+    try:
+        p = _json.loads(params) if isinstance(params, str) else (params or {})
+    except Exception:
+        p = {}
+    if kind == "TEXT":
+        return str(p.get("text", "")).strip()
+    parts = []
+    for k in ("target", "count", "radius", "x", "y", "z"):
+        if k in p and p[k] not in (None, ""):
+            parts.append(f"{k}={p[k]}")
+    extra = {k: v for k, v in p.items()
+             if k not in ("target", "count", "radius", "x", "y", "z")}
+    if extra:
+        parts.append("extra=" + _json.dumps(extra))
+    return f"Execute exactly this directive: {kind} " + " ".join(parts)
+
+
+def _order_worker():
+    """Drain overlay orders and drive each through the plan orchestrator."""
+    while True:
+        time.sleep(2)
+        try:
+            pending = api.raw_get("/telemetry/orders").get("pending", [])
+        except Exception:
+            time.sleep(10)
+            continue
+        for order in pending:
+            bot = str(order.get("bot", ""))
+            oid = str(order.get("id", ""))
+            kind = str(order.get("kind", ""))
+            if bot == "fleet":
+                threading.Thread(
+                    target=_run_fleet_partition,
+                    args=(oid, order.get("params"), str(order.get("player", "")),
+                          str(order.get("fleet", ""))),
+                    name=f"fleet:{oid}", daemon=True).start()
+                continue
+            runner = _all_runners.get(bot)
+            text = _order_text(kind, order.get("params"))
+            if not runner or not text:
+                try:
+                    api.raw_post("/telemetry/orders", {
+                        "id": oid, "bot": bot, "kind": kind, "status": "FAILED",
+                        "detail": "no such bot" if not runner else "empty order"})
+                except Exception:
+                    pass
+                continue
+            if kind != "TEXT":
+                # A builder order IS the directive — typed kind, typed params.
+                # It goes straight to L1 with no L3 in the loop: planning a
+                # precise order invites "interpretation" (live bug: CHANNEL
+                # wireless_terminal was rewritten into a quartz block because
+                # the terminal isn't conjure-learned). Free-text orders (v8)
+                # are the ones that need a planner.
+                print(f"[{bot}/orders] {oid}: direct dispatch {kind}")
+                threading.Thread(
+                    target=_run_direct_order,
+                    args=(runner, oid, kind, order.get("params"), str(order.get("player", ""))),
+                    name=f"order:{bot}:{oid}",
+                    daemon=True,
+                ).start()
+                continue
+            if not USE_L3_PLAN_LAYER:
+                try:
+                    api.raw_post("/telemetry/orders", {
+                        "id": oid, "bot": bot, "kind": kind, "status": "FAILED",
+                        "detail": "L3 plan layer disabled on this agent"})
+                except Exception:
+                    pass
+                continue
+            print(f"[{bot}/orders] {oid}: {text[:80]}")
+            threading.Thread(
+                target=runner._run_orchestrator,
+                args=(text, str(order.get("player", ""))),
+                kwargs={"order_id": oid, "order_kind": kind},
+                name=f"order:{bot}:{oid}",
+                daemon=True,
+            ).start()
+
+
+def _push_schemas():
+    """Keep the mod supplied with the directive catalog. The mod's SchemaStore
+    is in-memory: it is empty at boot AND empties again on every server
+    restart — and a modded boot takes 10-15 minutes. So this is a keeper, not
+    a one-shot: whenever the mod reports version 0, push again."""
+    from dashboard.schemas import DIRECTIVE_CATALOG
+    import copy
+    pushed_this_run = False
+    while True:
+        try:
+            v = api.raw_get("/telemetry/schemas").get("version", -1)
+            # Push when the mod has nothing OR this agent build hasn't pushed
+            # yet — catalog changes ship with agent restarts, and the old
+            # "only when empty" rule stranded new directives until the next
+            # server reboot.
+            if v == 0 or (v >= 0 and not pushed_this_run):
+                catalog = copy.deepcopy(DIRECTIVE_CATALOG)
+                # The conjure catalog makes the CHANNEL dropdown real: names
+                # the bots have actually learned, not a blank text box.
+                try:
+                    names = api.raw_get("/transmute/names").get("names", [])
+                    if names:
+                        for d in catalog:
+                            if d.get("type") == "CHANNEL":
+                                for prm in d.get("params", []):
+                                    if prm.get("name") == "target":
+                                        prm["options"] = sorted(names)[:200]
+                except Exception:
+                    pass
+                try:
+                    crafts = api.raw_post("/bot/Scout/me_craftables", {}).get("craftables", [])
+                    if crafts:
+                        for d in catalog:
+                            if d.get("type") == "CRAFT_REQUEST":
+                                for prm in d.get("params", []):
+                                    if prm.get("name") == "target":
+                                        prm["options"] = crafts
+                except Exception:
+                    pass
+                try:
+                    bp = api.raw_post("/hive/units", {"action": "list"})
+                    if bp.get("ok"):
+                        for d in catalog:
+                            if d.get("type") == "SPAWN_DRONES":
+                                for prm in d.get("params", []):
+                                    if prm.get("name") == "blueprint":
+                                        prm["options"] = bp.get("units", [])
+                            if d.get("type") == "SPAWN_GOLEM":
+                                for prm in d.get("params", []):
+                                    if prm.get("name") == "design":
+                                        prm["options"] = bp.get("golem_designs", [])
+                except Exception:
+                    pass
+                try:
+                    nets = api.raw_get("/server/me_networks").get("networks", [])
+                    opts = [f"{n['dimension']}@{n['x']},{n['y']},{n['z']}" for n in nets]
+                    for d in catalog:
+                        if d.get("type") == "PROVISION_TERMINAL":
+                            for prm in d.get("params", []):
+                                if prm.get("name") == "network":
+                                    prm["options"] = opts
+                except Exception:
+                    pass
+                r = api.raw_post("/telemetry/schemas", {"directives": catalog})
+                if r.get("ok"):
+                    pushed_this_run = True
+                    print(f"[schemas] pushed {len(DIRECTIVE_CATALOG)} directive kinds "
+                          f"(version {r.get('version')})")
+        except Exception:
+            pass
+        time.sleep(30)
+
+
+def _talk_worker():
+    """Answer overlay Talk messages with one conversational L3 call each."""
+    import l3_planner
+    while True:
+        time.sleep(2)
+        try:
+            pending = api.raw_get("/telemetry/talk").get("pending", [])
+        except Exception:
+            time.sleep(10)
+            continue
+        for msg in pending:
+            bot = str(msg.get("bot", ""))
+            text = str(msg.get("text", ""))
+            runner = _all_runners.get(bot)
+            if not runner or not text:
+                continue
+            try:
+                world_state = runner._l3_orchestrator_world_state()
+            except Exception:
+                world_state = ""
+            directive_line = ""
+            try:
+                directive_line = str((api.get_brain(bot) or {}).get("state", ""))
+            except Exception:
+                pass
+            history = []
+            try:
+                history = api.raw_get(f"/telemetry/talk?bot={bot}").get("history", [])
+                # the pending message is already the newest transcript line —
+                # drop it so it isn't doubled in context
+                if history and history[-1].get("text") == text:
+                    history = history[:-1]
+            except Exception:
+                pass
+            try:
+                reply = l3_planner.converse(
+                    runner.model, bot,
+                    _BOT_VOICES.get(bot.lower(), "a helpful bot"),
+                    text, world_state, "", directive_line, history=history)
+                if not reply:
+                    reply = "…"
+            except Exception as e:
+                reply = f"(I can't think right now: {str(e)[:80]})"
+            try:
+                api.raw_post("/telemetry/talk/reply", {"bot": bot, "text": reply})
+            except Exception:
+                pass
+            telemetry.push(bot, "talk",
+                           f"{msg.get('player','player')}: {text[:60]} → {reply[:80]}")
+
+
 def run():
     print(f"[agent] Checking ollama at {OLLAMA_URL}...")
     ok, models = brain.check_ollama(OLLAMA_URL)
@@ -2993,6 +3673,21 @@ def run():
             time.sleep(SPAWN_STAGGER_DELAY)
 
     print(f"[agent] All {len(runners)} bots started (tick={TICK_DELAY}s)")
+
+    # Talk worker: the conversation lane. Polls the mod's talk queue and
+    # answers with a single conversational L3 call — persona, world state,
+    # current directive as context. No plan is ever created here; that is
+    # the entire point of the Talk/Order split.
+    threading.Thread(target=_talk_worker, name="talk-worker", daemon=True).start()
+
+    # Overlay command surface: directive schemas up, orders down. Orders ride
+    # plan_orchestrator.execute_task — the same lane as chat tasks — so every
+    # L4 escalation trigger covers them with zero extra wiring.
+    threading.Thread(target=_push_schemas, name="schema-push", daemon=True).start()
+    threading.Thread(target=_order_worker, name="order-worker", daemon=True).start()
+    threading.Thread(target=_standing_worker, name="standing-worker", daemon=True).start()
+    threading.Thread(target=_drone_adoption_worker, name="drone-adoption", daemon=True).start()
+
     print("=" * 50)
 
     transmute_sync_counter = 0

@@ -94,11 +94,15 @@ public class BotVault {
         int moved = 0;
         for (ItemStack pulled : withdraw(itemId, count)) {
             int before = pulled.getCount();
-            if (!inventory.add(pulled)) {
-                // Carried inventory filled mid-transfer — put the remainder back.
+            inventory.add(pulled);
+            // Read the leftover BEFORE re-depositing: deposit() zeroes the
+            // stack it absorbs, which made this method report bounced items
+            // as moved ("withdrawn: 1" into a full pack, v7 spike finding).
+            int leftover = pulled.getCount();
+            if (leftover > 0) {
                 deposit(pulled);
             }
-            moved += before - pulled.getCount();
+            moved += before - leftover;
         }
         return moved;
     }

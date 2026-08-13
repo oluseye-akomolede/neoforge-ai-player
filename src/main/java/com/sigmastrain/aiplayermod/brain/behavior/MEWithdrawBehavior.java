@@ -76,10 +76,37 @@ public class MEWithdrawBehavior implements Behavior {
         ServerPlayer player = bot.getPlayer();
         ServerLevel level = player.serverLevel();
 
+        // Worn terminal first (v7 fabric): pull from the REAL network, from
+        // anywhere. The interface scan is the terminal-less fallback — and it
+        // only ever saw an interface's local buffer, not network storage.
+        var access = com.sigmastrain.aiplayermod.compat.ae2.WirelessME.resolve(player);
+        if (access.online()) {
+            progress.logEvent("Using wireless terminal");
+            for (ItemStack pulled : com.sigmastrain.aiplayermod.compat.ae2.WirelessME
+                    .extract(access, itemId, requested)) {
+                int delivered = BotPlayer.deliverTo(player, pulled);
+                extracted += delivered;
+                // deliverTo pages overflow to the vault — nothing is lost; a
+                // shortfall here means the NETWORK had less than requested.
+            }
+            progress.putResult("extracted", extracted);
+            progress.putResult("via", "wireless_terminal");
+            if (extracted == 0) {
+                progress.setFailureReason("network has no " + itemId);
+                bot.systemChat("ME: no " + itemId + " in network", "red");
+                return BehaviorResult.FAILED;
+            }
+            bot.systemChat("ME withdrew " + extracted + " via terminal", "green");
+            phase = Phase.COMPLETE;
+            return BehaviorResult.SUCCESS;
+        }
+        progress.logEvent("No wireless access (" + access.status() + ") — scanning for interface");
+
         meHandler = AE2Compat.findNearestMEInterface(level, player.blockPosition(), searchRadius);
         if (meHandler == null) {
-            progress.setFailureReason("No ME Interface found within " + searchRadius + " blocks");
-            bot.systemChat("No ME Interface in range", "red");
+            progress.setFailureReason("No ME access: " + access.status()
+                    + ", and no ME Interface within " + searchRadius + " blocks");
+            bot.systemChat("No ME access (" + access.status() + ")", "red");
             return BehaviorResult.FAILED;
         }
 

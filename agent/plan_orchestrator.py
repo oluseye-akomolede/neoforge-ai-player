@@ -26,6 +26,7 @@ import fast_planner
 import l3_planner
 import plan_memory
 import plan_store
+import telemetry
 from criteria_eval import evaluate as evaluate_criteria
 from plan_schema import Plan, PlanValidationError, Subtask
 
@@ -140,6 +141,8 @@ def execute_task(
 
     plan_store.write(plan)
     log.info("[%s] plan written with %d subtasks", bot_name, len(plan.subtasks))
+    telemetry.push(bot_name, "plan",
+                   f"plan: {len(plan.subtasks)} subtasks for '{task[:80]}'")
     try:
         on_plan_created(plan)
     except Exception:
@@ -159,6 +162,9 @@ def execute_task(
             except Exception:
                 log.exception("[%s] on_subtask_start hook raised", bot_name)
             last_subtask_id = subtask.id
+            telemetry.push(bot_name, "subtask",
+                           f"subtask {subtask.id}/{len(plan.subtasks)}: "
+                           f"{subtask.description[:100]} | needs: {subtask.criteria[:80]}")
         prev_status = subtask.status
         if not _step(plan, subtask, model, dispatch_fn, world_state_fn, dim_list):
             # _step returns False when the plan needs to abort
@@ -172,6 +178,8 @@ def execute_task(
 
     plan_store.write(plan)
     plan_store.archive(plan)
+    telemetry.push(bot_name, "done" if plan.status == "complete" else "fail",
+                   f"plan finalized: {plan.status}")
     if plan.status == "complete":
         try:
             plan_memory.record(plan)
@@ -277,6 +285,10 @@ def _step(plan: Plan, subtask: Subtask, model: str,
     )
     log.info("[%s] subtask %d criteria: %s (%s) — %s",
              plan.bot, subtask.id, satisfied, strategy, reason)
+    # The exact reason string the evaluator produced — the line that has
+    # explained every campaign failure this project, now visible in-game.
+    telemetry.push(plan.bot, "criteria" if satisfied else "criteria_fail",
+                   f"[{strategy}] {reason}")
 
     if satisfied:
         subtask.status = "complete"
@@ -296,6 +308,47 @@ def _step(plan: Plan, subtask: Subtask, model: str,
         plan_store.write(plan)
         return True
 
+    # L4 trigger: attempts exhausted. The system used to replan blindly;
+    # now the failure is shown to the player first. A free-text ruling
+    # becomes guidance in the replan prompt (it rides subtask.error into
+    # the next EXEC call). Timeout falls back to the blind replan.
+    import escalation
+    ruling = escalation.ask(
+        plan.bot, "attempts_exhausted",
+        f"Subtask {subtask.id} failed {MAX_ATTEMPTS}x: "
+        f"{subtask.description[:80]} — last error: {str(reason)[:80]}",
+        options=["replan", "skip subtask", "abort plan"], timeout=90)
+    if ruling.get("answered"):
+        choice = str(ruling.get("text", "")).strip()
+        if choice == "abort plan":
+            plan.status = "failed"
+            plan_store.write(plan)
+            return False
+        if choice == "skip subtask":
+            subtask.status = "complete"
+            subtask.error = "skipped by player ruling"
+            plan.advance()
+            plan_store.write(plan)
+            return True
+        if choice and choice != "replan":
+            # The overlay may send a JSON envelope: the player EDITED the
+            # failing directive field-by-field. The edit becomes explicit
+            # replan guidance — "use exactly this directive".
+            import json as _json
+            try:
+                env = _json.loads(choice)
+                parts = []
+                if isinstance(env, dict):
+                    if env.get("directive"):
+                        parts.append("player corrected the directive to: "
+                                     + _json.dumps(env["directive"]))
+                    if env.get("note"):
+                        parts.append(str(env["note"]))
+                if parts:
+                    choice = " | ".join(parts)
+            except (ValueError, TypeError):
+                pass
+            subtask.error = f"{reason} | player guidance: {choice}"
     return _replan(plan, subtask, model)
 
 
@@ -513,6 +566,26 @@ def _repair_directive(d: dict[str, Any], bot_name: str, dim_list: list[str] | No
                 flags = rendered.get("flags") or []
                 if flags:
                     log.info("[%s] l2-mcp flags on %s: %s", bot_name, nd.get("kind"), flags)
+                # L4 seam: l2-mcp DETECTS ambiguity and used to guess anyway
+                # — detection without a recipient. The player is the
+                # recipient now: candidates go to the inbox, and the ruling
+                # replaces the guess. Timeout falls back to the old guess.
+                if any(str(f).startswith("ambiguous_item") for f in flags):
+                    candidates = ((nd.get("extra") or {}).get("item_candidates")
+                                  or [])[:6]
+                    if candidates:
+                        import escalation
+                        ruling = escalation.ask(
+                            bot_name, "ambiguous_item",
+                            f"'{nd.get('target')}' is ambiguous for {nd.get('kind')}"
+                            f" — which did you mean?",
+                            options=list(candidates), timeout=90)
+                        if ruling.get("answered") \
+                                and ruling.get("action") in ("choose", "answer") \
+                                and ruling.get("text"):
+                            nd["target"] = ruling["text"]
+                            log.info("[%s] L4 resolved ambiguity -> %s",
+                                     bot_name, nd["target"])
                 return nd
         except Exception as e:
             log.debug("l2-mcp normalize bypass (%s)", e)
@@ -572,6 +645,9 @@ def _replan(plan: Plan, failed_subtask: Subtask, model: str) -> bool:
                     plan.bot, failed_subtask.id, failed_subtask.replans)
         plan.status = "failed"
         return False
+    telemetry.push(plan.bot, "replan",
+                   f"replanning subtask {failed_subtask.id} "
+                   f"(attempt {failed_subtask.replans + 1}): {str(failed_subtask.error)[:100]}")
     try:
         new_subtask = l3_planner.call_replan(model, plan, failed_subtask)
     except PlanValidationError as e:
@@ -590,8 +666,22 @@ def _replan(plan: Plan, failed_subtask: Subtask, model: str) -> bool:
         if proposed and proposed != failed_subtask.criteria.strip():
             impossible = _criterion_impossible(plan.bot, failed_subtask.criteria)
             if impossible and not _criterion_impossible(plan.bot, proposed):
-                log.info("[%s] replan criteria replacement ACCEPTED — original impossible: %s (%r -> %r)",
-                         plan.bot, impossible, failed_subtask.criteria, proposed)
+                # L4 trigger: the evidence gate says the original criterion is
+                # provably impossible — but moving a goalpost is the player's
+                # call to veto. Timeout accepts (old behavior); only an
+                # explicit "keep original" blocks the replacement.
+                import escalation
+                ruling = escalation.ask(
+                    plan.bot, "impossible_criteria",
+                    f"Criterion provably impossible ({impossible}): "
+                    f"'{failed_subtask.criteria[:70]}' — replace with '{proposed[:70]}'?",
+                    options=["accept replacement", "keep original"], timeout=90)
+                if ruling.get("answered") and ruling.get("text") == "keep original":
+                    log.info("[%s] L4 vetoed criteria replacement — keeping original", plan.bot)
+                    new_subtask.criteria = failed_subtask.criteria
+                else:
+                    log.info("[%s] replan criteria replacement ACCEPTED — original impossible: %s (%r -> %r)",
+                             plan.bot, impossible, failed_subtask.criteria, proposed)
             else:
                 log.info("[%s] replan tried to rewrite criteria (%r -> %r) — keeping original",
                          plan.bot, failed_subtask.criteria, new_subtask.criteria)

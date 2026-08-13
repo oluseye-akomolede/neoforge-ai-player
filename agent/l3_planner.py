@@ -91,6 +91,12 @@ Construction rules (MANDATORY for fortresses, strongholds, bases):
   larger than the structure (BUILD blueprint "clear") — never embed walls
   inside solid terrain.
 
+Reconnaissance: structures (end city, fortress, village, stronghold, mansion,
+monument, and modded ones) are LOCATED, not searched for. A single subtask
+"locate the nearest <structure> and travel to it" is correct and sufficient —
+do not plan a sweep, a grid search, or an exploration phase to find one.
+Coordinates a bot has already found appear in world state as known_locations.
+
 Inventory model: each bot has 36 carried slots plus an UNBOUNDED vault.
 Overflow pages to the vault automatically and BUILD withdraws from it as
 needed, so you never need to plan around running out of space. "inventory
@@ -250,9 +256,175 @@ DIRECTIVE PARAM REFERENCE (use these shapes EXACTLY):
   CONTAINER_WITHDRAW — {{ "kind":"CONTAINER_WITHDRAW", "target":"minecraft:iron_ingot", "count":64 }}
   CONTAINER_PLACE  — {{ "kind":"CONTAINER_PLACE", "target":"minecraft:chest", "x":<int>, "y":<int>, "z":<int> }}
   CONTAINER_SEARCH — {{ "kind":"CONTAINER_SEARCH", "target":"minecraft:diamond", "count":5 }}
-  WIDE_SEARCH      — {{ "kind":"WIDE_SEARCH", "target":"village" }}
+  LOCATE           — {{ "kind":"LOCATE", "target":"end_city", "extra":{{"travel":"true"}} }}
+                     Finds the nearest STRUCTURE (end city, fortress, village,
+                     stronghold, mansion, monument, modded structures) by asking
+                     the world generator — one query, reaches ~1600 blocks.
+                     USE THIS FOR STRUCTURES. WIDE_SEARCH cannot find them.
+                     To GO to what you find, set "extra":{{"travel":"true"}} —
+                     one directive that finds it AND lands the bot there.
+                     Do NOT emit LOCATE then GOTO in the same subtask: every
+                     directive in a subtask is written before any of them runs,
+                     so you cannot know the coordinates yet and would be
+                     guessing. Coordinates from a completed LOCATE appear in
+                     world state as known_locations=[...] — a LATER subtask may
+                     GOTO/TELEPORT those exact numbers.
+                     The finding is written to the requesting player's TemPad
+                     automatically so they can open a portal to it — you do NOT
+                     need to set share_with. Set
+                     "extra":{{"share_with":"<player>"}} only to send it to a
+                     DIFFERENT player than the one who gave the order.
+  WIDE_SEARCH      — {{ "kind":"WIDE_SEARCH", "target":"diamond_ore" }}
+                     Scans BLOCKS and ENTITIES in an expanding cube. The target
+                     MUST be a block or mob id. It cannot find a structure:
+                     "end_city" is not a block, so the scan runs forever and
+                     finds nothing. For structures use LOCATE.
+  ME_STORE         — {{ "kind":"ME_STORE", "target":"minecraft:cobblestone", "count":64 }}
+                     target "all" stores everything evictable. Uses the worn
+                     wireless terminal — works from ANYWHERE, no movement.
+  ME_WITHDRAW      — {{ "kind":"ME_WITHDRAW", "target":"minecraft:iron_ingot", "count":32 }}
+  VAULT_STORE      — {{ "kind":"VAULT_STORE", "target":"all" }} (or one item id)
+  VAULT_WITHDRAW   — {{ "kind":"VAULT_WITHDRAW", "target":"minecraft:bread", "count":8 }}
+
+  SPAWN_DRONES     — {{ "kind":"SPAWN_DRONES", "count":3, "blueprint":"" }}
+  DESPAWN_DRONES   — {{ "kind":"DESPAWN_DRONES", "count":1 }}
+                     Hive gestation: materialize worker drones at the
+                     PLAYER's position, paid from the player's hive FE
+                     reservoir (needs a powered Spawn Bay on their board).
+                     blueprint (optional) names a saved loadout to equip.
+                     Use when ordered to "spawn/summon/raise drones" or
+                     "dissolve/dismiss drones". Drones are full bots that
+                     accept any directive once gestated.
+
+  SPAWN_GOLEM      — {{ "kind":"SPAWN_GOLEM", "count":1, "design":"" }}
+                     design (optional) names a saved golem design from the
+                     workbench — its chassis materials, weapon and armor.
+                     Forge a hive OFFICER (a modular golem): persistent,
+                     expensive (2M FE), and its aura halves the upkeep of
+                     nearby drones. Needs a powered Golem Forge flanked by
+                     2+ Spawn Bays. DISMISS_GOLEM retires one.
+
+  MEDITATE         — {{ "kind":"MEDITATE", "count":10 }}
+                     The bot sits and cultivates XP (count = levels to
+                     gain, max 100). XP is the bot economy's currency:
+                     channeling/conjuring, anchoring upkeep, and terminal
+                     provisioning all spend it. When an order says
+                     "meditate", or a bot is refused for being broke
+                     ("this bot is broke"), MEDITATE is the answer.
+
+  ANCHOR_ON        — {{ "kind":"ANCHOR_ON" }}  ANCHOR_OFF — {{ "kind":"ANCHOR_OFF" }}
+                     An anchored bot keeps its surrounding chunks loaded
+                     (machines run, the ME grid stays whole) at a cost of
+                     XP per hour. Anchor before long stationary tasks away
+                     from players; release when leaving.
+
+  For "keep X stocked at N" style requests, tell the player to use the
+  Cmd tab's ⏲ Keep button (standing orders are created there) — do NOT
+  fake it with a one-shot plan.
+
+INVENTORY TASKS ("store", "clean up", "put away", "organize"):
+  - "storage" ALWAYS means the bot's VAULT or the ME NETWORK — it is NEVER
+    a place or a dimension. Do NOT emit TELEPORT or GOTO for storage tasks;
+    ME_STORE/VAULT_STORE work from wherever the bot stands.
+  - Essential items (keep unless told otherwise): equipped armor + weapons,
+    tools, food, and the wireless terminal. Everything else is fair game.
+  - "I don't care which": prefer ME_STORE when a terminal is worn,
+    VAULT_STORE otherwise.
+  - NEVER emit DROP for an inventory task unless the order literally says
+    drop or discard — vault and ME are recoverable, the ground is not.
+  - If the classification would move more than half the inventory and the
+    order is ambiguous, ASK_PLAYER first.
+  CRAFT_REQUEST    — {{ "kind":"CRAFT_REQUEST", "target":"ae2:quantum_helmet", "count":1 }}
+                     Submit an AUTOCRAFTING job to the ME network (needs a
+                     linked wireless terminal). The grid's CPUs craft; the
+                     products land in NETWORK storage — follow with
+                     ME_WITHDRAW if the bot must hold them. Only works for
+                     items the network has patterns for; the directive fails
+                     honestly with the missing-ingredient list otherwise.
+  ASK_PLAYER       — {{ "kind":"ASK_PLAYER", "target":"<your question>" }}
+                     Stops and asks the PLAYER. Use when the task is ambiguous,
+                     two readings conflict, or you need a decision only the
+                     player can make (which material, which location, destroy
+                     or keep). The answer arrives in the result text as
+                     "player says: ..." — plan the NEXT directives with it.
+                     Do not ask what you can observe or decide yourself.
   IDLE             — {{ "kind":"IDLE" }}
 """
+
+
+def partition_fleet(model: str, task: str, bots_info: str, bot_names: list) -> dict:
+    """Split one fleet order into per-bot assignments. Returns {bot: text};
+    a bot may be assigned "skip". Raises on parse failure (caller falls
+    back to verbatim fan-out)."""
+    sys_prompt = (
+        "You are the fleet coordinator for a team of Minecraft bots. Split the "
+        "operator's order into ONE short instruction per bot, playing to each "
+        "bot's role and holdings. If a bot has nothing useful to do, assign "
+        "exactly \"skip\". Reply with ONLY a JSON object mapping every bot "
+        "name to its instruction.\n\nThe team:\n" + bots_info
+        + "\n\nBot names: " + ", ".join(bot_names))
+    with ollama_lock:
+        resp = requests.post(
+            f"{OLLAMA_URL}/api/chat",
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": task},
+                ],
+                "stream": False,
+                "format": "json",
+                "options": {"temperature": 0.3, "num_predict": 400},
+            },
+            timeout=120,
+        )
+    resp.raise_for_status()
+    out = json.loads(resp.json().get("message", {}).get("content", "{}"))
+    return {k: str(v) for k, v in out.items() if k in bot_names}
+
+
+def converse(model: str, bot_name: str, persona: str, text: str,
+             world_state: str = "", memory_context: str = "",
+             directive_line: str = "", history: list | None = None) -> str:
+    """One conversational turn with a bot's L3. No plan, no JSON, no dispatch.
+
+    The other half of the Talk/Order split: L3 is powerful and mostly idle,
+    and talking to it should not spawn an orchestrator run. Context carries
+    the bot's persona, what it can see, and what it is doing — so 'what do
+    you make of the terrain' gets an answer from THIS bot, here, now."""
+    sys_prompt = (
+        f"You are {bot_name}, an AI bot in Minecraft.\n"
+        f"Persona: {persona}\n\n"
+        f"Your operator is talking WITH you — this is conversation, not an order. "
+        f"Nothing you say here is executed. Answer in character, concretely, in "
+        f"1-3 sentences. No JSON, no lists unless asked.\n\n"
+        f"What you can observe: {world_state or '(nothing reported)'}\n"
+        f"What you are doing: {directive_line or 'standing by'}\n"
+        + (f"Relevant memories:\n{memory_context}\n" if memory_context else "")
+    )
+    # The transcript rides along as real chat turns — without it every
+    # reply started the conversation over (player: "the chat is disjointed").
+    messages = [{"role": "system", "content": sys_prompt}]
+    for line in (history or [])[-10:]:
+        who = str(line.get("who", ""))
+        messages.append({
+            "role": "assistant" if who == bot_name else "user",
+            "content": str(line.get("text", ""))[:400],
+        })
+    messages.append({"role": "user", "content": text})
+    with ollama_lock:
+        resp = requests.post(
+            f"{OLLAMA_URL}/api/chat",
+            json={
+                "model": model,
+                "messages": messages,
+                "stream": False,
+                "options": {"temperature": 0.7, "num_predict": 200},
+            },
+            timeout=60,
+        )
+    resp.raise_for_status()
+    return (resp.json().get("message", {}).get("content") or "").strip()
 
 
 def call_exec(model: str, plan: Plan, subtask: Subtask,
