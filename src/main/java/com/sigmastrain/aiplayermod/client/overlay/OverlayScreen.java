@@ -141,22 +141,51 @@ public class OverlayScreen extends Screen {
         ddScroll = 0;
     }
 
-    /** The unit picker: every bot (originals, officers, drones) in one
-     *  type-to-search list, so the army scales past a tab-per-unit strip. */
-    private void openUnitPicker() {
-        List<String> names = new java.util.ArrayList<>();
-        for (OverlayPayloads.BotEntry b : snapshot.bots()) names.add(b.name());
-        openDropdown("select unit", names, this::pickUnit);
+    /** The navigation picker: Fleet, Inbox, extensions, the Drones roster and
+     *  every unit (originals, officers, drones) in ONE type-to-search list —
+     *  the whole control plane is reached from a single input instead of a
+     *  strip of tabs that runs off the panel as the army grows. */
+    private void openNavPicker() {
+        java.util.LinkedHashMap<String, Runnable> nav = new java.util.LinkedHashMap<>();
+        nav.put("Fleet", () -> selectUnit(-1));
+        int pending = inbox.items().size();
+        nav.put(pending > 0 ? "Inbox (" + pending + ")" : "Inbox",
+                () -> selectUnit(VIEW_INBOX));
+        var extTabs = OverlayExtensions.tabs();
+        for (int i = 0; i < extTabs.size(); i++) {
+            final int idx = VIEW_EXT_BASE - i;
+            nav.put(extTabs.get(i).label(), () -> selectUnit(idx));
+        }
+        List<OverlayPayloads.BotEntry> bots = snapshot.bots();
+        int droneCount = 0;
+        for (OverlayPayloads.BotEntry b : bots) if (isDrone(b)) droneCount++;
+        if (droneCount > 0) nav.put("Drones (" + droneCount + ")", () -> selectUnit(VIEW_DRONES));
+        for (int i = 0; i < bots.size(); i++) {
+            final int idx = i;
+            nav.put(bots.get(i).name(), () -> selectUnit(idx));
+        }
+        openDropdown("go to", new java.util.ArrayList<>(nav.keySet()), label -> {
+            Runnable r = nav.get(label);
+            if (r != null) r.run();
+        });
     }
 
-    private void pickUnit(String name) {
-        List<OverlayPayloads.BotEntry> bots = snapshot.bots();
-        for (int i = 0; i < bots.size(); i++) {
-            if (bots.get(i).name().equals(name)) {
-                selectUnit(i);
-                return;
-            }
-        }
+    /** The seven unit views (Status/Vault/Channel/Cmd/Mind/Talk/Stand) in a
+     *  single type-to-search dropdown — the same input as the navigation
+     *  picker, instead of a fixed strip of buttons with nowhere to grow. */
+    private void openCommandPicker() {
+        java.util.LinkedHashMap<String, Runnable> cmds = new java.util.LinkedHashMap<>();
+        cmds.put("Status", () -> switchUnitTab(UnitTab.STATUS));
+        cmds.put("Vault", () -> switchUnitTab(UnitTab.VAULT));
+        cmds.put("Channel", () -> switchUnitTab(UnitTab.CHANNEL));
+        cmds.put("Cmd", () -> switchUnitTab(UnitTab.COMMAND));
+        cmds.put("Mind", () -> switchUnitTab(UnitTab.MIND));
+        cmds.put("Talk", () -> switchUnitTab(UnitTab.TALK));
+        cmds.put("Stand", () -> switchUnitTab(UnitTab.STANDING));
+        openDropdown("unit command", new java.util.ArrayList<>(cmds.keySet()), label -> {
+            Runnable r = cmds.get(label);
+            if (r != null) r.run();
+        });
     }
 
     private static final int DD_ROWS = 10;
@@ -303,42 +332,29 @@ public class OverlayScreen extends Screen {
         clearWidgets();
         int px = panelX(), py = panelY(), pw = panelW();
 
-        // Tab strip: [Fleet] [Inbox(n)] then one per bot.
+        // Navigation: Fleet, Inbox, extensions, the Drones roster and every
+        // unit (originals, officers, drones) all live in ONE searchable
+        // dropdown — a tab-per-view strip runs straight off the panel as the
+        // army grows (the "tabs stretch horizontally off screen" report).
         int tx = px + 8;
         int ty = py + 22;
-        addTab(tx, ty, 44, "Fleet", -1);
-        tx += 48;
-        int pending = inbox.items().size();
-        String inboxLabel = pending > 0 ? "Inbox §6(" + pending + ")" : "Inbox";
-        int iw = Math.max(48, font.width(inboxLabel) + 14);
-        addTab(tx, ty, iw, inboxLabel, VIEW_INBOX);
-        tx += iw + 4;
-        var extTabs = OverlayExtensions.tabs();
-        for (int i = 0; i < extTabs.size(); i++) {
-            int ew = Math.max(44, font.width(extTabs.get(i).label()) + 14);
-            addTab(tx, ty, ew, extTabs.get(i).label(), VIEW_EXT_BASE - i);
-            tx += ew + 4;
-        }
         List<OverlayPayloads.BotEntry> bots = snapshot.bots();
-        // Individual units collapse into ONE searchable dropdown instead of a
-        // tab per bot — the army grows to dozens of officers/drones and a
-        // tab-per-unit strip runs straight off the panel (the "tabs stretch
-        // horizontally off screen" report). Fleet/Inbox/extensions stay as
-        // fixed tabs; every unit is reached through the picker, and the
-        // Drones roster keeps its grouped overview.
-        String unitLabel = (selected >= 0 && selected < bots.size())
-                ? "§b" + bots.get(selected).name() + " ▾" : "Units ▾";
-        int uw = Math.max(48, font.width(stripCodes(unitLabel)) + 14);
-        addRenderableWidget(Button.builder(Component.literal(unitLabel), b -> openUnitPicker())
-                .bounds(tx, ty, uw, 16).build());
-        tx += uw + 4;
-        int droneCount = 0;
-        for (OverlayPayloads.BotEntry b : bots) if (isDrone(b)) droneCount++;
-        if (droneCount > 0) {
-            String dl = "§fDrones (" + droneCount + ")";
-            int dw = Math.max(44, font.width(stripCodes(dl)) + 14);
-            addTab(tx, ty, dw, dl, VIEW_DRONES);
+        String navLabel;
+        if (activeExtension() != null) {
+            navLabel = activeExtension().label();
+        } else if (selected == VIEW_INBOX) {
+            navLabel = "Inbox";
+        } else if (selected == VIEW_DRONES) {
+            navLabel = "Drones";
+        } else if (selected >= 0 && selected < bots.size()) {
+            navLabel = bots.get(selected).name();
+        } else {
+            navLabel = "Fleet";
         }
+        String navBtn = "§b" + navLabel + " ▾";
+        int nw = Math.max(64, font.width(stripCodes(navBtn)) + 14);
+        addRenderableWidget(Button.builder(Component.literal(navBtn), b -> openNavPicker())
+                .bounds(tx, ty, nw, 16).build());
 
         // Interrupt — only meaningful on a bot tab with an ACTIVE directive.
         // Destructive (kills in-flight work), so it asks itself twice.
@@ -389,13 +405,22 @@ public class OverlayScreen extends Screen {
         OverlayPayloads.BotEntry unit = selectedBot();
         if (unit != null) {
             int sy = py + 44;
-            addTabSmall(px + 8, sy, "Status", () -> switchUnitTab(UnitTab.STATUS));
-            addTabSmall(px + 58, sy, "Vault", () -> switchUnitTab(UnitTab.VAULT));
-            addTabSmall(px + 108, sy, "Channel", () -> switchUnitTab(UnitTab.CHANNEL));
-            addTabSmall(px + 158, sy, "Cmd", () -> switchUnitTab(UnitTab.COMMAND));
-            addTabSmall(px + 208, sy, "Mind", () -> switchUnitTab(UnitTab.MIND));
-            addTabSmall(px + 258, sy, "Talk", () -> switchUnitTab(UnitTab.TALK));
-            addTabSmall(px + 308, sy, "Stand", () -> switchUnitTab(UnitTab.STANDING));
+            // The seven unit views collapse into ONE searchable dropdown, the
+            // same input as the navigation picker — a fixed strip of seven
+            // buttons is another row with nowhere to grow.
+            String cmdLabel = switch (unitTab) {
+                case STATUS -> "Status";
+                case VAULT -> "Vault";
+                case CHANNEL -> "Channel";
+                case COMMAND -> "Cmd";
+                case MIND -> "Mind";
+                case TALK -> "Talk";
+                case STANDING -> "Stand";
+            };
+            String cmdBtn = "§7" + cmdLabel + " ▾";
+            int cw = Math.max(64, font.width(stripCodes(cmdBtn)) + 14);
+            addRenderableWidget(Button.builder(Component.literal(cmdBtn), b -> openCommandPicker())
+                    .bounds(px + 8, sy, cw, 16).build());
 
             switch (unitTab) {
                 case STATUS -> buildStatusWidgets(unit, px, py, pw);
@@ -618,11 +643,6 @@ public class OverlayScreen extends Screen {
     public void onThoughts(String bot) {
         // Data lands in OverlayClientState; render pulls it. Nothing scrolls
         // on its own — newest renders first, the user owns the scroll.
-    }
-
-    private void addTabSmall(int x, int y, String label, Runnable action) {
-        addRenderableWidget(Button.builder(Component.literal(label), b -> action.run())
-                .bounds(x, y, 46, 14).build());
     }
 
     private void buildStatusWidgets(OverlayPayloads.BotEntry unit, int px, int py, int pw) {
@@ -1109,12 +1129,6 @@ public class OverlayScreen extends Screen {
     private void invalidateQuote() {
         quote = null;
         if (channelCommit != null) channelCommit.active = false;
-    }
-
-    private void addTab(int x, int y, int w, String label, int index) {
-        addRenderableWidget(Button.builder(Component.literal(label), b -> {
-            selectUnit(index);
-        }).bounds(x, y, w, 16).build());
     }
 
     /** Switching bots resets the sub-tab and per-bot caches. */
