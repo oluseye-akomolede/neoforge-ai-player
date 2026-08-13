@@ -1,0 +1,21 @@
+name: l3-emits-skill
+description: >
+  L3 integration: given "Mine 8 iron ore and smelt them into iron ingots",
+  L3 should emit a single {kind:SKILL, target:mine_and_smelt} directive rather
+  than hand-decomposing MINE+SMELT. Completion is verified by iron ingots in
+  inventory; SKILL emission is confirmed by the agent log tail (run with
+  --show-logs and look for "Directive sent: SKILL").
+
+world:
+  type: normal
+
+bots:
+  - image: null
+
+steps:
+  - instruction: "Mine 8 iron ore blocks, then smelt them into iron ingots"
+    timeout: 600
+    success:
+      inventory_contains:
+        item: minecraft:iron_ingot
+        min_count: 8

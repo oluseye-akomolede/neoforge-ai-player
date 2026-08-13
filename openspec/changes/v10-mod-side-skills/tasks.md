@@ -57,6 +57,21 @@ aiplayermod only (per testing directive); hive skills arrive after.
       `{kind:"SKILL", target:"search_and_loot", ...}` directive; the bot
       completes it end-to-end; `criteria_eval` marks the subtask complete
       without an L3 fallback.
+      **Investigated 2026-08-13 — NOT met.** Live-tested via
+      `agent/testing/tests/l3_emits_skill.yaml` (instruction → L3 plan →
+      exec). Two blockers found, one fixed, one open:
+      1. *(fixed)* Test-harness `OLLAMA_URL` pointed at the dead
+         `ollama.mindcraft` service (no endpoints since the ollama migration).
+         Repointed to `ollama-l3.minecraft-test` in `pod-template.yaml`.
+      2. *(open)* L3's PLAN prompt had no skill awareness, so the planner
+         decomposed a skill-covered task ("Mine 8 iron ore and smelt") into
+         raw MINE+SMELT subtasks before the skill-aware exec phase ever ran.
+         Added the skill catalog + a "one subtask per covered skill" rule to
+         `_PLAN_SYSTEM_PROMPT` (commit 4dba8fb), but qwen2.5:14b still
+         decomposes — it does not reliably prefer a skill over hand-
+         decomposition. Verdict: this proof is gated on either a
+         deterministic agent-side skill matcher (code, not prompt) or the
+         14b→32b upgrade (already deferred).
 - [x] Runtime self-expansion: `SkillBehavior` accepts an inline
       `extra.spec`; `SkillValidator` gates it; `extra.register` (opt-in)
       registers under a generated id; registry cap + LRU eviction.
