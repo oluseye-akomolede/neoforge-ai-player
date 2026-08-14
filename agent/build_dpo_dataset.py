@@ -155,6 +155,14 @@ def main() -> int:
     ap.add_argument("--trajectory-dir", default=None)
     ap.add_argument("--plans-dir", default=None)
     ap.add_argument("--out", default="dpo_dataset.jsonl")
+    ap.add_argument(
+        "--min-pairs",
+        type=int,
+        default=0,
+        help="Exit 2 (data-gated, not an error) if fewer than this many pairs "
+             "are found — lets a scheduled Airflow run fail fast instead of "
+             "training on a tiny dataset.",
+    )
     args = ap.parse_args()
 
     traj = pathlib.Path(args.trajectory_dir) if args.trajectory_dir else None
@@ -174,6 +182,10 @@ def main() -> int:
     print(f"  by source: {dict(by_src)}")
     if not pairs:
         print("  WARNING: no pairs. Data volume is the blocker (see module doc).")
+    if len(pairs) < args.min_pairs:
+        print(f"DATA_GATED: {len(pairs)} pairs < --min-pairs {args.min_pairs} "
+              f"— accumulate more trajectory data before training.")
+        return 2
     return 0
 
 
