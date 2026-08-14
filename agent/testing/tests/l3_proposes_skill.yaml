@@ -21,9 +21,11 @@ description: >
   currently: across three task shapes (conjure+store, meditate+conjure,
   equip+conjure) L3 never proposes — it either matches a seed ("conjure X" ->
   resupply_network) or PLAN-splits the task into single-directive subtasks
-  (sometimes inventing a trivial "ensure in overworld" subtask and ignoring
-  EQUIP_ALL entirely). That is LLM variance, not a code bug — the mod-side path
-  is proven deterministically by skill-propose-register.yaml.
+  (inventing a trivial no-op subtask — "ensure in overworld", then "holdings
+  0/0 of minecraft:air" — and ignoring EQUIP_ALL entirely). A PLAN-prompt line
+  to keep bounded reusable routines whole (v16) did NOT change this against the
+  14b model. That is a model-capability limit, not a code bug — the mod-side
+  path is proven deterministically by skill-propose-register.yaml.
 world:
   type: normal
 

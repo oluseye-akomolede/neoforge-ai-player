@@ -256,6 +256,12 @@ minecraft:iron_ingot"). Do NOT split a skill-covered task into its component
 directives — the skill already sequences them. Fall back to raw subtasks only
 when no skill fits.
 
+When NO skill covers the task but the task is a bounded, reusable multi-step
+routine (2-3 directive kinds in a fixed order, e.g. "equip then fight"), plan a
+SINGLE subtask for the whole routine — do NOT split it into one-directive
+subtasks. The exec layer can then synthesize a NEW skill for it inline. Split
+into separate subtasks only when the steps are independent goals, not one routine.
+
 Output schema:
 {{
   "task": "<echo the task text>",
