@@ -11,6 +11,16 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 L4_ENABLED = os.getenv("L4_ENABLED", "true").lower() in ("true", "1", "yes")
 
+# Off-loop skill author (DeepSeek). Separation of concerns: L3 (local qwen2.5)
+# stays in the live loop for planning/dispatch; DeepSeek authors reusable skills
+# OFF-LOOP from logged trajectories. The key lives in ANTHROPIC_AUTH_TOKEN (a
+# DeepSeek token) by deliberate user choice — never in settings.json.
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", os.getenv("ANTHROPIC_AUTH_TOKEN", ""))
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
+DEEPSEEK_URL = os.getenv("DEEPSEEK_URL", "https://api.deepseek.com")
+SKILL_AUTHOR_ENABLED = os.getenv("SKILL_AUTHOR_ENABLED", "false").lower() in ("true", "1", "yes")
+SKILL_AUTHOR_INTERVAL = float(os.getenv("SKILL_AUTHOR_INTERVAL", "90.0"))
+
 PROFILE_PATH = os.getenv("PROFILE_PATH", os.path.join(os.path.dirname(__file__), "profiles", "default.json"))
 
 TICK_DELAY = float(os.getenv("TICK_DELAY", "2.0"))

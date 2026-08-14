@@ -415,6 +415,16 @@ def skills():
     return _get("/skills")
 
 
+def register_skill(spec_json, skill_id=None):
+    """Off-loop author: validate + register a SkillSpec server-globally, without
+    executing it. `spec_json` is the full SkillSpec contract string
+    ({"id","description","params","nodes"}); returns the mod's {status, id|error}."""
+    body = {"spec": spec_json}
+    if skill_id:
+        body["id"] = skill_id
+    return _post("/skills", body, timeout=10)
+
+
 def skill_output(skill_id, **params):
     """Resolve a skill's terminal held item (for criteria grounding).
 

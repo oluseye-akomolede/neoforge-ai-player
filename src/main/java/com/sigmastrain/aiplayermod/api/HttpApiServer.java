@@ -14,6 +14,7 @@ import com.sigmastrain.aiplayermod.shop.TransmuteRegistry;
 import com.sigmastrain.aiplayermod.brain.skill.SkillRegistry;
 import com.sigmastrain.aiplayermod.brain.skill.SkillOutputResolver;
 import com.sigmastrain.aiplayermod.brain.skill.SkillSpec;
+import com.sigmastrain.aiplayermod.brain.skill.SkillValidator;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -108,16 +109,60 @@ public class HttpApiServer {
         ));
     }
 
-    // ── /skills ── (GET = catalog of registered skills)
+    // ── /skills ── (GET = catalog, POST = off-loop register)
 
     private void handleSkills(HttpExchange exchange) throws IOException {
         if (!checkAuth(exchange)) return;
-        if (!"GET".equals(exchange.getRequestMethod())) {
-            sendJson(exchange, 405, Map.of("error", "Method not allowed"));
+        String method = exchange.getRequestMethod();
+        if ("GET".equals(method)) {
+            // SkillRegistry is concurrent; no server.execute hop needed.
+            sendJson(exchange, 200, Map.of("skills", SkillRegistry.catalog()));
             return;
         }
-        // SkillRegistry is concurrent; no server.execute hop needed.
-        sendJson(exchange, 200, Map.of("skills", SkillRegistry.catalog()));
+        if ("POST".equals(method)) {
+            handleSkillRegister(exchange);
+            return;
+        }
+        sendJson(exchange, 405, Map.of("error", "Method not allowed"));
+    }
+
+    /** Off-loop author register: validate + store a proposed SkillSpec
+     *  server-globally WITHOUT executing it. Mirrors SkillBehavior.resolveSpec's
+     *  inline-spec register (a gen~ key guards curated seeds) but is standalone,
+     *  so the off-loop DeepSeek author never occupies a bot's directive slot or
+     *  triggers world actions on one. */
+    private void handleSkillRegister(HttpExchange exchange) throws IOException {
+        JsonObject body = readBody(exchange);
+        if (!body.has("spec")) {
+            sendJson(exchange, 400, Map.of("error", "'spec' (SkillSpec JSON string) required"));
+            return;
+        }
+        String specJson = body.get("spec").getAsString();
+        SkillSpec spec;
+        try {
+            spec = SkillSpec.parse(specJson);
+        } catch (RuntimeException e) {
+            sendJson(exchange, 200, Map.of("status", "rejected",
+                    "error", "spec unparsable: " + e.getMessage()));
+            return;
+        }
+        java.util.List<String> errors = SkillValidator.validate(spec, SkillRegistry::get);
+        if (!errors.isEmpty()) {
+            sendJson(exchange, 200, Map.of("status", "rejected",
+                    "error", "skill '" + spec.id + "' rejected: " + String.join("; ", errors)));
+            return;
+        }
+        String id = body.has("id") && !body.get("id").getAsString().isBlank()
+                ? body.get("id").getAsString() : spec.id;
+        if (SkillRegistry.has(id)) {
+            id = "gen~" + spec.id + "~" + Integer.toHexString(specJson.hashCode());
+        }
+        String err = SkillRegistry.register(id, spec);
+        if (err != null) {
+            sendJson(exchange, 200, Map.of("status", "rejected", "error", err));
+            return;
+        }
+        sendJson(exchange, 200, Map.of("status", "registered", "id", id));
     }
 
     // ── /skills/resolve ── (GET = deterministic skill-output resolution)

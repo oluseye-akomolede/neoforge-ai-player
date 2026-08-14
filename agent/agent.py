@@ -26,6 +26,7 @@ import openai_brain
 import waypoints
 import mc_items
 import terrain_db
+import skill_author
 
 # L3 spec-driven planning (shadow-persistence). Plans are written alongside
 # the existing decompose flow so the dashboard can surface them. Full Phase 1
@@ -3654,6 +3655,10 @@ def run():
     threading.Thread(target=_order_worker, name="order-worker", daemon=True).start()
     threading.Thread(target=_standing_worker, name="standing-worker", daemon=True).start()
     threading.Thread(target=_drone_adoption_worker, name="drone-adoption", daemon=True).start()
+
+    # Off-loop skill author (DeepSeek) — separated from L3's live loop. Spawns
+    # its own thread only when enabled + keyed (gating lives in skill_author).
+    skill_author.start_worker()
 
     print("=" * 50)
 
