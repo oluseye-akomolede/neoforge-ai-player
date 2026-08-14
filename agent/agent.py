@@ -156,6 +156,11 @@ class BotRunner:
         self.name = profile["name"]
         self.model = profile.get("model", "llama3.1:8b")
         self.specializations = profile.get("specializations", ["general"])
+        # Squad binding: a drone carries the name of its officer; an officer
+        # carries the names of its drones. Synced from the hive mod's `squads`
+        # map by _drone_adoption_worker (source of truth is mod-side).
+        self.squad = profile.get("squad", "")            # officer name, or ""
+        self.squad_members = list(profile.get("squad_members", []))
         self.chat_history = []
         self.conversation_history = []
         self.memory_entries = []
@@ -1230,6 +1235,10 @@ class BotRunner:
     def _check_task_board(self):
         """If idle (no plan), check the shared task board for pending tasks."""
         if self._plan_steps or not _task_board or self._following_player:
+            return
+        if self.squad:
+            # Bound drone: subordinated to its officer. It does not compete on
+            # the global board — it idles until its officer dispatches squad work.
             return
         try:
             task = _task_board.claim(self.name, self.specializations + ["any"])
@@ -3232,6 +3241,14 @@ def _drone_adoption_worker():
         try:
             names = {b.get("name")
                      for b in (api.list_bots() or {}).get("bots", [])}
+            # Squad bindings live mod-side (cycleSquad UI / army auto-assign);
+            # the agent mirrors them so an officer knows its drones and a drone
+            # knows its officer. Fail-open: no hive-mod → no squads.
+            squads = {}
+            try:
+                squads = (api.hive_units() or {}).get("squads", {}) or {}
+            except Exception:
+                pass
             for n in sorted(names):
                 if n and DRONE_RE.fullmatch(n) and n not in _all_runners:
                     officer = n.startswith("Officer")
@@ -3239,6 +3256,10 @@ def _drone_adoption_worker():
                         "name": n, "model": base_model,
                         "specializations": ["officer" if officer else "drone"],
                         "ephemeral": not officer,   # officers persist; drones don't
+                        "squad": "" if officer else str(squads.get(n, "")),
+                        "squad_members": [] if not officer else [
+                            d for d, o in squads.items()
+                            if o == n and d in names],
                         "persona": ("a hive officer — composed, tactical, speaks for its squad"
                                     if officer
                                     else "a silent, efficient hive drone — terse and obedient"),
@@ -3246,6 +3267,21 @@ def _drone_adoption_worker():
                     _all_runners[n] = runner
                     runner.start()
                     print(f"[agent] adopted hive unit {n}")
+            # Re-bind live runners each poll so cycleSquad / auto-assign take
+            # effect without a restart (squad membership is cheap, mutable state).
+            for n, runner in _all_runners.items():
+                if not DRONE_RE.fullmatch(n):
+                    continue
+                if n.startswith("Officer"):
+                    members = [d for d, o in squads.items() if o == n and d in names]
+                    if runner.squad_members != members:
+                        runner.squad_members = members
+                        print(f"[agent] squad {n} -> {members}")
+                else:
+                    officer = str(squads.get(n, ""))
+                    if runner.squad != officer:
+                        runner.squad = officer
+                        print(f"[agent] squad {n} under {officer or 'none'}")
             for n in list(_all_runners):
                 if DRONE_RE.fullmatch(n) and n not in names:
                     runner = _all_runners.pop(n)
@@ -3258,12 +3294,46 @@ def _drone_adoption_worker():
             print(f"[agent/drones] adoption error: {e}")
 
 
+def _partition_to_orders(bots, model, text, player, group_id, label):
+    """Partition `text` across `bots` via one L3 call (citing each bot's persona
+    + holdings) and re-inject one TEXT order per bot sharing `group_id`.
+    Partition failure falls back to verbatim fan-out — degraded beats dead."""
+    assignments = {}
+    try:
+        import l3_planner
+        infos = []
+        for b in bots:
+            persona = _BOT_VOICES.get(b.lower(), "generalist")
+            holding = ""
+            try:
+                eff = api.effective_inventory(b).get("inventory", [])
+                rows = sorted(eff, key=lambda r: -(int(r.get("carried", 0))
+                              + int(r.get("vault", 0))))[:6]
+                holding = ", ".join(f"{r.get('item','?')}" for r in rows)
+            except Exception:
+                pass
+            infos.append(f"- {b}: {persona[:80]}" + (f" | holds: {holding}" if holding else ""))
+        assignments = l3_planner.partition_fleet(model, text, "\n".join(infos), bots)
+    except Exception as e:
+        print(f"[{label}] partition failed ({e}) — verbatim fan-out")
+
+    for b in bots:
+        task = str(assignments.get(b, "") or text).strip()
+        if task.lower() in ("skip", "none", "-"):
+            continue
+        try:
+            api.raw_post("/telemetry/orders", {
+                "bot": b, "kind": "TEXT", "player": player,
+                "fleet": group_id, "params": {"text": task}})
+        except Exception as e:
+            print(f"[{label}] submit for {b} failed: {e}")
+    print(f"[{label}] partitioned '{text[:60]}' across {len(bots)} bots")
+
+
 def _run_fleet_partition(oid, params, player, fleet_id):
     """One natural-language order for the whole fleet: a single L3 call
-    splits it into per-bot assignments citing each bot's persona and
-    holdings; each assignment then runs through the ordinary per-bot lane.
-    Partition failure falls back to verbatim fan-out — degraded beats dead.
-    Orders that move items out of vaults gate on ONE inbox confirm."""
+    splits it into per-bot assignments. Orders that move items out of vaults
+    gate on ONE inbox confirm."""
     import json as _json
     try:
         p = _json.loads(params) if isinstance(params, str) else (params or {})
@@ -3286,37 +3356,41 @@ def _run_fleet_partition(oid, params, player, fleet_id):
             return
         # timeout or dispatch → proceed (the per-bot L4 triggers still stand)
 
-    assignments = {}
-    try:
-        import l3_planner
-        infos = []
-        for b in bots:
-            persona = _BOT_VOICES.get(b.lower(), "generalist")
-            holding = ""
-            try:
-                eff = api.effective_inventory(b).get("inventory", [])
-                rows = sorted(eff, key=lambda r: -(int(r.get("carried", 0))
-                              + int(r.get("vault", 0))))[:6]
-                holding = ", ".join(f"{r.get('item','?')}" for r in rows)
-            except Exception:
-                pass
-            infos.append(f"- {b}: {persona[:80]}" + (f" | holds: {holding}" if holding else ""))
-        assignments = l3_planner.partition_fleet(
-            _all_runners[bots[0]].model, text, "\n".join(infos), bots)
-    except Exception as e:
-        print(f"[fleet] partition failed ({e}) — verbatim fan-out")
+    _partition_to_orders(bots, _all_runners[bots[0]].model, text, player,
+                         fleet_id, "fleet")
 
-    for b in bots:
-        task = str(assignments.get(b, "") or text).strip()
-        if task.lower() in ("skip", "none", "-"):
-            continue
-        try:
-            api.raw_post("/telemetry/orders", {
-                "bot": b, "kind": "TEXT", "player": player,
-                "fleet": fleet_id, "params": {"text": task}})
-        except Exception as e:
-            print(f"[fleet] submit for {b} failed: {e}")
-    print(f"[fleet] {oid}: partitioned '{text[:60]}' across {len(bots)} bots")
+
+def _run_squad_partition(officer, oid, params, player, kind):
+    """One order to an officer fans out across its bound squad (officer +
+    assigned drones). TEXT orders get one L3 partition scoped to the squad;
+    typed orders fan out verbatim. The officer's model drives the partition."""
+    import json as _json
+    runner = _all_runners.get(officer)
+    if not runner:
+        return
+    members = [officer] + [d for d in runner.squad_members if d in _all_runners]
+
+    # Typed order → verbatim fan-out to every squad member (same as fleet).
+    if kind != "TEXT":
+        for b in members:
+            try:
+                api.raw_post("/telemetry/orders", {
+                    "bot": b, "kind": kind, "player": player,
+                    "fleet": f"squad:{officer}", "params": params})
+            except Exception as e:
+                print(f"[squad] submit for {b} failed: {e}")
+        print(f"[squad] {oid}: fanned out typed '{kind}' to {len(members)} units")
+        return
+
+    try:
+        p = _json.loads(params) if isinstance(params, str) else (params or {})
+    except Exception:
+        p = {}
+    text = str(p.get("text", "")).strip()
+    if not text:
+        return
+    _partition_to_orders(members, runner.model, text, player,
+                         f"squad:{officer}", f"squad:{officer}")
 
 
 def _order_text(kind, params):
@@ -3359,7 +3433,35 @@ def _order_worker():
                           str(order.get("fleet", ""))),
                     name=f"fleet:{oid}", daemon=True).start()
                 continue
+            # Explicit squad address: order the whole bound squad at once.
+            if bot.startswith("squad:"):
+                officer = bot[len("squad:"):]
+                orunner = _all_runners.get(officer)
+                if orunner and orunner.squad_members:
+                    threading.Thread(
+                        target=_run_squad_partition,
+                        args=(officer, oid, order.get("params"),
+                              str(order.get("player", "")), kind),
+                        name=f"squad:{oid}", daemon=True).start()
+                else:
+                    try:
+                        api.raw_post("/telemetry/orders", {
+                            "id": oid, "bot": bot, "kind": kind, "status": "FAILED",
+                            "detail": "no such squad"})
+                    except Exception:
+                        pass
+                continue
             runner = _all_runners.get(bot)
+            # A fresh order to an officer commands its bound squad (fan-out).
+            # The `fleet` field marks re-injected sub-orders from a fleet/squad
+            # partition, so the officer's own share runs solo — never re-partition.
+            if runner and runner.squad_members and not order.get("fleet"):
+                threading.Thread(
+                    target=_run_squad_partition,
+                    args=(bot, oid, order.get("params"),
+                          str(order.get("player", "")), kind),
+                    name=f"squad:{oid}", daemon=True).start()
+                continue
             text = _order_text(kind, order.get("params"))
             if not runner or not text:
                 try:

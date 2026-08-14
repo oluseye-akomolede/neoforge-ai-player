@@ -52,6 +52,16 @@ def list_bots():
     return _get("/bots")
 
 
+def hive_units():
+    """The hive roster + squad bindings, from hive-mod's POST /hive/units
+    (mounted into this API via ApiExtensions). Fail-open to {} when hive-mod
+    isn't loaded, so squad binding degrades to "no squads" rather than erroring."""
+    try:
+        return _post("/hive/units", {"action": "list"})
+    except Exception:
+        return {}
+
+
 # ── Observation ──
 
 def status(bot):
