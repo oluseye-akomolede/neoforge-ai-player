@@ -102,6 +102,13 @@ public class SmeltBehavior implements Behavior {
         Map.entry("minecraft:raw_copper_block", "minecraft:copper_block")
     );
 
+    /** Resolve the smelt output for an input item id (null when there is no
+     *  recipe). Public so {@code SkillOutputResolver} composes the exact table
+     *  this behavior enforces at runtime — no re-encoding. */
+    public static String resolveOutput(String inputItemId) {
+        return SMELTING_RECIPES.get(inputItemId);
+    }
+
     private final ProgressReport progress = new ProgressReport();
     private Phase phase;
 

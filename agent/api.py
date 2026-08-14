@@ -415,6 +415,19 @@ def skills():
     return _get("/skills")
 
 
+def skill_output(skill_id, **params):
+    """Resolve a skill's terminal held item (for criteria grounding).
+
+    Returns the mod's response {skill, output, resolved_by}; `output` is None
+    when the skill has no deterministic material output (e.g. goto_and_scan).
+    Extra kwargs are the skill's parameters (mirroring the SKILL directive's
+    extra map)."""
+    qs = {"skill": skill_id}
+    qs.update({k: str(v) for k, v in params.items()})
+    query = "&".join(f"{k}={v}" for k, v in qs.items())
+    return _get(f"/skills/resolve?{query}")
+
+
 # ── ME fabric (worn wireless terminal; v7 phase 6) ──
 
 def me_status(bot):

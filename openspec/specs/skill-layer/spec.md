@@ -114,3 +114,47 @@ evaluated by the agent's deterministic `criteria_eval` strategies.
 - WHEN the skill returns SUCCESS with inventory containing the loot
 - THEN `criteria_eval` marks the subtask complete via strategy 1 or 3
 - AND no L3 evaluation fallback is needed
+
+### Requirement: Skill output is resolvable mod-side
+The mod MUST be able to state, deterministically, what item a skill ends up
+holding after a full run. This is either the skill spec's optional `produces`
+override or an inference that walks the skill's node tree, composing
+`MineBehavior`'s drop table (MINE leaves) and `SmeltBehavior`'s smelting
+recipes (SMELT leaves). The resolver MUST NOT re-encode those tables, and MUST
+return no output when the skill's output is not determinable (e.g.
+`goto_and_scan` leaves nothing in hand).
+
+#### Scenario: Mine-and-smelt output resolves to the smelted ingot
+- GIVEN the registered skill `mine_and_smelt` (MINE then SMELT)
+- WHEN `GET /skills/resolve?skill=mine_and_smelt&target=iron_ore` is queried
+- THEN the response `output` is `minecraft:iron_ingot`
+- AND `resolved_by` is `inference`
+
+#### Scenario: Non-material skill resolves to no output
+- GIVEN the registered skill `goto_and_scan` (TELEPORT then WIDE_SEARCH)
+- WHEN `GET /skills/resolve?skill=goto_and_scan` is queried
+- THEN the response `output` is null
+
+#### Scenario: `produces` override wins
+- GIVEN a skill whose spec carries `"produces": "minecraft:iron_ingot"`
+- WHEN its output is resolved
+- THEN the override is returned regardless of what the tree infers
+- AND `resolved_by` is `override`
+
+### Requirement: Skill criteria are grounded in the resolved output
+When a subtask is covered by a `SKILL` directive, the agent MUST ground an
+inventory criterion that names a non-existent item to the skill's resolved
+output, rather than leaving the hallucinated id to fail `criteria_eval`. The
+grounding MUST be deterministic (a registry lookup, not an LLM call) and MUST
+leave real items untouched.
+
+#### Scenario: Hallucinated inventory item grounded to the output
+- GIVEN a SKILL-covered subtask whose criterion is "inventory has 8
+  minecraft:iron_ore_blocks" (a non-existent item)
+- WHEN the skill's resolved output is `minecraft:iron_ingot`
+- THEN the criterion is rewritten to "inventory has 8 minecraft:iron_ingot"
+
+#### Scenario: Real item left untouched
+- GIVEN a SKILL-covered subtask whose criterion names `minecraft:iron_pickaxe`
+- WHEN that id exists in the mod's item registry
+- THEN the criterion clause is left unchanged

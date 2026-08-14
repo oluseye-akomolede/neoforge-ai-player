@@ -12,6 +12,8 @@ import com.sigmastrain.aiplayermod.shop.BotShop;
 import com.sigmastrain.aiplayermod.shop.EnchantmentRegistry;
 import com.sigmastrain.aiplayermod.shop.TransmuteRegistry;
 import com.sigmastrain.aiplayermod.brain.skill.SkillRegistry;
+import com.sigmastrain.aiplayermod.brain.skill.SkillOutputResolver;
+import com.sigmastrain.aiplayermod.brain.skill.SkillSpec;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -62,6 +64,7 @@ public class HttpApiServer {
             server.createContext("/server/me_networks", this::handleMeNetworks);
             server.createContext("/server/players", this::handlePlayers);
             server.createContext("/skills", this::handleSkills);
+            server.createContext("/skills/resolve", this::handleSkillResolve);
 
             for (ApiExtensions.Route r : ApiExtensions.routes()) {
                 server.createContext(r.path(), r.handler());
@@ -115,6 +118,38 @@ public class HttpApiServer {
         }
         // SkillRegistry is concurrent; no server.execute hop needed.
         sendJson(exchange, 200, Map.of("skills", SkillRegistry.catalog()));
+    }
+
+    // ── /skills/resolve ── (GET = deterministic skill-output resolution)
+
+    private void handleSkillResolve(HttpExchange exchange) throws IOException {
+        if (!checkAuth(exchange)) return;
+        if (!"GET".equals(exchange.getRequestMethod())) {
+            sendJson(exchange, 405, Map.of("error", "Method not allowed"));
+            return;
+        }
+        Map<String, String> params = parseQuery(exchange.getRequestURI().getQuery());
+        String skillId = params.get("skill");
+        if (skillId == null || skillId.isBlank()) {
+            sendJson(exchange, 400, Map.of("error", "skill query parameter required"));
+            return;
+        }
+        SkillSpec spec = SkillRegistry.get(skillId);
+        if (spec == null) {
+            sendJson(exchange, 404, Map.of("error", "unknown skill: " + skillId));
+            return;
+        }
+        // Everything after `skill` is a skill parameter (the SKILL directive's
+        // extra map). Resolve is deterministic mod-side code — no execute hop.
+        Map<String, String> skillParams = new LinkedHashMap<>(params);
+        skillParams.remove("skill");
+        String output = SkillOutputResolver.resolve(skillId, skillParams);
+        String resolvedBy = spec.produces != null ? "override" : (output != null ? "inference" : "none");
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("skill", skillId);
+        body.put("output", output);
+        body.put("resolved_by", resolvedBy);
+        sendJson(exchange, 200, body);
     }
 
     // ── /bots ── (GET = list, POST = spawn)

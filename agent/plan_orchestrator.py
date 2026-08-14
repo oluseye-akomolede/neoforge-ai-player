@@ -276,6 +276,15 @@ def _step(plan: Plan, subtask: Subtask, model: str,
                  plan.bot, subtask.criteria, derived)
         subtask.criteria = derived
 
+    # Ground an inventory criterion in the SKILL's actual output (v13): a
+    # skill-covered subtask completes with what the skill holds, not the input
+    # L3 hallucinated. Runs after build grounding (mutually exclusive kinds).
+    grounded = _ground_skill_criteria(subtask, directives)
+    if grounded and grounded != subtask.criteria:
+        log.info("[%s] criteria grounded from SKILL output: %r -> %r",
+                 plan.bot, subtask.criteria, grounded)
+        subtask.criteria = grounded
+
     subtask.status = "executing"
     subtask.directives = list(directives)
     plan_store.write(plan)
@@ -546,6 +555,79 @@ def _derive_build_criteria(subtask: Subtask, directives: list[dict]) -> str | No
             material = "minecraft:" + material
         clauses[(x, y, z)] = f"block at ({x},{y},{z}) is {material}"
     return " AND ".join(clauses.values()) if clauses else None
+
+
+# ── Skill-output grounding (v13) ───────────────────────────────────────────
+# A skill-covered subtask completes with the item the skill ends up *holding*,
+# not the input L3 hallucinated into the criterion ("inventory has 8
+# minecraft:iron_ore_blocks" when mine_and_smelt actually yields
+# minecraft:iron_ingot). The mod resolves the output from the skill's node
+# tree against its own smelt/drop tables; the agent only checks which criterion
+# items are real. Deterministic both halves — no LLM judgment.
+
+_real_item_cache: dict[str, bool] = {}
+
+
+def _is_real_item(item_id: str) -> bool:
+    """True if the mod's item registry contains item_id (exact). Fail-open:
+    a registry error returns True (assume real) so grounding can never rewrite
+    a criterion onto the wrong item on a transient blip."""
+    if item_id in _real_item_cache:
+        return _real_item_cache[item_id]
+    real = True
+    try:
+        resp = api.server_items(query=item_id)
+        real = item_id in (resp or {}).get("items", [])
+    except Exception:
+        real = True
+    _real_item_cache[item_id] = real
+    return real
+
+
+def _ground_skill_criteria(subtask: Subtask, directives: list[dict]) -> str | None:
+    """Rewrite a hallucinated inventory criterion to the SKILL's real output.
+
+    Returns the rewritten criteria string when at least one clause changed, else
+    None. Mirrors `_derive_build_criteria`: a deterministic grounding, not an
+    LLM rewrite, so the anti-laundering guarantee is untouched."""
+    skill_d = next(
+        (d for d in directives if str(d.get("kind", "")).upper() == "SKILL"),
+        None,
+    )
+    if skill_d is None:
+        return None
+    skill_id = str(skill_d.get("target", "")).strip()
+    extra = skill_d.get("extra") if isinstance(skill_d.get("extra"), dict) else {}
+    if not skill_id:
+        return None
+    try:
+        resp = api.skill_output(skill_id, **{k: str(v) for k, v in extra.items()})
+    except Exception as e:
+        log.debug("skill output resolve failed (%s): %s", skill_id, e)
+        return None
+    output = (resp or {}).get("output")
+    if not output:
+        return None
+
+    from criteria_eval import _INVENTORY_PATTERN, ITEM_SYNONYMS
+
+    rewritten: list[str] = []
+    changed = False
+    for clause in _CLAUSE_SPLIT.split(subtask.criteria or ""):
+        m = _INVENTORY_PATTERN.search(clause)
+        if not m:
+            rewritten.append(clause)
+            continue
+        need, item = int(m.group(1)), m.group(2)
+        if ":" not in item:
+            item = "minecraft:" + item
+        item = ITEM_SYNONYMS.get(item, item)
+        if item == output or _is_real_item(item):
+            rewritten.append(clause)
+            continue
+        rewritten.append(f"inventory has {need} {output}")
+        changed = True
+    return " AND ".join(rewritten) if changed else None
 
 
 # L3-invented BUILD shapes → the mod's real blueprints

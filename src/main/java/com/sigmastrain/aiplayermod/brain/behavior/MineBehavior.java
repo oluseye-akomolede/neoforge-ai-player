@@ -80,7 +80,7 @@ public class MineBehavior implements Behavior {
         // counts ("have 64, mine 36 more"), so ensure-ownership semantics
         // deadlocked topping up a stack (stronghold finding C1: bots pinned at
         // 64/100 forever). MINE count=N now always means "mine N more".
-        String dropId = resolveDropItem(targetBlock);
+        String dropId = resolveDrop(targetBlock);
         if (dropId != null) {
             ServerPlayer player = bot.getPlayer();
             Item dropItem = BuiltInRegistries.ITEM.get(ResourceLocation.parse(dropId));
@@ -272,7 +272,7 @@ public class MineBehavior implements Behavior {
         int remaining = targetCount - totalMined;
 
         // Resolve what item the block drops
-        channelItemId = resolveDropItem(targetBlock);
+        channelItemId = resolveDrop(targetBlock);
         if (channelItemId == null) {
             progress.setFailureReason("Cannot channel: unknown drop for " + targetBlock);
             return BehaviorResult.FAILED;
@@ -479,8 +479,10 @@ public class MineBehavior implements Behavior {
 
     /**
      * Resolve what item a block drops (simplified mapping for common ores/blocks).
+     * Public so {@code SkillOutputResolver} composes the drop table this
+     * behavior enforces at runtime — no re-encoding.
      */
-    private String resolveDropItem(String blockTarget) {
+    public static String resolveDrop(String blockTarget) {
         String t = blockTarget.toLowerCase();
         String stripped = t.contains(":") ? t.substring(t.indexOf(':') + 1) : t;
         if (t.contains("iron_ore")) return "minecraft:raw_iron";
