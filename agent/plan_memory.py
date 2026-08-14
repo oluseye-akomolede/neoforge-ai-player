@@ -8,6 +8,8 @@ call on attempt 0, and retries fall through to L3 as usual).
 
 Deliberately conservative — a wrong reuse costs more than a slow plan:
   - Reuse only on EXACT normalized-text match (numbers masked to '#').
+  - Reuse is skill-only: only plans whose directives are all SKILL are
+    replayed; raw-directive plans fall through to a fresh L3 plan.
   - Count substitution only when BOTH tasks contain exactly one number.
   - Plans whose directives or criteria embed absolute coordinates are never
     reused (positional plans are context-dependent).
@@ -53,7 +55,13 @@ def _normalize(task: str) -> tuple[str, list[int]]:
 
 
 def _reusable(pd: dict) -> bool:
-    """Is this archived plan dict safe to replay?"""
+    """Is this archived plan dict safe to replay?
+
+    Replay is skill-only: a plan is reusable only when every directive is a
+    SKILL (deterministic, self-verifying, safe to replay verbatim). Raw-
+    directive plans are the pre-skill hand-decomposition this change retires;
+    they fall through to a fresh L3 plan instead of being replayed.
+    """
     if pd.get("status") != "complete":
         return False
     subtasks = pd.get("subtasks") or []
@@ -64,6 +72,8 @@ def _reusable(pd: dict) -> bool:
         if not dirs:
             return False  # nothing pre-baked → replay has no value
         for d in dirs:
+            if str(d.get("kind", "")).upper() != "SKILL":
+                return False  # raw-directive plan — let L3 plan fresh
             if any(k in d for k in ("x", "y", "z")):
                 return False  # positional — context-dependent
         if _COORD_RE.search(s.get("criteria", "")):
@@ -96,7 +106,8 @@ def _build_index() -> None:
 
 def _substitute_count(pd: dict, old: int, new: int) -> dict:
     """Replace the count `old` with `new` in criteria strings and directive
-    count fields. Word-boundary exact matches only."""
+    count fields (including `extra`, where skill params live). Word-boundary
+    exact matches only for strings; exact-int for numeric fields."""
     out = copy.deepcopy(pd)
     pat = re.compile(rf"\b{old}\b")
     for s in out.get("subtasks", []):
@@ -107,6 +118,11 @@ def _substitute_count(pd: dict, old: int, new: int) -> dict:
         for d in s.get("directives", []):
             if d.get("count") == old:
                 d["count"] = new
+            extra = d.get("extra")
+            if isinstance(extra, dict):
+                for k, v in list(extra.items()):
+                    if v == old:
+                        extra[k] = new
     return out
 
 

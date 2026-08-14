@@ -103,6 +103,26 @@ not via MinIO. The agent image is `harbor.arcadia-ecs.local/aiplayermod/agent:la
 - AND the test agent uses `botmemory_test`, the llm-gateway for chat, and
   `USE_L3_PLAN_LAYER=true`
 
+### Requirement: Prod Agent Promotion (pending)
+
+The prod `aibot-agent` (namespace `minecraft`) is intentionally NOT redeployed
+during the v10–v12 skill/RL development push. Two prod changes are already
+committed to `base/minecraft/agent.yaml` but NOT applied to the prod cluster;
+apply them together at promotion time:
+
+- `OLLAMA_URL` (prod `agent-config` secret) repointed from the retired
+  `ollama.mindcraft` to `ollama-l3.minecraft-test.svc.cluster.local:11434`
+  (v12). Prod still resolves the dead service until this is applied.
+- `USE_L3_PLAN_LAYER` is still unset on prod (legacy decompose path). Set it
+  to `"true"` once the skill-aware plan layer is validated in test — that is
+  the actual "skills first, directives fallback" switch for prod (v10/v12).
+
+Prod and test share the `harbor.arcadia-ecs.local/aiplayermod/agent:latest`
+image with `imagePullPolicy: Always`, so a prod pod restart already pulls the
+v12 agent (behavioral replay-memory retired, `plan_memory` replay skill-only).
+Safe for prod — it runs the legacy path, which never reaches `plan_memory` —
+but treat any prod restart as a mini-promotion and verify it.
+
 ### Requirement: Manifests Are The Source of Truth
 Cluster manifests MUST live in `~/clustering/manifests` (GitHub:
 `oluseye-akomolede/manifests`) and be committed after any live change, so the

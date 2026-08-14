@@ -420,8 +420,6 @@ class BotRunner:
             is_stop = (any(p in text_lower for p in _stop_phrases)
                        or any(text_lower.strip() == p for p in _stop_exact))
             if is_follow or is_goto or is_stop:
-                if self._plan_steps and self._plan_step_idx < len(self._plan_steps):
-                    self._store_plan_outcome(success=False, failure_reason=f"Overridden by player: {text[:60]}")
                 self._plan_steps = []
                 self._plan_step_idx = 0
                 self._plan_instruction = ""
@@ -473,8 +471,6 @@ class BotRunner:
             # active follow.  Only explicit shortcuts (follow/goto/stop,
             # handled in the pre-scan above) should break out of follow mode.
             if not from_bot and not self._following_player:
-                if self._plan_steps and self._plan_step_idx < len(self._plan_steps):
-                    self._store_plan_outcome(success=False, failure_reason=f"Overridden by player: {text[:60]}")
                 self._plan_steps = []
                 self._plan_step_idx = 0
                 self._plan_instruction = ""
@@ -602,8 +598,6 @@ class BotRunner:
                         api.system_chat(self.name, f"Waiting for tasks from {coordinator}...", "gray")
                     except Exception:
                         pass
-                    if self._plan_steps and self._plan_step_idx < len(self._plan_steps):
-                        self._store_plan_outcome(success=False, failure_reason=f"Interrupted: {text[:60]}")
                     self._plan_steps = []
                     self._plan_step_idx = 0
                     self._plan_instruction = ""
@@ -824,7 +818,6 @@ class BotRunner:
                 except Exception:
                     pass
                 shared_state.push_event({"bot": self.name, "type": "plan_complete", "steps": len(self._plan_steps)})
-                self._store_plan_outcome(success=True)
                 self._shadow_plan_finalize(success=True)
                 if self._current_task_id:
                     self._complete_task_board_task()
@@ -1232,31 +1225,6 @@ class BotRunner:
             _plan_store.archive(plan)
         except Exception as e:
             print(f"[{self.name}/plan-shadow] finalize failed: {e}")
-
-    def _store_plan_outcome(self, success, failure_reason=""):
-        """Store plan outcome in semantic memory for future planning."""
-        if not self.semantic_mem or not self._plan_instruction:
-            return
-        try:
-            steps_str = " -> ".join(self._plan_steps)
-            if success:
-                content = (
-                    f"[knowledge] Plan succeeded: \"{self._plan_instruction[:80]}\". "
-                    f"Steps that worked: {steps_str}"
-                )
-            else:
-                completed = self._plan_steps[:self._plan_step_idx]
-                failed_step = self._plan_steps[self._plan_step_idx] if self._plan_step_idx < len(self._plan_steps) else "unknown"
-                content = (
-                    f"[knowledge] Plan failed at step {self._plan_step_idx+1}: \"{failed_step}\". "
-                    f"Original task: \"{self._plan_instruction[:80]}\". "
-                    f"Reason: {failure_reason or 'unknown'}. "
-                    f"Completed steps: {' -> '.join(completed) if completed else 'none'}"
-                )
-            mid = self.semantic_mem.store(content, category="knowledge")
-            print(f"[{self.name}/planner] Stored plan outcome (id={mid})")
-        except Exception as e:
-            print(f"[{self.name}/planner] Failed to store outcome: {e}")
 
     def _check_task_board(self):
         """If idle (no plan), check the shared task board for pending tasks."""
@@ -2455,7 +2423,6 @@ Respond with ONLY a JSON array. Example:
                                 if self._plan_step_idx >= len(self._plan_steps):
                                     print(f"[{self.name}/planner] Plan COMPLETE! All {len(self._plan_steps)} steps done.")
                                     api.system_chat(self.name, f"Plan complete! ({len(self._plan_steps)} steps done)", "green")
-                                    self._store_plan_outcome(success=True)
                                     if self._current_task_id:
                                         self._complete_task_board_task()
                                     else:
@@ -2525,7 +2492,6 @@ Respond with ONLY a JSON array. Example:
                         self._l1_failed_steps = set()
                         self._last_failure_context = ""
                         if self._plan_step_idx >= len(self._plan_steps):
-                            self._store_plan_outcome(success=False, failure_reason=f"All tiers failed on: {current_step}")
                             self._fail_task_board_task(f"All tiers exhausted on: {current_step[:80]}")
                             self._plan_steps = []
                             self._plan_step_idx = 0
@@ -2560,7 +2526,6 @@ Respond with ONLY a JSON array. Example:
                     self._l1_failed_steps = set()
                     self._last_failure_context = ""
                     if self._plan_step_idx >= len(self._plan_steps):
-                        self._store_plan_outcome(success=False, failure_reason=f"L3 failed on: {current_step}")
                         self._fail_task_board_task(f"L3 failed on: {current_step[:80]}")
                         self._plan_steps = []
                         self._plan_step_idx = 0
