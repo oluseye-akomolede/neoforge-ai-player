@@ -451,6 +451,15 @@ subtask end-to-end, emit exactly ONE directive of kind SKILL — do NOT hand-exp
 the skill into its raw directive sequence. Skills are deterministic and
 post-verified against world state, so a matching skill is always the better choice.
 
+A skill covers a subtask ONLY when EVERY step in its description applies — never
+just one. Each seed skill is a fixed two-step routine (e.g. "mine THEN smelt",
+"farm THEN store", "conjure THEN send"). If the subtask asks for only ONE of
+those steps, or pairs a step with a DIFFERENT second step (e.g. "mine then
+store", "craft then store", "conjure then keep"), the skill does NOT cover it —
+hand-expand the raw directives instead. Never drop or rename a step the subtask
+requires just to fit a skill, and never repurpose a skill's parameter (e.g. a
+"crop" slot is for crops, not planks or ingots).
+
 Worked example — subtask "mine 8 iron ore and smelt into ingots" is covered by the
 mine_and_smelt skill, so emit:
 {{
