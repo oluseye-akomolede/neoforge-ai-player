@@ -15,7 +15,14 @@ public class BotServerPlayer extends ServerPlayer {
 
     @Override
     public boolean canBeSeenByAnyone() {
-        return false;
+        // Bots must be targetable: TargetingConditions.test() checks this
+        // FIRST, so returning false made every hostile mob ignore the fleet.
+        // (Melee/combat targeting funnels through this check, and the
+        // BotAggro pump hands targets to hostiles directly — but they could
+        // never land a hit while this was false.) Crash-prone mod selectors
+        // that dereference fake-player state are now contained by
+        // TargetingConditionsMixin instead of by hiding the bot.
+        return true;
     }
 
     @Override

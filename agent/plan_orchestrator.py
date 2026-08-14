@@ -447,7 +447,7 @@ _DIM_ALIASES = {
 
 
 # Renamed/wrong mob ids the LLM emits from stale training data.
-from criteria_eval import _BLOCK_PATTERN, _CLAUSE_SPLIT  # shared criterion grammar
+from criteria_eval import _BLOCK_PATTERN, _CLAUSE_SPLIT, _INVENTORY_PATTERN  # shared criterion grammar
 
 
 def _probe_block(bot_name: str, x: int, y: int, z: int) -> str | None:
@@ -475,14 +475,48 @@ def _validate_criteria_geometry(plan: Plan) -> list[str]:
     return out
 
 
+# Items whose only natural source is an Overworld ore — unobtainable by mining
+# in the Nether/End. Gold is deliberately absent (nether gold ore drops it).
+_OVERWORLD_ONLY_ITEMS = {
+    "minecraft:diamond", "minecraft:diamond_ore", "minecraft:deepslate_diamond_ore",
+    "minecraft:emerald", "minecraft:emerald_ore", "minecraft:deepslate_emerald_ore",
+    "minecraft:coal", "minecraft:coal_ore", "minecraft:deepslate_coal_ore",
+    "minecraft:iron_ingot", "minecraft:iron_ore", "minecraft:deepslate_iron_ore",
+    "minecraft:copper_ingot", "minecraft:copper_ore", "minecraft:deepslate_copper_ore",
+    "minecraft:lapis_lazuli", "minecraft:lapis_ore", "minecraft:deepslate_lapis_ore",
+    "minecraft:redstone", "minecraft:redstone_ore", "minecraft:deepslate_redstone_ore",
+}
+
+
+def _current_dimension(bot_name: str) -> str:
+    try:
+        return api.status(bot_name).get("dimension", "")
+    except Exception:
+        return ""
+
+
 def _criterion_impossible(bot_name: str, criteria: str) -> str | None:
-    """Reason string if any block-at clause targets a void position, else None."""
+    """Reason string if a criterion is provably impossible, else None.
+
+    Two evidence classes: a block-at clause targeting a void position (outside
+    the generated world), or an inventory clause demanding an Overworld-only
+    item while the bot stands in the Nether/End (diamond-in-the-Nether loops).
+    """
     for clause in _CLAUSE_SPLIT.split(criteria or ""):
         m = _BLOCK_PATTERN.search(clause)
         if m:
             bx, by, bz = int(m.group(1)), int(m.group(2)), int(m.group(3))
             if _probe_block(bot_name, bx, by, bz) == "minecraft:void_air":
                 return f"({bx},{by},{bz}) is outside the world"
+        m = _INVENTORY_PATTERN.search(clause)
+        if m:
+            item_id = m.group(2)
+            if ":" not in item_id:
+                item_id = f"minecraft:{item_id}"
+            if item_id in _OVERWORLD_ONLY_ITEMS:
+                dim = _current_dimension(bot_name)
+                if dim and dim != "minecraft:overworld":
+                    return f"{item_id} is Overworld-only, but bot is in {dim}"
     return None
 
 

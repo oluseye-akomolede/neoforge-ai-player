@@ -6,7 +6,8 @@
   "compatibilityLevel": "JAVA_21",
   "mixins": [
     "EntityTickCrashMixin",
-    "JackedContainerClickMixin"
+    "JackedContainerClickMixin",
+    "TargetingConditionsMixin"
   ],
   "injectors": {
     "defaultRequire": 1

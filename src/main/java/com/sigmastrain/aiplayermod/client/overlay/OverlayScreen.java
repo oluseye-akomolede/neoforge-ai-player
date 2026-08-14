@@ -389,15 +389,7 @@ public class OverlayScreen extends Screen {
             fleetInput.setHint(Component.literal("order the whole fleet, plainly…"));
             fleetInput.setMaxLength(300);
             addRenderableWidget(fleetInput);
-            addRenderableWidget(Button.builder(Component.literal("§6Fleet ▶"), b -> {
-                        String text = fleetInput.getValue().trim();
-                        if (text.isEmpty()) return;
-                        var params = new com.google.gson.JsonObject();
-                        params.addProperty("text", text);
-                        PacketDistributor.sendToServer(new OverlayPayloads.SubmitOrder(
-                                "fleet", "TEXT", params.toString()));
-                        fleetInput.setValue("");
-                    })
+            addRenderableWidget(Button.builder(Component.literal("§6Fleet ▶"), b -> sendFleetOrder())
                     .bounds(px + pw - 84, fy, 76, 14).build());
         }
 
@@ -1597,6 +1589,18 @@ public class OverlayScreen extends Screen {
         talkInput.setValue("");
     }
 
+    /** Fleet-order box: Enter sends, same as the "Fleet ▶" button. */
+    private void sendFleetOrder() {
+        if (fleetInput == null) return;
+        String text = fleetInput.getValue().trim();
+        if (text.isEmpty()) return;
+        var params = new com.google.gson.JsonObject();
+        params.addProperty("text", text);
+        PacketDistributor.sendToServer(new OverlayPayloads.SubmitOrder(
+                "fleet", "TEXT", params.toString()));
+        fleetInput.setValue("");
+    }
+
     /** Chat-style: tail-anchored, oldest of the visible window at the top. */
     private void renderTalk(GuiGraphics g, OverlayPayloads.BotEntry unit, int px, int y, int pw) {
         if (talkCmdMode) {
@@ -1896,6 +1900,13 @@ public class OverlayScreen extends Screen {
                     sendTalk(e);
                     return true;
                 }
+            }
+            // Enter sends the fleet order too — addressing the fleet from the
+            // keyboard must not require the mouse (live report: typing a fleet
+            // command then Enter did nothing).
+            if (keyCode == 257 && getFocused() == fleetInput) {
+                sendFleetOrder();
+                return true;
             }
             return super.keyPressed(keyCode, scanCode, modifiers);
         }

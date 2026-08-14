@@ -8,7 +8,8 @@ whatever it would have done before L4 existed — an AFK player degrades to
 the old behavior, never to a wedged fleet.
 
 The L5 loop lives here too: if the player rules "escalate_l5", the question
-goes to OpenAI, and the answer comes BACK AS A NEW INBOX ITEM for approval.
+goes to DeepSeek (the player's own key), and the answer comes BACK AS A NEW
+INBOX ITEM for approval.
 Nothing from L5 ever travels down the chain unreviewed. That invariant is
 the design (user directive), not an implementation detail.
 """

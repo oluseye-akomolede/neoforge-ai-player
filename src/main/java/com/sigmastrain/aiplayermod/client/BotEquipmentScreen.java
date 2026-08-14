@@ -130,10 +130,15 @@ public class BotEquipmentScreen extends AbstractContainerScreen<BotEquipmentMenu
         guiGraphics.blit(CONTAINER_TEXTURE, x, y + 166, 0, 126, this.imageWidth, 96);
 
         // Hardpoint labels — an empty extra slot means nothing without one.
+        // Right-aligned beside their slot (left of the 152px column), centred
+        // on the slot row: the old `y + 26 + i*18` put the R-mount label on
+        // top of the L-mount slot, so the two hardpoint boxes read as one
+        // overlapping blob.
         var auxLabels = this.menu.getAuxLabels();
         for (int i = 0; i < Math.min(auxLabels.size(), this.menu.getAuxCount()); i++) {
-            guiGraphics.drawString(this.font, "§8" + auxLabels.get(i),
-                    x + 148, y + 26 + i * 18, 0xFF7A8B8B, false);
+            String label = auxLabels.get(i);
+            guiGraphics.drawString(this.font, "§8" + label,
+                    x + 148 - this.font.width(label), y + 12 + i * 18, 0xFF7A8B8B, false);
         }
 
         int entityId = this.menu.getBotEntityId();
