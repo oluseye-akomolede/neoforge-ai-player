@@ -1,0 +1,24 @@
+name: skill-propose-register
+description: >
+  Deterministic proof of the mod's inline-spec proposal path: a SKILL directive
+  carrying an inline "spec" (full SkillSpec JSON) + "register":"true" for a NEW
+  skill (conjure_torches) is parsed, validated, and registered mod-side — it
+  then appears in /skills as a non-seed id. This is the wiring the L3 path
+  depends on, exercised without any LLM in the loop.
+world:
+  type: normal
+
+bots:
+  - image: null
+
+steps:
+  - instruction: "Register and run a new conjure_torches skill (inline spec + register)"
+    directive:
+      directive_type: SKILL
+      target: conjure_torches
+      extra:
+        spec: '{"id":"conjure_torches","nodes":{"type":"sequence","children":[{"type":"directive","kind":"CHANNEL","target":"minecraft:torch","count":"8"}]}}'
+        register: "true"
+    timeout: 120
+    success:
+      skill_registered: true

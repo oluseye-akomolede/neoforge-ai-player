@@ -1,0 +1,33 @@
+name: l3-proposes-skill
+description: >
+  L3 integration: given a task NO seed skill covers, L3 should synthesize a NEW
+  skill inline (a SKILL directive whose extra carries a declarative "spec" +
+  "register":true) rather than hand-expanding raw directives. The mod validates
+  and registers it, so /skills gains a non-seed id. Verified via skill_registered
+  (a new skill id beyond the five seeds). Confirms the agent-side spec wrap +
+  mod-side resolveSpec/validate/register path end-to-end.
+
+  The task is deliberately chosen to have NO seed coverage: MEDITATE + CHANNEL
+  (no seed uses MEDITATE, so it cannot collapse to any of mine_and_smelt /
+  goto_and_scan / search_and_loot / harvest_and_store / resupply_network), and
+  it is phrased as a reusable "routine" so L3 proposes rather than treating it
+  as a one-off. Both leaves are XP-economy ops (no mobs, no world, no recipe),
+  so it is headless-safe.
+
+  NOTE: this is an L3-BEHAVIOR probe, not a deterministic gate. It passes only
+  when qwen2.5:14b actually emits an inline-spec SKILL proposal. Against the
+  local 14b model it currently splits the task into single-directive subtasks
+  at PLAN time (MEDITATE alone, then conjure -> resupply_network seed), so no
+  proposal is produced. That is LLM variance, not a code bug — the mod-side
+  path is proven deterministically by skill-propose-register.yaml.
+world:
+  type: normal
+
+bots:
+  - image: null
+
+steps:
+  - instruction: "Learn a torch-refill routine and run it: meditate to gain 10 XP, then conjure 8 torches."
+    timeout: 600
+    success:
+      skill_registered: true

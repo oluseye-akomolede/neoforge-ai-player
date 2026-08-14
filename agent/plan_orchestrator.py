@@ -706,10 +706,22 @@ def _repair_directive(d: dict[str, Any], bot_name: str, dim_list: list[str] | No
         # string), so normalize an ergonomic nested-object spec + boolean
         # register down to the string contract. A pre-serialized spec passes
         # through unchanged.
+        #
+        # The prompt invites a BARE node tree ({"type":"sequence","children":…
+        # }); SkillSpec.parse requires the full contract {"id", "nodes": {tree}}.
+        # Wrap the bare form so the mod accepts it, using the directive's
+        # target as the skill id (a spec-provided id wins when present).
         extra = d.get("extra")
         if isinstance(extra, dict):
-            if isinstance(extra.get("spec"), dict):
-                extra["spec"] = json.dumps(extra["spec"])
+            spec = extra.get("spec")
+            if isinstance(spec, dict):
+                if "nodes" not in spec:
+                    spec_id = str(spec.get("id") or d.get("target") or "proposed")
+                    spec = {"id": spec_id,
+                            "nodes": {k: v for k, v in spec.items() if k != "id"}}
+                    log.info("[%s] wrapped proposed skill spec -> %s",
+                             bot_name, spec_id)
+                extra["spec"] = json.dumps(spec)
             if "register" in extra and not isinstance(extra["register"], str):
                 extra["register"] = "true" if extra["register"] else "false"
 

@@ -189,6 +189,22 @@ class TestRunner:
                 details["error"] = str(e)
                 return False, details
 
+        if "skill_registered" in criteria:
+            # A proposed (non-seed) skill was registered: /skills now lists an
+            # id beyond the five curated seeds. Deterministic proof that an
+            # inline-spec proposal was validated and registered mod-side.
+            seeds = {"mine_and_smelt", "goto_and_scan", "search_and_loot",
+                     "harvest_and_store", "resupply_network"}
+            try:
+                catalog = self._api_get(world.mod_api_url, "/skills")
+                skills = catalog.get("skills", []) or []
+                new_ids = [s.get("id") for s in skills if s.get("id") not in seeds]
+                details["new_skill_ids"] = new_ids
+                return bool(new_ids), details
+            except Exception as e:
+                details["error"] = str(e)
+                return False, details
+
         return True, {"note": "no criteria specified"}
 
     def _resolve_bots(self, world: TestWorld) -> list[str]:
