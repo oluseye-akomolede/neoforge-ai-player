@@ -340,7 +340,7 @@ class TestRunner:
                         phases_passed.add(step.phase)
 
             phases_fully_passed = phases_seen - phase_has_failure
-            logs = get_logs(world, "agent", 100)
+            logs = get_logs(world, "agent", 400)
 
             return TestResult(
                 test_name=test_def.name, passed=all_passed,
@@ -398,6 +398,6 @@ def run_tests(test_paths: list[Path], show_logs: bool = False, **runner_kwargs) 
             print(f"  ERROR: {result.error}")
         if show_logs and result.logs:
             print(f"  Agent log tail:")
-            for line in result.logs.strip().splitlines()[-20:]:
+            for line in result.logs.strip().splitlines()[-120:]:
                 print(f"    | {line}")
     return results
