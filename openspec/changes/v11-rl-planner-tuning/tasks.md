@@ -42,13 +42,19 @@ Sequenced R1→R5; R1 runs in parallel with v10.
 
 ## R3 — offline DPO (archive)
 
-- [ ] Convert archived plans → TRL DPO dataset: chosen = successful exec
-      directives, rejected = failed exec directives, paired on same/near task
-      prompt. Filter schema-invalid responses out of the chosen side.
+- [x] Convert archived plans → TRL DPO dataset — `agent/build_dpo_dataset.py`.
+      Two sources: replan-refinement pairs (failed → later-successful call
+      within one `(plan_ref, subtask_id)`) + near-task cross-plan pairs
+      (normalized description+criteria). Tested on live data: 3 pairs from 1
+      day of trajectory (archive yields 0 same-task pairs). **DATA-GATED** —
+      dataset volume, not code, is the blocker.
 - [ ] Fine-tune `qwen2.5:14b-instruct` with `DPOTrainer` + QLoRA 4-bit +
-      unsloth on A4000×2 (bf16).
+      unsloth on A4000×2 (bf16). — `agent/train_dpo.py` written; RUN blocked
+      on data volume (3 pairs ≪ needed for 14B) + GPU env (TRL/unsloth on
+      A4000×2).
 - [ ] **Proof**: eval the LoRA on the holdout split — plan success rate
       ≥ baseline (no regression) and a win on a known-variance case.
+      (Blocked on R3 step 2.)
 
 ## R4 — online GRPO (headless verifier)
 
