@@ -163,4 +163,16 @@ public final class SkillCondition {
         if (!id.contains(":") && !id.isEmpty()) id = "minecraft:" + id;
         return id;
     }
+
+    /** Reconstruct the declarative JSON for this predicate, so a spec's
+     *  {@code verify} / {@code while} / {@code if} condition round-trips through
+     *  disk persistence. */
+    public JsonObject toJson() {
+        JsonObject o = new JsonObject();
+        o.addProperty("predicate", predicate);
+        for (var e : args.entrySet()) {
+            o.add(e.getKey(), e.getValue());
+        }
+        return o;
+    }
 }

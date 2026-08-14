@@ -198,4 +198,60 @@ public final class SkillNode {
     public String z() { return z; }
     public boolean hasLocation() { return hasLocation; }
     public Map<String, String> extra() { return extra == null ? Collections.emptyMap() : extra; }
+
+    /** Reconstruct the declarative JSON for this node, mirroring the grammar
+     *  {@link #parse} accepts, so a spec can round-trip through disk persistence. */
+    public JsonObject toJson() {
+        JsonObject o = new JsonObject();
+        switch (type) {
+            case SEQUENCE, FALLBACK -> {
+                o.addProperty("type", type == Type.SEQUENCE ? "sequence" : "fallback");
+                JsonArray kids = new JsonArray();
+                for (SkillNode c : children) {
+                    kids.add(c.toJson());
+                }
+                o.add("children", kids);
+            }
+            case LOOP -> {
+                o.addProperty("type", "loop");
+                o.add("body", body.toJson());
+                o.addProperty("max_iterations", maxIterations);
+                if (condition != null) {
+                    o.add("while", condition.toJson());
+                }
+            }
+            case IF -> {
+                o.addProperty("type", "if");
+                o.add("condition", condition.toJson());
+                o.add("then", thenBranch.toJson());
+                if (elseBranch != null) {
+                    o.add("else", elseBranch.toJson());
+                }
+            }
+            case SKILL_REF -> {
+                o.addProperty("type", "skill");
+                o.addProperty("ref", ref);
+            }
+            case DIRECTIVE -> {
+                o.addProperty("type", "directive");
+                o.addProperty("kind", kind);
+                if (target != null) o.addProperty("target", target);
+                if (count != null) o.addProperty("count", count);
+                if (radius != null) o.addProperty("radius", radius);
+                if (hasLocation) {
+                    o.addProperty("x", x);
+                    o.addProperty("y", y);
+                    o.addProperty("z", z);
+                }
+                if (extra != null && !extra.isEmpty()) {
+                    JsonObject ex = new JsonObject();
+                    for (var e : extra.entrySet()) {
+                        ex.addProperty(e.getKey(), e.getValue());
+                    }
+                    o.add("extra", ex);
+                }
+            }
+        }
+        return o;
+    }
 }

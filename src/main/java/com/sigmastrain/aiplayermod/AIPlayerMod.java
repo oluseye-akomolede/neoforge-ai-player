@@ -56,6 +56,8 @@ public class AIPlayerMod {
         TransmuteRegistry.init(event.getServer().getServerDirectory());
         EnchantmentRegistry.init(event.getServer());
         com.sigmastrain.aiplayermod.brain.skill.SkillRegistry.initSeeds();
+        com.sigmastrain.aiplayermod.brain.skill.SkillRegistry.initPersistence(
+                event.getServer().getServerDirectory().resolve("aiplayermod_skills.json"));
 
         int port = Integer.parseInt(System.getProperty("aiplayermod.api.port",
                 System.getenv().getOrDefault("AIPLAYER_API_PORT", String.valueOf(DEFAULT_API_PORT))));
@@ -90,6 +92,7 @@ public class AIPlayerMod {
             apiServer.stop();
         }
         TransmuteRegistry.saveConfig();
+        com.sigmastrain.aiplayermod.brain.skill.SkillRegistry.save();
         try {
             java.nio.file.Path f = event.getServer().getServerDirectory()
                     .resolve("aiplayermod_standing.json");

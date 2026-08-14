@@ -86,4 +86,25 @@ public final class SkillSpec {
     public SkillSpec withId(String newId) {
         return new SkillSpec(newId, description, params, root, verify, produces);
     }
+
+    /** Reconstruct the full declarative JSON for this spec, so an authored
+     *  skill can be persisted to disk and re-parsed verbatim by {@link #parse}. */
+    public JsonObject toJson() {
+        JsonObject o = new JsonObject();
+        o.addProperty("id", id);
+        o.addProperty("description", description);
+        JsonObject p = new JsonObject();
+        for (var e : params.entrySet()) {
+            p.addProperty(e.getKey(), e.getValue());
+        }
+        o.add("params", p);
+        o.add("nodes", root.toJson());
+        if (verify != null) {
+            o.add("verify", verify.toJson());
+        }
+        if (produces != null) {
+            o.addProperty("produces", produces);
+        }
+        return o;
+    }
 }

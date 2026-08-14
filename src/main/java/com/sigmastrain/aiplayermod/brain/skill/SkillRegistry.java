@@ -1,8 +1,13 @@
 package com.sigmastrain.aiplayermod.brain.skill;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonParser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -37,6 +42,14 @@ public final class SkillRegistry {
     /** Curated ids registered by {@link #initSeeds}; exempt from LRU eviction. */
     private static final Set<String> SEEDS = new LinkedHashSet<>();
 
+    /** On-disk file for authored (non-seed) skills, under the world save dir.
+     *  Null until {@link #initPersistence} wires it at server start. */
+    private static Path savePath = null;
+
+    /** True while {@link #load()} is re-registering persisted skills, so the
+     *  write-through save in {@link #register} doesn't rewrite the file mid-load. */
+    private static boolean loading = false;
+
     private SkillRegistry() {}
 
     /** Register a spec after static validation. Stores under {@code id} (which
@@ -54,6 +67,11 @@ public final class SkillRegistry {
         LOGGER.info("[skill] registered {}", id);
         if (previous != null) {
             LOGGER.info("[skill] replaced existing {}", id);
+        }
+        // Write-through so a crash between registers and shutdown can't lose a
+        // freshly authored skill. No-op until a save path is configured.
+        if (!loading) {
+            save();
         }
         return null;
     }
@@ -159,6 +177,73 @@ public final class SkillRegistry {
         String err = register(id, SkillSpec.parse(sb.toString()));
         if (err != null) {
             LOGGER.error("[skill] seed failed: {}", err);
+        }
+    }
+
+    // ── persistence ─────────────────────────────────────────────────────────
+
+    /** Wire on-disk persistence to the world-save directory and load any
+     *  previously authored skills. MUST run after {@link #initSeeds()} so the
+     *  seeds are registered first (persisted skills may reference them via a
+     *  skill-ref node, and a stale file must never clobber a curated seed). */
+    public static synchronized void initPersistence(Path path) {
+        savePath = path;
+        load();
+    }
+
+    /** Load authored skills from disk, re-validating each through the same
+     *  {@link #register} path (a corrupt or hand-edited file can never poison
+     *  the registry). Seeds are skipped — they're already registered. */
+    public static synchronized void load() {
+        if (savePath == null || !Files.exists(savePath)) {
+            return;
+        }
+        try {
+            JsonElement root = JsonParser.parseString(Files.readString(savePath));
+            if (!root.isJsonArray()) {
+                LOGGER.warn("[skill] persistence file is not a JSON array; ignoring");
+                return;
+            }
+            loading = true;
+            int loaded = 0;
+            for (JsonElement el : root.getAsJsonArray()) {
+                if (!el.isJsonObject()) continue;
+                try {
+                    SkillSpec spec = SkillSpec.parse(el.getAsJsonObject());
+                    if (SEEDS.contains(spec.id)) continue;
+                    String err = register(spec.id, spec);
+                    if (err == null) {
+                        loaded++;
+                    } else {
+                        LOGGER.warn("[skill] load rejected '{}': {}", spec.id, err);
+                    }
+                } catch (Exception e) {
+                    LOGGER.warn("[skill] load skipped an entry: {}", e.getMessage());
+                }
+            }
+            LOGGER.info("[skill] loaded {} authored skill(s)", loaded);
+        } catch (Exception e) {
+            LOGGER.warn("[skill] load failed", e);
+        } finally {
+            loading = false;
+        }
+    }
+
+    /** Write authored (non-seed) skills to disk. No-op until a save path is
+     *  configured. Best-effort: a failed write must never break the bot. */
+    public static synchronized void save() {
+        if (savePath == null) return;
+        JsonArray arr = new JsonArray();
+        for (Map.Entry<String, SkillSpec> e : SKILLS.entrySet()) {
+            if (SEEDS.contains(e.getKey())) continue;
+            arr.add(e.getValue().toJson());
+        }
+        try {
+            Path parent = savePath.getParent();
+            if (parent != null) Files.createDirectories(parent);
+            Files.writeString(savePath, arr.toString());
+        } catch (Exception e) {
+            LOGGER.warn("[skill] save failed", e);
         }
     }
 }
