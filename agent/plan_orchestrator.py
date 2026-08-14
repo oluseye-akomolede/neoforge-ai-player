@@ -23,7 +23,6 @@ from typing import Any, Callable
 import requests
 
 import api
-import fast_planner
 import l3_planner
 import plan_memory
 import plan_store
@@ -81,19 +80,14 @@ def execute_task(
     # Cached for the rest of this task — dims rarely change mid-task.
     dim_list = _safe_get_dimensions()
 
-    # Phase 0: deterministic fast path. Recognized command shapes ("mine 16
-    # iron ore", "goto x y z", "teleport to the nether") skip L3 planning
-    # entirely — the Plan arrives with pre-baked directives on subtask 1.
-    plan = fast_planner.try_plan(bot_name, task)
+    # Phase 0: plan-template memory — replay a proven SKILL-only plan for a
+    # near-identical past task (exact normalized match, count substituted).
+    # This is the only "0 LLM call" planning path: the deterministic
+    # fast-planner shim is retired (v14), so every fresh task flows through L3
+    # and raw-directive plans are never replayed.
+    plan = plan_memory.lookup(bot_name, task)
     if plan is not None:
-        log.info("[%s] fast-path plan (0 LLM calls): %s",
-                 bot_name, plan.subtasks[0].description)
-    if plan is None:
-        # Phase 0.5: plan-template memory — replay a proven plan for a
-        # near-identical past task (exact normalized match, count substituted).
-        plan = plan_memory.lookup(bot_name, task)
-        if plan is not None:
-            log.info("[%s] plan-memory reuse (0 LLM planning calls)", bot_name)
+        log.info("[%s] plan-memory reuse (0 LLM planning calls)", bot_name)
     if plan is None:
         # Phase 1: L3 plan — with one retry if criteria geometry is provably
         # impossible (finding D1: PLAN-time criteria pointed below the world
@@ -231,9 +225,10 @@ def _step(plan: Plan, subtask: Subtask, model: str,
           dispatch_fn: DispatchFn, world_state_fn: WorldStateFn,
           dim_list: list[str] | None = None) -> bool:
     """Drive one subtask through one attempt. Returns False if the plan must abort."""
-    # Fast path: subtask arrived with pre-baked directives (fast_planner) and
-    # this is the first attempt — skip the L3 exec call entirely. Retries
-    # (attempts > 0) fall through to L3 so failures get intelligent handling.
+    # Replay path: a subtask that arrived with pre-baked directives (plan-memory
+    # SKILL-only replay) on its first attempt skips the L3 exec call entirely.
+    # Retries (attempts > 0) fall through to L3 so failures get intelligent
+    # handling.
     if subtask.directives and subtask.attempts == 0 and not subtask.error:
         directives = list(subtask.directives)
         exec_call_id = None
@@ -314,7 +309,7 @@ def _step(plan: Plan, subtask: Subtask, model: str,
                    f"[{strategy}] {reason}")
 
     # v11 R1: correlate this deterministic outcome to the exec call that
-    # produced the directives (pre-baked fast-path subtasks had no L3 call).
+    # produced the directives (plan-memory replay subtasks had no L3 call).
     if exec_call_id:
         trajectory_log.log_outcome(
             call_id=exec_call_id, bot=plan.bot, phase="exec",
