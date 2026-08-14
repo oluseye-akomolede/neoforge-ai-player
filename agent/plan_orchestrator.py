@@ -14,6 +14,7 @@ dependencies.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -454,6 +455,12 @@ def _provision_materials(bot_name: str, directives: list[dict],
     smelting netherrack into quartz). Sum each BUILD's material need, check
     inventory, and prepend a CHANNEL for any shortfall — search-then-channel
     enforced by L2, not hoped for from L3."""
+    # A SKILL directive covers the whole subtask end-to-end and its leaves own
+    # acquisition (SmeltBehavior conjures inputs via XP, etc.). Provisioning a
+    # skill-covered subtask just channels a bogus item the skill would have
+    # produced itself — skip it.
+    if any(str(d.get("kind", "")).upper() == "SKILL" for d in directives):
+        return directives
     needs: dict[str, int] = {}
     for d in directives:
         if str(d.get("kind", "")).upper() != "BUILD":
@@ -615,6 +622,19 @@ def _repair_directive(d: dict[str, Any], bot_name: str, dim_list: list[str] | No
     d["kind"] = kind
     if kind == "EQUIP":
         d["kind"] = "EQUIP_ALL"
+
+    if kind == "SKILL":
+        # L3 proposes a new skill with an inline spec. The mod's extra map is
+        # Map<String,String> (SkillBehavior.resolveSpec reads `spec` as a JSON
+        # string), so normalize an ergonomic nested-object spec + boolean
+        # register down to the string contract. A pre-serialized spec passes
+        # through unchanged.
+        extra = d.get("extra")
+        if isinstance(extra, dict):
+            if isinstance(extra.get("spec"), dict):
+                extra["spec"] = json.dumps(extra["spec"])
+            if "register" in extra and not isinstance(extra["register"], str):
+                extra["register"] = "true" if extra["register"] else "false"
 
     if kind == "COMBAT":
         tgt = str(d.get("target", "")).strip().lower()

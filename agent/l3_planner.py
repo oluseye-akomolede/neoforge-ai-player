@@ -527,6 +527,28 @@ INVENTORY TASKS ("store", "clean up", "put away", "organize"):
                      "player says: ..." — plan the NEXT directives with it.
                      Do not ask what you can observe or decide yourself.
   IDLE             — {{ "kind":"IDLE" }}
+
+SKILL PROPOSAL (fallback — only when NO registered skill above covers the subtask
+AND the subtask is a bounded, reusable sequence of the directive kinds listed
+above): you MAY synthesize a NEW skill inline instead of hand-expanding it. Emit
+exactly ONE directive of kind SKILL whose extra carries a declarative "spec" (an
+object, not a string) plus "register": true:
+{{
+  "directives": [
+    {{ "kind": "SKILL", "target": "equip_and_fight", "extra": {{
+      "spec": {{ "type": "sequence", "children": [
+        {{ "type": "directive", "kind": "EQUIP_ALL" }},
+        {{ "type": "directive", "kind": "COMBAT", "target": "minecraft:zombie", "extra": {{ "radius": 16 }} }}
+      ] }},
+      "register": true
+    }} }}
+  ]
+}}
+Constraints: spec leaves MUST use only the directive kinds listed above; a "loop"
+node MUST set "max_iterations"; never "skill-ref" the skill to itself. The mod
+validates the spec and rejects anything invalid — a rejection is safe, just retry
+as raw directives. Propose a new skill ONLY for a reusable pattern; a one-off
+subtask is fine as raw directives.
 """
 
 

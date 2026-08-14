@@ -86,6 +86,15 @@ ITEM_SYNONYMS = {
     "minecraft:smooth_quartz_block": "minecraft:smooth_quartz",
     "minecraft:basalt_stone": "minecraft:basalt",
     "minecraft:blackstone_block": "minecraft:blackstone",
+    # 1.21 ore confabulations: mining an ore drops the RAW item, not the ore
+    # block, and L3 invents "*_ore_blocks" ids that have no real counterpart.
+    # Inventory semantics only (this map is never used for block-at checks).
+    "minecraft:iron_ore_blocks": "minecraft:raw_iron",
+    "minecraft:gold_ore_blocks": "minecraft:raw_gold",
+    "minecraft:copper_ore_blocks": "minecraft:raw_copper",
+    "minecraft:iron_ore": "minecraft:raw_iron",
+    "minecraft:gold_ore": "minecraft:raw_gold",
+    "minecraft:copper_ore": "minecraft:raw_copper",
 }
 
 
