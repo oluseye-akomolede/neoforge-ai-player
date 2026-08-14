@@ -52,7 +52,7 @@
 - [x] **Headless proof PASSED (2026-08-11)**: typed fan-out — five
       ME_STORE orders dispatched; TEXT partition — "everyone check in"
       split into five tailored assignments, five plans, five COMPLETED.
-- [ ] **In-game batch** (player): the v8 canonical orders retried under
+- [ ] **In-game batch** (PLAYER — needs in-game order issue): the v8 canonical orders retried under
       v9 — "fleet: store non-essentials" plus the standing restock built
       from the quantum helmet's missing-ingredient list; verify anchor
       persistence across the NEXT restart (this one shut down on the

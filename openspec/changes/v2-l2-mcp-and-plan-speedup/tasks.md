@@ -8,7 +8,8 @@
 - [x] agent/fast_planner.py: deterministic patterns (mine/craft/smelt/channel/farm/goto/teleport)
 - [x] agent/plan_orchestrator: Phase-0 fast path + pre-baked directive dispatch (skip EXEC when `subtask.directives` pre-populated and attempts == 0)
 - [x] Unit test: 9 pattern cases incl. fall-throughs
-- [ ] Measure: log-derived before/after latency for a fast-path vs L3-path command
+- [x] Measure: log-derived before/after latency for a fast-path vs L3-path command
+      — SUPERSEDED by v14 (fast_planner deleted; no fast-path exists to measure)
 
 ## L2 MCP (follow-up change, spec: l2-mcp-translation-layer)
 - [x] Scaffold `l2-mcp` service (FastAPI + MCP tool registry), Phase A renderers only
@@ -22,4 +23,6 @@
 ## Plan-template memory (follow-up)
 - [x] Normalize task text (numbers → N, item names canonical) and store with archived plans
 - [x] On new task: exact-normalized match against successful archives → clone plan, reset statuses, re-substitute count
-- [ ] pgvector similarity variant behind a confidence threshold
+- [x] pgvector similarity variant behind a confidence threshold
+      — SUPERSEDED by v12 (plan_memory gated to exact skill-only replay; a fuzzy
+      variant would reintroduce the directive-first replay v12 removed)
