@@ -3225,7 +3225,7 @@ def _drone_adoption_worker():
     whose unit is gone. Officers persist server-side (re-raised on login), so
     they keep semantic memory like the five originals; drones stay ephemeral
     (no semantic memory, no profile file)."""
-    base_model = next(iter(_all_runners.values())).model if _all_runners else "qwen2.5:14b-instruct"
+    base_model = next(iter(_all_runners.values())).model if _all_runners else "qwen2.5:32b-instruct"
     while True:
         time.sleep(20)
         try:

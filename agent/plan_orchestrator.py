@@ -40,6 +40,7 @@ log = logging.getLogger("aibot.orchestrator")
 
 MAX_ATTEMPTS = 3
 MAX_REPLANS_PER_SUBTASK = 2
+MAX_SPEC_REFINES = 3
 
 DispatchFn = Callable[[dict[str, Any]], str]
 WorldStateFn = Callable[[], str]
@@ -221,6 +222,50 @@ def _safe_get_dimensions() -> list[str]:
     return list(l3_planner._DEFAULT_DIMENSIONS)
 
 
+def _is_spec_rejection(result_text: str) -> bool:
+    """True if a SKILL dispatch failed because the mod REJECTED its inline spec
+    (a validator problem L3 can fix), as opposed to a runtime failure of an
+    already-registered skill (nothing to fix here)."""
+    if not isinstance(result_text, str):
+        return False
+    return ("spec unparsable" in result_text
+            or "spec rejected" in result_text
+            or " rejected:" in result_text)
+
+
+def _dispatch_skill_with_refine(d: dict[str, Any], dispatch_fn: DispatchFn,
+                                model: str, bot_name: str) -> str:
+    """Dispatch a SKILL directive carrying an inline spec. On a validator
+    rejection, feed the joined error back to L3 (refine_skill) to fix the spec
+    and re-dispatch, up to MAX_SPEC_REFINES times. Falls back to the raw result
+    when the spec can't be extracted or L3 gives up — never worse than the
+    existing single-shot path."""
+    result = dispatch_fn(d)
+    for _ in range(MAX_SPEC_REFINES):
+        if not _is_spec_rejection(result):
+            return result
+        extra = d.get("extra")
+        spec = extra.get("spec") if isinstance(extra, dict) else None
+        if not isinstance(spec, str):
+            # No inline spec string to fix (shouldn't happen for a proposal).
+            return result
+        error = result.replace("FAILED SKILL", "", 1).strip() or result
+        fixed = l3_planner.refine_skill(model, bot_name, spec, error)
+        if fixed is None:
+            log.info("[%s] L3 could not fix rejected skill spec; keeping raw result",
+                     bot_name)
+            return result
+        new_d = {"kind": "SKILL",
+                 "target": d.get("target") or "proposed",
+                 "extra": {"spec": fixed, "register": True}}
+        # Re-normalize through _repair_directive so the mod's string contract
+        # (spec → JSON string, register → "true") is re-applied to the fix.
+        d = _repair_directive(new_d, bot_name, None)
+        log.info("[%s] skill spec refine — retrying: %s", bot_name, error[:100])
+        result = dispatch_fn(d)
+    return result
+
+
 def _step(plan: Plan, subtask: Subtask, model: str,
           dispatch_fn: DispatchFn, world_state_fn: WorldStateFn,
           dim_list: list[str] | None = None) -> bool:
@@ -284,11 +329,19 @@ def _step(plan: Plan, subtask: Subtask, model: str,
     subtask.directives = list(directives)
     plan_store.write(plan)
 
-    # Dispatch each directive via L1
+    # Dispatch each directive via L1. A SKILL proposal carrying an inline spec
+    # goes through the validate→refine loop so a mod-side validator rejection
+    # is fed back to L3 and the spec is corrected in place before retrying.
     last_result = ""
     for d in directives:
         try:
-            last_result = dispatch_fn(d)
+            if (str(d.get("kind", "")).upper() == "SKILL"
+                    and isinstance(d.get("extra"), dict)
+                    and d["extra"].get("spec") is not None):
+                last_result = _dispatch_skill_with_refine(
+                    d, dispatch_fn, model, plan.bot)
+            else:
+                last_result = dispatch_fn(d)
         except Exception as e:
             last_result = f"DISPATCH_ERROR: {e}"
             log.warning("[%s] dispatch failed for %s: %s", plan.bot, d.get("kind"), e)

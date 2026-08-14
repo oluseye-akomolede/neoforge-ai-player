@@ -1,31 +1,25 @@
 name: l3-proposes-skill
 description: >
-  L3 integration: given a task NO seed skill covers, L3 should synthesize a NEW
-  skill inline (a SKILL directive whose extra carries a declarative "spec" +
-  "register":true) rather than hand-expanding raw directives. The mod validates
-  and registers it, so /skills gains a non-seed id. Verified via skill_registered
-  (a new skill id beyond the five seeds). Confirms the agent-side spec wrap +
-  mod-side resolveSpec/validate/register path end-to-end.
+  L3 integration: given a task NO seed skill covers, the agent-side proposal
+  SHIM (l3_planner._collapse_to_skill) synthesizes a NEW skill inline from a
+  bounded 2-3 directive valid-kind sequence that L3 hand-expands, instead of
+  dispatching the raw directives. The synthesized directive is a SKILL carrying
+  a declarative "spec" + register:true; the mod validates and registers it, so
+  /skills gains a non-seed id (skill_registered: true).
 
-  The task is deliberately chosen to have NO seed coverage AND to resist the
-  PLAN phase's tendency to split: EQUIP_ALL + CHANNEL. EQUIP_ALL is the prompt's
-  own canonical "unverifiable prep step" (the proposal example is equip_and_fight
-  = EQUIP_ALL + COMBAT), so PLAN is least likely to peel it into its own
-  subtask; and EQUIP_ALL + CHANNEL matches no seed (resupply_network is
-  CHANNEL + SEND_ITEM, so a bare conjure would collapse but equip+conjure will
-  not). "Gear up" frames it as one reusable routine so EXEC proposes rather than
-  hand-expanding. Both leaves are headless-safe (no mobs, no world, no recipe).
+  Task is chosen for the shim: CHANNEL + STORE_ALL is a bounded reusable
+  routine, matches no seed (resupply_network is CHANNEL + SEND_ITEM;
+  search_and_loot is CONTAINER_SEARCH + STORE_ALL), and both leaves are
+  headless-safe (CHANNEL conjures via XP, no recipe, no mobs, no world).
 
-  NOTE: this is an L3-BEHAVIOR probe, not a deterministic gate. It passes only
-  when qwen2.5:14b actually emits an inline-spec SKILL proposal. It does not
-  currently: across three task shapes (conjure+store, meditate+conjure,
-  equip+conjure) L3 never proposes — it either matches a seed ("conjure X" ->
-  resupply_network) or PLAN-splits the task into single-directive subtasks
-  (inventing a trivial no-op subtask — "ensure in overworld", then "holdings
-  0/0 of minecraft:air" — and ignoring EQUIP_ALL entirely). A PLAN-prompt line
-  to keep bounded reusable routines whole (v16) did NOT change this against the
-  14b model. That is a model-capability limit, not a code bug — the mod-side
-  path is proven deterministically by skill-propose-register.yaml.
+  NOTE: this is an L3-BEHAVIOR probe, not a deterministic gate. The shim fires
+  only when L3 emits CHANNEL + STORE_ALL in a SINGLE subtask's EXEC result. The
+  14b model's known tendency is to PLAN-split a two-step task into
+  single-directive subtasks, in which case the shim never sees a multi-directive
+  sequence and the test still fails — that is a model-capability limit
+  ([[project-l3-skill-proposal]]), not a code bug. The deterministic
+  mod-side register path is proven by skill-propose-register.yaml; the shim +
+  validate→refine loop are unit-checked in the agent.
 world:
   type: normal
 
@@ -33,7 +27,7 @@ bots:
   - image: null
 
 steps:
-  - instruction: "Gear up for conjuring: equip your best gear, then conjure 8 torches."
+  - instruction: "Conjure 8 torches, then store all your torches in storage."
     timeout: 600
     success:
       skill_registered: true

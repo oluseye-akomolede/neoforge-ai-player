@@ -46,6 +46,14 @@ _DEFAULT_DIMENSIONS = [
 
 _PRIMARY_DIMS = {"minecraft:overworld", "minecraft:the_nether", "minecraft:the_end"}
 
+# Single HTTP timeout for every L3 ollama call. 32b (19 GB) cold-loads in ~5m
+# on the V100 pair — llama-server startup + CUDA-graph capture across the
+# tensor-parallel split dominates, not the weight copy. 120s used to abort the
+# load mid-flight on the first call after a pod restart (the agent's read
+# timeout closed the connection, which cancelled the in-progress load). 420s
+# rides out a full cold start; warm calls are unaffected.
+_OLLAMA_TIMEOUT = 420.0
+
 
 def _dim_lines(dimensions: list[str] | None) -> str:
     """Render the dimension list with usage annotations. War-test finding #4:
@@ -167,9 +175,68 @@ def _build_skill_extra(param_names, directives: list[dict]) -> dict[str, str]:
     return extra
 
 
+# DirectiveType enum (mod) — the kinds a declarative skill leaf may use. The
+# shim refuses to synthesize a skill from any kind outside this set: EQUIP_ALL,
+# EQUIP, DROP, VAULT_STORE/WITHDRAW, PROVISION_TERMINAL and ASK_PLAYER are
+# agent-side conveniences, not mod directives, and would fail SkillValidator.
+_VALID_DIRECTIVE_KINDS = frozenset({
+    "MINE", "GATHER", "GOTO", "FOLLOW", "COMBAT", "CRAFT", "SMELT", "ENCHANT",
+    "BREW", "CHANNEL", "SEND_ITEM", "BUILD", "FARM", "CONTAINER_PLACE",
+    "CONTAINER_SEARCH", "CONTAINER_STORE", "CONTAINER_WITHDRAW", "TELEPORT",
+    "IDLE", "PATROL", "WIDE_SEARCH", "LOCATE", "STORE_ALL", "ME_STORE",
+    "ME_WITHDRAW", "CRAFT_REQUEST", "MEDITATE",
+})
+
+# Valid kinds that are nonetheless context-specific (a hardcoded coordinate,
+# a named structure, a followed/patrolled target) — a frozen skill replaying
+# them verbatim is wrong, so the shim will not synthesize from them.
+_NON_REUSABLE_KINDS = frozenset({
+    "TELEPORT", "GOTO", "LOCATE", "PATROL", "FOLLOW", "BUILD", "IDLE",
+})
+
+
+def _directive_to_node(d: dict) -> dict:
+    """One raw L3 directive → a declarative DIRECTIVE leaf. Numeric fields are
+    stringified: SkillNode.parse reads leaves as strings, SkillBehavior re-parses
+    at execution time."""
+    node = {"type": "directive", "kind": str(d.get("kind", "")).upper()}
+    for field in ("target", "count", "radius", "x", "y", "z"):
+        v = d.get(field)
+        if v is not None and str(v) != "":
+            node[field] = str(v)
+    extra = d.get("extra")
+    if isinstance(extra, dict) and extra:
+        node["extra"] = {k: str(v) for k, v in extra.items()}
+    return node
+
+
+def _synthesize_skill(directives: list[dict], kinds: tuple[str, ...]) -> dict | None:
+    """Deterministic self-expansion: a bounded (2-3 leaf) sequence of valid,
+    reusable directive kinds that matches NO seed is a routine L3 hand-expanded
+    instead of proposing. Synthesize an inline SKILL for it (register:true) so
+    the mod validates + registers it and a future identical task reuses it.
+
+    Frozen, not parameterized: leaf targets/counts are baked in. Deliberate —
+    the shim learns the exact routine it just ran, never an over-generalized
+    one. Returns None when the sequence is not a candidate."""
+    if len(directives) not in (2, 3):
+        return None
+    if any(k not in _VALID_DIRECTIVE_KINDS for k in kinds):
+        return None
+    if any(k in _NON_REUSABLE_KINDS for k in kinds):
+        return None
+    skill_id = "gen_" + "_".join(k.lower() for k in kinds)
+    tree = {"type": "sequence", "children": [_directive_to_node(d) for d in directives]}
+    log.info("skill-synthesize: %s -> %s (register)", kinds, skill_id)
+    return {"kind": "SKILL", "target": skill_id,
+            "extra": {"spec": tree, "register": True}}
+
+
 def _collapse_to_skill(directives: list[dict]) -> list[dict]:
-    """Collapse a raw directive sequence that exactly matches a seed skill into a
-    single SKILL directive. Returns the input unchanged when no seed matches."""
+    """Collapse a raw directive sequence into a single SKILL directive: an exact
+    seed match re-routes to that seed, otherwise a bounded reusable no-seed
+    sequence is synthesized inline (register:true). Returns the input unchanged
+    when neither applies."""
     if not directives:
         return directives
     kinds = tuple(str(d.get("kind", "")).upper() for d in directives)
@@ -180,6 +247,9 @@ def _collapse_to_skill(directives: list[dict]) -> list[dict]:
             extra = _build_skill_extra(param_names, directives)
             log.info("skill-collapse: %s -> SKILL %s (extra=%r)", kinds, skill_id, extra)
             return [{"kind": "SKILL", "target": skill_id, "extra": extra}]
+    synthesized = _synthesize_skill(directives, kinds)
+    if synthesized is not None:
+        return [synthesized]
     return directives
 
 
@@ -301,7 +371,7 @@ def call_plan(model: str, bot_name: str, task: str,
                 "format": "json",
                 "options": {"temperature": 0.2, "num_predict": 1024},
             },
-            timeout=120,
+            timeout=_OLLAMA_TIMEOUT,
         )
     resp.raise_for_status()
     raw = _strip_codefence(resp.json()["message"]["content"])
@@ -582,7 +652,7 @@ def partition_fleet(model: str, task: str, bots_info: str, bot_names: list) -> d
                 "format": "json",
                 "options": {"temperature": 0.3, "num_predict": 400},
             },
-            timeout=120,
+            timeout=_OLLAMA_TIMEOUT,
         )
     resp.raise_for_status()
     out = json.loads(resp.json().get("message", {}).get("content", "{}"))
@@ -662,7 +732,7 @@ def call_exec(model: str, plan: Plan, subtask: Subtask,
                 "format": "json",
                 "options": {"temperature": 0.2, "num_predict": 768},
             },
-            timeout=120,
+            timeout=_OLLAMA_TIMEOUT,
         )
     resp.raise_for_status()
     raw = _strip_codefence(resp.json()["message"]["content"])
@@ -755,7 +825,7 @@ def call_replan(model: str, plan: Plan, failed_subtask: Subtask) -> Subtask:
                 "format": "json",
                 "options": {"temperature": 0.3, "num_predict": 384},
             },
-            timeout=120,
+            timeout=_OLLAMA_TIMEOUT,
         )
     resp.raise_for_status()
     raw = _strip_codefence(resp.json()["message"]["content"])
@@ -801,6 +871,91 @@ def call_replan(model: str, plan: Plan, failed_subtask: Subtask) -> Subtask:
         **data, "status": "pending", "attempts": 0,
         "directives": [], "error": None,
     })
+
+
+_REFINE_SKILL_PROMPT = """You are {bot_name}, an AI bot in Minecraft.
+
+You proposed a NEW declarative skill (a SKILL directive carrying an inline
+"spec"), but the mod's deterministic validator REJECTED it. Fix ONLY the spec
+so it validates. Do not change the skill's intent.
+
+Rejected spec (JSON):
+{spec_json}
+
+Validator error:
+{error}
+
+Correct SkillSpec contract (a single JSON object):
+{{
+  "id": "<skill_id>",
+  "nodes": {{ <one root node> }}
+}}
+
+Node grammar (type → required fields):
+  "sequence" / "fallback" → "children": [node, ...]
+  "loop" → "body": node, "max_iterations": N (N must be > 0), optional "while"
+  "if" → "condition": str, "then": node, optional "else": node
+  "skill" (reference an existing skill) → "ref": "<skill_id>"
+  "directive" (leaf) → "kind": one of {valid_kinds}, optional
+      "target"/"count"/"radius"/"x"/"y"/"z"/"extra" (all strings)
+
+Rules the validator enforces:
+  - a "loop" MUST set max_iterations > 0 (never 0 or missing)
+  - a "directive" leaf MUST set a valid "kind"
+  - never reference the skill itself ("skill" with ref == its own id)
+  - any "${{name}}" in nodes must be declared in the top-level "params" map
+
+Output ONLY the corrected spec as a JSON object (no prose, no fences), or:
+{{"error": "<why it cannot be fixed>"}}
+"""
+
+
+def refine_skill(model: str, bot_name: str, spec: str, error: str) -> dict | None:
+    """Feed a validator rejection back to L3 to fix an inline skill spec.
+
+    Returns the corrected spec dict (with "id" + "nodes"), or None if L3
+    gives up or returns non-JSON. The caller re-wraps via _repair_directive.
+    """
+    sys_prompt = _REFINE_SKILL_PROMPT.format(
+        bot_name=bot_name,
+        spec_json=spec,
+        error=error,
+        valid_kinds=", ".join(sorted(_VALID_DIRECTIVE_KINDS)),
+    )
+    user = "Fix the rejected skill spec."
+    log.info("[%s] L3 REFINE-SKILL call — error: %s", bot_name, error[:120])
+    try:
+        with ollama_lock:
+            resp = requests.post(
+                f"{OLLAMA_URL}/api/chat",
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": user},
+                    ],
+                    "stream": False,
+                    "format": "json",
+                    "options": {"temperature": 0.2, "num_predict": 768},
+                },
+                timeout=_OLLAMA_TIMEOUT,
+            )
+        resp.raise_for_status()
+    except Exception as e:
+        log.warning("[%s] refine_skill call failed: %s", bot_name, e)
+        return None
+    raw = _strip_codefence(resp.json()["message"]["content"])
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        log.warning("[%s] refine_skill returned non-JSON: %s", bot_name, e)
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("error") and "id" not in data:
+        log.info("[%s] L3 gave up on skill spec: %s", bot_name, data.get("error"))
+        return None
+    return data
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
