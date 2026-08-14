@@ -7,19 +7,23 @@ description: >
   (a new skill id beyond the five seeds). Confirms the agent-side spec wrap +
   mod-side resolveSpec/validate/register path end-to-end.
 
-  The task is deliberately chosen to have NO seed coverage: MEDITATE + CHANNEL
-  (no seed uses MEDITATE, so it cannot collapse to any of mine_and_smelt /
-  goto_and_scan / search_and_loot / harvest_and_store / resupply_network), and
-  it is phrased as a reusable "routine" so L3 proposes rather than treating it
-  as a one-off. Both leaves are XP-economy ops (no mobs, no world, no recipe),
-  so it is headless-safe.
+  The task is deliberately chosen to have NO seed coverage AND to resist the
+  PLAN phase's tendency to split: EQUIP_ALL + CHANNEL. EQUIP_ALL is the prompt's
+  own canonical "unverifiable prep step" (the proposal example is equip_and_fight
+  = EQUIP_ALL + COMBAT), so PLAN is least likely to peel it into its own
+  subtask; and EQUIP_ALL + CHANNEL matches no seed (resupply_network is
+  CHANNEL + SEND_ITEM, so a bare conjure would collapse but equip+conjure will
+  not). "Gear up" frames it as one reusable routine so EXEC proposes rather than
+  hand-expanding. Both leaves are headless-safe (no mobs, no world, no recipe).
 
   NOTE: this is an L3-BEHAVIOR probe, not a deterministic gate. It passes only
-  when qwen2.5:14b actually emits an inline-spec SKILL proposal. Against the
-  local 14b model it currently splits the task into single-directive subtasks
-  at PLAN time (MEDITATE alone, then conjure -> resupply_network seed), so no
-  proposal is produced. That is LLM variance, not a code bug — the mod-side
-  path is proven deterministically by skill-propose-register.yaml.
+  when qwen2.5:14b actually emits an inline-spec SKILL proposal. It does not
+  currently: across three task shapes (conjure+store, meditate+conjure,
+  equip+conjure) L3 never proposes — it either matches a seed ("conjure X" ->
+  resupply_network) or PLAN-splits the task into single-directive subtasks
+  (sometimes inventing a trivial "ensure in overworld" subtask and ignoring
+  EQUIP_ALL entirely). That is LLM variance, not a code bug — the mod-side path
+  is proven deterministically by skill-propose-register.yaml.
 world:
   type: normal
 
@@ -27,7 +31,7 @@ bots:
   - image: null
 
 steps:
-  - instruction: "Learn a torch-refill routine and run it: meditate to gain 10 XP, then conjure 8 torches."
+  - instruction: "Gear up for conjuring: equip your best gear, then conjure 8 torches."
     timeout: 600
     success:
       skill_registered: true
