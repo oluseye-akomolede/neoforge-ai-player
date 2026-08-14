@@ -100,6 +100,89 @@ def _skills_lines() -> str:
     return text
 
 
+# ── Post-EXEC skill collapse (deterministic backstop) ──────────────────────
+#
+# L3 is asked to prefer SKILL, but a small model may still hand-decompose a
+# skill-covered subtask into its raw directive sequence. This backstop detects
+# that case and collapses the raw sequence into a single SKILL directive, so the
+# v10 "skills first, directives fallback" contract holds regardless of model
+# behavior. It is deliberately conservative:
+#   - Only the five curated seed skills are matched (their kind signature + param
+#     names are fixed here; self-expanded skills fall through to their raw
+#     directives, which is always safe).
+#   - The match is an EXACT kind-sequence match (order + kinds). Any same-shape
+#     raw pair is re-routed to the skill, but a bad param is caught by the
+#     skill's verify predicate and the orchestrator retries/replans.
+
+# seed skill id -> (ordered directive kind signature, param names to extract)
+_SEED_SKILLS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "mine_and_smelt": (("MINE", "SMELT"), ("target", "count")),
+    "goto_and_scan": (("TELEPORT", "WIDE_SEARCH"), ("x", "y", "z", "target")),
+    "search_and_loot": (("CONTAINER_SEARCH", "STORE_ALL"), ("item", "count")),
+    "harvest_and_store": (("FARM", "STORE_ALL"), ("crop", "count")),
+    "resupply_network": (("CHANNEL", "SEND_ITEM"), ("item", "count", "to")),
+}
+
+
+def _build_skill_extra(param_names, directives: list[dict]) -> dict[str, str]:
+    """Map raw directives back onto a skill's param names. Conservative: a param
+    it cannot map is omitted (the skill's own verify predicate catches a bad run)."""
+    def find(*kinds: str):
+        for d in directives:
+            if str(d.get("kind", "")).upper() in kinds:
+                return d
+        return None
+
+    extra: dict[str, str] = {}
+    for name in param_names:
+        n = str(name).lower()
+        if n == "count":
+            for d in directives:
+                if d.get("count") is not None:
+                    extra[name] = str(d["count"])
+                    break
+        elif n == "target":
+            # first directive that actually carries a target (MINE for
+            # mine_and_smelt; WIDE_SEARCH for goto_and_scan whose TELEPORT has none)
+            for d in directives:
+                if d.get("target"):
+                    extra[name] = str(d["target"])
+                    break
+        elif n == "smelt":
+            d = find("SMELT")
+            extra[name] = str(d.get("target", "")) if d else ""
+        elif n == "item":
+            d = find("CHANNEL", "SEND_ITEM", "CONTAINER_SEARCH", "CONTAINER_WITHDRAW")
+            extra[name] = str(d.get("target", "")) if d else ""
+        elif n == "crop":
+            d = find("FARM")
+            extra[name] = str(d.get("target", "")) if d else ""
+        elif n == "to":
+            d = find("SEND_ITEM")
+            extra[name] = str(d.get("target", "")) if d else ""
+        elif n in ("x", "y", "z"):
+            d = find("TELEPORT", "GOTO")
+            extra[name] = str(d.get(n, "")) if d else ""
+        # unknown param name -> omitted (SkillParams leaves ${name} visible)
+    return extra
+
+
+def _collapse_to_skill(directives: list[dict]) -> list[dict]:
+    """Collapse a raw directive sequence that exactly matches a seed skill into a
+    single SKILL directive. Returns the input unchanged when no seed matches."""
+    if not directives:
+        return directives
+    kinds = tuple(str(d.get("kind", "")).upper() for d in directives)
+    if "SKILL" in kinds:
+        return directives  # already skill-directed
+    for skill_id, (signature, param_names) in _SEED_SKILLS.items():
+        if kinds == signature:
+            extra = _build_skill_extra(param_names, directives)
+            log.info("skill-collapse: %s -> SKILL %s (extra=%r)", kinds, skill_id, extra)
+            return [{"kind": "SKILL", "target": skill_id, "extra": extra}]
+    return directives
+
+
 # ── Phase 1: plan ──────────────────────────────────────────────────────────
 
 
@@ -284,7 +367,23 @@ Output ONLY a JSON object (no prose, no fences):
   ]
 }}
 
-DIRECTIVE PARAM REFERENCE (use these shapes EXACTLY):
+SKILL REFERENCE (registered skills — pick one when it covers the subtask):
+{skills}
+
+FIRST, check the SKILL REFERENCE above. If a registered skill covers this entire
+subtask end-to-end, emit exactly ONE directive of kind SKILL — do NOT hand-expand
+the skill into its raw directive sequence. Skills are deterministic and
+post-verified against world state, so a matching skill is always the better choice.
+
+Worked example — subtask "mine 8 iron ore and smelt into ingots" is covered by the
+mine_and_smelt skill, so emit:
+{{
+  "directives": [
+    {{ "kind": "SKILL", "target": "mine_and_smelt", "extra": {{ "target": "minecraft:iron_ore", "count": "8" }} }}
+  ]
+}}
+
+RAW DIRECTIVE REFERENCE (fallback — use ONLY when NO skill above covers the subtask):
 
   MINE             — {{ "kind":"MINE", "target":"minecraft:iron_ore", "count":16 }}
   CRAFT            — {{ "kind":"CRAFT", "target":"minecraft:torch", "count":16 }}
@@ -428,15 +527,6 @@ INVENTORY TASKS ("store", "clean up", "put away", "organize"):
                      "player says: ..." — plan the NEXT directives with it.
                      Do not ask what you can observe or decide yourself.
   IDLE             — {{ "kind":"IDLE" }}
-  SKILL            — {{ "kind":"SKILL", "target":"<skill_id>", "extra":{{"<param>":"<value>", ...}} }}
-                     Runs a registered skill end-to-end (see SKILL REFERENCE
-                     below). target is the skill id; extra carries the skill's
-                     params as strings. Prefer a matching skill over re-emitting
-                     its directive sequence by hand — skills are deterministic
-                     and post-verified against world state.
-
-SKILL REFERENCE (registered skills — pick one when it covers the subtask):
-{skills}
 """
 
 
@@ -573,6 +663,7 @@ def call_exec(model: str, plan: Plan, subtask: Subtask,
         )
         raise ValueError("L3 EXEC returned no directives")
     parsed = [d for d in directives if isinstance(d, dict) and "kind" in d]
+    parsed = _collapse_to_skill(parsed)
     call_id = trajectory_log.log_call(
         phase="exec", bot=plan.bot, model=model,
         prompt_system=sys_prompt, prompt_user=user,
