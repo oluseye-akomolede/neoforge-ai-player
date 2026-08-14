@@ -7,19 +7,20 @@ description: >
   a declarative "spec" + register:true; the mod validates and registers it, so
   /skills gains a non-seed id (skill_registered: true).
 
-  Task is chosen for the shim: CHANNEL + STORE_ALL is a bounded reusable
-  routine, matches no seed (resupply_network is CHANNEL + SEND_ITEM;
-  search_and_loot is CONTAINER_SEARCH + STORE_ALL), and both leaves are
-  headless-safe (CHANNEL conjures via XP, no recipe, no mobs, no world).
+  Task is chosen for the shim: CRAFT + STORE_ALL is a bounded reusable routine
+  with NO seed verb at all (the five seeds cover MINE, TELEPORT, CONTAINER_SEARCH,
+  FARM, CHANNEL, SMELT, WIDE_SEARCH, STORE_ALL, SEND_ITEM — but never CRAFT, and
+  never STORE_ALL as a *leading* verb). "Craft … then store all" therefore has no
+  seed for L3 to greedily match (unlike "mine"→mine_and_smelt or "conjure"→
+  resupply_network), so EXEC must hand-expand raw directives, which is exactly
+  the shim's firing condition.
 
   NOTE: this is an L3-BEHAVIOR probe, not a deterministic gate. The shim fires
-  only when L3 emits CHANNEL + STORE_ALL in a SINGLE subtask's EXEC result. The
-  14b model's known tendency is to PLAN-split a two-step task into
-  single-directive subtasks, in which case the shim never sees a multi-directive
-  sequence and the test still fails — that is a model-capability limit
-  ([[project-l3-skill-proposal]]), not a code bug. The deterministic
-  mod-side register path is proven by skill-propose-register.yaml; the shim +
-  validate→refine loop are unit-checked in the agent.
+  only when L3 emits CRAFT + STORE_ALL (or CRAFT + ME_STORE) as raw directives in
+  a SINGLE subtask's EXEC result. A seed-match or split still yields
+  skill_registered:false — a model-variance limit ([[project-l3-skill-proposal]]),
+  not a code bug. The deterministic mod-side register path is proven by
+  skill-propose-register.yaml; the shim + validate→refine loop are unit-checked.
 world:
   type: normal
 
@@ -27,7 +28,7 @@ bots:
   - image: null
 
 steps:
-  - instruction: "Conjure 8 torches, then store all your torches in storage."
+  - instruction: "Craft 6 oak planks, then store them all."
     timeout: 600
     success:
       skill_registered: true
