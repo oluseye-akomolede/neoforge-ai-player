@@ -3491,6 +3491,25 @@ def _run_squad_partition(officer, oid, params, player, kind):
     if not text:
         return
 
+    # Deterministic anchor intent: chunk anchoring is single-bot, so an
+    # "anchor" clause targets the officer alone, not the squad. Extract it
+    # before partition — the 14b partitioner drops it, leaving "engage your
+    # anchor" a silent no-op (player report).
+    _low = text.lower()
+    if "anchor" in _low:
+        _off = bool(re.search(r"\b(release|drop|lower|anchor\s+down|anchor\s+off)\b", _low))
+        try:
+            r = api.raw_post(f"/bot/{officer}/{'anchor_off' if _off else 'anchor_on'}", {})
+            verb = "released" if _off else "engaged"
+            print(f"[squad:{officer}] anchor {verb}"
+                  + ("" if r.get("ok") else f" — refused: {r.get('error', r)}"))
+        except Exception as e:
+            print(f"[squad:{officer}] anchor failed: {e}")
+        # Strip the anchor clause so the rest partitions cleanly.
+        text = re.sub(r"[^.]*\banchor\b[^.]*\.\s*", "", text, flags=re.IGNORECASE).strip()
+        if not text:
+            return
+
     # Deterministic skill shard (Feature 1): a skill-matched squad order fans
     # the SAME SKILL to every member, sharding the search area via
     # bot_index/bot_count so N units split the cells instead of one L3 call
