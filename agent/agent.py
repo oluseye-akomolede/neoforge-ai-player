@@ -1035,7 +1035,43 @@ class BotRunner:
         found = self._recent_findings()
         if found:
             parts.append("known_locations=[" + "; ".join(found) + "]")
+        squad = self._squad_context()
+        if squad:
+            parts.append(squad.replace("\n", " "))
         return "  ".join(parts) or "(no state)"
+
+    def _squad_context(self) -> str:
+        """The officer's situational awareness of its squad: which drones serve
+        under it and each drone's live state, so the officer can REASON about
+        them (dispatch, regroup, check on a lagging unit) instead of only
+        routing orders to them blindly. A drone gets the reverse: its officer.
+        Reads the latest per-bot snapshots — no extra API calls."""
+        if not self.squad_members and not self.squad:
+            return ""
+        snap = shared_state.snapshot().get("bots", {})
+        if self.squad_members:
+            lines = [f"## Squad — you command {len(self.squad_members)} drone(s)"]
+            for d in self.squad_members:
+                b = snap.get(d, {}) or {}
+                st = b.get("status", {}) or {}
+                pos = st.get("position", {}) or {}
+                dim = st.get("dimension", "?")
+                hp = st.get("health", "?")
+                xp = st.get("xp_level", "?")
+                plan = b.get("plan", {}) or {}
+                instr = plan.get("instruction", "") or ""
+                if b.get("awaiting_taskboard"):
+                    state = "awaiting orders"
+                elif instr:
+                    state = f"doing: {instr}"
+                else:
+                    state = "idle"
+                lines.append(
+                    f"  {d}: hp={hp} xp={xp} "
+                    f"at ({int(pos.get('x', 0))},{int(pos.get('y', 0))},{int(pos.get('z', 0))}) "
+                    f"[{dim}] {state}".rstrip())
+            return "\n".join(lines)
+        return f"## Squad — you serve officer {self.squad}"
 
     MAX_FINDINGS = 8
 
@@ -2638,6 +2674,9 @@ Respond with ONLY a JSON array. Example:
             except Exception:
                 pass
 
+        squad = self._squad_context()
+        if squad:
+            obs = obs + "\n\n" + squad
         return obs, new_messages
 
     def _execute_actions(self, actions):
