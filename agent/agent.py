@@ -3389,6 +3389,35 @@ def _run_squad_partition(officer, oid, params, player, kind):
     text = str(p.get("text", "")).strip()
     if not text:
         return
+
+    # Deterministic skill shard (Feature 1): a skill-matched squad order fans
+    # the SAME SKILL to every member, sharding the search area via
+    # bot_index/bot_count so N units split the cells instead of one L3 call
+    # producing heterogeneous work. goto_and_scan is the only shardable seed
+    # (WIDE_SEARCH is the only leaf that reads bot_index/bot_count); other
+    # matches fall through to the L3 partition below.
+    try:
+        import skill_matcher
+        matched = skill_matcher.match(text)
+    except Exception:
+        matched = None
+    if matched and str(matched.get("target", "")) == "goto_and_scan":
+        base_extra = dict(matched.get("extra") or {})
+        n = len(members)
+        for i, b in enumerate(members):
+            d_extra = dict(base_extra)
+            d_extra["bot_index"] = str(i)
+            d_extra["bot_count"] = str(n)
+            try:
+                api.set_directive(b, "SKILL", target="goto_and_scan", extra=d_extra)
+                telemetry.push(b, "squad",
+                               f"squad:{officer} SKILL goto_and_scan [bot {i}/{n}]")
+            except Exception as e:
+                print(f"[squad:{officer}] SKILL fan-out to {b} failed: {e}")
+        print(f"[squad:{officer}] {oid}: fanned SKILL goto_and_scan to {n} units "
+              f"(bot_index 0..{n - 1})")
+        return
+
     _partition_to_orders(members, runner.model, text, player,
                          f"squad:{officer}", f"squad:{officer}")
 

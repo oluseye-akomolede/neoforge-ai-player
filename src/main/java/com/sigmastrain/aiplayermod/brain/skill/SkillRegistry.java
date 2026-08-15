@@ -127,10 +127,10 @@ public final class SkillRegistry {
                 """
                 { "type": "sequence", "children": [
                     { "type": "directive", "kind": "TELEPORT", "x": "${x}", "y": "${y}", "z": "${z}" },
-                    { "type": "directive", "kind": "WIDE_SEARCH", "target": "${target}" }
+                    { "type": "directive", "kind": "WIDE_SEARCH", "target": "${target}", "extra": { "bot_index": "${bot_index}", "bot_count": "${bot_count}" } }
                 ] }
                 """,
-                "x:int", "y:int", "z:int", "target:block_or_entity");
+                "x:int", "y:int", "z:int", "target:block_or_entity", "bot_index:int", "bot_count:int");
 
         seed("search_and_loot", "Search containers for an item, then store everything.",
                 """
