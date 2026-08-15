@@ -3493,7 +3493,7 @@ def _run_squad_partition(officer, oid, params, player, kind):
 
     # Deterministic anchor intent: chunk anchoring is single-bot, so an
     # "anchor" clause targets the officer alone, not the squad. Extract it
-    # before partition — the 14b partitioner drops it, leaving "engage your
+    # before partition — the partitioner drops it, leaving "engage your
     # anchor" a silent no-op (player report).
     _low = text.lower()
     if "anchor" in _low:
