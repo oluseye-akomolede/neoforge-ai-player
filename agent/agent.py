@@ -3427,11 +3427,20 @@ def _partition_to_orders(bots, model, text, player, group_id, label):
     print(f"[{label}] partitioned '{text[:60]}' across {len(bots)} bots")
 
 
-def _run_fleet_partition(oid, params, player, fleet_id):
+def _run_fleet_partition(oid, params, player, fleet_id, kind):
     """One natural-language order for the whole fleet: a single L3 call
     splits it into per-bot assignments. Orders that move items out of vaults
     gate on ONE inbox confirm."""
     import json as _json
+
+    def _status(status, detail=""):
+        try:
+            api.raw_post("/telemetry/orders", {
+                "id": oid, "bot": "fleet", "kind": kind,
+                "status": status, "detail": detail[:200]})
+        except Exception:
+            pass
+
     try:
         p = _json.loads(params) if isinstance(params, str) else (params or {})
     except Exception:
@@ -3440,8 +3449,12 @@ def _run_fleet_partition(oid, params, player, fleet_id):
         p = {}
     text = str(p.get("text", "")).strip()
     if not text:
+        _status("FAILED", "empty order")
         return
     bots = list(_all_runners.keys())
+    if not bots:
+        _status("FAILED", "no bots online")
+        return
 
     # destructive-at-scale gate: one confirm, not five
     lowered = text.lower()
@@ -3452,11 +3465,14 @@ def _run_fleet_partition(oid, params, player, fleet_id):
             f"Fleet-wide order touches inventories: '{text[:120]}' — dispatch to "
             f"{len(bots)} bots?", ["dispatch", "cancel"], timeout=60)
         if ruling.get("answered") and ruling.get("text") == "cancel":
+            _status("FAILED", "cancelled at fleet confirm")
             return
         # timeout or dispatch → proceed (the per-bot L4 triggers still stand)
 
+    _status("RUNNING", f"partitioning across {len(bots)} bots")
     _partition_to_orders(bots, _all_runners[bots[0]].model, text, player,
                          fleet_id, "fleet")
+    _status("COMPLETED", f"partitioned across {len(bots)} bots")
 
 
 def _run_squad_partition(officer, oid, params, player, kind):
@@ -3464,13 +3480,24 @@ def _run_squad_partition(officer, oid, params, player, kind):
     assigned drones). TEXT orders get one L3 partition scoped to the squad;
     typed orders fan out verbatim. The officer's model drives the partition."""
     import json as _json
+
+    def _status(status, detail=""):
+        try:
+            api.raw_post("/telemetry/orders", {
+                "id": oid, "bot": officer, "kind": kind,
+                "status": status, "detail": detail[:200]})
+        except Exception:
+            pass
+
     runner = _all_runners.get(officer)
     if not runner:
+        _status("FAILED", "no such officer")
         return
     members = [officer] + [d for d in runner.squad_members if d in _all_runners]
 
     # Typed order → verbatim fan-out to every squad member (same as fleet).
     if kind != "TEXT":
+        _status("RUNNING", f"fanning out '{kind}' to {len(members)} units")
         for b in members:
             try:
                 api.raw_post("/telemetry/orders", {
@@ -3479,6 +3506,7 @@ def _run_squad_partition(officer, oid, params, player, kind):
             except Exception as e:
                 print(f"[squad] submit for {b} failed: {e}")
         print(f"[squad] {oid}: fanned out typed '{kind}' to {len(members)} units")
+        _status("COMPLETED", f"fanned '{kind}' to {len(members)} units")
         return
 
     try:
@@ -3489,6 +3517,7 @@ def _run_squad_partition(officer, oid, params, player, kind):
         p = {}
     text = str(p.get("text", "")).strip()
     if not text:
+        _status("FAILED", "empty order")
         return
 
     # Deterministic anchor intent: chunk anchoring is single-bot, so an
@@ -3498,16 +3527,22 @@ def _run_squad_partition(officer, oid, params, player, kind):
     _low = text.lower()
     if "anchor" in _low:
         _off = bool(re.search(r"\b(release|drop|lower|anchor\s+down|anchor\s+off)\b", _low))
+        verb = "released" if _off else "engaged"
         try:
             r = api.raw_post(f"/bot/{officer}/{'anchor_off' if _off else 'anchor_on'}", {})
-            verb = "released" if _off else "engaged"
             print(f"[squad:{officer}] anchor {verb}"
                   + ("" if r.get("ok") else f" — refused: {r.get('error', r)}"))
         except Exception as e:
             print(f"[squad:{officer}] anchor failed: {e}")
-        # Strip the anchor clause so the rest partitions cleanly.
+        # Strip the anchor clause so the rest partitions cleanly. The period
+        # strip only bites on "engage your anchor." — a bare "engage your
+        # anchor" survives it, so drop whatever still mentions anchor: it's
+        # already handled above, not a task for the squad.
         text = re.sub(r"[^.]*\banchor\b[^.]*\.\s*", "", text, flags=re.IGNORECASE).strip()
+        if "anchor" in text.lower():
+            text = ""
         if not text:
+            _status("COMPLETED", "anchor " + verb)
             return
 
     # Deterministic skill shard (Feature 1): a skill-matched squad order fans
@@ -3544,10 +3579,13 @@ def _run_squad_partition(officer, oid, params, player, kind):
                 print(f"[squad:{officer}] SKILL fan-out to {b} failed: {e}")
         print(f"[squad:{officer}] {oid}: fanned SKILL {skill_id} to {n} units"
               + (f" (bot_index 0..{n - 1})" if shard else ""))
+        _status("COMPLETED", f"fanned SKILL {skill_id} to {n} units")
         return
 
+    _status("RUNNING", f"partitioning across {len(members)} units")
     _partition_to_orders(members, runner.model, text, player,
                          f"squad:{officer}", f"squad:{officer}")
+    _status("COMPLETED", f"partitioned across {len(members)} units")
 
 
 def _order_text(kind, params):
@@ -3589,7 +3627,7 @@ def _order_worker():
                 threading.Thread(
                     target=_run_fleet_partition,
                     args=(oid, order.get("params"), str(order.get("player", "")),
-                          str(order.get("fleet", ""))),
+                          str(order.get("fleet", "")), kind),
                     name=f"fleet:{oid}", daemon=True).start()
                 continue
             # Explicit squad address: order the whole bound squad at once.
