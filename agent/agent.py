@@ -3348,6 +3348,47 @@ def _drone_adoption_worker():
             print(f"[agent/drones] adoption error: {e}")
 
 
+def _squad_cohesion_worker():
+    """Physical cohesion: a bound drone escorts its officer, so the squad moves
+    as one unit. Whenever a drone has no live work (no ACTIVE directive, not
+    already FOLLOWing its officer) it is re-pointed at the officer via a
+    persistent FOLLOW directive — FollowBehavior walks it in, teleports it if it
+    falls >32 blocks (or cross-dimension) behind. A task dispatched to the drone
+    interrupts FOLLOW naturally; this loop re-binds it on the next idle tick.
+    Follow distances stagger by drone number so the column doesn't stack."""
+    import re as _re
+    while True:
+        time.sleep(8)
+        try:
+            for name, runner in list(_all_runners.items()):
+                if not DRONE_RE.fullmatch(name) or name.startswith("Officer"):
+                    continue
+                officer = runner.squad
+                if not officer or officer not in _all_runners:
+                    continue
+                try:
+                    d = (api.get_directive(name) or {}).get("directive", {}) or {}
+                except Exception:
+                    d = {}
+                dtype = str(d.get("type", "")).upper()
+                status = str(d.get("status", "")).upper()
+                tgt = str(d.get("target", ""))
+                if dtype == "FOLLOW" and tgt == officer:
+                    continue                       # already escorting
+                if status == "ACTIVE":
+                    continue                       # busy with real work
+                m = _re.search(r"(\d+)$", name)
+                dist = str(3 + (int(m.group(1)) % 4)) if m else "3"
+                try:
+                    api.set_directive(name, "FOLLOW", target=officer,
+                                      extra={"distance": dist})
+                    print(f"[cohesion] {name} -> following {officer} (d={dist})")
+                except Exception as e:
+                    print(f"[cohesion] {name} follow {officer} failed: {e}")
+        except Exception as e:
+            print(f"[agent/cohesion] error: {e}")
+
+
 def _partition_to_orders(bots, model, text, player, group_id, label):
     """Partition `text` across `bots` via one L3 call (citing each bot's persona
     + holdings) and re-inject one TEXT order per bot sharing `group_id`.
@@ -3858,6 +3899,7 @@ def run():
     threading.Thread(target=_order_worker, name="order-worker", daemon=True).start()
     threading.Thread(target=_standing_worker, name="standing-worker", daemon=True).start()
     threading.Thread(target=_drone_adoption_worker, name="drone-adoption", daemon=True).start()
+    threading.Thread(target=_squad_cohesion_worker, name="squad-cohesion", daemon=True).start()
 
     # Off-loop skill author (DeepSeek) — separated from L3's live loop. Spawns
     # its own thread only when enabled + keyed (gating lives in skill_author).
