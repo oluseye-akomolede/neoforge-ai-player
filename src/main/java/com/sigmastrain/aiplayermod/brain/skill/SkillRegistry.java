@@ -76,6 +76,22 @@ public final class SkillRegistry {
         return null;
     }
 
+    /** Register a curated cross-mod skill as a seed — exempt from LRU eviction
+     *  and, crucially, from on-disk persistence. The latter is what lets a
+     *  dependent mod (hive-mod) contribute an always-present skill through the
+     *  same seam as the built-in seeds: {@link #load()} skips seed ids, so a
+     *  stale copy that an earlier run persisted under {@link #register} can
+     *  never clobber the fresh registration at boot. Returns null on success,
+     *  or the joined validation errors. */
+    public static synchronized String registerSeed(String id, SkillSpec spec) {
+        SEEDS.add(id); // curated — exempt from LRU eviction and persistence
+        String err = register(id, spec);
+        if (err != null) {
+            SEEDS.remove(id); // don't leave a half-registered seed behind
+        }
+        return err;
+    }
+
     /** Drop the least-recently-used non-seed entry to stay under {@link #MAX_SKILLS}. */
     private static void evictIfNeeded(String incomingId) {
         if (SKILLS.containsKey(incomingId) || SKILLS.size() < MAX_SKILLS) {
