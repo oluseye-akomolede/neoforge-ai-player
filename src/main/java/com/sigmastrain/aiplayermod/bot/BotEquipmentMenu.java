@@ -53,14 +53,16 @@ public class BotEquipmentMenu extends AbstractContainerMenu {
         addSlot(new Slot(botContainer, 40, 77, 62));
 
         // Aux slots (hive hardpoints): registered by other mods, laid out
-        // down the right edge beside the armor column.
+        // down the right edge beside the armor column. Start at y=20 so the
+        // top hardpoint clears the ← / 💬 header buttons (which sit at y=4..18)
+        // — the old y=8 row collided with the chat toggle.
         this.auxProvider = com.sigmastrain.aiplayermod.bot.AuxSlots.providerFor(botName);
         if (auxProvider != null) {
             Container aux = auxProvider.containerFor(botName);
             this.auxCount = aux.getContainerSize();
             for (int i = 0; i < auxCount; i++) {
                 final int idx = i;
-                addSlot(new Slot(aux, i, 152, 8 + i * 18) {
+                addSlot(new Slot(aux, i, 152, 20 + i * 18) {
                     @Override
                     public boolean mayPlace(net.minecraft.world.item.ItemStack stack) {
                         return auxProvider.accepts(botName, idx, stack);

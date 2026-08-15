@@ -131,14 +131,14 @@ public class BotEquipmentScreen extends AbstractContainerScreen<BotEquipmentMenu
 
         // Hardpoint labels — an empty extra slot means nothing without one.
         // Right-aligned beside their slot (left of the 152px column), centred
-        // on the slot row: the old `y + 26 + i*18` put the R-mount label on
-        // top of the L-mount slot, so the two hardpoint boxes read as one
-        // overlapping blob.
+        // on the slot row. The slot column now starts at y=20 (below the ←/💬
+        // header buttons), so the label row tracks it at +4 — the label stays
+        // centred on its 16px slot without drifting onto the header.
         var auxLabels = this.menu.getAuxLabels();
         for (int i = 0; i < Math.min(auxLabels.size(), this.menu.getAuxCount()); i++) {
             String label = auxLabels.get(i);
             guiGraphics.drawString(this.font, "§8" + label,
-                    x + 148 - this.font.width(label), y + 12 + i * 18, 0xFF7A8B8B, false);
+                    x + 148 - this.font.width(label), y + 24 + i * 18, 0xFF7A8B8B, false);
         }
 
         int entityId = this.menu.getBotEntityId();
