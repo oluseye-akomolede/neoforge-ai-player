@@ -3292,6 +3292,19 @@ def _drone_adoption_worker():
                     except Exception:
                         pass
                     print(f"[agent] released dissolved unit {n}")
+            # Named fleet bots are agent-spawned; a server restart despawns
+            # them and nothing re-raises them (hive-mod only re-raises
+            # drones/officers). Re-spawn any profile bot whose entity is gone
+            # so the fleet survives a server restart without an agent restart.
+            for n, runner in _all_runners.items():
+                if DRONE_RE.fullmatch(n):
+                    continue
+                if n not in names:
+                    try:
+                        api.spawn(n)
+                        print(f"[agent] re-spawned missing fleet bot {n}")
+                    except Exception as e:
+                        print(f"[agent] re-spawn {n} failed: {e}")
         except Exception as e:
             print(f"[agent/drones] adoption error: {e}")
 
@@ -3695,12 +3708,16 @@ def run():
             print(f"[agent] Mod API not ready (attempt {attempt}/{max_retries}), retrying in 5s...")
             time.sleep(5)
 
-    # Despawn any stale bots from a previous agent run
+    # Despawn any stale NAMED bots from a previous agent run (so they re-spawn
+    # fresh with profile/memory), but leave hive units (Drone<N>/Officer<N>)
+    # alone — those are owned by hive-mod and re-raised on its own schedule.
     try:
         existing = api.list_bots().get("bots", [])
-        if existing:
-            print(f"[agent] Cleaning up {len(existing)} stale bot(s): {existing}")
-            for name in existing:
+        stale = [b.get("name") for b in existing
+                 if isinstance(b, dict) and b.get("name") and not DRONE_RE.fullmatch(b["name"])]
+        if stale:
+            print(f"[agent] Cleaning up {len(stale)} stale bot(s): {stale}")
+            for name in stale:
                 api.despawn(name)
     except Exception:
         pass

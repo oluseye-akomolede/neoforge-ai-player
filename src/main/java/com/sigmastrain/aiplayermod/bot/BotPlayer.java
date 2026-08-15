@@ -344,8 +344,16 @@ public class BotPlayer {
             JsonObject root = JsonParser.parseReader(r).getAsJsonObject();
             HolderLookup.Provider registries = player.getServer().registryAccess();
 
-            if (root.has("dimension")) {
-                String dimStr = root.get("dimension").getAsString();
+            // A bot must never respawn in a non-overworld dimension. A prior
+            // session can send one to the End/Nether (an ender-pearl run), and
+            // saveState faithfully records that dimension; restoring it strands
+            // the bot in the_end/the_nether on spawn (live bug: Mystic came back
+            // in the Nether, Axiom/Forge/Scout/Tiller in the End). Only an
+            // overworld save is restored; a cross-dimension save falls back to
+            // the overworld spawn that create() already placed us at.
+            String dimStr = root.has("dimension")
+                    ? root.get("dimension").getAsString() : "minecraft:overworld";
+            if ("minecraft:overworld".equals(dimStr)) {
                 ResourceKey<Level> dimKey = ResourceKey.create(Registries.DIMENSION, ResourceLocation.parse(dimStr));
                 ServerLevel targetLevel = player.getServer().getLevel(dimKey);
                 if (targetLevel != null) {
@@ -357,14 +365,17 @@ public class BotPlayer {
                         AIPlayerMod.LOGGER.warn("Failed to set bot dimension on load", e);
                     }
                 }
-            }
 
-            double x = root.get("x").getAsDouble();
-            double y = root.get("y").getAsDouble();
-            double z = root.get("z").getAsDouble();
-            float yRot = root.has("yRot") ? root.get("yRot").getAsFloat() : 0;
-            float xRot = root.has("xRot") ? root.get("xRot").getAsFloat() : 0;
-            player.moveTo(x, y, z, yRot, xRot);
+                double x = root.get("x").getAsDouble();
+                double y = root.get("y").getAsDouble();
+                double z = root.get("z").getAsDouble();
+                float yRot = root.has("yRot") ? root.get("yRot").getAsFloat() : 0;
+                float xRot = root.has("xRot") ? root.get("xRot").getAsFloat() : 0;
+                player.moveTo(x, y, z, yRot, xRot);
+            } else {
+                AIPlayerMod.LOGGER.warn("Bot {} saved in {} — respawning at overworld spawn instead",
+                        name, dimStr);
+            }
 
             if (root.has("xp")) {
                 player.giveExperiencePoints(root.get("xp").getAsInt() - player.totalExperience);
@@ -441,8 +452,9 @@ public class BotPlayer {
                 }
             }
 
-            AIPlayerMod.LOGGER.info("Loaded bot state: {} at ({}, {}, {}) in {}", name, (int) x, (int) y, (int) z,
-                    root.has("dimension") ? root.get("dimension").getAsString() : "overworld");
+            AIPlayerMod.LOGGER.info("Loaded bot state: {} at ({}, {}, {}) in {}", name,
+                    (int) player.getX(), (int) player.getY(), (int) player.getZ(),
+                    player.level().dimension().location());
         } catch (Exception e) {
             AIPlayerMod.LOGGER.error("Failed to load bot state for {}", name, e);
         }
