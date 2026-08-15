@@ -45,6 +45,7 @@ public final class BehaviorFactory {
             case ME_WITHDRAW -> ModCompat.isAE2Loaded() ? new MEWithdrawBehavior() : new FailFastBehavior("AE2 not loaded");
             case CRAFT_REQUEST -> ModCompat.isAE2Loaded() ? new CraftRequestBehavior() : new FailFastBehavior("AE2 not loaded");
             case MEDITATE -> new MeditateBehavior();
+            case CULTIVATE -> new CultivateBehavior();
             case SKILL -> new SkillBehavior();
             case IDLE -> new IdleBehavior();
             default -> new IdleBehavior(); // GATHER, PATROL — no impl yet

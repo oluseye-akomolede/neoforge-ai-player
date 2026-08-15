@@ -28,5 +28,6 @@ public enum DirectiveType {
     ME_WITHDRAW,
     CRAFT_REQUEST,
     MEDITATE,
+    CULTIVATE,
     SKILL
 }
