@@ -14,6 +14,7 @@ dependencies.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import os
@@ -26,6 +27,7 @@ import api
 import l3_planner
 import plan_memory
 import plan_store
+import skill_matcher
 import telemetry
 import trajectory_log
 from criteria_eval import evaluate as evaluate_criteria
@@ -48,6 +50,57 @@ OnPlanCreated = Callable[[Plan], None]
 OnSubtaskStart = Callable[[Plan, Subtask], None]
 OnSubtaskDone = Callable[[Plan, Subtask, bool], None]
 OnFinalized = Callable[[Plan], None]
+
+
+def _plan_from_skill(bot_name: str, task: str) -> Plan | None:
+    """Deterministic plan-time skill match (Phase 0.5).
+
+    When the task phrase unmistakably maps to a seed skill, build a
+    single-subtask plan whose pre-baked directive is that SKILL — zero L3 calls,
+    no decompose→collapse round-trip. A miss returns None and the caller falls
+    through to L3 exactly as before.
+    """
+    directive = skill_matcher.match(task)
+    if directive is None:
+        return None
+    skill_id = str(directive.get("target", ""))
+    extra = directive.get("extra") if isinstance(directive.get("extra"), dict) else {}
+    criteria = _skill_criteria(skill_id, extra)
+    subtask = Subtask(
+        id=1,
+        description=task,
+        criteria=criteria,
+        status="pending",
+        directives=[directive],
+    )
+    plan = Plan(
+        task=task,
+        bot=bot_name,
+        created_at=datetime.datetime.utcnow().isoformat(),
+        status="executing",
+        subtasks=[subtask],
+        current_subtask_id=1,
+    )
+    log.info("[%s] skill-match plan (%s, 0 LLM planning calls)", bot_name, skill_id)
+    return plan
+
+
+def _skill_criteria(skill_id: str, extra: dict[str, Any]) -> str:
+    """A deterministic completion criterion for a matched skill.
+
+    Material-output skills are grounded in the skill's real terminal item
+    (same source _ground_skill_criteria uses at exec, so it will not rewrite
+    this). Skills with no material output (goto_and_scan, resupply_network)
+    fall back to the skill's own COMPLETED/FAILED dispatch signal.
+    """
+    count = str(extra.get("count") or "1")
+    try:
+        out = (api.skill_output(skill_id, **{k: str(v) for k, v in extra.items()}) or {}).get("output")
+    except Exception:
+        out = None
+    if out and ":" in str(out):
+        return f"inventory has {count} {out}"
+    return "skill completes successfully"
 
 
 def execute_task(
@@ -89,6 +142,10 @@ def execute_task(
     plan = plan_memory.lookup(bot_name, task)
     if plan is not None:
         log.info("[%s] plan-memory reuse (0 LLM planning calls)", bot_name)
+    if plan is None:
+        # Phase 0.5: deterministic skill match — a skill-covered task becomes a
+        # single SKILL directive, skipping the L3 decompose→collapse round-trip.
+        plan = _plan_from_skill(bot_name, task)
     if plan is None:
         # Phase 1: L3 plan — with one retry if criteria geometry is provably
         # impossible (finding D1: PLAN-time criteria pointed below the world
