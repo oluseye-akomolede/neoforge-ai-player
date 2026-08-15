@@ -3366,6 +3366,8 @@ def _squad_cohesion_worker():
                 officer = runner.squad
                 if not officer or officer not in _all_runners:
                     continue
+                if runner._plan_steps:
+                    continue                       # mid-plan: don't disturb
                 try:
                     d = (api.get_directive(name) or {}).get("directive", {}) or {}
                 except Exception:
