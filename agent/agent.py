@@ -3037,6 +3037,8 @@ def _run_direct_order(runner, oid, kind, params, player=""):
         p = _json.loads(params) if isinstance(params, str) else (params or {})
     except Exception:
         p = {}
+    if not isinstance(p, dict):
+        p = {}
     extra = {k: v for k, v in p.items()
              if k not in ("target", "count", "radius", "x", "y", "z")}
     if kind == "PROVISION_TERMINAL":
@@ -3339,6 +3341,8 @@ def _run_fleet_partition(oid, params, player, fleet_id):
         p = _json.loads(params) if isinstance(params, str) else (params or {})
     except Exception:
         p = {}
+    if not isinstance(p, dict):
+        p = {}
     text = str(p.get("text", "")).strip()
     if not text:
         return
@@ -3386,6 +3390,8 @@ def _run_squad_partition(officer, oid, params, player, kind):
         p = _json.loads(params) if isinstance(params, str) else (params or {})
     except Exception:
         p = {}
+    if not isinstance(p, dict):
+        p = {}
     text = str(p.get("text", "")).strip()
     if not text:
         return
@@ -3401,21 +3407,29 @@ def _run_squad_partition(officer, oid, params, player, kind):
         matched = skill_matcher.match(text)
     except Exception:
         matched = None
-    if matched and str(matched.get("target", "")) == "goto_and_scan":
+    # A matched skill fans out to the whole squad. goto_and_scan shards the
+    # search area via bot_index/bot_count (WIDE_SEARCH is the only leaf that
+    # reads them); the hive's cultivate fans out verbatim — one SKILL per
+    # member, no sharding. Other matched skills and non-matched text fall
+    # through to the L3 partition (heterogeneous per-bot assignment).
+    if matched and str(matched.get("target", "")) in ("goto_and_scan", "cultivate"):
+        skill_id = str(matched.get("target", ""))
         base_extra = dict(matched.get("extra") or {})
         n = len(members)
+        shard = skill_id == "goto_and_scan"
         for i, b in enumerate(members):
             d_extra = dict(base_extra)
-            d_extra["bot_index"] = str(i)
-            d_extra["bot_count"] = str(n)
+            if shard:
+                d_extra["bot_index"] = str(i)
+                d_extra["bot_count"] = str(n)
             try:
-                api.set_directive(b, "SKILL", target="goto_and_scan", extra=d_extra)
+                api.set_directive(b, "SKILL", target=skill_id, extra=d_extra)
                 telemetry.push(b, "squad",
-                               f"squad:{officer} SKILL goto_and_scan [bot {i}/{n}]")
+                               f"squad:{officer} SKILL {skill_id} [bot {i}/{n}]")
             except Exception as e:
                 print(f"[squad:{officer}] SKILL fan-out to {b} failed: {e}")
-        print(f"[squad:{officer}] {oid}: fanned SKILL goto_and_scan to {n} units "
-              f"(bot_index 0..{n - 1})")
+        print(f"[squad:{officer}] {oid}: fanned SKILL {skill_id} to {n} units"
+              + (f" (bot_index 0..{n - 1})" if shard else ""))
         return
 
     _partition_to_orders(members, runner.model, text, player,
@@ -3428,6 +3442,8 @@ def _order_text(kind, params):
     try:
         p = _json.loads(params) if isinstance(params, str) else (params or {})
     except Exception:
+        p = {}
+    if not isinstance(p, dict):
         p = {}
     if kind == "TEXT":
         return str(p.get("text", "")).strip()

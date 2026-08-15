@@ -1598,7 +1598,18 @@ public class HttpApiServer {
                     sendJson(exchange, 400, Map.of("error", "bot and kind required"));
                     return;
                 }
-                String params = body.has("params") ? body.get("params").toString() : "{}";
+                // params may arrive as a JSON object (dashboard) or as a JSON
+                // object STRING (agent squad/fleet fan-out re-injection and
+                // overlay parity). Re-serializing a string primitive with
+                // .toString() double-encodes it ("{\"...\"}"), which the agent's
+                // _order_text later json.loads into a *string* and then .items()
+                // crashes on — killing the order-worker thread. Preserve a
+                // primitive as its raw string; objects/arrays stay compact JSON.
+                String params = "{}";
+                if (body.has("params") && !body.get("params").isJsonNull()) {
+                    var pe = body.get("params");
+                    params = pe.isJsonPrimitive() ? pe.getAsString() : pe.toString();
+                }
                 String player = body.has("player") ? body.get("player").getAsString() : "api";
                 String fleet = body.has("fleet") ? body.get("fleet").getAsString() : "";
                 String oid = com.sigmastrain.aiplayermod.telemetry.OrderStore

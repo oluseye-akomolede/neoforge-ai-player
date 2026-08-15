@@ -167,12 +167,25 @@ def _resupply_network(t: str) -> dict[str, str] | None:
     return {"item": item, "count": _first_count(m.group(1)), "to": m.group(2).lower()}
 
 
+def _cultivate(t: str) -> dict[str, str] | None:
+    """The hive's FE skill: 'cultivate'/'cultivation' orders a CULTIVATE
+    directive (a bounded hold, `seconds`). No items, no XP — the FE transfer is
+    the point, so there is nothing to resolve. A duration phrase sets `seconds`;
+    otherwise the skill's own default (30s) applies."""
+    if not re.search(r"\bcultivat\w*\b", t):
+        return None
+    m = _NUM.search(t)
+    seconds = str(max(1, min(3600, int(m.group(1))))) if m else "30"
+    return {"seconds": seconds}
+
+
 _RULES = [
     ("mine_and_smelt", _mine_and_smelt),
     ("goto_and_scan", _goto_and_scan),
     ("search_and_loot", _search_and_loot),
     ("harvest_and_store", _harvest_and_store),
     ("resupply_network", _resupply_network),
+    ("cultivate", _cultivate),
 ]
 
 
