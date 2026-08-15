@@ -167,6 +167,55 @@ def _resupply_network(t: str) -> dict[str, str] | None:
     return {"item": item, "count": _first_count(m.group(1)), "to": m.group(2).lower()}
 
 
+# ── cultivate duration parsing ──────────────────────────────────────────────
+# The skill's `seconds` param must honour "2 hours" / "two hours" / "90 minutes",
+# not just a bare 1-3 digit number (which read "two hours" as no-number → the
+# 30s default, and "2 hours" as 2 *seconds*). Word numbers cover common spoken
+# durations; digits cover the rest; a unit maps to a ×1/×60/×3600 multiplier.
+# No duration phrase → None (the caller keeps the skill default).
+
+_WORD_NUM = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+    "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16,
+    "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
+    "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60,
+}
+
+_DURATION = re.compile(
+    r"\b(\d{1,6}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|"
+    r"twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|"
+    r"twenty|thirty|forty|fifty|sixty)\s*"
+    r"(hours?|hrs?|minutes?|mins?|seconds?|secs?|h|m|s)?",
+    re.IGNORECASE,
+)
+
+_UNIT_MULT = {
+    "h": 3600, "hr": 3600, "hrs": 3600, "hour": 3600, "hours": 3600,
+    "m": 60, "min": 60, "mins": 60, "minute": 60, "minutes": 60,
+    "s": 1, "sec": 1, "secs": 1, "second": 1, "seconds": 1,
+}
+
+# Mirror CultivateBehavior.MAX_SECONDS (24h) so a duration the agent extracts
+# is never silently larger than what the mod will actually run.
+MAX_CULTIVATE_SECONDS = 86400
+
+
+def _parse_duration(t: str) -> int | None:
+    """'2 hours' / 'two hours' / '90 minutes' / '45' → seconds; None when the
+    text carries no duration phrase (the caller keeps the skill default)."""
+    m = _DURATION.search(t)
+    if not m:
+        return None
+    raw = m.group(1)
+    n = int(raw) if raw.isdigit() else _WORD_NUM.get(raw.lower())
+    if n is None:
+        return None
+    mult = _UNIT_MULT.get((m.group(2) or "").lower(), 1)
+    secs = n * mult
+    return secs if secs > 0 else None
+
+
 def _cultivate(t: str) -> dict[str, str] | None:
     """The hive's FE skill: 'cultivate'/'cultivation' orders a CULTIVATE
     directive (a bounded hold, `seconds`). No items, no XP — the FE transfer is
@@ -174,9 +223,8 @@ def _cultivate(t: str) -> dict[str, str] | None:
     otherwise the skill's own default (30s) applies."""
     if not re.search(r"\bcultivat\w*\b", t):
         return None
-    m = _NUM.search(t)
-    seconds = str(max(1, min(3600, int(m.group(1))))) if m else "30"
-    return {"seconds": seconds}
+    secs = _parse_duration(t) or 30
+    return {"seconds": str(max(1, min(MAX_CULTIVATE_SECONDS, secs)))}
 
 
 _RULES = [

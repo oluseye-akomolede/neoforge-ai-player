@@ -19,14 +19,15 @@ import net.minecraft.world.phys.Vec3;
  * and routes the unit's FE toward the owner's reservoir. Keeping this side FE
  * and XP agnostic is what lets the two mods keep their ledgers separate.
  *
- * <p>{@code count} = seconds to cultivate (default 30, hard-capped at an
- * hour). The behavior simply holds for that long and reports COMPLETED; the
- * real value is accrued externally while it runs.
+ * <p>{@code count} = seconds to cultivate (default 30, hard-capped at 24
+ * hours so "cultivate for two hours" lands intact). The behavior simply holds
+ * for that long and reports COMPLETED; the real value is accrued externally
+ * while it runs.
  */
 public class CultivateBehavior implements Behavior {
 
     private static final int DEFAULT_SECONDS = 30;
-    private static final int MAX_SECONDS = 3600;
+    private static final int MAX_SECONDS = 86400;
 
     private final ProgressReport progress = new ProgressReport();
     private int durationTicks;
