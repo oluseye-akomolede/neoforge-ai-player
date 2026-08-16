@@ -133,16 +133,33 @@ def _goto_and_scan(t: str) -> dict[str, str] | None:
     return {"x": c.group(1), "y": c.group(2), "z": c.group(3), "target": target}
 
 
+_LOOT_MARKER = re.compile(
+    r"\b(?:chest|container|barrel|shulker|area|all|everything|marked)\b")
+
+
 def _search_and_loot(t: str) -> dict[str, str] | None:
-    if not re.search(r"\bsearch|loot\b", t):
+    """Loot-all has no target item — it drains every spawnable container in an
+    area. Fire on an unambiguous 'loot' phrase (a container word, 'area', 'all',
+    'marked', or an explicit coordinate triple); a bare 'loot' falls through to
+    L3. Optional coordinate triple and radius map to the seed's x/y/z/radius;
+    bot_index/bot_count are injected by the squad fan-out, not here."""
+    if not re.search(r"\bloot\b", t):
         return None
-    if not re.search(r"\bchest|container|barrel|shulker\b", t):
+    if not _LOOT_MARKER.search(t) and not _COORD.search(t):
         return None
-    m = re.search(r"\bfor\s+(.+?)(?:\s+(?:in|from|around|near)\b|$)", t)
-    item = _resolve(_clean_segment(m.group(1))) if m else None
-    if item is None:
-        return None
-    return {"item": item, "count": _first_count(t)}
+    # Default radius so a location-less "loot the area" still yields a NON-EMPTY
+    # extra (match() treats a falsy dict as "no match"). AreaLootBehavior defaults
+    # to the same 32; an explicit "within N" below overrides it.
+    extra: dict[str, str] = {"radius": "32"}
+    c = _COORD.search(t)
+    if c:
+        extra.update({"x": c.group(1), "y": c.group(2), "z": c.group(3)})
+    # "within N" / "radius N" only — NOT "around", which is a location preposition
+    # ("loot chests around 100 64 -200") and would otherwise swallow the coord.
+    m = re.search(r"\b(?:within|radius)\s+(\d{1,3})\b", t)
+    if m:
+        extra["radius"] = m.group(1)
+    return extra
 
 
 def _harvest_and_store(t: str) -> dict[str, str] | None:

@@ -3427,6 +3427,27 @@ def _partition_to_orders(bots, model, text, player, group_id, label):
     print(f"[{label}] partitioned '{text[:60]}' across {len(bots)} bots")
 
 
+def _resolve_marked_area(text):
+    """Replace 'marked area' / 'marked_area' / 'marked block' / 'the mark'
+    with the marked block's coordinates (from the mod's /server/mark buffer)
+    so a location-taking directive or skill sees a concrete position instead of
+    a phrase the planner cannot resolve. No mark / no phrase -> unchanged."""
+    if not text:
+        return text
+    if not re.search(r"\bmarked[\s_]*(?:area|block|point|location)?\b|\bthe\s+mark\b",
+                     text, re.IGNORECASE):
+        return text
+    try:
+        m = api.raw_get("/server/mark")
+    except Exception:
+        return text
+    if not m or not m.get("marked"):
+        return text
+    coords = f"{m.get('x')} {m.get('y')} {m.get('z')}"
+    return re.sub(r"\bmarked[\s_]*(?:area|block|point|location)?\b|\bthe\s+mark\b",
+                  coords, text, flags=re.IGNORECASE)
+
+
 def _run_fleet_partition(oid, params, player, fleet_id, kind):
     """One natural-language order for the whole fleet: a single L3 call
     splits it into per-bot assignments. Orders that move items out of vaults
@@ -3447,7 +3468,7 @@ def _run_fleet_partition(oid, params, player, fleet_id, kind):
         p = {}
     if not isinstance(p, dict):
         p = {}
-    text = str(p.get("text", "")).strip()
+    text = _resolve_marked_area(str(p.get("text", "")).strip())
     if not text:
         _status("FAILED", "empty order")
         return
@@ -3515,7 +3536,7 @@ def _run_squad_partition(officer, oid, params, player, kind):
         p = {}
     if not isinstance(p, dict):
         p = {}
-    text = str(p.get("text", "")).strip()
+    text = _resolve_marked_area(str(p.get("text", "")).strip())
     if not text:
         _status("FAILED", "empty order")
         return
@@ -3556,16 +3577,16 @@ def _run_squad_partition(officer, oid, params, player, kind):
         matched = skill_matcher.match(text)
     except Exception:
         matched = None
-    # A matched skill fans out to the whole squad. goto_and_scan shards the
-    # search area via bot_index/bot_count (WIDE_SEARCH is the only leaf that
-    # reads them); the hive's cultivate fans out verbatim — one SKILL per
-    # member, no sharding. Other matched skills and non-matched text fall
+    # A matched skill fans out to the whole squad. goto_and_scan and
+    # search_and_loot shard their area via bot_index/bot_count (WIDE_SEARCH and
+    # AREA_LOOT read them); the hive's cultivate fans out verbatim — one SKILL
+    # per member, no sharding. Other matched skills and non-matched text fall
     # through to the L3 partition (heterogeneous per-bot assignment).
-    if matched and str(matched.get("target", "")) in ("goto_and_scan", "cultivate"):
+    if matched and str(matched.get("target", "")) in ("goto_and_scan", "cultivate", "search_and_loot"):
         skill_id = str(matched.get("target", ""))
         base_extra = dict(matched.get("extra") or {})
         n = len(members)
-        shard = skill_id == "goto_and_scan"
+        shard = skill_id in ("goto_and_scan", "search_and_loot")
         for i, b in enumerate(members):
             d_extra = dict(base_extra)
             if shard:
@@ -3660,6 +3681,8 @@ def _order_worker():
                     name=f"squad:{oid}", daemon=True).start()
                 continue
             text = _order_text(kind, order.get("params"))
+            if kind == "TEXT":
+                text = _resolve_marked_area(text)
             if not runner or not text:
                 try:
                     api.raw_post("/telemetry/orders", {

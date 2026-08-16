@@ -39,6 +39,7 @@ public final class BehaviorFactory {
             case CONTAINER_WITHDRAW -> new ContainerWithdrawBehavior();
             case TELEPORT -> new TeleportBehavior();
             case WIDE_SEARCH -> new WideSearchBehavior();
+            case AREA_LOOT -> new AreaLootBehavior();
             case LOCATE -> new LocateBehavior();
             case STORE_ALL -> new StoreAllBehavior();
             case ME_STORE -> ModCompat.isAE2Loaded() ? new MEStoreBehavior() : new FailFastBehavior("AE2 not loaded");

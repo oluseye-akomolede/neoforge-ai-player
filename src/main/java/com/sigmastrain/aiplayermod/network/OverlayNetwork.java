@@ -464,6 +464,20 @@ public final class OverlayNetwork {
                     PacketDistributor.sendToPlayer(sp, buildStandingList(name));
                 }));
 
+        registrar.playToServer(
+                OverlayPayloads.MarkBlock.TYPE,
+                OverlayPayloads.MarkBlock.CODEC,
+                (payload, context) -> context.enqueueWork(() -> {
+                    if (!(context.player() instanceof ServerPlayer sp)) return;
+                    com.sigmastrain.aiplayermod.telemetry.MarkStore.set(
+                            sp.getName().getString(),
+                            sp.serverLevel().dimension().location().toString(),
+                            payload.x(), payload.y(), payload.z());
+                    AIPlayerMod.LOGGER.info("[mark] {} marked block {} {} {} in {}",
+                            sp.getName().getString(), payload.x(), payload.y(), payload.z(),
+                            sp.serverLevel().dimension().location());
+                }));
+
         // S2C payloads: lambda bodies so the client classes load only when a
         // packet actually arrives (never on a dedicated server).
         registrar.playToClient(

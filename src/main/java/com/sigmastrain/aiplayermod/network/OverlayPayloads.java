@@ -743,6 +743,25 @@ public final class OverlayPayloads {
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
+    // ── C2S: mark a block (the "marked area" the agent resolves to) ──────
+
+    /** The block under the crosshair, sent when the player taps the mark key.
+     *  Lands in {@code MarkStore} for the agent to read via /server/mark. */
+    public record MarkBlock(int x, int y, int z) implements CustomPacketPayload {
+        public static final Type<MarkBlock> TYPE = new Type<>(id("overlay_mark_block"));
+        public static final StreamCodec<RegistryFriendlyByteBuf, MarkBlock> CODEC =
+                StreamCodec.of(
+                        (buf, p) -> {
+                            buf.writeVarInt(p.x);
+                            buf.writeVarInt(p.y);
+                            buf.writeVarInt(p.z);
+                        },
+                        buf -> new MarkBlock(buf.readVarInt(), buf.readVarInt(), buf.readVarInt()));
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
     // ── S2C: ack / error for a control packet ────────────────────────────
 
     public record ControlAck(boolean ok, String message) implements CustomPacketPayload {

@@ -61,6 +61,7 @@ public class HttpApiServer {
             server.createContext("/server/items", this::handleServerItems);
             server.createContext("/server/structures", this::handleServerStructures);
             server.createContext("/server/tempad", this::handleTempadList);
+            server.createContext("/server/mark", this::handleMark);
             server.createContext("/server/dimensions", this::handleDimensions);
             server.createContext("/server/me_networks", this::handleMeNetworks);
             server.createContext("/server/players", this::handlePlayers);
@@ -1891,6 +1892,20 @@ public class HttpApiServer {
             future.complete(players);
         });
         sendJson(exchange, 200, Map.of("players", future.join()));
+    }
+
+    // ── /server/mark ──
+
+    /** The operator's marked block — {@code {"marked":true,x,y,z,dimension,player}}
+     *  or {@code {"marked":false}}. The agent resolves "the marked area" from
+     *  this when a location-taking directive references it. */
+    private void handleMark(HttpExchange exchange) throws IOException {
+        if (!checkAuth(exchange)) return;
+        if (!"GET".equals(exchange.getRequestMethod())) {
+            sendJson(exchange, 405, Map.of("error", "Method not allowed"));
+            return;
+        }
+        sendJson(exchange, 200, com.sigmastrain.aiplayermod.telemetry.MarkStore.toMap());
     }
 
     // ── Helpers ──

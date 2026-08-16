@@ -22,6 +22,7 @@ public enum DirectiveType {
     IDLE,
     PATROL,
     WIDE_SEARCH,
+    AREA_LOOT,
     LOCATE,
     STORE_ALL,
     ME_STORE,

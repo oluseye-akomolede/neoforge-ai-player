@@ -126,7 +126,7 @@ def _skills_lines() -> str:
 _SEED_SKILLS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "mine_and_smelt": (("MINE", "SMELT"), ("target", "count")),
     "goto_and_scan": (("TELEPORT", "WIDE_SEARCH"), ("x", "y", "z", "target")),
-    "search_and_loot": (("CONTAINER_SEARCH", "STORE_ALL"), ("item", "count")),
+    "search_and_loot": (("AREA_LOOT", "STORE_ALL"), ("x", "y", "z", "radius")),
     "harvest_and_store": (("FARM", "STORE_ALL"), ("crop", "count")),
     "resupply_network": (("CHANNEL", "SEND_ITEM"), ("item", "count", "to")),
 }
@@ -169,8 +169,11 @@ def _build_skill_extra(param_names, directives: list[dict]) -> dict[str, str]:
             d = find("SEND_ITEM")
             extra[name] = str(d.get("target", "")) if d else ""
         elif n in ("x", "y", "z"):
-            d = find("TELEPORT", "GOTO")
+            d = find("TELEPORT", "GOTO", "AREA_LOOT")
             extra[name] = str(d.get(n, "")) if d else ""
+        elif n == "radius":
+            d = find("AREA_LOOT", "WIDE_SEARCH")
+            extra[name] = str(d.get("radius", "")) if d else ""
         # unknown param name -> omitted (SkillParams leaves ${name} visible)
     return extra
 

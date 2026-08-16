@@ -148,14 +148,16 @@ public final class SkillRegistry {
                 """,
                 "x:int", "y:int", "z:int", "target:block_or_entity", "bot_index:int", "bot_count:int");
 
-        seed("search_and_loot", "Search containers for an item, then store everything.",
+        seed("search_and_loot", "Loot every spawnable container in an area, then store everything.",
                 """
                 { "type": "sequence", "children": [
-                    { "type": "directive", "kind": "CONTAINER_SEARCH", "target": "${item}", "count": "${count}" },
+                    { "type": "directive", "kind": "AREA_LOOT", "extra": {
+                        "bot_index": "${bot_index}", "bot_count": "${bot_count}",
+                        "x": "${x}", "y": "${y}", "z": "${z}", "radius": "${radius}" } },
                     { "type": "directive", "kind": "STORE_ALL" }
                 ] }
                 """,
-                "item:item_id", "count:int");
+                "bot_index:int", "bot_count:int", "x:int", "y:int", "z:int", "radius:int");
 
         seed("harvest_and_store", "Farm N crops, then store the yield.",
                 """
