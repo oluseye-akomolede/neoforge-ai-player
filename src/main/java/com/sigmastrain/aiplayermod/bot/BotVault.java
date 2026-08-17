@@ -109,6 +109,18 @@ public class BotVault {
 
     // ── Queries ───────────────────────────────────────────────────────────
 
+    /** Every held item id → total count (unordered snapshot). */
+    public Map<String, Integer> counts() {
+        Map<String, Integer> out = new LinkedHashMap<>();
+        synchronized (stacks) {
+            for (ItemStack s : stacks) {
+                String id = BuiltInRegistries.ITEM.getKey(s.getItem()).toString();
+                out.merge(id, s.getCount(), Integer::sum);
+            }
+        }
+        return out;
+    }
+
     /** Total count of an exact item id. */
     public int count(String itemId) {
         Item want = resolve(itemId);

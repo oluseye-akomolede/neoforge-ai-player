@@ -109,6 +109,20 @@ public class StoreAllBehavior implements Behavior {
             grouped.merge(stack.getItem(), stack.getCount(), Integer::sum);
         }
 
+        // Vault overflow counts too — otherwise loot that spilled past the
+        // carried inventory sits in the vault forever and never reaches storage.
+        int vaultItems = 0;
+        for (var ve : bot.getVault().counts().entrySet()) {
+            Item item = BuiltInRegistries.ITEM.get(ResourceLocation.parse(ve.getKey()));
+            if (item == Items.AIR) continue;
+            if (isEssential(player, new ItemStack(item), -1, selectedSlot)) continue;
+            grouped.merge(item, ve.getValue(), Integer::sum);
+            vaultItems += ve.getValue();
+        }
+        if (vaultItems > 0) {
+            progress.logEvent("Including " + vaultItems + " vault items");
+        }
+
         if (grouped.isEmpty()) {
             progress.logEvent("No non-essential items to store");
             bot.systemChat("Nothing to store — inventory is all essentials", "yellow");
@@ -196,6 +210,10 @@ public class StoreAllBehavior implements Behavior {
         int selectedSlot = player.getInventory().selected;
         int deposited = 0;
 
+        // Page vault stock of this item through the carried inventory: pull
+        // what fits, deposit it, and come back for more next tick.
+        int pulledFromVault = bot.getVault().withdrawInto(player.getInventory(), current.itemId, Integer.MAX_VALUE);
+
         IItemHandler handler = level.getCapability(Capabilities.ItemHandler.BLOCK, pos, null);
         if (handler != null) {
             deposited = depositViaHandler(player, handler, current.item, selectedSlot);
@@ -210,7 +228,15 @@ public class StoreAllBehavior implements Behavior {
         totalStored += deposited;
 
         if (deposited > 0) {
-            progress.logEvent("Stored " + deposited + "x " + current.itemId);
+            progress.logEvent("Stored " + deposited + "x " + current.itemId
+                    + (pulledFromVault > 0 ? " (" + pulledFromVault + " via vault)" : ""));
+        }
+
+        // More of this item still in the vault and the container took some:
+        // stay here and drain another page. A zero deposit means the target
+        // is full (or the item is now only in essential slots) — move on.
+        if (deposited > 0 && bot.getVault().count(current.itemId) > 0) {
+            return BehaviorResult.RUNNING;
         }
 
         phase = Phase.NEXT_ITEM;
