@@ -61,7 +61,7 @@ public class OverlayScreen extends Screen {
             inboxDirBoxes = new java.util.LinkedHashMap<>();
     private String inboxDirKind = "";
 
-    private enum UnitTab { STATUS, VAULT, CHANNEL, COMMAND, MIND, TALK, STANDING }
+    private enum UnitTab { STATUS, VAULT, CHANNEL, COMMAND, MIND, TALK, STANDING, VEHICLE }
     private UnitTab unitTab = UnitTab.STATUS;
 
     private OverlayPayloads.FleetSnapshot snapshot = OverlayClientState.snapshot();
@@ -108,6 +108,7 @@ public class OverlayScreen extends Screen {
     private net.minecraft.client.gui.components.EditBox channelItem;
     private net.minecraft.client.gui.components.EditBox channelCount;
     private net.minecraft.client.gui.components.Checkbox channelInterrupt;
+    private net.minecraft.client.gui.components.Checkbox channelToVehicle;
     private Button channelCommit;
     private OverlayPayloads.ChannelQuoteReply quote;
 
@@ -182,6 +183,10 @@ public class OverlayScreen extends Screen {
         cmds.put("Mind", () -> switchUnitTab(UnitTab.MIND));
         cmds.put("Talk", () -> switchUnitTab(UnitTab.TALK));
         cmds.put("Stand", () -> switchUnitTab(UnitTab.STANDING));
+        OverlayPayloads.BotEntry cur = selectedBot();
+        if (cur != null && (cur.aboard() || cur.vehicleNear())) {
+            cmds.put("Vehicle", () -> switchUnitTab(UnitTab.VEHICLE));
+        }
         openDropdown("unit command", new java.util.ArrayList<>(cmds.keySet()), label -> {
             Runnable r = cmds.get(label);
             if (r != null) r.run();
@@ -300,10 +305,23 @@ public class OverlayScreen extends Screen {
     private Button anchorBtn;
 
     public void onSnapshot(OverlayPayloads.FleetSnapshot snap) {
+        // Vehicle state changes the button set (Status + Vehicle tabs), so
+        // rebuild when the selected bot boards/dismounts or its ext actions change.
+        OverlayPayloads.BotEntry before = selectedBot();
         this.snapshot = snap;
         if (selected >= snap.bots().size()) selected = -1;
         refreshInterruptButton();
         OverlayPayloads.BotEntry cur = selectedBot();
+        if (before != null && cur != null && (unitTab == UnitTab.STATUS || unitTab == UnitTab.VEHICLE
+                || unitTab == UnitTab.CHANNEL)) {
+            boolean changed = before.aboard() != cur.aboard()
+                    || before.vehicleNear() != cur.vehicleNear()
+                    || !before.extActions().equals(cur.extActions())
+                    || (cur.aboard() && before.aboard()
+                        && (!before.vehicle().weapon().equals(cur.vehicle().weapon())
+                            || before.vehicle().containerSize() != cur.vehicle().containerSize()));
+            if (changed) buildWidgets();
+        }
         if (anchorBtn != null && cur != null) {
             anchorBtn.setMessage(Component.literal(
                     cur.anchored() ? "§b⚓ Anchored" : "§8⚓ Anchor"));
@@ -408,6 +426,7 @@ public class OverlayScreen extends Screen {
                 case MIND -> "Mind";
                 case TALK -> "Talk";
                 case STANDING -> "Stand";
+                case VEHICLE -> "Vehicle";
             };
             String cmdBtn = "§7" + cmdLabel + " ▾";
             int cw = Math.max(64, font.width(stripCodes(cmdBtn)) + 14);
@@ -422,6 +441,7 @@ public class OverlayScreen extends Screen {
                 case MIND -> buildMindWidgets(unit, px, py, pw);
                 case TALK -> buildTalkWidgets(unit, px, py, pw);
                 case STANDING -> buildStandingWidgets(unit, px, py, pw);
+                case VEHICLE -> buildVehicleWidgets(unit, px, py, pw);
             }
         }
     }
@@ -655,6 +675,15 @@ public class OverlayScreen extends Screen {
                 .bounds(px + pw - 96, py + 82, 88, 14)
                 .build());
 
+        if (unit.aboard()) {
+            addRenderableWidget(Button.builder(Component.literal("§b⛟ Vehicle…"), b -> switchUnitTab(UnitTab.VEHICLE))
+                    .bounds(px + pw - 96, py + 100, 88, 14).build());
+        } else if (unit.vehicleNear()) {
+            addRenderableWidget(Button.builder(Component.literal("§b⛟ Board nearest"), b ->
+                            PacketDistributor.sendToServer(new OverlayPayloads.VehicleOp(unit.id(), "mount", "")))
+                    .bounds(px + pw - 96, py + 100, 88, 14).build());
+        }
+
         OverlayPayloads.JackState js = OverlayClientState.jackState();
         if (js.active()) {
             addRenderableWidget(Button.builder(Component.literal("§d⏏ Eject"), b -> {
@@ -804,6 +833,16 @@ public class OverlayScreen extends Screen {
                 .build();
         addRenderableWidget(channelInterrupt);
 
+        channelToVehicle = null;
+        if (unit.aboard() || unit.vehicleNear()) {
+            channelToVehicle = net.minecraft.client.gui.components.Checkbox.builder(
+                            Component.literal("→ into vehicle hold"), font)
+                    .pos(px + pw - 150, py + 112)
+                    .selected(false)
+                    .build();
+            addRenderableWidget(channelToVehicle);
+        }
+
         channelCommit = Button.builder(Component.literal("⚡ Channel"), b -> {
                     OverlayPayloads.ChannelQuoteReply q = quote;
                     if (q == null || !q.known()) return;
@@ -815,7 +854,8 @@ public class OverlayScreen extends Screen {
                     }
                     PacketDistributor.sendToServer(new OverlayPayloads.ChannelExecute(
                             q.bot(), q.item(), q.count(),
-                            channelInterrupt.selected(), q.activeDirectiveId()));
+                            channelInterrupt.selected(), q.activeDirectiveId(),
+                            channelToVehicle != null && channelToVehicle.selected() ? "vehicle" : ""));
                     b.setMessage(Component.literal("⚡ Channel"));
                     invalidateQuote();
                 })
@@ -1251,6 +1291,7 @@ public class OverlayScreen extends Screen {
                     case MIND -> renderMind(g, e, px, contentY + 2, pw);
                     case TALK -> renderTalk(g, e, px, contentY + 2, pw);
                     case STANDING -> renderStanding(g, e, px, contentY + 2, pw);
+                    case VEHICLE -> renderVehicle(g, e, px, contentY + 2, pw);
                 }
             }
         }
@@ -1380,6 +1421,12 @@ public class OverlayScreen extends Screen {
 
         int cy = y + 40;
         g.fill(px + 6, cy, px + pw - 6, cy + 46, ROW_BG);
+        if (e.aboard()) {
+            OverlayPayloads.VehicleInfo v = e.vehicle();
+            g.drawString(font, trim("§b⛟ aboard §r" + v.name() + " §8· §7seat " + v.seat()
+                    + (v.driver() ? " (driver)" : "") + " §8· §e⚡ " + fmtLong(v.energy()) + "§8/§7" + fmtLong(v.maxEnergy())
+                    + " §8· §c♥ " + (int) v.health() + "§8/§7" + (int) v.maxHealth(), pw - 24), px + 10, cy + 50, TEXT);
+        }
         if (e.directiveId() < 0) {
             g.drawString(font, "standing by — no directive", px + 12, cy + 6, TEXT_DIM);
             return;
@@ -1390,6 +1437,105 @@ public class OverlayScreen extends Screen {
         g.drawString(font, "§8phase: §7" + e.phase() + "  §8status: " + statusGlyph(e.directiveStatus()),
                 px + 12, cy + 28, TEXT_DIM);
         g.drawString(font, trim(e.stateLine(), pw - 30), px + 12, cy + 38, TEXT_DIM);
+    }
+
+    // ── Vehicle tab ──────────────────────────────────────────────────────
+
+    private void buildVehicleWidgets(OverlayPayloads.BotEntry unit, int px, int py, int pw) {
+        int bx = px + pw - 96, y = py + 44;
+        if (unit.aboard()) {
+            OverlayPayloads.VehicleInfo v = unit.vehicle();
+            if (v.containerSize() > 0) {
+                addRenderableWidget(Button.builder(Component.literal("Hold…"), b ->
+                                PacketDistributor.sendToServer(new OverlayPayloads.VehicleOp(unit.id(), "open_inventory", "0")))
+                        .bounds(bx, y, 88, 14).build());
+                y += 18;
+            }
+            addRenderableWidget(Button.builder(Component.literal("Dismount"), b ->
+                            PacketDistributor.sendToServer(new OverlayPayloads.VehicleOp(unit.id(), "dismount", "")))
+                    .bounds(bx, y, 88, 14).build());
+            y += 18;
+            addRenderableWidget(Button.builder(Component.literal("Seat ▸"), b ->
+                            PacketDistributor.sendToServer(new OverlayPayloads.VehicleOp(unit.id(), "seat", "")))
+                    .bounds(bx, y, 88, 14).build());
+            y += 18;
+            if (!v.weapon().isEmpty()) {
+                addRenderableWidget(Button.builder(Component.literal("Weapon ▸"), b ->
+                                PacketDistributor.sendToServer(new OverlayPayloads.VehicleOp(unit.id(), "weapon", "")))
+                        .bounds(bx, y, 88, 14).build());
+                y += 18;
+            }
+        } else if (unit.vehicleNear()) {
+            addRenderableWidget(Button.builder(Component.literal("§b⛟ Board nearest"), b ->
+                            PacketDistributor.sendToServer(new OverlayPayloads.VehicleOp(unit.id(), "mount", "")))
+                    .bounds(bx, y, 88, 14).build());
+            y += 18;
+            addRenderableWidget(Button.builder(Component.literal("Hold…"), b ->
+                            PacketDistributor.sendToServer(new OverlayPayloads.VehicleOp(unit.id(), "open_inventory", "0")))
+                    .bounds(bx, y, 88, 14).build());
+            y += 18;
+        }
+        // Buttons other mods contribute (hive: charge from FE, materialize ammo).
+        for (OverlayPayloads.ExtAction a : unit.extActions()) {
+            final String id = a.id();
+            addRenderableWidget(Button.builder(Component.literal(a.label()), b ->
+                            PacketDistributor.sendToServer(new OverlayPayloads.VehicleOp(unit.id(), "ext", id)))
+                    .bounds(bx, y, 88, 14).build());
+            y += 18;
+        }
+    }
+
+    private void renderVehicle(GuiGraphics g, OverlayPayloads.BotEntry e, int px, int y, int pw) {
+        int w = pw - 120; // leave the right button column free
+        if (!e.aboard()) {
+            g.drawString(font, "§7not aboard a vehicle", px + 10, y + 2, TEXT_DIM);
+            if (e.vehicleNear()) {
+                g.drawString(font, "§8a Superb Warfare vehicle is within reach", px + 10, y + 14, TEXT_DIM);
+                g.drawString(font, "§8Board it, or charge / stock it from here", px + 10, y + 26, TEXT_DIM);
+            }
+            return;
+        }
+        OverlayPayloads.VehicleInfo v = e.vehicle();
+        g.drawString(font, "§l" + v.name() + " §r§8(" + v.type().toLowerCase() + ")", px + 10, y, TEXT);
+        g.drawString(font, "§7seat " + v.seat() + (v.driver() ? " §8· §bdriver" : " §8· §7passenger")
+                + (v.drivable() ? "" : " §8· §7not drivable by bots"), px + 10, y + 12, TEXT_DIM);
+
+        // Energy bar
+        int by = y + 28;
+        g.drawString(font, "§e⚡ energy", px + 10, by, TEXT_DIM);
+        bar(g, px + 10, by + 10, w, v.maxEnergy() > 0 ? v.energy() / (double) v.maxEnergy() : 1.0, 0xFFE8C954);
+        g.drawString(font, fmtLong(v.energy()) + " §8/ §7" + fmtLong(v.maxEnergy())
+                + (v.maxEnergy() == 0 ? " §8(no energy storage)" : ""), px + 12, by + 11, TEXT);
+        // Health bar
+        by += 26;
+        g.drawString(font, "§c♥ hull", px + 10, by, TEXT_DIM);
+        bar(g, px + 10, by + 10, w, v.maxHealth() > 0 ? v.health() / (double) v.maxHealth() : 1.0, 0xFFE05454);
+        g.drawString(font, (int) v.health() + " §8/ §7" + (int) v.maxHealth(), px + 12, by + 11, TEXT);
+        // Weapon
+        by += 26;
+        if (v.weapon().isEmpty()) {
+            g.drawString(font, "§7this seat has no weapon", px + 10, by, TEXT_DIM);
+        } else {
+            g.drawString(font, "§7weapon: §r" + v.weapon() + " §8· §7ammo " + (v.ammo() == Integer.MAX_VALUE ? "∞" : v.ammo()), px + 10, by, TEXT);
+            String uses = v.ammoItem().isEmpty() ? "" : "FE".equals(v.ammoItem()) ? "uses FE energy"
+                    : "player-ammo".equals(v.ammoItem()) ? "uses carried ammo" : "uses " + shortItem(v.ammoItem());
+            if (!uses.isEmpty()) g.drawString(font, "§8" + uses, px + 10, by + 12, TEXT_DIM);
+        }
+        by += 26;
+        g.drawString(font, "§7hold: " + (v.containerSize() > 0 ? v.containerSize() + " slots" : "none"), px + 10, by, TEXT_DIM);
+        g.drawString(font, "§8Channel tab → \"into vehicle hold\" conjures straight into it", px + 10, by + 12, TEXT_DIM);
+    }
+
+    private void bar(GuiGraphics g, int x, int y, int w, double frac, int color) {
+        frac = Math.max(0, Math.min(1, frac));
+        g.fill(x, y, x + w, y + 10, 0xFF1A2228);
+        g.fill(x, y, x + (int) (w * frac), y + 10, (color & 0x00FFFFFF) | 0x66000000);
+        g.fill(x, y + 9, x + (int) (w * frac), y + 10, color);
+    }
+
+    private static String shortItem(String id) {
+        int i = id.indexOf(':');
+        return i >= 0 ? id.substring(i + 1) : id;
     }
 
     private void renderVault(GuiGraphics g, OverlayPayloads.BotEntry unit,

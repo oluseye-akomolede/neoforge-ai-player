@@ -83,8 +83,14 @@ public final class OverlayPayloads {
             String stateLine,
             int kills,
             int deaths,
-            boolean anchored
+            boolean anchored,
+            VehicleInfo vehicle,        // null when not aboard a Superb Warfare vehicle
+            boolean vehicleNear,        // an SW vehicle/turret is within reach (board / charge)
+            List<ExtAction> extActions  // per-bot buttons contributed by other mods (hive)
     ) {
+        /** Convenience: is this bot aboard a vehicle? */
+        public boolean aboard() { return vehicle != null; }
+
         static void write(RegistryFriendlyByteBuf buf, BotEntry e) {
             buf.writeUtf(e.id);
             buf.writeUtf(e.name);
@@ -104,6 +110,12 @@ public final class OverlayPayloads {
             buf.writeVarInt(e.kills);
             buf.writeVarInt(e.deaths);
             buf.writeBoolean(e.anchored);
+            buf.writeBoolean(e.vehicle != null);
+            if (e.vehicle != null) VehicleInfo.write(buf, e.vehicle);
+            buf.writeBoolean(e.vehicleNear);
+            List<ExtAction> ext = e.extActions == null ? List.of() : e.extActions;
+            buf.writeVarInt(ext.size());
+            for (ExtAction a : ext) { buf.writeUtf(a.id()); buf.writeUtf(a.label()); }
         }
 
         static BotEntry read(RegistryFriendlyByteBuf buf) {
@@ -125,7 +137,44 @@ public final class OverlayPayloads {
                     buf.readUtf(),
                     buf.readVarInt(),
                     buf.readVarInt(),
-                    buf.readBoolean());
+                    buf.readBoolean(),
+                    buf.readBoolean() ? VehicleInfo.read(buf) : null,
+                    buf.readBoolean(),
+                    readExt(buf));
+        }
+
+        private static List<ExtAction> readExt(RegistryFriendlyByteBuf buf) {
+            int n = buf.readVarInt();
+            List<ExtAction> out = new java.util.ArrayList<>(n);
+            for (int i = 0; i < n; i++) out.add(new ExtAction(buf.readUtf(), buf.readUtf()));
+            return out;
+        }
+    }
+
+    /** A button another mod contributes to a bot's panel (see BotActionExtensions). */
+    public record ExtAction(String id, String label) {}
+
+    /** Snapshot of the Superb Warfare vehicle a bot is aboard. */
+    public record VehicleInfo(
+            String id, String name, String type, int seat, boolean driver,
+            int energy, int maxEnergy, float health, float maxHealth,
+            String weapon, int ammo, String ammoItem, int containerSize, boolean drivable
+    ) {
+        static void write(RegistryFriendlyByteBuf buf, VehicleInfo v) {
+            buf.writeUtf(v.id); buf.writeUtf(v.name); buf.writeUtf(v.type);
+            buf.writeVarInt(v.seat); buf.writeBoolean(v.driver);
+            buf.writeVarInt(v.energy); buf.writeVarInt(v.maxEnergy);
+            buf.writeFloat(v.health); buf.writeFloat(v.maxHealth);
+            buf.writeUtf(v.weapon); buf.writeVarInt(v.ammo); buf.writeUtf(v.ammoItem);
+            buf.writeVarInt(v.containerSize); buf.writeBoolean(v.drivable);
+        }
+        static VehicleInfo read(RegistryFriendlyByteBuf buf) {
+            return new VehicleInfo(buf.readUtf(), buf.readUtf(), buf.readUtf(),
+                    buf.readVarInt(), buf.readBoolean(),
+                    buf.readVarInt(), buf.readVarInt(),
+                    buf.readFloat(), buf.readFloat(),
+                    buf.readUtf(), buf.readVarInt(), buf.readUtf(),
+                    buf.readVarInt(), buf.readBoolean());
         }
     }
 
@@ -196,8 +245,12 @@ public final class OverlayPayloads {
     }
 
     /** Commit a channel. {@code interrupt} = cancel the active directive first. */
+    /** {@code deliver}: "" = the bot's own inventory (default), "vehicle" = the hold of the vehicle it is aboard. */
     public record ChannelExecute(String bot, String itemId, int count, boolean interrupt,
-                                 long expectDirectiveId) implements CustomPacketPayload {
+                                 long expectDirectiveId, String deliver) implements CustomPacketPayload {
+        public ChannelExecute(String bot, String itemId, int count, boolean interrupt, long expectDirectiveId) {
+            this(bot, itemId, count, interrupt, expectDirectiveId, "");
+        }
         public static final Type<ChannelExecute> TYPE = new Type<>(id("overlay_channel_exec"));
         public static final StreamCodec<RegistryFriendlyByteBuf, ChannelExecute> CODEC =
                 StreamCodec.of(
@@ -207,9 +260,10 @@ public final class OverlayPayloads {
                             buf.writeVarInt(p.count);
                             buf.writeBoolean(p.interrupt);
                             buf.writeVarLong(p.expectDirectiveId + 1);
+                            buf.writeUtf(p.deliver == null ? "" : p.deliver);
                         },
                         buf -> new ChannelExecute(buf.readUtf(), buf.readUtf(), buf.readVarInt(),
-                                buf.readBoolean(), buf.readVarLong() - 1));
+                                buf.readBoolean(), buf.readVarLong() - 1, buf.readUtf()));
 
         @Override
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
@@ -232,6 +286,21 @@ public final class OverlayPayloads {
                 StreamCodec.of(
                         (buf, p) -> buf.writeUtf(p.bot),
                         buf -> new OpenCurios(buf.readUtf()));
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    /**
+     * Vehicle control from the overlay: op ∈ mount|dismount|seat|weapon|
+     * open_inventory|ext. arg = target/page/ext-id as the op needs.
+     */
+    public record VehicleOp(String bot, String op, String arg) implements CustomPacketPayload {
+        public static final Type<VehicleOp> TYPE = new Type<>(id("overlay_vehicle_op"));
+        public static final StreamCodec<RegistryFriendlyByteBuf, VehicleOp> CODEC =
+                StreamCodec.of(
+                        (buf, p) -> { buf.writeUtf(p.bot); buf.writeUtf(p.op); buf.writeUtf(p.arg); },
+                        buf -> new VehicleOp(buf.readUtf(), buf.readUtf(), buf.readUtf()));
 
         @Override
         public Type<? extends CustomPacketPayload> type() { return TYPE; }

@@ -32,6 +32,7 @@ public class ChannelBehavior implements Behavior {
 
     private String itemId;
     private int count;
+    private boolean toVehicle;
     private int xpCost;
     private int channelTicks;
     private int meditateTarget;
@@ -46,6 +47,7 @@ public class ChannelBehavior implements Behavior {
         progress.reset();
         this.itemId = directive.getTarget();
         this.count = directive.getCount() > 0 ? directive.getCount() : 1;
+        this.toVehicle = "vehicle".equalsIgnoreCase(directive.getExtra().getOrDefault("deliver", ""));
         enterPhase(Phase.VALIDATE);
     }
 
@@ -163,15 +165,39 @@ public class ChannelBehavior implements Behavior {
         int maxStack = item.getDefaultMaxStackSize();
         int remaining = count;
         int toVault = 0;
+        int toHold = 0;
+        // Optional: conjure straight into the hold of the vehicle the bot is
+        // aboard (or standing next to). Whatever the hold rejects falls back to
+        // the bot as usual — never dropped.
+        net.neoforged.neoforge.items.IItemHandler hold = null;
+        if (toVehicle) {
+            net.minecraft.world.entity.Entity v =
+                    com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.vehicleOf(player);
+            if (v == null) v = com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat
+                    .nearestVehicle(level, player.position(), 4.0, null);
+            if (v != null) hold = com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.inventory(v);
+            if (hold == null) progress.logEvent("No vehicle hold in reach — delivering to the bot instead");
+        }
         while (remaining > 0) {
             int stackSize = Math.min(remaining, maxStack);
             ItemStack stack = new ItemStack(item, stackSize);
-            // Vault-backed delivery: carried first, overflow to the vault.
-            // Never dropped (the entity-cleanup cronjob destroys ground items).
-            int before = bot.getVault().totalItems();
-            bot.deliver(stack);
-            toVault += bot.getVault().totalItems() - before;
+            if (hold != null) {
+                ItemStack left = net.neoforged.neoforge.items.ItemHandlerHelper.insertItemStacked(hold, stack, false);
+                toHold += stackSize - left.getCount();
+                stack = left;
+            }
+            if (!stack.isEmpty()) {
+                // Vault-backed delivery: carried first, overflow to the vault.
+                // Never dropped (the entity-cleanup cronjob destroys ground items).
+                int before = bot.getVault().totalItems();
+                bot.deliver(stack);
+                toVault += bot.getVault().totalItems() - before;
+            }
             remaining -= stackSize;
+        }
+        if (toHold > 0) {
+            progress.logEvent(toHold + " placed in the vehicle hold");
+            bot.systemChat("Conjured " + toHold + "x into the vehicle hold", "aqua");
         }
         if (toVault > 0) {
             progress.logEvent("Inventory full — " + toVault + " routed to vault");

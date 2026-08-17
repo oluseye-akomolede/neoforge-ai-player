@@ -223,9 +223,9 @@ public final class OverlayNetwork {
                     var directive = com.sigmastrain.aiplayermod.brain.Directive
                             .builder(com.sigmastrain.aiplayermod.brain.DirectiveType.CHANNEL)
                             .target(payload.itemId())
-                            .count(payload.count())
-                            .build();
-                    bot.getBrain().setDirective(directive);
+                            .count(payload.count());
+                    if ("vehicle".equals(payload.deliver())) directive.extra("deliver", "vehicle");
+                    bot.getBrain().setDirective(directive.build());
                     AIPlayerMod.LOGGER.info("[overlay] {} channels {}x {} for {} (interrupt={})",
                             sp.getName().getString(), payload.count(), payload.itemId(),
                             botName(bot), payload.interrupt());
@@ -280,6 +280,16 @@ public final class OverlayNetwork {
                         buf.writeVarInt(count);
                         for (String l : labels) buf.writeUtf(l);
                     });
+                }));
+
+        registrar.playToServer(
+                OverlayPayloads.VehicleOp.TYPE,
+                OverlayPayloads.VehicleOp.CODEC,
+                (payload, context) -> context.enqueueWork(() -> {
+                    if (!(context.player() instanceof ServerPlayer sp)) return;
+                    BotPlayer bot = resolveBot(payload.bot());
+                    if (bot == null || bot.getPlayer() == null) return;
+                    handleVehicleOp(sp, bot, payload.op(), payload.arg());
                 }));
 
         registrar.playToServer(
@@ -985,6 +995,131 @@ public final class OverlayNetwork {
 
     // ── snapshot assembly (server thread only) ───────────────────────────
 
+    /** Overlay vehicle controls — same implementation the HTTP API uses. */
+    private static void handleVehicleOp(ServerPlayer sp, BotPlayer bot, String op, String arg) {
+        ServerPlayer bp = bot.getPlayer();
+        String msg;
+        boolean ok = true;
+        switch (op) {
+            case "open_inventory" -> {
+                net.minecraft.world.entity.Entity v =
+                        com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.vehicleOf(bp);
+                if (v == null) v = com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat
+                        .nearestVehicle(bp.serverLevel(), bp.position(), 4.0, null);
+                if (v == null) { ack(sp, false, "no vehicle aboard or nearby"); return; }
+                var handler = com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.inventory(v);
+                if (handler == null || handler.getSlots() == 0) { ack(sp, false, "that vehicle has no hold"); return; }
+                int page = 0;
+                try { page = Integer.parseInt(arg.trim()); } catch (Exception ignored) {}
+                int total = handler.getSlots();
+                page = Math.max(0, Math.min(page, com.sigmastrain.aiplayermod.bot.VehicleContainer.pages(total) - 1));
+                var hold = new com.sigmastrain.aiplayermod.bot.VehicleContainer(handler, page);
+                int count = hold.getContainerSize();
+                int entityId = bp.getId();
+                String bName = botName(bot);
+                String vName = com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.displayName(v);
+                final int fPage = page;
+                sp.openMenu(new net.minecraft.world.SimpleMenuProvider(
+                        (id, inv, p) -> new com.sigmastrain.aiplayermod.bot.BotVehicleMenu(
+                                id, inv, hold, fPage, total, entityId, bName, vName),
+                        net.minecraft.network.chat.Component.literal(vName + " hold")
+                ), buf -> {
+                    buf.writeVarInt(entityId);
+                    buf.writeUtf(bName);
+                    buf.writeUtf(vName);
+                    buf.writeVarInt(total);
+                    buf.writeVarInt(fPage);
+                    buf.writeVarInt(count);
+                });
+                return;
+            }
+            case "ext" -> {
+                var a = com.sigmastrain.aiplayermod.bot.BotActionExtensions.find(arg);
+                if (a == null) { ack(sp, false, "unknown action " + arg); return; }
+                try {
+                    msg = a.run(sp, bot);
+                } catch (Exception e) {
+                    ok = false; msg = "action failed: " + e.getMessage();
+                }
+                ack(sp, ok, msg);
+                PacketDistributor.sendToPlayer(sp, buildSnapshot());
+                return;
+            }
+            default -> {
+                com.google.gson.JsonObject body = new com.google.gson.JsonObject();
+                String action;
+                switch (op) {
+                    case "mount" -> { action = "vehicle_mount"; body.addProperty("target", arg); }
+                    case "dismount" -> action = "vehicle_dismount";
+                    case "seat" -> { action = "vehicle_seat"; if (!arg.isEmpty()) body.addProperty("seat", Integer.parseInt(arg)); }
+                    case "weapon" -> { action = "vehicle_weapon"; if (!arg.isEmpty()) body.addProperty("index", Integer.parseInt(arg)); }
+                    default -> { ack(sp, false, "unknown vehicle op " + op); return; }
+                }
+                Map<String, Object> r = com.sigmastrain.aiplayermod.api.VehicleApi.act(bot, action, body);
+                ok = Boolean.TRUE.equals(r.get("ok"));
+                msg = ok ? describe(op, r) : String.valueOf(r.get("error"));
+                ack(sp, ok, msg);
+                PacketDistributor.sendToPlayer(sp, buildSnapshot());
+            }
+        }
+    }
+
+    private static String describe(String op, Map<String, Object> r) {
+        return switch (op) {
+            case "mount" -> "boarding…";
+            case "dismount" -> "dismounted";
+            case "seat" -> "seat " + r.get("seat");
+            case "weapon" -> "weapon: " + r.get("weapon");
+            default -> "ok";
+        };
+    }
+
+    private static void ack(ServerPlayer sp, boolean ok, String msg) {
+        PacketDistributor.sendToPlayer(sp, new OverlayPayloads.ControlAck(ok, msg == null ? "" : msg));
+    }
+
+    private static OverlayPayloads.VehicleInfo vehicleInfoOf(BotPlayer bot) {
+        ServerPlayer p = bot.getPlayer();
+        net.minecraft.world.entity.Entity v = com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.vehicleOf(p);
+        if (v == null) return null;
+        int seat = com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.seatIndex(v, p);
+        boolean armed = com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.hasWeapon(v, seat);
+        return new OverlayPayloads.VehicleInfo(
+                v.getUUID().toString(),
+                com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.displayName(v),
+                com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.typeName(v),
+                seat,
+                com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.isDriver(p),
+                com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.energy(v),
+                com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.maxEnergy(v),
+                com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.health(v),
+                com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.maxHealth(v),
+                armed ? com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.weaponName(v, seat) : "",
+                armed ? com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.ammoCount(p) : 0,
+                com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.ammoItemFor(p),
+                com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.containerSize(v),
+                com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.drivable(v));
+    }
+
+    /** An SW vehicle/turret within 4 blocks (chargeable) or 16 blocks (boardable). */
+    private static boolean vehicleNear(ServerPlayer p) {
+        if (!com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.isAvailable()) return false;
+        if (p.getVehicle() != null) return false;
+        return com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat
+                .nearestVehicle(p.serverLevel(), p.position(), 16.0, null) != null;
+    }
+
+    private static List<OverlayPayloads.ExtAction> extActionsFor(BotPlayer bot) {
+        List<OverlayPayloads.ExtAction> out = new ArrayList<>();
+        for (var a : com.sigmastrain.aiplayermod.bot.BotActionExtensions.all()) {
+            try {
+                if (a.visible(bot)) out.add(new OverlayPayloads.ExtAction(a.id(), a.label()));
+            } catch (Exception ignored) {
+            }
+        }
+        return out;
+    }
+
     private static OverlayPayloads.FleetSnapshot buildSnapshot() {
         List<OverlayPayloads.BotEntry> entries = new ArrayList<>();
         for (Map.Entry<String, BotPlayer> e : BotManager.getAllBots().entrySet()) {
@@ -1018,7 +1153,10 @@ public final class OverlayNetwork {
                     brain.stateLine(),
                     kills,
                     deaths,
-                    com.sigmastrain.aiplayermod.bot.AnchorManager.isAnchored(e.getKey())));
+                    com.sigmastrain.aiplayermod.bot.AnchorManager.isAnchored(e.getKey()),
+                    vehicleInfoOf(bot),
+                    vehicleNear(p),
+                    extActionsFor(bot)));
         }
         return new OverlayPayloads.FleetSnapshot(
                 com.sigmastrain.aiplayermod.telemetry.AgentPresence.silentSeconds(),

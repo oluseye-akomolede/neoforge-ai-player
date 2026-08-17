@@ -1164,8 +1164,9 @@ public class HttpApiServer {
             case "conjure" -> {
                 String item = body.get("item").getAsString();
                 int count = body.has("count") ? body.get("count").getAsInt() : 1;
+                boolean toVehicle = body.has("deliver") && "vehicle".equalsIgnoreCase(body.get("deliver").getAsString());
                 BotManager.getServer().execute(() ->
-                        bot.getActionQueue().enqueue(new ConjureAction(item, count)));
+                        bot.getActionQueue().enqueue(new ConjureAction(item, count, toVehicle)));
                 sendJson(exchange, 200, Map.of("status", "conjuring", "item", item, "count", count));
             }
             case "repair" -> {

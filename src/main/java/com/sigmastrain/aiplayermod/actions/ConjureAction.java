@@ -24,6 +24,7 @@ import java.util.Map;
 public class ConjureAction implements BotAction {
     private final String itemId;
     private final int count;
+    private final boolean toVehicle;
     private int ticksRemaining;
     private int xpCost;
     private String result = null;
@@ -131,6 +132,12 @@ public class ConjureAction implements BotAction {
     private static final int DEFAULT_COST = 8;
 
     public ConjureAction(String itemId, int count) {
+        this(itemId, count, false);
+    }
+
+    /** {@code toVehicle}: put the result in the hold of the SW vehicle the bot is aboard/next to. */
+    public ConjureAction(String itemId, int count, boolean toVehicle) {
+        this.toVehicle = toVehicle;
         this.itemId = itemId;
         this.count = Math.max(1, Math.min(64, count));
         this.xpCost = getCostForItem(itemId) * this.count;
@@ -196,7 +203,17 @@ public class ConjureAction implements BotAction {
             player.giveExperienceLevels(-xpCost);
         }
 
-        BotPlayer.deliverTo(player, stack);
+        if (toVehicle) {
+            net.minecraft.world.entity.Entity v =
+                    com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.vehicleOf(player);
+            if (v == null) v = com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat
+                    .nearestVehicle(player.serverLevel(), player.position(), 4.0, null);
+            var hold = v == null ? null : com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.inventory(v);
+            if (hold != null) {
+                stack = net.neoforged.neoforge.items.ItemHandlerHelper.insertItemStacked(hold, stack, false);
+            }
+        }
+        if (!stack.isEmpty()) BotPlayer.deliverTo(player, stack);
 
         level.sendParticles(ParticleTypes.END_ROD,
                 pos.x, pos.y + 1.0, pos.z,
