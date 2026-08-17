@@ -167,8 +167,16 @@ public class CombatBehavior implements Behavior {
 
         double dist = player.distanceTo(target);
 
-        // Always teleport to melee range if not already there
-        if (dist > MELEE_RANGE) {
+        // Standoff: a handler holding a ranged weapon (guns) engages from
+        // range, so we close only to that range instead of teleporting to melee.
+        double standoff = com.sigmastrain.aiplayermod.brain.CombatExtensions.preferredRange(player);
+        if (standoff > 0) {
+            if (dist > standoff) {
+                teleportToward(player, target, standoff * 0.6);
+                dist = player.distanceTo(target);
+            }
+        } else if (dist > MELEE_RANGE) {
+            // Always teleport to melee range if not already there
             // Bonus: shoot arrow first if we have a bow
             if (dist > 8.0) {
                 tryBowShot(bot, player, target);
@@ -300,6 +308,17 @@ public class CombatBehavior implements Behavior {
         return best;
     }
 
+    /** Land {@code standoff} blocks from the target, on our side of it. */
+    private void teleportToward(ServerPlayer player, Entity target, double standoff) {
+        Vec3 tPos = target.position();
+        Vec3 dir = player.position().subtract(tPos);
+        double len = dir.length();
+        dir = len > 0.1 ? dir.normalize() : new Vec3(1, 0, 0);
+        double x = tPos.x + dir.x * standoff, z = tPos.z + dir.z * standoff;
+        int y = BotPlayer.safeGroundY(player.serverLevel(), (int) Math.floor(x), (int) Math.floor(z), (int) tPos.y);
+        teleportBot(player, x, y, z);
+    }
+
     private void teleportToTarget(ServerPlayer player, Entity target) {
         Vec3 tPos = target.position();
         Vec3 dir = player.position().subtract(tPos);
@@ -400,6 +419,13 @@ public class CombatBehavior implements Behavior {
         ServerPlayer player = bot.getPlayer();
         int bestSlot = -1;
         double bestDamage = 0;
+        // Gear this mod can't value by attack damage (guns) wins outright when
+        // a handler says it is usable right now.
+        int preferred = com.sigmastrain.aiplayermod.brain.CombatExtensions.preferredWeaponSlot(player);
+        if (preferred >= 0) {
+            bestSlot = preferred;
+            bestDamage = Double.MAX_VALUE;
+        }
         for (int i = 0; i < 36; i++) {
             ItemStack stack = player.getInventory().getItem(i);
             if (stack.isEmpty()) continue;

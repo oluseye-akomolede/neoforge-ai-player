@@ -27,6 +27,21 @@ public final class CombatExtensions {
          * or -1 when this handler did nothing (fall through to melee).
          */
         int tryAttack(ServerPlayer bot, LivingEntity target, double distance);
+
+        /**
+         * Distance this handler would like to engage from, or -1 for "no
+         * opinion". Combat stops closing in once the target is within the
+         * largest preferred range any handler reports (guns fire from
+         * standoff instead of teleporting to melee).
+         */
+        default double preferredRange(ServerPlayer bot) { return -1; }
+
+        /**
+         * Inventory slot (0-35) holding a weapon this handler can fight with
+         * right now, or -1. Consulted when combat picks what to hold — gear
+         * this mod can't value by attack damage (guns) is chosen here.
+         */
+        default int preferredWeaponSlot(ServerPlayer bot) { return -1; }
     }
 
     private static final List<CombatHandler> HANDLERS = new ArrayList<>();
@@ -37,6 +52,30 @@ public final class CombatExtensions {
 
     public static synchronized List<CombatHandler> handlers() {
         return Collections.unmodifiableList(new ArrayList<>(HANDLERS));
+    }
+
+    /** Largest preferred engagement range across handlers, or -1. */
+    public static double preferredRange(ServerPlayer bot) {
+        double best = -1;
+        for (CombatHandler h : handlers()) {
+            try {
+                best = Math.max(best, h.preferredRange(bot));
+            } catch (Throwable ignored) {
+            }
+        }
+        return best;
+    }
+
+    /** First slot any handler wants held, or -1. */
+    public static int preferredWeaponSlot(ServerPlayer bot) {
+        for (CombatHandler h : handlers()) {
+            try {
+                int s = h.preferredWeaponSlot(bot);
+                if (s >= 0) return s;
+            } catch (Throwable ignored) {
+            }
+        }
+        return -1;
     }
 
     /** @return cooldown ticks if a handler acted, else -1. */

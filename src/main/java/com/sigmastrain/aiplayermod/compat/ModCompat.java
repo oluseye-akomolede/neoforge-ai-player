@@ -5,6 +5,8 @@ import net.neoforged.fml.ModList;
 public final class ModCompat {
     private static Boolean ae2Loaded;
     private static Boolean betterCombatLoaded;
+    private static Boolean taczLoaded;
+    private static Boolean superbWarfareLoaded;
 
     private ModCompat() {}
 
@@ -20,5 +22,19 @@ public final class ModCompat {
             betterCombatLoaded = ModList.get().isLoaded("bettercombat");
         }
         return betterCombatLoaded;
+    }
+
+    public static boolean isTaczLoaded() {
+        if (taczLoaded == null) {
+            taczLoaded = ModList.get().isLoaded("tacz");
+        }
+        return taczLoaded;
+    }
+
+    public static boolean isSuperbWarfareLoaded() {
+        if (superbWarfareLoaded == null) {
+            superbWarfareLoaded = ModList.get().isLoaded("superbwarfare");
+        }
+        return superbWarfareLoaded;
     }
 }

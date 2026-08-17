@@ -97,6 +97,20 @@ public class CombatModeAction implements BotAction {
 
         bot.lookAt(target.getX(), target.getEyeY(), target.getZ());
 
+        // Ranged gear (guns, hive armament) gets first refusal, from standoff:
+        // no need to close to melee if a handler can engage from here.
+        if (attackCooldown <= 0 && target instanceof LivingEntity ext) {
+            int cd = com.sigmastrain.aiplayermod.brain.CombatExtensions.tryAll(player, ext, dist);
+            if (cd >= 0) {
+                attackCooldown = cd;
+                return false;
+            }
+        }
+        double standoff = com.sigmastrain.aiplayermod.brain.CombatExtensions.preferredRange(player);
+        if (standoff > 0 && dist <= standoff) {
+            return false; // in range for a ranged handler; hold position and let its cooldown run
+        }
+
         if (dist <= ATTACK_RANGE) {
             if (attackCooldown <= 0) {
                 float hpBefore = target instanceof LivingEntity lt ? lt.getHealth() : -1;
@@ -202,6 +216,11 @@ public class CombatModeAction implements BotAction {
         ServerPlayer player = bot.getPlayer();
         int bestSlot = -1;
         double bestDamage = 0;
+        int preferred = com.sigmastrain.aiplayermod.brain.CombatExtensions.preferredWeaponSlot(player);
+        if (preferred >= 0) {
+            bestSlot = preferred;
+            bestDamage = Double.MAX_VALUE;   // a usable gun beats any melee value
+        }
 
         for (int i = 0; i < 36; i++) {
             ItemStack stack = player.getInventory().getItem(i);
