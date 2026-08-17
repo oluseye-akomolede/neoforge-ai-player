@@ -15,6 +15,7 @@ import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.RandomizableContainerBlockEntity;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -216,19 +217,41 @@ public class AreaLootBehavior implements Behavior {
             return;
         }
         int drained = 0;
+        Map<String, Integer> found = new LinkedHashMap<>();
         for (int i = 0; i < c.getContainerSize(); i++) {
             ItemStack stack = c.getItem(i);
             if (stack.isEmpty()) continue;
             ItemStack taken = stack.copy();
             c.setItem(i, ItemStack.EMPTY);
             BotPlayer.deliverTo(player, taken);
-            drained += taken.getCount();
+            int n = taken.getCount();
+            drained += n;
+            found.merge(stack.getHoverName().getString(), n, Integer::sum);
         }
         if (drained > 0) {
             itemsLooted += drained;
             progress.increment("items_looted", drained);
-            bot.systemChat("Looted " + drained + " items from " + p.toShortString(), "green");
+            // Announce the actual finds the way combat announces hits/kills, so
+            // loot is visible in chat instead of being silently paged away.
+            String what = summarize(found);
+            bot.systemChat("Looted " + what + " from " + p.toShortString(), "green");
+            progress.logEvent("Looted " + what + " from " + p.toShortString());
+            progress.putResult("last_loot", found);
         }
+    }
+
+    /** "3x diamond, 12x iron ingot" — compact so a chest of junk never floods
+     *  chat; more than 6 distinct types collapse into "+N more". */
+    private static String summarize(Map<String, Integer> found) {
+        List<String> parts = new ArrayList<>();
+        int shown = 0;
+        for (Map.Entry<String, Integer> e : found.entrySet()) {
+            if (shown++ >= 6) break;
+            parts.add(e.getValue() + "x " + e.getKey());
+        }
+        String s = String.join(", ", parts);
+        int rest = found.size() - shown;
+        return rest > 0 ? s + " (+" + rest + " more)" : s;
     }
 
     private BehaviorResult finish(BotPlayer bot) {
