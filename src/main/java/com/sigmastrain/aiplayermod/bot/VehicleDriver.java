@@ -28,7 +28,18 @@ public final class VehicleDriver {
         int ticks;
         boolean turningLast;
         public String lastNote = "";
+        // Stuck recovery: sample position every 20 ticks; if we're pushing
+        // forward and barely moved, back out for a while (turning the other
+        // way), then try again.
+        Vec3 samplePos;
+        int sampleTick;
+        int reverseUntil = -1;
+        int stuckCount;
     }
+
+    private static final int SAMPLE_TICKS = 20;
+    private static final double STUCK_MOVE = 0.6;      // blocks per sample window
+    private static final int REVERSE_TICKS = 40;
 
     public static final double DEFAULT_ARRIVE = 4.0;
     public static final double HELI_HOVER_ABOVE = 6.0;
@@ -96,7 +107,30 @@ public final class VehicleDriver {
         double signed = err * st.turnSign;
         boolean left = turning && signed < 0;
         boolean right = turning && signed > 0;
-        boolean behind = absErr > 120;
+
+        // Stuck detection while pushing forward.
+        if (st.samplePos == null || st.ticks - st.sampleTick >= SAMPLE_TICKS) {
+            if (st.samplePos != null && st.reverseUntil < st.ticks) {
+                double moved = v.position().distanceTo(st.samplePos);
+                if (moved < STUCK_MOVE) {
+                    st.stuckCount++;
+                    st.reverseUntil = st.ticks + REVERSE_TICKS + Math.min(st.stuckCount, 4) * 20;
+                    st.lastNote = "stuck — reversing";
+                } else {
+                    st.stuckCount = 0;
+                }
+            }
+            st.samplePos = v.position();
+            st.sampleTick = st.ticks;
+        }
+        if (st.ticks < st.reverseUntil) {
+            // Back out, steering the opposite way so we swing clear of the obstacle.
+            SwVehicleCompat.setInputs(v, false, true, right, left, false, false, false);
+            st.lastNote = String.format("reversing (%d) dist=%.1f", st.reverseUntil - st.ticks, dist);
+            return false;
+        }
+
+        boolean behind = absErr > 100;
         boolean forward = !behind && (absErr < 90 || dist > 12);
         boolean back = behind && dist < 25;          // reverse-turn when target is behind and close
         boolean sprint = forward && absErr < 20 && dist > 30;
