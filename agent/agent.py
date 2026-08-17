@@ -3582,24 +3582,32 @@ def _run_squad_partition(officer, oid, params, player, kind):
     # AREA_LOOT read them); the hive's cultivate fans out verbatim — one SKILL
     # per member, no sharding. Other matched skills and non-matched text fall
     # through to the L3 partition (heterogeneous per-bot assignment).
-    if matched and str(matched.get("target", "")) in ("goto_and_scan", "cultivate", "search_and_loot"):
+    if matched and str(matched.get("target", "")) in ("goto_and_scan", "cultivate", "search_and_loot", "summon_vehicle"):
         skill_id = str(matched.get("target", ""))
         base_extra = dict(matched.get("extra") or {})
         n = len(members)
         shard = skill_id in ("goto_and_scan", "search_and_loot")
+        # A squad is a crew: the officer summons and drives; drones board the
+        # same vehicle as gunners (armed seats first). One vehicle per order.
+        crew = skill_id == "summon_vehicle"
         for i, b in enumerate(members):
             d_extra = dict(base_extra)
+            sid = skill_id
             if shard:
                 d_extra["bot_index"] = str(i)
                 d_extra["bot_count"] = str(n)
+            if crew and i > 0:
+                sid = "crew_vehicle"
+                d_extra = {}
             try:
-                api.set_directive(b, "SKILL", target=skill_id, extra=d_extra)
+                api.set_directive(b, "SKILL", target=sid, extra=d_extra)
                 telemetry.push(b, "squad",
-                               f"squad:{officer} SKILL {skill_id} [bot {i}/{n}]")
+                               f"squad:{officer} SKILL {sid} [bot {i}/{n}]")
             except Exception as e:
                 print(f"[squad:{officer}] SKILL fan-out to {b} failed: {e}")
         print(f"[squad:{officer}] {oid}: fanned SKILL {skill_id} to {n} units"
-              + (f" (bot_index 0..{n - 1})" if shard else ""))
+              + (f" (bot_index 0..{n - 1})" if shard else "")
+              + (" (officer summons+drives, drones crew)" if crew else ""))
         _status("COMPLETED", f"fanned SKILL {skill_id} to {n} units")
         return
 

@@ -244,7 +244,38 @@ def _cultivate(t: str) -> dict[str, str] | None:
     return {"seconds": str(max(1, min(MAX_CULTIVATE_SECONDS, secs)))}
 
 
+# Superb Warfare vehicles a unit can requisition (hive charges FE). Loose
+# phrases resolve mod-side ("lav-150 commando" -> superbwarfare:lav_150); the
+# matcher only has to recognise "summon/spawn/deploy/requisition a <vehicle>".
+_VEHICLE_WORDS = (
+    r"vehicle|tank|apc|lav[- ]?\d*|m1a2|m_1a_2|abrams|t[- ]?90|ztz|yx[- ]?100|plz|bmp|bradley|"
+    r"prism tank|helicopter|heli|chopper|ah[- ]?6|mi[- ]?28|speedboat|boat|truck|pickup|pick[- ]?up|"
+    r"sodayo|wheelchair|mortar|howitzer|artillery|mk[- ]?42|mle|bl[- ]?132|hpj|laser tower|"
+    r"annihilator|waveforce|tow launcher|kv[- ]?16|ju[- ]?87|stuka|a[- ]?10|warthog|tom[- ]?6"
+)
+_SUMMON_RE = re.compile(
+    r"\b(?:summon|spawn|deploy|requisition|call in|bring (?:me|up|in)|materiali[sz]e)\b\s+"
+    r"(?:(?:an|a|the|my|us|our)\s+)?"
+    r"(?P<vehicle>[a-z0-9][a-z0-9 \-]{0,40}?(?:" + _VEHICLE_WORDS + r")(?:\s+commando)?)\b"
+)
+
+
+def _summon_vehicle(t: str) -> dict[str, str] | None:
+    """Hive skill: 'summon a LAV-150 and mount it' -> summon_vehicle{vehicle}.
+    Whatever follows the verb up to a vehicle word is the loose vehicle name;
+    the mod resolves it against Superb Warfare's vehicle types."""
+    m = _SUMMON_RE.search(t)
+    if not m:
+        return None
+    vehicle = re.sub(r"^(?:an|a|the|my|us|our)\s+", "", m.group("vehicle").strip(" .,!"))
+    # "summon a vehicle" with no type: let L3 ask, don't guess a tank.
+    if vehicle in ("vehicle", ""):
+        return None
+    return {"vehicle": vehicle}
+
+
 _RULES = [
+    ("summon_vehicle", _summon_vehicle),
     ("mine_and_smelt", _mine_and_smelt),
     ("goto_and_scan", _goto_and_scan),
     ("search_and_loot", _search_and_loot),

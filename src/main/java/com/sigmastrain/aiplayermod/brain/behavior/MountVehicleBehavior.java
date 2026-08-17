@@ -34,6 +34,7 @@ public class MountVehicleBehavior implements Behavior {
     private int radius;
     private int wantSeat = -1;
     private boolean gunner;
+    private int waitTicks, ticks;
     private boolean done;
     private boolean failed;
 
@@ -45,6 +46,10 @@ public class MountVehicleBehavior implements Behavior {
         Map<String, String> extra = directive.getExtra();
         try { wantSeat = Integer.parseInt(extra.getOrDefault("seat", "-1").trim()); } catch (NumberFormatException e) { wantSeat = -1; }
         gunner = "gunner".equalsIgnoreCase(extra.getOrDefault("role", ""));
+        int w = 0;
+        try { w = Integer.parseInt(extra.getOrDefault("wait", "0").trim()); } catch (NumberFormatException e) { w = 0; }
+        waitTicks = Math.max(0, Math.min(300, w)) * 20;   // keep looking this long before giving up
+        ticks = 0;
         done = false; failed = false;
         progress.setPhase("locating vehicle");
     }
@@ -58,7 +63,13 @@ public class MountVehicleBehavior implements Behavior {
         if (!SwVehicleCompat.isAvailable()) return fail(bot, "Superb Warfare vehicles unavailable");
 
         Entity v = resolve(level, player);
-        if (v == null) return fail(bot, "no vehicle found" + (target.isEmpty() ? "" : " matching '" + target + "'") + " within " + radius);
+        if (v == null) {
+            if (ticks++ < waitTicks) {
+                if (ticks == 1) progress.setPhase("waiting for a vehicle");
+                return BehaviorResult.RUNNING;
+            }
+            return fail(bot, "no vehicle found" + (target.isEmpty() ? "" : " matching '" + target + "'") + " within " + radius);
+        }
         if (SwVehicleCompat.isWreck(v)) return fail(bot, SwVehicleCompat.displayName(v) + " is wrecked");
 
         // Step next to it (bots approach by teleport everywhere else too).

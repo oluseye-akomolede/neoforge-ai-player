@@ -129,6 +129,7 @@ _SEED_SKILLS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "search_and_loot": (("AREA_LOOT", "STORE_ALL"), ("x", "y", "z", "radius")),
     "harvest_and_store": (("FARM", "STORE_ALL"), ("crop", "count")),
     "resupply_network": (("CHANNEL", "SEND_ITEM"), ("item", "count", "to")),
+    "summon_vehicle": (("REQUISITION", "MOUNT_VEHICLE"), ("vehicle",)),
 }
 
 
@@ -188,7 +189,7 @@ _VALID_DIRECTIVE_KINDS = frozenset({
     "CONTAINER_SEARCH", "CONTAINER_STORE", "CONTAINER_WITHDRAW", "TELEPORT",
     "IDLE", "PATROL", "WIDE_SEARCH", "LOCATE", "STORE_ALL", "ME_STORE",
     "ME_WITHDRAW", "CRAFT_REQUEST", "MEDITATE", "CULTIVATE",
-    "MOUNT_VEHICLE", "DISMOUNT_VEHICLE", "DRIVE_VEHICLE",
+    "MOUNT_VEHICLE", "DISMOUNT_VEHICLE", "DRIVE_VEHICLE", "REQUISITION",
 })
 
 # Valid kinds that are nonetheless context-specific (a hardcoded coordinate,
@@ -582,6 +583,16 @@ RAW DIRECTIVE REFERENCE (fallback — use ONLY when NO skill above covers the su
                      boat and helicopter only; airplanes can be gunned, not
                      flown). Vehicles need FE energy and ammo in their hold —
                      the hive charges them from the owner's reservoir.
+                     VEHICLES CANNOT BE FOUND BY WIDE_SEARCH OR LOCATE — they
+                     are entities, not blocks or structures. If no vehicle is
+                     nearby, use SKILL summon_vehicle (hive units only; the
+                     owner's FE reservoir pays; the skill mounts it too). A bot
+                     with no hive owner cannot summon — say so instead of
+                     searching for one.
+  REQUISITION      — {{ "kind":"REQUISITION", "target":"vehicle:lav_150" }} or an item id + count
+                     Ask the hive to materialize something for FE and wait for
+                     it (vehicle arrives repaired + charged, 3 blocks ahead).
+                     Prefer SKILL summon_vehicle, which requisitions AND mounts.
   DISMOUNT_VEHICLE — {{ "kind":"DISMOUNT_VEHICLE" }}
   DRIVE_VEHICLE    — {{ "kind":"DRIVE_VEHICLE", "x":<int>, "y":<int>, "z":<int>, "count":120 }}
                      Drive the vehicle you pilot to a point (or "target":

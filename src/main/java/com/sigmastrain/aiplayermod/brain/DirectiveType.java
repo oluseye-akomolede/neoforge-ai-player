@@ -33,5 +33,6 @@ public enum DirectiveType {
     SKILL,
     MOUNT_VEHICLE,
     DISMOUNT_VEHICLE,
-    DRIVE_VEHICLE
+    DRIVE_VEHICLE,
+    REQUISITION
 }
