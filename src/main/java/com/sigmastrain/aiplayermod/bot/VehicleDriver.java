@@ -92,13 +92,31 @@ public final class VehicleDriver {
         st.turningLast = turning;
     }
 
+    /** Horizontal speed in blocks/tick. */
+    static double speed(Entity v) {
+        Vec3 d = v.getDeltaMovement();
+        return Math.sqrt(d.x * d.x + d.z * d.z);
+    }
+
     private static boolean steerSurface(Entity v, State st, Vec3 target, double arriveRadius) {
         double dist = horizontalDistance(v, target);
+        double spd = speed(v);
         if (dist <= arriveRadius) {
+            // Hold the brake until we've actually stopped — SW power decays
+            // slowly on release, so a coasting vehicle overshoots by tens of blocks.
+            if (spd > 0.08) {
+                SwVehicleCompat.setInputs(v, false, false, false, false, true, false, false);
+                st.lastNote = String.format("braking at target (%.2f b/t)", spd);
+                return false;
+            }
             SwVehicleCompat.clearInputs(v);
             st.lastNote = "arrived";
             return true;
         }
+        // Approach: stop accelerating inside the braking envelope and brake hard
+        // when still fast close in. ~1 block of stopping distance per 0.05 b/t.
+        double brakeDist = 6 + spd * 20;
+        boolean closeIn = dist < brakeDist;
         double err = headingError(v, target);
         double absErr = Math.abs(err);
         boolean turning = absErr > 8;
@@ -131,13 +149,14 @@ public final class VehicleDriver {
         }
 
         boolean behind = absErr > 100;
-        boolean forward = !behind && (absErr < 90 || dist > 12);
+        boolean forward = !behind && (absErr < 90 || dist > 12) && !closeIn;
         boolean back = behind && dist < 25;          // reverse-turn when target is behind and close
+        boolean brake = closeIn && spd > 0.15;
         boolean sprint = forward && absErr < 20 && dist > 30;
         // When reversing, steering geometry inverts on wheels/tracks.
         if (back) { boolean t = left; left = right; right = t; forward = false; }
-        SwVehicleCompat.setInputs(v, forward, back, left, right, false, false, sprint);
-        st.lastNote = String.format("dist=%.1f err=%.0f", dist, err);
+        SwVehicleCompat.setInputs(v, forward, back, left, right, brake, false, sprint);
+        st.lastNote = String.format("dist=%.1f err=%.0f spd=%.2f%s", dist, err, spd, brake ? " braking" : "");
         return false;
     }
 
