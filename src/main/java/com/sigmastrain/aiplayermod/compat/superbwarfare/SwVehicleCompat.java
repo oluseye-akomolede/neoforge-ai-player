@@ -230,6 +230,9 @@ public final class SwVehicleCompat {
         m.put("yaw", v.getYRot());
         m.put("onGround", v.onGround());
         m.put("engine", engineKind(v).name());
+        m.put("tickCount", v.tickCount);
+        m.put("gameTime", v.level().getGameTime());
+        m.put("motion", v.getDeltaMovement().toString());
         m.put("engineDamaged", call(v, engDamaged, null));
         m.put("lWheelDamaged", call(v, lWheelDamaged, null));
         m.put("rWheelDamaged", call(v, rWheelDamaged, null));
