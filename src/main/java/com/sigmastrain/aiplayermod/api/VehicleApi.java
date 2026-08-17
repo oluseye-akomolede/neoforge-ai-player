@@ -97,6 +97,20 @@ public final class VehicleApi {
                 SwVehicleCompat.changeWeapon(v, seat, idx);
                 return Map.of("ok", true, "weapon", names.get(idx), "index", idx);
             }
+            case "vehicle_input" -> {
+                // Diagnostic: set the raw input flags once (they persist as entity data).
+                Entity v = SwVehicleCompat.vehicleOf(p);
+                if (v == null) return err("not aboard a vehicle");
+                SwVehicleCompat.setInputs(v,
+                        body.has("forward") && body.get("forward").getAsBoolean(),
+                        body.has("back") && body.get("back").getAsBoolean(),
+                        body.has("left") && body.get("left").getAsBoolean(),
+                        body.has("right") && body.get("right").getAsBoolean(),
+                        body.has("up") && body.get("up").getAsBoolean(),
+                        body.has("down") && body.get("down").getAsBoolean(),
+                        body.has("sprint") && body.get("sprint").getAsBoolean());
+                return Map.of("ok", true, "debug", SwVehicleCompat.driveDebug(v));
+            }
             case "vehicle_charge" -> {
                 // Raw energy set — the FE-paid path lives in hive-mod. Kept for testing/ops.
                 Entity v = SwVehicleCompat.vehicleOf(p);

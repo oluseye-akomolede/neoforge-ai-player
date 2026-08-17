@@ -711,6 +711,8 @@ public class HttpApiServer {
                     Map<String, Object> out = new LinkedHashMap<>();
                     out.put("aboard", info != null);
                     if (info != null) out.put("vehicle", info);
+                    var aboardV = com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.vehicleOf(bot.getPlayer());
+                    if (aboardV != null) out.put("drive_debug", com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.driveDebug(aboardV));
                     // Nearby SW vehicles the bot could board.
                     List<Map<String, Object>> near = new ArrayList<>();
                     var lvl = bot.getPlayer().serverLevel();
@@ -733,7 +735,7 @@ public class HttpApiServer {
                 });
                 sendJson(exchange, 200, vf.join());
             }
-            case "vehicle_mount", "vehicle_dismount", "vehicle_seat", "vehicle_weapon", "vehicle_charge" -> {
+            case "vehicle_mount", "vehicle_dismount", "vehicle_seat", "vehicle_weapon", "vehicle_charge", "vehicle_input" -> {
                 var vf = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
                 final String act = action;
                 BotManager.getServer().execute(() -> {

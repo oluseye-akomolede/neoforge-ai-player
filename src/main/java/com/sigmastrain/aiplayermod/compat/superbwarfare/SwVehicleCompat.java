@@ -45,7 +45,8 @@ public final class SwVehicleCompat {
             setForward, setBack, setLeft, setRight, setUp, setDown, setSprint, mouseInput,
             getEnergy, getMaxEnergy, setEnergy, hasEnergyStorage, getContainerSize, hasContainer,
             getHealth, getMaxHealth, heal, getVehicleType, getEngineInfo, isWreck, computed, seatsOf, weaponsOf,
-            getGunDataLiving, dataSelectedConsumer, consumerStack, consumerGetType, consumerGetPlayerAmmoType;
+            getGunDataLiving, dataSelectedConsumer, consumerStack, consumerGetType, consumerGetPlayerAmmoType,
+            getPower, fwdDown, backDown, leftDown, rightDown, upDown, sprintDown;
 
     public static boolean isAvailable() {
         return ModCompat.isSuperbWarfareLoaded() && resolve();
@@ -214,6 +215,22 @@ public final class SwVehicleCompat {
 
     public static void clearInputs(Entity v) { setInputs(v, false, false, false, false, false, false, false); }
 
+    /** Diagnostic snapshot of the drive state (power + raw input flags). */
+    public static java.util.Map<String, Object> driveDebug(Entity v) {
+        java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+        m.put("power", call(v, getPower, -1f));
+        m.put("forward", call(v, fwdDown, false));
+        m.put("back", call(v, backDown, false));
+        m.put("left", call(v, leftDown, false));
+        m.put("right", call(v, rightDown, false));
+        m.put("up", call(v, upDown, false));
+        m.put("sprint", call(v, sprintDown, false));
+        m.put("yaw", v.getYRot());
+        m.put("onGround", v.onGround());
+        m.put("engine", engineKind(v).name());
+        return m;
+    }
+
     public static void mouseInput(Entity v, double dx, double dy) { call(v, mouseInput, null, dx, dy); }
 
     public static EngineKind engineKind(Entity v) {
@@ -322,6 +339,16 @@ public final class SwVehicleCompat {
                 getEngineInfo = vehicleCls.getMethod("getEngineInfo");
                 isWreck = vehicleCls.getMethod("isWreck");
                 computed = vehicleCls.getMethod("computed");
+                try {
+                    getPower = vehicleCls.getMethod("getPower");
+                    fwdDown = vehicleCls.getMethod("forwardInputDown");
+                    backDown = vehicleCls.getMethod("backInputDown");
+                    leftDown = vehicleCls.getMethod("leftInputDown");
+                    rightDown = vehicleCls.getMethod("rightInputDown");
+                    upDown = vehicleCls.getMethod("upInputDown");
+                    sprintDown = vehicleCls.getMethod("sprintInputDown");
+                } catch (Throwable ignored) {
+                }
                 Class<?> dataCls = Class.forName("com.atsuishio.superbwarfare.data.vehicle.DefaultVehicleData");
                 seatsOf = dataCls.getMethod("seats");
                 Class<?> seatCls = Class.forName("com.atsuishio.superbwarfare.data.vehicle.subdata.SeatInfo");
