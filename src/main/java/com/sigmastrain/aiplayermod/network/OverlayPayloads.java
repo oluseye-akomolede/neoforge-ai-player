@@ -226,6 +226,17 @@ public final class OverlayPayloads {
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
+    public record OpenCurios(String bot) implements CustomPacketPayload {
+        public static final Type<OpenCurios> TYPE = new Type<>(id("overlay_open_curios"));
+        public static final StreamCodec<RegistryFriendlyByteBuf, OpenCurios> CODEC =
+                StreamCodec.of(
+                        (buf, p) -> buf.writeUtf(p.bot),
+                        buf -> new OpenCurios(buf.readUtf()));
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
     // ── S2C: vault snapshot + channel quote (Phase 2) ────────────────────
 
     /** {@code me} is a long: networks hold millions of an item. */

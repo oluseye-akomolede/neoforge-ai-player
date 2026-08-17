@@ -12,5 +12,6 @@ public class ClientSetup {
     @SubscribeEvent
     public static void onRegisterScreens(RegisterMenuScreensEvent event) {
         event.register(ModMenuTypes.BOT_EQUIPMENT.get(), BotEquipmentScreen::new);
+        event.register(ModMenuTypes.BOT_CURIOS.get(), BotCuriosScreen::new);
     }
 }

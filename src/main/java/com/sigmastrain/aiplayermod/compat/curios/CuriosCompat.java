@@ -30,6 +30,10 @@ public final class CuriosCompat {
 
     public record WornSlot(String slotType, int index, ItemStack stack) {}
 
+    /** A slot type and how many slots of it a player has — the layout shape,
+     *  enumerable WITHOUT a live bot via {@link #layout(ServerPlayer)}. */
+    public record CurioSlotDef(String slotType, int size) {}
+
     public static boolean isAvailable() {
         return ModList.get().isLoaded("curios");
     }
@@ -71,6 +75,35 @@ public final class CuriosCompat {
         } catch (Throwable t) {
             AIPlayerMod.LOGGER.warn("[curios] list failed: {}", t.toString());
         }
+        return out;
+    }
+
+    /**
+     * The curios slot LAYOUT for a player — every slot type and its size —
+     * without needing the bot's own inventory. Sourced from the datapack via
+     * {@code CuriosApi.getPlayerSlots(Player)} → {@code Map<String, ISlotType>},
+     * so any player-shaped entity (bot or owner) yields the same shape. The
+     * designer uses this to enumerate {@code curio:<type>:<index>} keys before
+     * a unit exists to query.
+     */
+    public static List<CurioSlotDef> layout(ServerPlayer anyPlayer) {
+        List<CurioSlotDef> out = new ArrayList<>();
+        if (!isAvailable()) return out;
+        // Derived from list() — the getCuriosInventory() path — NOT
+        // getPlayerSlots(), whose public entry points are mixin-patched stubs
+        // that log "Missing Curios API implementation!" and return empty when
+        // the impl hook isn't wired. list() is the proven live path (the
+        // overlay Worn row), and its slotType keys are exactly the strings
+        // putDirect/getDirect/accepts index by, so a designer key built here
+        // always resolves at materialization.
+        Map<String, Integer> sizes = new LinkedHashMap<>();
+        for (WornSlot w : list(anyPlayer)) {
+            sizes.merge(w.slotType(), 1, Integer::sum);
+        }
+        for (Map.Entry<String, Integer> e : sizes.entrySet()) {
+            out.add(new CurioSlotDef(e.getKey(), e.getValue()));
+        }
+        out.sort(java.util.Comparator.comparing(CurioSlotDef::slotType));
         return out;
     }
 
@@ -193,9 +226,30 @@ public final class CuriosCompat {
         }
     }
 
+    /** Read one worn slot directly — the {@link CuriosContainer} read path. */
+    public static ItemStack getDirect(ServerPlayer bot, String slotType, int index) {
+        if (!isAvailable()) return ItemStack.EMPTY;
+        try {
+            Object handler = handler(bot);
+            if (handler == null) return ItemStack.EMPTY;
+            Object curios = handler.getClass().getMethod("getCurios").invoke(handler);
+            if (!(curios instanceof Map<?, ?> byType)) return ItemStack.EMPTY;
+            Object stacksHandler = byType.get(slotType);
+            if (stacksHandler == null) return ItemStack.EMPTY;
+            Object stacks = stacksHandler.getClass().getMethod("getStacks").invoke(stacksHandler);
+            Object s = stacks.getClass().getMethod("getStackInSlot", int.class).invoke(stacks, index);
+            return s instanceof ItemStack st ? st : ItemStack.EMPTY;
+        } catch (Throwable t) {
+            AIPlayerMod.LOGGER.warn("[curios] getDirect failed: {}", t.toString());
+            return ItemStack.EMPTY;
+        }
+    }
+
     /** Does this slot accept the item? Falls back to true when the check
-     *  itself can't run — equip then fails loudly rather than silently. */
-    private static boolean accepts(ServerPlayer bot, String slotType, int index,
+     *  itself can't run — equip then fails loudly rather than silently.
+     *  Public: the curios container's {@code mayPlace} and the designer's
+     *  per-slot catalogue both reuse this validity gate. */
+    public static boolean accepts(ServerPlayer bot, String slotType, int index,
                                    ItemStack stack) {
         try {
             // CuriosApi.isStackValid(SlotContext, ItemStack) — SlotContext is

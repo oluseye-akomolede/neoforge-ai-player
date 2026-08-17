@@ -1,5 +1,6 @@
 package com.sigmastrain.aiplayermod;
 
+import com.sigmastrain.aiplayermod.bot.BotCuriosMenu;
 import com.sigmastrain.aiplayermod.bot.BotEquipmentMenu;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.world.inventory.MenuType;
@@ -14,4 +15,7 @@ public class ModMenuTypes {
 
     public static final Supplier<MenuType<BotEquipmentMenu>> BOT_EQUIPMENT =
             MENUS.register("bot_equipment", () -> IMenuTypeExtension.create(BotEquipmentMenu::fromNetwork));
+
+    public static final Supplier<MenuType<BotCuriosMenu>> BOT_CURIOS =
+            MENUS.register("bot_curios", () -> IMenuTypeExtension.create(BotCuriosMenu::fromNetwork));
 }

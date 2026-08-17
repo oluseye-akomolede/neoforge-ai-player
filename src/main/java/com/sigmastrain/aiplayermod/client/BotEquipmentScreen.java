@@ -59,8 +59,12 @@ public class BotEquipmentScreen extends AbstractContainerScreen<BotEquipmentMenu
         chatInput.setVisible(false);
         addWidget(chatInput);
 
-        addRenderableWidget(Button.builder(Component.literal("←"), b -> onClose())
+        addRenderableWidget(Button.builder(Component.literal("◈"), b ->
+                        PacketDistributor.sendToServer(new OverlayPayloads.OpenCurios(botAddress())))
                 .bounds(leftPos + imageWidth - 42, topPos + 4, 18, 14).build());
+
+        addRenderableWidget(Button.builder(Component.literal("←"), b -> onClose())
+                .bounds(leftPos + imageWidth - 62, topPos + 4, 18, 14).build());
     }
 
     // ESC (and ←) return to the overlay — the equipment window is a leaf

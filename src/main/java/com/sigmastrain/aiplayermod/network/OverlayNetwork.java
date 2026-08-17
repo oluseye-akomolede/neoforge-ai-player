@@ -256,6 +256,33 @@ public final class OverlayNetwork {
                 }));
 
         registrar.playToServer(
+                OverlayPayloads.OpenCurios.TYPE,
+                OverlayPayloads.OpenCurios.CODEC,
+                (payload, context) -> context.enqueueWork(() -> {
+                    if (!(context.player() instanceof ServerPlayer sp)) return;
+                    BotPlayer bot = resolveBot(payload.bot());
+                    if (bot == null || bot.getPlayer() == null) return;
+                    ServerPlayer bp = bot.getPlayer();
+                    int entityId = bp.getId();
+                    String bName = botName(bot);
+                    // The slot count + type labels ride the open buffer so the
+                    // client builds the same grid without a live Curios query.
+                    var container = new com.sigmastrain.aiplayermod.bot.CuriosContainer(bp);
+                    int count = container.getContainerSize();
+                    List<String> labels = container.labels();
+                    sp.openMenu(new net.minecraft.world.SimpleMenuProvider(
+                            (id, inv, p) -> new com.sigmastrain.aiplayermod.bot.BotCuriosMenu(
+                                    id, inv, bp, entityId),
+                            net.minecraft.network.chat.Component.literal(bName + "'s Curios")
+                    ), buf -> {
+                        buf.writeVarInt(entityId);
+                        buf.writeUtf(bName);
+                        buf.writeVarInt(count);
+                        for (String l : labels) buf.writeUtf(l);
+                    });
+                }));
+
+        registrar.playToServer(
                 OverlayPayloads.InboxRespond.TYPE,
                 OverlayPayloads.InboxRespond.CODEC,
                 (payload, context) -> context.enqueueWork(() -> {
