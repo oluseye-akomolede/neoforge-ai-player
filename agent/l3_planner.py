@@ -187,7 +187,8 @@ _VALID_DIRECTIVE_KINDS = frozenset({
     "BREW", "CHANNEL", "SEND_ITEM", "BUILD", "FARM", "CONTAINER_PLACE",
     "CONTAINER_SEARCH", "CONTAINER_STORE", "CONTAINER_WITHDRAW", "TELEPORT",
     "IDLE", "PATROL", "WIDE_SEARCH", "LOCATE", "STORE_ALL", "ME_STORE",
-    "ME_WITHDRAW", "CRAFT_REQUEST", "MEDITATE",
+    "ME_WITHDRAW", "CRAFT_REQUEST", "MEDITATE", "CULTIVATE",
+    "MOUNT_VEHICLE", "DISMOUNT_VEHICLE", "DRIVE_VEHICLE",
 })
 
 # Valid kinds that are nonetheless context-specific (a hardcoded coordinate,
@@ -195,6 +196,7 @@ _VALID_DIRECTIVE_KINDS = frozenset({
 # them verbatim is wrong, so the shim will not synthesize from them.
 _NON_REUSABLE_KINDS = frozenset({
     "TELEPORT", "GOTO", "LOCATE", "PATROL", "FOLLOW", "BUILD", "IDLE",
+    "DRIVE_VEHICLE",
 })
 
 
@@ -569,6 +571,22 @@ RAW DIRECTIVE REFERENCE (fallback — use ONLY when NO skill above covers the su
                      expensive (2M FE), and its aura halves the upkeep of
                      nearby drones. Needs a powered Golem Forge flanked by
                      2+ Spawn Bays. DISMISS_GOLEM retires one.
+
+  MOUNT_VEHICLE    — {{ "kind":"MOUNT_VEHICLE", "target":"tank", "extra":{{"seat":"0","role":"driver"}} }}
+                     Board a Superb Warfare vehicle: target = a vehicle name/
+                     type substring ("tank","lav","m1a2","ah6","boat") or empty
+                     for the nearest within radius (default 32). Seat 0 is the
+                     driver; role "gunner" takes the first armed passenger
+                     seat. Once aboard, COMBAT fights FROM the vehicle (turret
+                     aims and fires; a driver closes to weapon range — land,
+                     boat and helicopter only; airplanes can be gunned, not
+                     flown). Vehicles need FE energy and ammo in their hold —
+                     the hive charges them from the owner's reservoir.
+  DISMOUNT_VEHICLE — {{ "kind":"DISMOUNT_VEHICLE" }}
+  DRIVE_VEHICLE    — {{ "kind":"DRIVE_VEHICLE", "x":<int>, "y":<int>, "z":<int>, "count":120 }}
+                     Drive the vehicle you pilot to a point (or "target":
+                     "<player or entity>" to follow it). Only from the driver
+                     seat; count = max seconds. Land/boat/helicopter only.
 
   MEDITATE         — {{ "kind":"MEDITATE", "count":10 }}
                      The bot sits and cultivates XP (count = levels to

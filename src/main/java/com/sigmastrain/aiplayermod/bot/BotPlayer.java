@@ -1,5 +1,7 @@
 package com.sigmastrain.aiplayermod.bot;
 
+import com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat;
+
 import com.sigmastrain.aiplayermod.AIPlayerMod;
 import com.sigmastrain.aiplayermod.actions.ActionQueue;
 import com.sigmastrain.aiplayermod.brain.BotBrain;
@@ -698,7 +700,41 @@ public class BotPlayer {
             status.put("mob_kills", -1);
             status.put("deaths", -1);
         }
+        Map<String, Object> vehicle = getVehicleInfo();
+        if (vehicle != null) status.put("vehicle", vehicle);
         return status;
+    }
+
+    /**
+     * The Superb Warfare vehicle this bot is aboard, or null. Keys: id, name,
+     * type, seat, driver, energy, max_energy, health, max_health, weapon,
+     * weapons, ammo, ammo_item, container_size, drivable.
+     */
+    public Map<String, Object> getVehicleInfo() {
+        net.minecraft.world.entity.Entity v =
+                SwVehicleCompat.vehicleOf(player);
+        if (v == null) return null;
+        Map<String, Object> m = new LinkedHashMap<>();
+        int seat = SwVehicleCompat.seatIndex(v, player);
+        m.put("id", v.getUUID().toString());
+        m.put("name", SwVehicleCompat.displayName(v));
+        m.put("type", SwVehicleCompat.typeName(v));
+        m.put("seat", seat);
+        m.put("driver", SwVehicleCompat.isDriver(player));
+        m.put("energy", SwVehicleCompat.energy(v));
+        m.put("max_energy", SwVehicleCompat.maxEnergy(v));
+        m.put("health", SwVehicleCompat.health(v));
+        m.put("max_health", SwVehicleCompat.maxHealth(v));
+        boolean armed = SwVehicleCompat.hasWeapon(v, seat);
+        m.put("weapon", armed ? SwVehicleCompat.weaponName(v, seat) : "");
+        m.put("weapons", SwVehicleCompat.weaponNames(v, seat));
+        m.put("ammo", armed ? SwVehicleCompat.ammoCount(player) : 0);
+        m.put("ammo_item", SwVehicleCompat.ammoItemFor(player));
+        m.put("container_size", SwVehicleCompat.containerSize(v));
+        m.put("drivable", SwVehicleCompat.drivable(v));
+        m.put("engine", SwVehicleCompat.engineKind(v).name());
+        m.put("position", formatPos(v.position()));
+        return m;
     }
 
     public List<Map<String, Object>> getNearbyEntities(double radius) {

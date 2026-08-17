@@ -30,5 +30,8 @@ public enum DirectiveType {
     CRAFT_REQUEST,
     MEDITATE,
     CULTIVATE,
-    SKILL
+    SKILL,
+    MOUNT_VEHICLE,
+    DISMOUNT_VEHICLE,
+    DRIVE_VEHICLE
 }

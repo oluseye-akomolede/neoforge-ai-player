@@ -704,6 +704,51 @@ public class HttpApiServer {
                 });
                 sendJson(exchange, 200, ptFuture.join());
             }
+            case "vehicle" -> {
+                var vf = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    Map<String, Object> info = bot.getVehicleInfo();
+                    Map<String, Object> out = new LinkedHashMap<>();
+                    out.put("aboard", info != null);
+                    if (info != null) out.put("vehicle", info);
+                    // Nearby SW vehicles the bot could board.
+                    List<Map<String, Object>> near = new ArrayList<>();
+                    var lvl = bot.getPlayer().serverLevel();
+                    var pos = bot.getPlayer().position();
+                    for (var e : lvl.getEntities((net.minecraft.world.entity.Entity) null,
+                            bot.getPlayer().getBoundingBox().inflate(32),
+                            com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat::isVehicle)) {
+                        near.add(Map.of(
+                                "id", e.getUUID().toString(),
+                                "name", com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.displayName(e),
+                                "type", com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.typeName(e),
+                                "distance", Math.round(e.position().distanceTo(pos) * 10) / 10.0,
+                                "energy", com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.energy(e),
+                                "max_energy", com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.maxEnergy(e),
+                                "free_seat", com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.firstFreeSeat(e),
+                                "drivable", com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.drivable(e)));
+                    }
+                    out.put("nearby", near);
+                    vf.complete(out);
+                });
+                sendJson(exchange, 200, vf.join());
+            }
+            case "vehicle_mount", "vehicle_dismount", "vehicle_seat", "vehicle_weapon", "vehicle_charge" -> {
+                var vf = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                final String act = action;
+                BotManager.getServer().execute(() -> {
+                    vf.complete(com.sigmastrain.aiplayermod.api.VehicleApi.act(bot, act, body));
+                });
+                sendJson(exchange, 200, vf.join());
+            }
+            case "vehicle_inventory" -> {
+                var vf = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                final boolean get = "GET".equals(exchange.getRequestMethod());
+                BotManager.getServer().execute(() -> {
+                    vf.complete(com.sigmastrain.aiplayermod.api.VehicleApi.inventory(bot, get ? null : body));
+                });
+                sendJson(exchange, 200, vf.join());
+            }
             case "curios_list" -> {
                 var clFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
                 BotManager.getServer().execute(() -> {

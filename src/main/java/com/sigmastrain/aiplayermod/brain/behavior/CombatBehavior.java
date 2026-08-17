@@ -37,6 +37,9 @@ import java.util.Random;
 
 public class CombatBehavior implements Behavior {
     private final ProgressReport progress = new ProgressReport();
+    private final com.sigmastrain.aiplayermod.brain.VehicleCombat.State vehicleState =
+            new com.sigmastrain.aiplayermod.brain.VehicleCombat.State();
+    private BotPlayer lastBot;
     private final Random random = new Random();
 
     private int duration;
@@ -72,6 +75,7 @@ public class CombatBehavior implements Behavior {
 
     @Override
     public void start(BotPlayer bot, Directive directive) {
+        lastBot = bot;
         progress.reset();
         progress.setPhase("combat");
         elapsed = 0;
@@ -166,6 +170,11 @@ public class CombatBehavior implements Behavior {
         bot.lookAt(target.getX(), target.getEyeY(), target.getZ());
 
         double dist = player.distanceTo(target);
+
+        // Aboard a vehicle: fight from it (never teleport off it).
+        if (com.sigmastrain.aiplayermod.brain.VehicleCombat.tick(bot, player, target, vehicleState)) {
+            return BehaviorResult.RUNNING;
+        }
 
         // Standoff: a handler holding a ranged weapon (guns) engages from
         // range, so we close only to that range instead of teleporting to melee.
@@ -544,5 +553,9 @@ public class CombatBehavior implements Behavior {
     public ProgressReport getProgress() { return progress; }
 
     @Override
-    public void stop() {}
+    public void stop() {
+        if (lastBot != null && lastBot.getPlayer() != null) {
+            com.sigmastrain.aiplayermod.brain.VehicleCombat.release(lastBot.getPlayer());
+        }
+    }
 }

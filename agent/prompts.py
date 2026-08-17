@@ -44,7 +44,7 @@ You can include 1-5 actions per response. They execute in order.
 - teleport: Instantly teleport to coordinates, optionally across dimensions. Params: x, y, z, dimension (optional, e.g. "minecraft:the_nether", "minecraft:the_end")
 
 ### Combat
-- combat_mode: Enter sustained combat mode. Auto-equips best weapon, fights hostiles, eats food when hungry, retreats when health critical. Runs until no enemies remain. Params: radius (optional, default 24), hostile_only (optional, default true), target (optional, specific mob name/type)
+- combat_mode: Enter sustained combat mode. Auto-equips best weapon, fights hostiles, eats food when hungry, retreats when health critical. Runs until no enemies remain. Params: radius (optional, default 24), hostile_only (optional, default true), target (optional, specific mob name/type). Bots holding a gun (TaCZ / Superb Warfare) fire it from standoff instead of meleeing; a bot aboard a Superb Warfare vehicle fights FROM the vehicle (aims the turret, fires, drives to range if it is the driver of a land/boat/heli).
 - attack: Single attack on nearest matching entity. Params: target (name/type), radius (optional)
 
 ### Inventory & items

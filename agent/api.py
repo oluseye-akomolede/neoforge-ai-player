@@ -204,6 +204,33 @@ def combat_mode(bot, radius=24.0, hostile_only=True, target=None):
         data["target"] = target
     return _post(f"/bot/{bot}/combat_mode", data)
 
+def vehicle_status(bot):
+    return _get(f"/bot/{bot}/vehicle")
+
+def vehicle_mount(bot, target="", seat=-1, role=None, radius=None):
+    data = {"target": target or "", "seat": seat}
+    if role:
+        data["role"] = role
+    if radius:
+        data["radius"] = radius
+    return _post(f"/bot/{bot}/vehicle_mount", data)
+
+def vehicle_dismount(bot):
+    return _post(f"/bot/{bot}/vehicle_dismount", {})
+
+def vehicle_seat(bot, seat=-1):
+    return _post(f"/bot/{bot}/vehicle_seat", {"seat": seat})
+
+def vehicle_weapon(bot, index=-1):
+    return _post(f"/bot/{bot}/vehicle_weapon", {"index": index})
+
+def vehicle_inventory(bot):
+    return _get(f"/bot/{bot}/vehicle_inventory")
+
+def vehicle_inventory_op(bot, action, item="", count=1, slot=-1):
+    return _post(f"/bot/{bot}/vehicle_inventory",
+                 {"action": action, "item": item, "count": count, "slot": slot})
+
 def mine(bot, x, y, z):
     return _post(f"/bot/{bot}/mine", {"x": x, "y": y, "z": z})
 

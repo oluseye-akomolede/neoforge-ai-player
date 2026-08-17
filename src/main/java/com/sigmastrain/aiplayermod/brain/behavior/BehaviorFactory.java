@@ -47,6 +47,9 @@ public final class BehaviorFactory {
             case CRAFT_REQUEST -> ModCompat.isAE2Loaded() ? new CraftRequestBehavior() : new FailFastBehavior("AE2 not loaded");
             case MEDITATE -> new MeditateBehavior();
             case CULTIVATE -> new CultivateBehavior();
+            case MOUNT_VEHICLE -> ModCompat.isSuperbWarfareLoaded() ? new MountVehicleBehavior() : new FailFastBehavior("Superb Warfare not loaded");
+            case DISMOUNT_VEHICLE -> new DismountVehicleBehavior();
+            case DRIVE_VEHICLE -> ModCompat.isSuperbWarfareLoaded() ? new DriveVehicleBehavior() : new FailFastBehavior("Superb Warfare not loaded");
             case SKILL -> new SkillBehavior();
             case IDLE -> new IdleBehavior();
             default -> new IdleBehavior(); // GATHER, PATROL — no impl yet

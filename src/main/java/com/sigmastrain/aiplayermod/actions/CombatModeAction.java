@@ -40,6 +40,9 @@ public class CombatModeAction implements BotAction {
     private static final int EAT_HUNGER_THRESHOLD = 14;
     private static final float RETREAT_HEALTH = 4.0f;
 
+    private final com.sigmastrain.aiplayermod.brain.VehicleCombat.State vehicleState =
+            new com.sigmastrain.aiplayermod.brain.VehicleCombat.State();
+
     public CombatModeAction(double searchRadius, boolean hostileOnly, String specificTarget) {
         this.searchRadius = Math.max(searchRadius, 16.0);
         this.hostileOnly = hostileOnly;
@@ -85,7 +88,9 @@ public class CombatModeAction implements BotAction {
 
         if (target == null) {
             ticksWithoutTarget++;
-            if (!player.onGround()) {
+            if (player.isPassenger()) {
+                com.sigmastrain.aiplayermod.brain.VehicleCombat.release(player); // hold the vehicle still
+            } else if (!player.onGround()) {
                 yVelocity -= GRAVITY;
                 player.move(MoverType.SELF, new Vec3(0, yVelocity, 0));
             }
@@ -96,6 +101,11 @@ public class CombatModeAction implements BotAction {
         double dist = player.distanceTo(target);
 
         bot.lookAt(target.getX(), target.getEyeY(), target.getZ());
+
+        // Aboard a vehicle: fight from it.
+        if (com.sigmastrain.aiplayermod.brain.VehicleCombat.tick(bot, player, target, vehicleState)) {
+            return false;
+        }
 
         // Ranged gear (guns, hive armament) gets first refusal, from standoff:
         // no need to close to melee if a handler can engage from here.

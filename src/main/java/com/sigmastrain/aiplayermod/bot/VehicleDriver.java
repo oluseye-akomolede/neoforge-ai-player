@@ -1,0 +1,133 @@
+package com.sigmastrain.aiplayermod.bot;
+
+import com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat;
+import com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.EngineKind;
+import net.minecraft.util.Mth;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.phys.Vec3;
+
+/**
+ * Steers a Superb Warfare vehicle toward a point using only the inputs a
+ * player's keys would set. Land/boat: yaw error → left/right + forward (reverse
+ * + turn when the target is behind); helicopter: yaw via mouse input, altitude
+ * via up/down, forward when aligned. Fixed-wing is not driven (board/gun only).
+ *
+ * <p>The turn direction convention is learned, not assumed: if steering "left"
+ * for a few ticks makes the heading error grow, the sign flips. That keeps the
+ * controller correct across SW's engine implementations without hard-coding
+ * their yaw handling.
+ */
+public final class VehicleDriver {
+
+    private VehicleDriver() {}
+
+    /** Per-driver memory. Keep one per bot while a drive is active. */
+    public static final class State {
+        int turnSign = 1;
+        double lastAbsErr = Double.NaN;
+        int ticks;
+        boolean turningLast;
+        public String lastNote = "";
+    }
+
+    public static final double DEFAULT_ARRIVE = 4.0;
+    public static final double HELI_HOVER_ABOVE = 6.0;
+
+    /**
+     * One control tick. Returns true when arrived (inputs cleared).
+     * Non-drivable engines return true immediately with a note.
+     */
+    public static boolean driveTo(Entity v, State st, Vec3 target, double arriveRadius) {
+        EngineKind kind = SwVehicleCompat.engineKind(v);
+        st.ticks++;
+        switch (kind) {
+            case LAND, BOAT -> { return steerSurface(v, st, target, arriveRadius); }
+            case HELI -> { return steerHeli(v, st, target, arriveRadius); }
+            default -> {
+                SwVehicleCompat.clearInputs(v);
+                st.lastNote = "vehicle is not drivable by bots (" + kind + ")";
+                return true;
+            }
+        }
+    }
+
+    /** Stop everything (release all keys). */
+    public static void stop(Entity v) {
+        SwVehicleCompat.clearInputs(v);
+    }
+
+    static double headingError(Entity v, Vec3 target) {
+        double dx = target.x - v.getX();
+        double dz = target.z - v.getZ();
+        double desired = Math.toDegrees(Math.atan2(-dx, dz));
+        return Mth.wrapDegrees(desired - v.getYRot());
+    }
+
+    static double horizontalDistance(Entity v, Vec3 target) {
+        double dx = target.x - v.getX(), dz = target.z - v.getZ();
+        return Math.sqrt(dx * dx + dz * dz);
+    }
+
+    private static void learnTurnSign(State st, double absErr, boolean turning) {
+        if (turning && st.turningLast && !Double.isNaN(st.lastAbsErr) && st.ticks % 10 == 0) {
+            if (absErr > st.lastAbsErr + 4.0) {
+                st.turnSign = -st.turnSign;   // steering the wrong way — flip
+                st.lastNote = "flipped steering sign";
+            }
+            st.lastAbsErr = absErr;
+        } else if (st.ticks % 10 == 0) {
+            st.lastAbsErr = absErr;
+        }
+        st.turningLast = turning;
+    }
+
+    private static boolean steerSurface(Entity v, State st, Vec3 target, double arriveRadius) {
+        double dist = horizontalDistance(v, target);
+        if (dist <= arriveRadius) {
+            SwVehicleCompat.clearInputs(v);
+            st.lastNote = "arrived";
+            return true;
+        }
+        double err = headingError(v, target);
+        double absErr = Math.abs(err);
+        boolean turning = absErr > 8;
+        learnTurnSign(st, absErr, turning);
+
+        double signed = err * st.turnSign;
+        boolean left = turning && signed < 0;
+        boolean right = turning && signed > 0;
+        boolean behind = absErr > 120;
+        boolean forward = !behind && (absErr < 90 || dist > 12);
+        boolean back = behind && dist < 25;          // reverse-turn when target is behind and close
+        boolean sprint = forward && absErr < 20 && dist > 30;
+        // When reversing, steering geometry inverts on wheels/tracks.
+        if (back) { boolean t = left; left = right; right = t; forward = false; }
+        SwVehicleCompat.setInputs(v, forward, back, left, right, false, false, sprint);
+        st.lastNote = String.format("dist=%.1f err=%.0f", dist, err);
+        return false;
+    }
+
+    private static boolean steerHeli(Entity v, State st, Vec3 target, double arriveRadius) {
+        double dist = horizontalDistance(v, target);
+        double targetY = target.y + HELI_HOVER_ABOVE;
+        double dy = targetY - v.getY();
+        boolean up = dy > 1.5;
+        boolean down = dy < -2.5;
+        if (dist <= arriveRadius) {
+            SwVehicleCompat.setInputs(v, false, false, false, false, up, down, false);
+            SwVehicleCompat.mouseInput(v, 0, 0);
+            st.lastNote = "hovering at target";
+            return Math.abs(dy) < 3;
+        }
+        double err = headingError(v, target);
+        double absErr = Math.abs(err);
+        boolean turning = absErr > 6;
+        learnTurnSign(st, absErr, turning);
+        double yawInput = turning ? Mth.clamp(err * 0.15, -6, 6) * st.turnSign : 0;
+        SwVehicleCompat.mouseInput(v, yawInput, 0);
+        boolean forward = absErr < 35;
+        SwVehicleCompat.setInputs(v, forward, false, false, false, up, down, forward && dist > 40);
+        st.lastNote = String.format("heli dist=%.1f err=%.0f dy=%.1f", dist, err, dy);
+        return false;
+    }
+}

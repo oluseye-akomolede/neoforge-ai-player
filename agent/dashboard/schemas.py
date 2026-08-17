@@ -89,6 +89,31 @@ DIRECTIVE_CATALOG = [
         ],
     },
     {
+        "type": "MOUNT_VEHICLE",
+        "label": "Vehicle: board",
+        "params": [
+            {"name": "target", "type": "str", "label": "Vehicle (name/type, blank = nearest)", "required": False,
+             "default": ""},
+            {"name": "extra", "type": "dict", "label": "Seat/role, e.g. {\"seat\":\"0\"} or {\"role\":\"gunner\"}",
+             "required": False},
+        ],
+    },
+    {
+        "type": "DISMOUNT_VEHICLE",
+        "label": "Vehicle: dismount",
+        "params": [],
+    },
+    {
+        "type": "DRIVE_VEHICLE",
+        "label": "Vehicle: drive to",
+        "params": [
+            {"name": "x", "type": "int", "label": "X", "required": True},
+            {"name": "y", "type": "int", "label": "Y", "required": True},
+            {"name": "z", "type": "int", "label": "Z", "required": True},
+            {"name": "count", "type": "int", "label": "Max seconds", "required": False, "default": 120},
+        ],
+    },
+    {
         "type": "MEDITATE",
         "label": "Meditate (earn XP)",
         "params": [
