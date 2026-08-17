@@ -102,7 +102,9 @@ public final class VehicleDriver {
     private static boolean steerSurface(Entity v, State st, Vec3 target, double arriveRadius) {
         double dist = horizontalDistance(v, target);
         double spd = speed(v);
-        if (dist <= arriveRadius) {
+        // Arrived: inside the radius, or stopped just outside it (a big hull
+        // parks where it parks — don't idle 4.5 blocks from a 4-block goal).
+        if (dist <= arriveRadius || (dist <= arriveRadius * 1.5 && spd < 0.05 && st.forwardHeld == 0)) {
             // Hold the brake until we've actually stopped — SW power decays
             // slowly on release, so a coasting vehicle overshoots by tens of blocks.
             if (spd > 0.08) {
