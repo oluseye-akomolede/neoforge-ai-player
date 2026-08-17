@@ -46,7 +46,9 @@ public final class SwVehicleCompat {
             getEnergy, getMaxEnergy, setEnergy, hasEnergyStorage, getContainerSize, hasContainer,
             getHealth, getMaxHealth, heal, getVehicleType, getEngineInfo, isWreck, computed, seatsOf, weaponsOf,
             getGunDataLiving, dataSelectedConsumer, consumerStack, consumerGetType, consumerGetPlayerAmmoType,
-            getPower, fwdDown, backDown, leftDown, rightDown, upDown, sprintDown;
+            getPower, fwdDown, backDown, leftDown, rightDown, upDown, sprintDown,
+            engDamaged, lWheelDamaged, rWheelDamaged, turretDamaged,
+            engHealth, engMax, lWheelHealth, wheelMax, setEngHealth, setSubEngHealth, setLWheel, setRWheel, setTurretHealth, turretMax, setHealth;
 
     public static boolean isAvailable() {
         return ModCompat.isSuperbWarfareLoaded() && resolve();
@@ -228,7 +230,25 @@ public final class SwVehicleCompat {
         m.put("yaw", v.getYRot());
         m.put("onGround", v.onGround());
         m.put("engine", engineKind(v).name());
+        m.put("engineDamaged", call(v, engDamaged, null));
+        m.put("lWheelDamaged", call(v, lWheelDamaged, null));
+        m.put("rWheelDamaged", call(v, rWheelDamaged, null));
+        m.put("turretDamaged", call(v, turretDamaged, null));
+        m.put("engineHealth", call(v, engHealth, null) + "/" + call(v, engMax, null));
+        m.put("wheelHealth", call(v, lWheelHealth, null) + "/" + call(v, wheelMax, null));
         return m;
+    }
+
+    /** Full repair: hull + every part to max. Returns false if unsupported. */
+    public static boolean repair(Entity v) {
+        if (!isVehicle(v)) return false;
+        float hull = maxHealth(v);
+        if (hull > 0) call(v, setHealth, null, hull);
+        Object em = call(v, engMax, null), wm = call(v, wheelMax, null), tm = call(v, turretMax, null);
+        if (em instanceof Float f) { call(v, setEngHealth, null, f); call(v, setSubEngHealth, null, f); }
+        if (wm instanceof Float f) { call(v, setLWheel, null, f); call(v, setRWheel, null, f); }
+        if (tm instanceof Float f) call(v, setTurretHealth, null, f);
+        return true;
     }
 
     public static void mouseInput(Entity v, double dx, double dy) { call(v, mouseInput, null, dx, dy); }
@@ -347,6 +367,24 @@ public final class SwVehicleCompat {
                     rightDown = vehicleCls.getMethod("rightInputDown");
                     upDown = vehicleCls.getMethod("upInputDown");
                     sprintDown = vehicleCls.getMethod("sprintInputDown");
+                } catch (Throwable ignored) {
+                }
+                try {
+                    engDamaged = vehicleCls.getMethod("getMainEngineDamaged");
+                    lWheelDamaged = vehicleCls.getMethod("getLeftWheelDamaged");
+                    rWheelDamaged = vehicleCls.getMethod("getRightWheelDamaged");
+                    turretDamaged = vehicleCls.getMethod("getTurretDamaged");
+                    engHealth = vehicleCls.getMethod("getMainEngineHealth");
+                    engMax = vehicleCls.getMethod("getEngineMaxHealth");
+                    lWheelHealth = vehicleCls.getMethod("getLeftWheelHealth");
+                    wheelMax = vehicleCls.getMethod("getWheelMaxHealth");
+                    turretMax = vehicleCls.getMethod("getTurretMaxHealth");
+                    setEngHealth = vehicleCls.getMethod("setMainEngineHealth", float.class);
+                    setSubEngHealth = vehicleCls.getMethod("setSubEngineHealth", float.class);
+                    setLWheel = vehicleCls.getMethod("setLeftWheelHealth", float.class);
+                    setRWheel = vehicleCls.getMethod("setRightWheelHealth", float.class);
+                    setTurretHealth = vehicleCls.getMethod("setTurretHealth", float.class);
+                    setHealth = vehicleCls.getMethod("setHealth", float.class);
                 } catch (Throwable ignored) {
                 }
                 Class<?> dataCls = Class.forName("com.atsuishio.superbwarfare.data.vehicle.DefaultVehicleData");

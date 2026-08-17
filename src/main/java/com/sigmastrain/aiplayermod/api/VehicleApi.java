@@ -111,6 +111,13 @@ public final class VehicleApi {
                         body.has("sprint") && body.get("sprint").getAsBoolean());
                 return Map.of("ok", true, "debug", SwVehicleCompat.driveDebug(v));
             }
+            case "vehicle_repair" -> {
+                Entity v = SwVehicleCompat.vehicleOf(p);
+                if (v == null) v = SwVehicleCompat.nearestVehicle(p.serverLevel(), p.position(), 4.0, null);
+                if (v == null) return err("no vehicle aboard or within 4 blocks");
+                boolean ok = SwVehicleCompat.repair(v);
+                return Map.of("ok", ok, "health", SwVehicleCompat.health(v), "debug", SwVehicleCompat.driveDebug(v));
+            }
             case "vehicle_charge" -> {
                 // Raw energy set — the FE-paid path lives in hive-mod. Kept for testing/ops.
                 Entity v = SwVehicleCompat.vehicleOf(p);

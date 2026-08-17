@@ -735,7 +735,7 @@ public class HttpApiServer {
                 });
                 sendJson(exchange, 200, vf.join());
             }
-            case "vehicle_mount", "vehicle_dismount", "vehicle_seat", "vehicle_weapon", "vehicle_charge", "vehicle_input" -> {
+            case "vehicle_mount", "vehicle_dismount", "vehicle_seat", "vehicle_weapon", "vehicle_charge", "vehicle_input", "vehicle_repair" -> {
                 var vf = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
                 final String act = action;
                 BotManager.getServer().execute(() -> {
