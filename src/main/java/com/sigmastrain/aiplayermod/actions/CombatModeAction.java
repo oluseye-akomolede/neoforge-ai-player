@@ -101,6 +101,7 @@ public class CombatModeAction implements BotAction {
             if (attackCooldown <= 0) {
                 float hpBefore = target instanceof LivingEntity lt ? lt.getHealth() : -1;
                 forceFullAttackStrength(player);
+                com.sigmastrain.aiplayermod.brain.AttackAnimations.broadcastSwing(player);
                 player.attack(target);
                 player.resetAttackStrengthTicker();
                 float hpAfter = target instanceof LivingEntity lt2 ? lt2.getHealth() : -1;

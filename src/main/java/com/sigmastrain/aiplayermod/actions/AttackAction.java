@@ -49,6 +49,7 @@ public class AttackAction implements BotAction {
         bot.lookAt(target.getX(), target.getEyeY(), target.getZ());
 
         if (closest <= 3.5) {
+            com.sigmastrain.aiplayermod.brain.AttackAnimations.broadcastSwing(player);
             player.attack(target);
             player.resetAttackStrengthTicker();
         } else {

@@ -5,7 +5,6 @@ import com.sigmastrain.aiplayermod.bot.BotPlayer;
 import com.sigmastrain.aiplayermod.brain.BehaviorResult;
 import com.sigmastrain.aiplayermod.brain.Directive;
 import com.sigmastrain.aiplayermod.brain.ProgressReport;
-import com.sigmastrain.aiplayermod.compat.bettercombat.BetterCombatCompat;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.level.TicketType;
@@ -21,8 +20,6 @@ import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.entity.projectile.AbstractArrow;
-import net.minecraft.network.protocol.game.ClientboundAnimatePacket;
-import net.minecraft.network.protocol.game.ClientboundHurtAnimationPacket;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.food.FoodProperties;
 import net.minecraft.world.item.BowItem;
@@ -212,25 +209,9 @@ public class CombatBehavior implements Behavior {
                 EnchantmentHelper.doPostAttackEffectsWithItemSource(sl, le, damageSource, weapon);
             }
 
-            // Broadcast attack animation — use Better Combat if available, vanilla swing otherwise
-            if (player.level() instanceof ServerLevel sl) {
-                boolean bcHandled = false;
-                try {
-                    bcHandled = BetterCombatCompat.broadcastAttackAnimation(player);
-                } catch (Exception e) {
-                    AIPlayerMod.LOGGER.debug("[CombatBehavior] BC compat exception, using vanilla: {}", e.getMessage());
-                }
-                if (!bcHandled) {
-                    var swingPacket = new ClientboundAnimatePacket(player, ClientboundAnimatePacket.SWING_MAIN_HAND);
-                    for (ServerPlayer online : sl.getServer().getPlayerList().getPlayers()) {
-                        online.connection.send(swingPacket);
-                    }
-                }
-                var hurtPacket = new ClientboundHurtAnimationPacket(le);
-                for (ServerPlayer online : sl.getServer().getPlayerList().getPlayers()) {
-                    online.connection.send(hurtPacket);
-                }
-            }
+            // Make the hit visible: BC animation for BC weapons, vanilla swing
+            // always, plus the target's flinch (we bypassed the client path).
+            com.sigmastrain.aiplayermod.brain.AttackAnimations.broadcastHit(player, le);
 
             AIPlayerMod.LOGGER.info("[{}] Attack {} — dmg={} (base={}), hurt={}, hp={}/{}",
                     player.getName().getString(), target.getName().getString(),
