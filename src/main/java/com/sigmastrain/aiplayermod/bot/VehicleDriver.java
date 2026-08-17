@@ -35,6 +35,7 @@ public final class VehicleDriver {
         int sampleTick;
         int reverseUntil = -1;
         int stuckCount;
+        int forwardHeld;          // consecutive ticks we've been pushing forward
     }
 
     private static final int SAMPLE_TICKS = 20;
@@ -126,9 +127,10 @@ public final class VehicleDriver {
         boolean left = turning && signed < 0;
         boolean right = turning && signed > 0;
 
-        // Stuck detection while pushing forward.
+        // Stuck detection — only meaningful while we've been pushing forward
+        // for the whole sample window (braking/holding near the target is not "stuck").
         if (st.samplePos == null || st.ticks - st.sampleTick >= SAMPLE_TICKS) {
-            if (st.samplePos != null && st.reverseUntil < st.ticks) {
+            if (st.samplePos != null && st.reverseUntil < st.ticks && st.forwardHeld >= SAMPLE_TICKS) {
                 double moved = v.position().distanceTo(st.samplePos);
                 if (moved < STUCK_MOVE) {
                     st.stuckCount++;
@@ -144,6 +146,7 @@ public final class VehicleDriver {
         if (st.ticks < st.reverseUntil) {
             // Back out, steering the opposite way so we swing clear of the obstacle.
             SwVehicleCompat.setInputs(v, false, true, right, left, false, false, false);
+            st.forwardHeld = 0;
             st.lastNote = String.format("reversing (%d) dist=%.1f", st.reverseUntil - st.ticks, dist);
             return false;
         }
@@ -156,6 +159,7 @@ public final class VehicleDriver {
         // When reversing, steering geometry inverts on wheels/tracks.
         if (back) { boolean t = left; left = right; right = t; forward = false; }
         SwVehicleCompat.setInputs(v, forward, back, left, right, brake, false, sprint);
+        st.forwardHeld = forward ? st.forwardHeld + 1 : 0;
         st.lastNote = String.format("dist=%.1f err=%.0f spd=%.2f%s", dist, err, spd, brake ? " braking" : "");
         return false;
     }
