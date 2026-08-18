@@ -277,7 +277,10 @@ def _summon_vehicle(t: str) -> dict[str, str] | None:
 # Guns: TaCZ guns share one item id, so a plain CHANNEL of the item yields a
 # blank; the channel_gun skill goes through gun-id resolution and adds ammo.
 _GUN_WORDS = (
-    r"(?:tacz|superbwarfare):[a-z0-9_]+|"
+    r"(?:tacz|superbwarfare|eos|hazennstuff):[a-z0-9_]+|"
+    # EOS Dawn Goddess Lab (TaCZ gunpack, namespace eos:)
+    r"chasing light|clover cross|elp[-_ ]?\d+[a-z]?(?:[-_ ]?t\d(?:x2)?)?|achilles|ar68|eos chaos|helena'?s nail|hg57|"
+    r"m[-_ ]?57cw|mg85|nekomata|qgz[-_ ]?86|riku|sr85|wa[-_ ]?2000|snake kiss|"
     r"gun|rifle|pistol|smg|shotgun|sniper|carbine|lmg|mg|launcher|rpg|minigun|revolver|handgun|"
     r"ak[-_ ]?\d+|m[-_ ]?4a?1?|m16a?\d?|m[-_ ]?249|m[-_ ]?60|m[-_ ]?1911|m[-_ ]?9|m[-_ ]?700|m[-_ ]?95|"
     r"hk[-_ ]?416|hk[-_ ]?g3|glock[-_ ]?\d*|deagle|desert eagle|mp[-_ ]?\d+|ump[-_ ]?45|p90|scar[-_ ]?[hl]?|"

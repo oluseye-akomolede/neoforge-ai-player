@@ -99,7 +99,7 @@ public final class GunConjure {
         Map<String, String> out = new LinkedHashMap<>();
         for (String id : TaczCompat.gunIds()) {
             ResourceLocation rl = ResourceLocation.parse(id);
-            out.put(id, TaczCompat.gunName(rl) + " (TaCZ)");
+            out.put(id, TaczCompat.gunName(rl) + " (" + ("tacz".equals(rl.getNamespace()) ? "TaCZ" : rl.getNamespace().toUpperCase(java.util.Locale.ROOT) + " gunpack") + ")");
         }
         if (SwGunCompat.isAvailable()) {
             for (Item item : BuiltInRegistries.ITEM) {

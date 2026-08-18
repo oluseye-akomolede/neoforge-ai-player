@@ -32,7 +32,7 @@ public final class TaczCompat {
     private static Method allCommonGunIndex, commonGunIndex, indexGetGunData, gunDataGetAmmoId, gunDataGetAmmoAmount,
             gunBuilderCreate, gunBuilderSetId, gunBuilderSetAmmoCount, gunBuilderBuild,
             ammoBuilderCreate, ammoBuilderSetId, ammoBuilderSetCount, ammoBuilderBuild, iGunGetGunId,
-            iAmmoGetAmmoId, allCommonAmmoIndex;
+            iAmmoGetAmmoId, allCommonAmmoIndex, indexGetPojo, pojoGetName;
     private static Class<?> iAmmoCls;
 
     public static boolean isAvailable() {
@@ -138,15 +138,33 @@ public final class TaczCompat {
         return best == null ? null : net.minecraft.resources.ResourceLocation.parse(best);
     }
 
-    /** Human name for a gun id (falls back to the id path). */
+    /** Human name for a gun id: the pack's name key when translatable server-side, else a prettified path. */
     public static String gunName(net.minecraft.resources.ResourceLocation gunId) {
-        String key = "tacz.gun." + gunId.getNamespace() + "." + gunId.getPath();  // "tacz.gun.tacz.ak47" isn't right for all packs
-        String alt = "gun." + gunId.getNamespace() + "." + gunId.getPath();
-        for (String k : new String[]{key, alt}) {
-            String t = net.minecraft.network.chat.Component.translatable(k).getString();
-            if (!t.equals(k)) return t;
+        try {
+            if (commonGunIndex != null && indexGetPojo != null && pojoGetName != null) {
+                Object opt = commonGunIndex.invoke(null, gunId);
+                if (opt instanceof java.util.Optional<?> o && o.isPresent()) {
+                    Object pojo = indexGetPojo.invoke(o.get());
+                    Object key = pojoGetName.invoke(pojo);
+                    if (key instanceof String k && !k.isBlank()) {
+                        String t = net.minecraft.network.chat.Component.translatable(k).getString();
+                        if (!t.equals(k)) return t;
+                    }
+                }
+            }
+        } catch (Exception ignored) {
         }
-        return gunId.getPath();
+        // "eos_hg57_t2" → "Eos Hg57 T2", "ak47" → "AK47"
+        String p = gunId.getPath().replace('_', ' ');
+        StringBuilder sb = new StringBuilder();
+        for (String w : p.split(" ")) {
+            if (w.isEmpty()) continue;
+            if (sb.length() > 0) sb.append(' ');
+            boolean hasDigit = w.chars().anyMatch(Character::isDigit);
+            sb.append(hasDigit && w.length() <= 6 ? w.toUpperCase(java.util.Locale.ROOT)
+                    : Character.toUpperCase(w.charAt(0)) + w.substring(1));
+        }
+        return sb.length() == 0 ? gunId.getPath() : sb.toString();
     }
 
     /** Ammo id a gun uses, or null. */
@@ -273,6 +291,10 @@ public final class TaczCompat {
                     commonGunIndex = api.getMethod("getCommonGunIndex", net.minecraft.resources.ResourceLocation.class);
                     Class<?> idx = Class.forName("com.tacz.guns.resource.index.CommonGunIndex");
                     indexGetGunData = idx.getMethod("getGunData");
+                    try {
+                        indexGetPojo = idx.getMethod("getPojo");
+                        pojoGetName = Class.forName("com.tacz.guns.resource.pojo.GunIndexPOJO").getMethod("getName");
+                    } catch (Throwable ignored) {}
                     Class<?> gd = Class.forName("com.tacz.guns.resource.pojo.data.gun.GunData");
                     gunDataGetAmmoId = gd.getMethod("getAmmoId");
                     gunDataGetAmmoAmount = gd.getMethod("getAmmoAmount");
