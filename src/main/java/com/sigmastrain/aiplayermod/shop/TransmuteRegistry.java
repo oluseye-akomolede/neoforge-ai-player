@@ -100,6 +100,10 @@ public class TransmuteRegistry {
     public static boolean discover(ItemStack stack, String source, long tick) {
         if (stack.isEmpty()) return false;
         String itemId = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+        // TaCZ guns/ammo share one item id each; catalogue them by their gun/ammo id
+        // so "channel tacz:ak47" is a real, discoverable thing.
+        String specific = com.sigmastrain.aiplayermod.compat.guns.GunConjure.discoveryId(stack);
+        if (specific != null) itemId = specific;
         if (registry.containsKey(itemId)) return false;
 
         int cost = estimateXpCost(stack);

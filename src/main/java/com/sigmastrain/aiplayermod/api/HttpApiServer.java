@@ -1810,6 +1810,9 @@ public class HttpApiServer {
                 }
             }
         }
+        // Guns are channelled by gun id (TaCZ) or gun item (SW) — list them so the
+        // Channel dropdown / L3 vocab can name them.
+        names.putAll(com.sigmastrain.aiplayermod.compat.guns.GunConjure.catalogue());
         sendJson(exchange, 200, Map.of("names", names, "count", names.size()));
     }
 

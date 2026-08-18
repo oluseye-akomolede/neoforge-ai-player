@@ -3758,7 +3758,7 @@ def _push_schemas():
                             if d.get("type") == "CHANNEL":
                                 for prm in d.get("params", []):
                                     if prm.get("name") == "target":
-                                        prm["options"] = sorted(names)[:200]
+                                        prm["options"] = sorted(names)[:600]
                 except Exception:
                     pass
                 try:

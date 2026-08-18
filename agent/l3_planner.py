@@ -130,6 +130,7 @@ _SEED_SKILLS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "harvest_and_store": (("FARM", "STORE_ALL"), ("crop", "count")),
     "resupply_network": (("CHANNEL", "SEND_ITEM"), ("item", "count", "to")),
     "summon_vehicle": (("REQUISITION", "MOUNT_VEHICLE"), ("vehicle",)),
+    "channel_gun": (("CHANNEL",), ("gun",)),
 }
 
 
@@ -481,6 +482,12 @@ RAW DIRECTIVE REFERENCE (fallback — use ONLY when NO skill above covers the su
   SMELT            — {{ "kind":"SMELT", "target":"minecraft:raw_iron", "count":16 }}
   CHANNEL          — {{ "kind":"CHANNEL", "target":"minecraft:diamond", "count":4 }}
                      (use when no recipe exists OR item must be transmuted via EMC)
+                     GUNS: TaCZ guns are ONE item — never channel
+                     tacz:modern_kinetic_gun; the target is the GUN ID
+                     (tacz:ak47, tacz:m4a1 …) and Superb Warfare guns are
+                     their item id (superbwarfare:hk_416). Prefer SKILL
+                     channel_gun (gun + ammo) and SKILL channel_ammo
+                     (target "ammo" = rounds for the gun the bot holds).
   ENCHANT          — {{ "kind":"ENCHANT", "target":"minecraft:iron_pickaxe", "extra":{{"tier":"max"}} }}
   BREW             — {{ "kind":"BREW", "target":"minecraft:potion_of_healing", "count":1 }}
   FARM             — {{ "kind":"FARM", "target":"minecraft:wheat", "count":32 }}

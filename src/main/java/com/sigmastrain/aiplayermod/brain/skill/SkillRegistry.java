@@ -177,6 +177,21 @@ public final class SkillRegistry {
                 """,
                 "item:item_id", "count:int", "to:player");
 
+        // Guns are not plain items: TaCZ guns share one item id (the gun id is a
+        // component) and every gun wants ammo alongside. CHANNEL resolves gun ids
+        // through GunConjure; this skill is the L1/L3 handle for "get me an AK-47".
+        seed("channel_gun", "Channel a gun (TaCZ gun id like tacz:ak47, or a Superb Warfare gun item) loaded, plus ammo, into the bot's inventory. Costs XP.",
+                """
+                { "type": "directive", "kind": "CHANNEL", "target": "${gun}", "count": "1", "extra": { "ammo": "${ammo}" } }
+                """,
+                "gun:gun_id", "ammo:int");
+
+        seed("channel_ammo", "Channel ammunition for the gun the bot holds (or first gun it carries): TaCZ rounds / Superb Warfare ammo boxes. rounds = how many. Costs XP.",
+                """
+                { "type": "directive", "kind": "CHANNEL", "target": "ammo", "count": "${rounds}" }
+                """,
+                "rounds:int");
+
         LOGGER.info("[skill] seeded {} skills", SKILLS.size() - before);
     }
 

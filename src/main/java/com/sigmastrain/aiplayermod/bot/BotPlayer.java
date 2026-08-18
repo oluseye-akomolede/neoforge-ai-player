@@ -125,6 +125,9 @@ public class BotPlayer {
         for (ServerPlayer online : player.getServer().getPlayerList().getPlayers()) {
             if (online.level().dimension().equals(player.level().dimension())) {
                 sendSpawnPackets(online);
+                if (player.isPassenger() && player.getVehicle() != null) {
+                    online.connection.send(new net.minecraft.network.protocol.game.ClientboundSetPassengersPacket(player.getVehicle()));
+                }
             } else {
                 online.connection.send(new ClientboundRemoveEntitiesPacket(player.getId()));
             }
@@ -210,13 +213,27 @@ public class BotPlayer {
     }
 
     private void broadcastPosition() {
-        ClientboundTeleportEntityPacket teleport = new ClientboundTeleportEntityPacket(player);
+        // A riding bot is positioned by its vehicle on every client; a teleport
+        // packet would fight that (and break SW's hide-passenger check). Send
+        // only head rotation, and keep the client's rider→vehicle link fresh.
+        boolean riding = player.isPassenger() && player.getVehicle() != null;
+        ClientboundTeleportEntityPacket teleport = riding ? null : new ClientboundTeleportEntityPacket(player);
         ClientboundRotateHeadPacket head = new ClientboundRotateHeadPacket(player,
                 (byte) ((int) (player.getYHeadRot() * 256.0f / 360.0f)));
+        net.minecraft.network.protocol.game.ClientboundSetPassengersPacket riders =
+                riding ? new net.minecraft.network.protocol.game.ClientboundSetPassengersPacket(player.getVehicle()) : null;
         for (ServerPlayer online : player.getServer().getPlayerList().getPlayers()) {
-            online.connection.send(teleport);
+            if (teleport != null) online.connection.send(teleport);
             online.connection.send(head);
+            if (riders != null && tickCounter % 20 == 0) online.connection.send(riders);
         }
+    }
+
+    /** Tell every client which vehicle this bot rides (after a (re)spawn packet the client forgets). */
+    public void broadcastRiding() {
+        if (!player.isPassenger() || player.getVehicle() == null) return;
+        var pkt = new net.minecraft.network.protocol.game.ClientboundSetPassengersPacket(player.getVehicle());
+        for (ServerPlayer online : player.getServer().getPlayerList().getPlayers()) online.connection.send(pkt);
     }
 
     public void remove() {

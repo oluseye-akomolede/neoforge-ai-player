@@ -153,6 +153,9 @@ public class ConjureAction implements BotAction {
             // Verify item exists
             Item item;
             try {
+                if (com.sigmastrain.aiplayermod.compat.guns.GunConjure.resolve(itemId) != null) {
+                    item = net.minecraft.world.item.Items.STICK; // gun ids aren't items; validated by GunConjure
+                } else
                 item = BuiltInRegistries.ITEM.get(ResourceLocation.parse(itemId));
                 if (item == net.minecraft.world.item.Items.AIR) {
                     result = "FAILED: Unknown item '" + itemId + "'. Use minecraft:item_name format.";
@@ -196,6 +199,15 @@ public class ConjureAction implements BotAction {
         if (ticksRemaining > 0) return false;
 
         // Complete the ritual — big particle burst + sound
+        var gun = com.sigmastrain.aiplayermod.compat.guns.GunConjure.resolve(itemId);
+        if (gun != null) {
+            for (ItemStack g : com.sigmastrain.aiplayermod.compat.guns.GunConjure.build(level, gun,
+                    com.sigmastrain.aiplayermod.compat.guns.GunConjure.defaultAmmo(gun))) {
+                BotPlayer.deliverTo(player, g);
+            }
+            result = "Conjured " + gun.display() + " + ammo";
+            return true;
+        }
         Item item = BuiltInRegistries.ITEM.get(ResourceLocation.parse(itemId));
         ItemStack stack = new ItemStack(item, count);
 

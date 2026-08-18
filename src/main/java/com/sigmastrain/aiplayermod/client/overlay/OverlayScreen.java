@@ -826,6 +826,14 @@ public class OverlayScreen extends Screen {
         addRenderableWidget(Button.builder(Component.literal("Quote"), b -> requestQuote())
                 .bounds(px + pw - 48, py + 62, 40, 14).build());
 
+        // Guns need ammo constantly; one click quotes ammo for whatever gun the bot holds.
+        addRenderableWidget(Button.builder(Component.literal("§e🔫 Ammo for held gun"), b -> {
+                    channelItem.setValue("ammo");
+                    channelCount.setValue("90");
+                    requestQuote();
+                })
+                .bounds(px + 116, py + 134, 130, 18).build());
+
         channelInterrupt = net.minecraft.client.gui.components.Checkbox.builder(
                         Component.literal("interrupt current directive"), font)
                 .pos(px + 8, py + 112)
@@ -1614,6 +1622,8 @@ public class OverlayScreen extends Screen {
 
     private void renderChannel(GuiGraphics g, OverlayPayloads.BotEntry unit, int px, int y, int pw) {
         OverlayPayloads.ChannelQuoteReply q = quote;
+        g.drawString(font, "§8guns: TaCZ gun id (tacz:ak47) or SW gun item; \"ammo\" = rounds for the held gun",
+                px + 10, y + 24, TEXT_DIM);
         if (q == null) {
             g.drawString(font, "§8quote an item to see its cost", px + 10, y, TEXT_DIM);
             return;

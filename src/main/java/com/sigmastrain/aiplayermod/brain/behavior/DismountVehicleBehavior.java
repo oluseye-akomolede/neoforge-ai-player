@@ -29,7 +29,7 @@ public class DismountVehicleBehavior implements Behavior {
         }
         String name = SwVehicleCompat.isVehicle(v) ? SwVehicleCompat.displayName(v) : v.getName().getString();
         if (SwVehicleCompat.isVehicle(v)) SwVehicleCompat.clearInputs(v);
-        player.stopRiding();
+        SwVehicleCompat.dismount(player);
         progress.logEvent("Dismounted " + name);
         bot.systemChat("Dismounted " + name, "aqua");
         return BehaviorResult.SUCCESS;

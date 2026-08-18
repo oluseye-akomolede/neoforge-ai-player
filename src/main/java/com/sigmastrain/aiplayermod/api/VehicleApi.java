@@ -66,7 +66,7 @@ public final class VehicleApi {
                 Entity v = SwVehicleCompat.vehicleOf(p);
                 if (v == null && !p.isPassenger()) return err("not aboard anything");
                 if (v != null) SwVehicleCompat.clearInputs(v);
-                p.stopRiding();
+                SwVehicleCompat.dismount(p);
                 return Map.of("ok", true);
             }
             case "vehicle_seat" -> {

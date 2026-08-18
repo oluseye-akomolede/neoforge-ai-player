@@ -33,7 +33,7 @@ public final class SwGunCompat {
             dataSelectedConsumer, dataHasEnoughAmmo, dataSave,
             consumerGetType, consumerGetPlayerAmmoType,
             ammoAdd, ammoGetEntity, supplierGetType, supplierGetAmmoToAdd,
-            handlerTryStartReload;
+            handlerTryStartReload, ammoGetItemStackN, consumerStack;
     private static Object handlerInstance, propRpm;
 
     public static boolean isAvailable() {
@@ -142,6 +142,33 @@ public final class SwGunCompat {
         return false;
     }
 
+    /**
+     * Ammo for an SW gun: player-ammo guns get {@code boxes} supplier items of
+     * their ammo type; item-ammo guns get {@code boxes} of the ammo item. Empty if unknown.
+     */
+    public static ItemStack ammoStackFor(ItemStack gun, int boxes) {
+        if (!isGun(gun) || boxes <= 0) return ItemStack.EMPTY;
+        try {
+            Object data = dataFrom.invoke(null, gun);
+            Object consumer = dataSelectedConsumer.invoke(data);
+            if (consumer == null) return ItemStack.EMPTY;
+            String type = String.valueOf(consumerGetType.invoke(consumer));
+            if ("PLAYER_AMMO".equals(type)) {
+                Object ammoType = consumerGetPlayerAmmoType.invoke(consumer);
+                if (ammoType == null || ammoGetItemStackN == null) return ItemStack.EMPTY;
+                Object st = ammoGetItemStackN.invoke(ammoType, boxes);
+                return st instanceof ItemStack s ? s : ItemStack.EMPTY;
+            }
+            if ("ITEM".equals(type) && consumerStack != null) {
+                Object st = consumerStack.invoke(consumer);
+                if (st instanceof ItemStack s && !s.isEmpty()) return s.copyWithCount(Math.min(boxes, s.getMaxStackSize()));
+            }
+        } catch (Exception e) {
+            AIPlayerMod.LOGGER.debug("[SwGunCompat] ammoStackFor failed: {}", e.toString());
+        }
+        return ItemStack.EMPTY;
+    }
+
     private static boolean resolve() {
         Boolean r = resolved;
         if (r != null) return r;
@@ -171,6 +198,8 @@ public final class SwGunCompat {
                 Class<?> ammoCls = Class.forName("com.atsuishio.superbwarfare.data.gun.Ammo");
                 ammoAdd = ammoCls.getMethod("add", Entity.class, int.class);
                 ammoGetEntity = ammoCls.getMethod("get", Entity.class);
+                try { ammoGetItemStackN = ammoCls.getMethod("getItemStack", int.class); } catch (Throwable ignored) {}
+                try { consumerStack = consumerCls.getMethod("stack"); } catch (Throwable ignored) {}
                 try {
                     ammoSupplierCls = Class.forName("com.atsuishio.superbwarfare.item.ammo.AmmoSupplierItem");
                     supplierGetType = ammoSupplierCls.getMethod("getType");

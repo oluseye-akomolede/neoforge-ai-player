@@ -757,14 +757,33 @@ public final class OverlayNetwork {
     private static OverlayPayloads.ChannelQuoteReply buildQuote(String name, BotPlayer bot,
                                                                 String itemId, int count) {
         int n = Math.max(1, Math.min(64, count));
-        var rl = net.minecraft.resources.ResourceLocation.tryParse(
-                itemId.contains(":") ? itemId : "minecraft:" + itemId);
-        boolean known = rl != null
-                && net.minecraft.core.registries.BuiltInRegistries.ITEM.containsKey(rl);
-        String resolved = known ? rl.toString() : itemId;
-        int cost = known
-                ? com.sigmastrain.aiplayermod.actions.ConjureAction.costFor(resolved) * n
-                : 0;
+        // Guns (TaCZ gun ids share one item; SW guns come with ammo) quote as one gun + default ammo.
+        var gun = com.sigmastrain.aiplayermod.compat.guns.GunConjure.resolve(itemId);
+        var ammo = com.sigmastrain.aiplayermod.compat.guns.GunConjure.resolveAmmo(itemId, bot.getPlayer());
+        boolean known;
+        String resolved;
+        int cost;
+        if (ammo != null) {
+            known = true;
+            resolved = ammo.idString();
+            if (n <= 1) n = com.sigmastrain.aiplayermod.compat.guns.GunConjure.DEFAULT_TACZ_ROUNDS;
+            cost = com.sigmastrain.aiplayermod.compat.guns.GunConjure.ammoXpCost(ammo, n);
+        } else if (gun != null) {
+            known = true;
+            resolved = gun.idString();
+            n = 1;
+            cost = com.sigmastrain.aiplayermod.compat.guns.GunConjure.xpCost(gun,
+                    com.sigmastrain.aiplayermod.compat.guns.GunConjure.defaultAmmo(gun));
+        } else {
+            var rl = net.minecraft.resources.ResourceLocation.tryParse(
+                    itemId.contains(":") ? itemId : "minecraft:" + itemId);
+            known = rl != null
+                    && net.minecraft.core.registries.BuiltInRegistries.ITEM.containsKey(rl);
+            resolved = known ? rl.toString() : itemId;
+            cost = known
+                    ? com.sigmastrain.aiplayermod.actions.ConjureAction.costFor(resolved) * n
+                    : 0;
+        }
         int levels = bot.getPlayer().experienceLevel;
 
         var directive = bot.getBrain().peekDirective();

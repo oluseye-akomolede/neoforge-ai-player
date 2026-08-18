@@ -33,6 +33,10 @@ public class ChannelBehavior implements Behavior {
     private String itemId;
     private int count;
     private boolean toVehicle;
+    private com.sigmastrain.aiplayermod.compat.guns.GunConjure.Gun gun;   // non-null when channeling a gun
+    private com.sigmastrain.aiplayermod.compat.guns.GunConjure.Ammo ammo; // non-null when channeling ammo
+    private int gunAmmo;
+    private Directive lastDirective;
     private int xpCost;
     private int channelTicks;
     private int meditateTarget;
@@ -46,6 +50,7 @@ public class ChannelBehavior implements Behavior {
     public void start(BotPlayer bot, Directive directive) {
         progress.reset();
         this.itemId = directive.getTarget();
+        this.lastDirective = directive;
         this.count = directive.getCount() > 0 ? directive.getCount() : 1;
         this.toVehicle = "vehicle".equalsIgnoreCase(directive.getExtra().getOrDefault("deliver", ""));
         enterPhase(Phase.VALIDATE);
@@ -68,6 +73,32 @@ public class ChannelBehavior implements Behavior {
             return BehaviorResult.FAILED;
         }
 
+        // Ammo: "ammo" = the held gun's ammunition; TaCZ ammo ids resolve too. count = rounds.
+        ammo = com.sigmastrain.aiplayermod.compat.guns.GunConjure.resolveAmmo(itemId, bot.getPlayer());
+        if (ammo != null) {
+            itemId = ammo.idString();
+            if (count <= 1) count = com.sigmastrain.aiplayermod.compat.guns.GunConjure.DEFAULT_TACZ_ROUNDS;
+            if (ammo.kind() == com.sigmastrain.aiplayermod.compat.guns.GunConjure.Kind.SW && count > 16) count = com.sigmastrain.aiplayermod.compat.guns.GunConjure.DEFAULT_SW_BOXES;
+            xpCost = com.sigmastrain.aiplayermod.compat.guns.GunConjure.ammoXpCost(ammo, count);
+            progress.logEvent("Channeling " + count + "x " + ammo.display() + " (cost: " + xpCost + " XP levels)");
+            return afterCostKnown(bot);
+        }
+        // Guns first: TaCZ guns share one item id and need their gun id + builder,
+        // SW guns are items but want ammo alongside. GunConjure decides.
+        gun = com.sigmastrain.aiplayermod.compat.guns.GunConjure.resolve(itemId);
+        if (gun != null) {
+            itemId = gun.idString();
+            count = 1;
+            gunAmmo = com.sigmastrain.aiplayermod.compat.guns.GunConjure.defaultAmmo(gun);
+            try {
+                String a = lastDirective == null ? null : lastDirective.getExtra().get("ammo");
+                if (a != null && !a.isBlank()) gunAmmo = Math.max(0, Integer.parseInt(a.trim()));
+            } catch (NumberFormatException ignored) {}
+            xpCost = com.sigmastrain.aiplayermod.compat.guns.GunConjure.xpCost(gun, gunAmmo);
+            progress.logEvent("Channeling gun " + gun.display() + " (" + itemId + ") + ammo " + gunAmmo
+                    + " (cost: " + xpCost + " XP levels)");
+            return afterCostKnown(bot);
+        }
         if (!itemId.contains(":")) {
             itemId = "minecraft:" + itemId;
         }
@@ -99,20 +130,7 @@ public class ChannelBehavior implements Behavior {
         xpCost = perItemCost * count;
 
         progress.logEvent("Channeling " + count + "x " + itemId + " (cost: " + xpCost + " XP levels)");
-
-        if (player.experienceLevel < xpCost) {
-            meditateTarget = xpCost - player.experienceLevel;
-            meditateTicks = 0;
-            meditateLevelsGained = 0;
-            progress.logEvent("Need " + meditateTarget + " more XP levels, meditating");
-            bot.systemChat("Meditating for " + meditateTarget + " XP levels...", "light_purple");
-            enterPhase(Phase.MEDITATING);
-            return BehaviorResult.RUNNING;
-        }
-
-        channelTicks = 0;
-        enterPhase(Phase.CHANNELING);
-        return BehaviorResult.RUNNING;
+        return afterCostKnown(bot);
     }
 
     private BehaviorResult tickMeditating(BotPlayer bot) {
@@ -161,6 +179,30 @@ public class ChannelBehavior implements Behavior {
 
         player.giveExperienceLevels(-xpCost);
 
+        if (ammo != null) {
+            java.util.List<ItemStack> built = com.sigmastrain.aiplayermod.compat.guns.GunConjure.buildAmmo(ammo, count);
+            if (built.isEmpty()) {
+                progress.setFailureReason("could not build " + ammo.display());
+                bot.systemChat("Couldn't materialize " + ammo.display(), "red");
+                return BehaviorResult.FAILED;
+            }
+            deliverStacks(bot, player, level, built);
+            progress.logEvent("Channeled " + count + "x " + ammo.display());
+            bot.systemChat("Channeled " + count + "x " + ammo.display(), "aqua");
+            return BehaviorResult.SUCCESS;
+        }
+        if (gun != null) {
+            java.util.List<ItemStack> built = com.sigmastrain.aiplayermod.compat.guns.GunConjure.build(level, gun, gunAmmo);
+            if (built.isEmpty()) {
+                progress.setFailureReason("could not build " + gun.display());
+                bot.systemChat("Couldn't materialize " + gun.display(), "red");
+                return BehaviorResult.FAILED;
+            }
+            deliverStacks(bot, player, level, built);
+            progress.logEvent("Channeled " + gun.display() + " + " + gunAmmo + " ammo");
+            bot.systemChat("Channeled " + gun.display() + (gunAmmo > 0 ? " + " + gunAmmo + " ammo" : ""), "aqua");
+            return BehaviorResult.SUCCESS;
+        }
         Item item = BuiltInRegistries.ITEM.get(ResourceLocation.parse(itemId));
         int maxStack = item.getDefaultMaxStackSize();
         int remaining = count;
@@ -237,4 +279,38 @@ public class ChannelBehavior implements Behavior {
 
     @Override
     public void stop() {}
+
+    /** Common tail of validation: meditate for missing XP, else channel. */
+    private BehaviorResult afterCostKnown(BotPlayer bot) {
+        ServerPlayer player = bot.getPlayer();
+
+        if (player.experienceLevel < xpCost) {
+            meditateTarget = xpCost - player.experienceLevel;
+            meditateTicks = 0;
+            meditateLevelsGained = 0;
+            progress.logEvent("Need " + meditateTarget + " more XP levels, meditating");
+            bot.systemChat("Meditating for " + meditateTarget + " XP levels...", "light_purple");
+            enterPhase(Phase.MEDITATING);
+            return BehaviorResult.RUNNING;
+        }
+
+        channelTicks = 0;
+        enterPhase(Phase.CHANNELING);
+        return BehaviorResult.RUNNING;
+    }
+
+    /** Deliver built stacks the same way the item path does: vehicle hold if asked, else the bot (vault overflow). */
+    private void deliverStacks(BotPlayer bot, ServerPlayer player, ServerLevel level, java.util.List<ItemStack> stacks) {
+        net.neoforged.neoforge.items.IItemHandler hold = null;
+        if (toVehicle) {
+            net.minecraft.world.entity.Entity v = com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.vehicleOf(player);
+            if (v == null) v = com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.nearestVehicle(level, player.position(), 4.0, null);
+            if (v != null) hold = com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.inventory(v);
+        }
+        for (ItemStack st : stacks) {
+            ItemStack left = st;
+            if (hold != null) left = net.neoforged.neoforge.items.ItemHandlerHelper.insertItemStacked(hold, st, false);
+            if (!left.isEmpty()) bot.deliver(left);
+        }
+    }
 }

@@ -274,8 +274,57 @@ def _summon_vehicle(t: str) -> dict[str, str] | None:
     return {"vehicle": vehicle}
 
 
+# Guns: TaCZ guns share one item id, so a plain CHANNEL of the item yields a
+# blank; the channel_gun skill goes through gun-id resolution and adds ammo.
+_GUN_WORDS = (
+    r"(?:tacz|superbwarfare):[a-z0-9_]+|"
+    r"gun|rifle|pistol|smg|shotgun|sniper|carbine|lmg|mg|launcher|rpg|minigun|revolver|handgun|"
+    r"ak[-_ ]?\d+|m[-_ ]?4a?1?|m16a?\d?|m[-_ ]?249|m[-_ ]?60|m[-_ ]?1911|m[-_ ]?9|m[-_ ]?700|m[-_ ]?95|"
+    r"hk[-_ ]?416|hk[-_ ]?g3|glock[-_ ]?\d*|deagle|desert eagle|mp[-_ ]?\d+|ump[-_ ]?45|p90|scar[-_ ]?[hl]?|"
+    r"mk[-_ ]?14|mk[-_ ]?47|awp|aa[-_ ]?12|db[-_ ]?short|qbz|type[-_ ]?81|vector|uzi|spr[-_ ]?15|sks|"
+    r"rpk|m870|m1a1|m2hb|ntw[-_ ]?20|ak74|kar98|springfield|thompson|mosin|k98|m3"
+)
+_CHANNEL_GUN_RE = re.compile(
+    r"\b(?:channel|conjure|summon|spawn|get|give|hand|make|materiali[sz]e|fetch|bring)\b\s+(?:me\s+|us\s+|yourself\s+)?"
+    r"(?:(?:an|a|the|my|some)\s+)?(?P<gun>[a-z0-9][a-z0-9 \-_:.]{0,30}?(?:" + _GUN_WORDS + r"))\b"
+)
+_GENERIC_GUN = {"gun", "rifle", "pistol", "weapon", "sniper rifle", "sniper", "smg", "shotgun", "carbine",
+                "lmg", "mg", "launcher", "handgun", "revolver", "a gun", "firearm"}
+_AMMO_RE = re.compile(r"\b(?:ammo|ammunition|bullets|rounds|magazines?|mags|clips?)\b")
+
+
+def _channel_ammo(t: str) -> dict[str, str] | None:
+    """'get more ammo' / 'channel 120 rounds' → channel_ammo{rounds}."""
+    if not _AMMO_RE.search(t):
+        return None
+    if not re.search(r"\b(?:channel|conjure|get|need|more|make|give|fetch|bring|restock|resupply|load|reload)\b", t):
+        return None
+    m = re.search(r"\b(\d{1,4})\b", t)
+    rounds = int(m.group(1)) if m else 90
+    return {"rounds": str(max(1, min(960, rounds)))}
+
+
+def _channel_gun(t: str) -> dict[str, str] | None:
+    """'channel me an ak47' / 'get an m4a1 with 200 rounds' → channel_gun{gun, ammo}.
+    Vehicle summons are matched earlier and never reach this rule; a bare
+    'ammo' request without a gun name is channel_ammo's."""
+    m = _CHANNEL_GUN_RE.search(t)
+    if not m:
+        return None
+    gun = re.sub(r"^(?:an|a|the|my|some)\s+", "", m.group("gun").strip(" .,!"))
+    if gun in _GENERIC_GUN or not gun:
+        return None   # no specific gun named — let L3 ask which one
+    ammo = "90"
+    mm = re.search(r"\bwith\s+(\d{1,4})\s*(?:rounds|bullets|ammo|mags?|magazines?)?", t)
+    if mm:
+        ammo = str(max(0, min(960, int(mm.group(1)))))
+    return {"gun": gun, "ammo": ammo}
+
+
 _RULES = [
     ("summon_vehicle", _summon_vehicle),
+    ("channel_gun", _channel_gun),
+    ("channel_ammo", _channel_ammo),
     ("mine_and_smelt", _mine_and_smelt),
     ("goto_and_scan", _goto_and_scan),
     ("search_and_loot", _search_and_loot),

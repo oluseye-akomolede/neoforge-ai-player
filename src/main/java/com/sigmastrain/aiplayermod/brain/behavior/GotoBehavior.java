@@ -11,6 +11,8 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 
 public class GotoBehavior implements Behavior {
+    private final com.sigmastrain.aiplayermod.bot.VehicleDriver.State rideState = new com.sigmastrain.aiplayermod.bot.VehicleDriver.State();
+    private BotPlayer lastBot;
     private final ProgressReport progress = new ProgressReport();
     private double targetX, targetY, targetZ;
     private double arriveDistance = 2.0;
@@ -70,6 +72,13 @@ public class GotoBehavior implements Behavior {
         if (++totalTicks > MAX_TICKS) {
             progress.setFailureReason("Timed out after " + MAX_TICKS + " ticks");
             return BehaviorResult.FAILED;
+        }
+
+        // Aboard a vehicle: drive there instead of walking/teleporting.
+        lastBot = bot;
+        if (com.sigmastrain.aiplayermod.brain.VehicleRide.steer(bot, player, rideState, target, arriveDistance)) {
+            progress.setPhase("driving (aboard)");
+            return BehaviorResult.RUNNING;
         }
 
         if (distance > TELEPORT_THRESHOLD) {
@@ -138,5 +147,7 @@ public class GotoBehavior implements Behavior {
     }
 
     @Override
-    public void stop() {}
+    public void stop() {
+        if (lastBot != null && lastBot.getPlayer() != null) com.sigmastrain.aiplayermod.brain.VehicleRide.release(lastBot.getPlayer());
+    }
 }

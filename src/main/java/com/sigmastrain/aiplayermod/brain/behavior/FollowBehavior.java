@@ -18,7 +18,9 @@ import net.minecraft.world.phys.Vec3;
 
 public class FollowBehavior implements Behavior {
     private final ProgressReport progress = new ProgressReport();
+    private final com.sigmastrain.aiplayermod.bot.VehicleDriver.State rideState = new com.sigmastrain.aiplayermod.bot.VehicleDriver.State();
     private String targetName;
+    private BotPlayer lastBot;
     private double followDistance = 3.0;
     private double searchRadius = 64.0;
     private int searchTicks = 0;
@@ -29,6 +31,7 @@ public class FollowBehavior implements Behavior {
 
     @Override
     public void start(BotPlayer bot, Directive directive) {
+        lastBot = bot;
         progress.reset();
         progress.setPhase("following");
         this.targetName = directive.getTarget();
@@ -60,6 +63,13 @@ public class FollowBehavior implements Behavior {
         Vec3 currentPos = player.position();
         Vec3 targetPos = target.position();
         double distance = currentPos.distanceTo(targetPos);
+
+        // Aboard a vehicle: drive it after the target (driver) or just ride.
+        if (com.sigmastrain.aiplayermod.brain.VehicleRide.steer(bot, player, rideState, targetPos, followDistance + 4)) {
+            bot.lookAt(targetPos.x, targetPos.y + 1.0, targetPos.z);
+            progress.setPhase("following (aboard)");
+            return BehaviorResult.RUNNING;
+        }
 
         if (distance <= followDistance) {
             bot.lookAt(targetPos.x, targetPos.y + 1.0, targetPos.z);

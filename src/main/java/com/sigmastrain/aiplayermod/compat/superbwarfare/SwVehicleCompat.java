@@ -46,7 +46,7 @@ public final class SwVehicleCompat {
             getEnergy, getMaxEnergy, setEnergy, hasEnergyStorage, getContainerSize, hasContainer,
             getHealth, getMaxHealth, heal, getVehicleType, getEngineInfo, isWreck, computed, seatsOf, weaponsOf,
             getGunDataLiving, dataSelectedConsumer, consumerStack, consumerGetType, consumerGetPlayerAmmoType,
-            getPower, fwdDown, backDown, leftDown, rightDown, upDown, sprintDown,
+            getPower, fwdDown, backDown, leftDown, rightDown, upDown, sprintDown, hidePassengerEnt,
             engDamaged, lWheelDamaged, rWheelDamaged, turretDamaged,
             engHealth, engMax, lWheelHealth, wheelMax, setEngHealth, setSubEngHealth, setLWheel, setRWheel, setTurretHealth, turretMax, setHealth;
 
@@ -107,12 +107,14 @@ public final class SwVehicleCompat {
         }
         if (bot.isPassenger()) bot.stopRiding();
         if (!bot.startRiding(v, true)) return "could not board (no free seat?)";
+        broadcastPassengers(v);
         if (seat >= 0 && seatIndex(v, bot) != seat) {
             Object ok = call(v, changeSeat, false, bot, seat);
             if (!(ok instanceof Boolean b && b)) {
                 // stay wherever startRiding put us; not fatal
                 AIPlayerMod.LOGGER.debug("[SwVehicleCompat] seat {} unavailable, staying in seat {}", seat, seatIndex(v, bot));
             }
+            broadcastPassengers(v);
         }
         return null;
     }
@@ -123,7 +125,27 @@ public final class SwVehicleCompat {
     }
 
     public static void dismount(ServerPlayer bot) {
+        Entity v = bot.getVehicle();
         if (bot.isPassenger()) bot.stopRiding();
+        if (v != null) broadcastPassengers(v);
+    }
+
+    /** Re-send the vehicle's passenger list to everyone (bots are packet ghosts; the tracker may not). */
+    public static void broadcastPassengers(Entity v) {
+        if (v == null || !(v.level() instanceof ServerLevel sl)) return;
+        var pkt = new net.minecraft.network.protocol.game.ClientboundSetPassengersPacket(v);
+        for (ServerPlayer online : sl.getServer().getPlayerList().getPlayers()) online.connection.send(pkt);
+    }
+
+    /** Does the seat this passenger sits in hide its occupant (enclosed hull)? Works client-side too. */
+    public static boolean hidesPassenger(Entity v, Entity passenger) {
+        if (!isVehicle(v) || hidePassengerEnt == null) return false;
+        try {
+            Object r = hidePassengerEnt.invoke(v, passenger);
+            return r instanceof Boolean b && b;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     public static boolean isDriver(ServerPlayer bot) {
@@ -372,6 +394,7 @@ public final class SwVehicleCompat {
                     sprintDown = vehicleCls.getMethod("sprintInputDown");
                 } catch (Throwable ignored) {
                 }
+                try { hidePassengerEnt = vehicleCls.getMethod("hidePassenger", Entity.class); } catch (Throwable ignored) {}
                 try {
                     engDamaged = vehicleCls.getMethod("getMainEngineDamaged");
                     lWheelDamaged = vehicleCls.getMethod("getLeftWheelDamaged");
