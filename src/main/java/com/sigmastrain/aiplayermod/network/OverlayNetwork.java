@@ -356,6 +356,7 @@ public final class OverlayNetwork {
                     if (bot == null) return;
                     com.sigmastrain.aiplayermod.telemetry.TalkStore.playerMessage(
                             botName(bot), sp.getName().getString(), payload.text());
+                    com.sigmastrain.aiplayermod.bot.BotOwners.setMaster(botName(bot), sp.getName().getString());
                 }));
 
         registrar.playToServer(
@@ -404,6 +405,7 @@ public final class OverlayNetwork {
                             for (var e : BotManager.getAllBots().entrySet()) {
                                 if (e.getValue().getPlayer() == null
                                         || !e.getValue().isAlive()) continue;
+                                com.sigmastrain.aiplayermod.bot.BotOwners.setMaster(e.getKey(), sp.getName().getString());
                                 com.sigmastrain.aiplayermod.telemetry.OrderStore.submit(
                                         e.getKey(), sp.getName().getString(),
                                         payload.kind(), payload.paramsJson(), fleetId);
@@ -422,6 +424,7 @@ public final class OverlayNetwork {
                         return;
                     }
                     String name = botName(bot);
+                    com.sigmastrain.aiplayermod.bot.BotOwners.setMaster(name, sp.getName().getString());
                     String id = com.sigmastrain.aiplayermod.telemetry.OrderStore.submit(
                             name, sp.getName().getString(), payload.kind(), payload.paramsJson());
                     AIPlayerMod.LOGGER.info("[overlay] {} orders {} for {} ({})",

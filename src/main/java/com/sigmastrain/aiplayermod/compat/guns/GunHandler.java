@@ -100,6 +100,15 @@ public final class GunHandler implements CombatExtensions.CombatHandler {
             if (bp != null) bp.systemChat("Firing " + gun.getHoverName().getString() + " at " + targetName, "yellow");
         }
 
+        // Don't shoot a player, or through one standing between the bot and the target.
+        if (target instanceof ServerPlayer) return -1;
+        if (bot.level() instanceof net.minecraft.server.level.ServerLevel sl) {
+            net.minecraft.world.phys.Vec3 aim = target.position().add(0, target.getBbHeight() * 0.5, 0);
+            if (com.sigmastrain.aiplayermod.brain.CombatSafety.firingEndangersPlayer(sl, bot.getEyePosition(), aim, 0.0, 1.5)) {
+                return 8; // hold; re-check shortly
+            }
+        }
+
         if (TaczCompat.isGun(gun)) return fireTacz(bot, bp, gun);
         return fireSw(bot, bp, gun);
     }

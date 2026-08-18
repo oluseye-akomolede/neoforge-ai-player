@@ -614,6 +614,9 @@ public class BotPlayer {
     public List<Map<String, Object>> getCachedBlocks() { return cachedBlocks; }
 
     public void addChatMessage(String sender, String message) {
+        // A named human giving this bot an order becomes its master (used to
+        // resolve "follow me" and to shield the master from friendly fire).
+        BotOwners.setMaster(player.getGameProfile().getName(), sender);
         Map<String, String> entry = new LinkedHashMap<>();
         entry.put("sender", sender);
         entry.put("message", message);

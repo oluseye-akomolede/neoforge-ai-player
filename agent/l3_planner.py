@@ -519,6 +519,9 @@ RAW DIRECTIVE REFERENCE (fallback — use ONLY when NO skill above covers the su
                      and weapon automatically. Use whenever the task says
                      "equip". There is NO per-item EQUIP directive.
   FOLLOW           — {{ "kind":"FOLLOW", "target":"<player_name>" }}
+                     target may be a player name or "me"/"master"
+                     (the unit follows whoever last commanded it); it gives up
+                     if that player logs off, so it never freezes.
   GOTO             — {{ "kind":"GOTO", "x":<int>, "y":<int>, "z":<int> }}
                      (intra-dimension only; uses current dimension)
   TELEPORT         — {{ "kind":"TELEPORT", "x":<int>, "y":<int>, "z":<int>, "extra":{{"dimension":"<dim_id>"}} }}

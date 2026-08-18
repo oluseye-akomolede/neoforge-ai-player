@@ -28,6 +28,8 @@ public class FollowBehavior implements Behavior {
     private static final double FLY_SPEED = 0.8;
     private static final double TELEPORT_THRESHOLD = 32.0;
     private static final int CROSS_DIM_SEARCH_DELAY = 40;
+    private static final int OFFLINE_GIVEUP_TICKS = 400;   // 20 s of a vanished target ⇒ stop, don't freeze
+    private int lostTicks;
 
     @Override
     public void start(BotPlayer bot, Directive directive) {
@@ -35,6 +37,12 @@ public class FollowBehavior implements Behavior {
         progress.reset();
         progress.setPhase("following");
         this.targetName = directive.getTarget();
+        // "follow me"/"master"/"" → the bot's recorded master (last commander).
+        if (com.sigmastrain.aiplayermod.bot.BotOwners.isSelfReference(this.targetName)) {
+            String m = com.sigmastrain.aiplayermod.bot.BotOwners.masterName(bot.getPlayer().getGameProfile().getName());
+            if (m != null) this.targetName = m;
+        }
+        this.lostTicks = 0;
         if (directive.getExtra().containsKey("distance")) {
             this.followDistance = Double.parseDouble(directive.getExtra().get("distance"));
         }
@@ -48,9 +56,23 @@ public class FollowBehavior implements Behavior {
 
         if (target == null) {
             searchTicks++;
+            lostTicks++;
+            // The target is truly gone (logged off / died and not respawned):
+            // give up instead of holding position forever — especially aboard a
+            // vehicle, where a frozen FOLLOW looked like a stuck unit.
+            boolean namedPlayerOffline = targetName != null
+                    && player.getServer().getPlayerList().getPlayerByName(targetName) == null
+                    && BotManager.getBot(targetName) == null;
+            if (namedPlayerOffline && lostTicks >= OFFLINE_GIVEUP_TICKS) {
+                com.sigmastrain.aiplayermod.brain.VehicleRide.release(player);
+                progress.logEvent("Lost " + targetName + " (offline) — standing by");
+                bot.systemChat("Lost " + targetName + " — standing by", "yellow");
+                return BehaviorResult.SUCCESS;
+            }
             if (searchTicks >= CROSS_DIM_SEARCH_DELAY) {
                 searchTicks = 0;
                 if (tryTeleportToTarget(bot, player)) {
+                    lostTicks = 0;
                     return BehaviorResult.RUNNING;
                 }
             }
@@ -58,6 +80,7 @@ public class FollowBehavior implements Behavior {
             return BehaviorResult.RUNNING;
         }
         searchTicks = 0;
+        lostTicks = 0;
 
         progress.setPhase("following");
         Vec3 currentPos = player.position();

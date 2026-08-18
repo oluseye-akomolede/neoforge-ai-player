@@ -67,8 +67,16 @@ public final class VehicleCombat {
         Vec3 aim = target.position().add(0, target.getBbHeight() * 0.5, 0);
         bot.lookAt(aim.x, aim.y, aim.z);
 
+        // Never fire on a player, and never when a player would be caught in the
+        // blast or the line of fire (a vehicle cannon killed its owner this way).
+        boolean friendlyTarget = target instanceof ServerPlayer;
+        double blast = com.sigmastrain.aiplayermod.brain.CombatSafety.blastFor(weapon);
+        boolean endangers = player.level() instanceof net.minecraft.server.level.ServerLevel sl
+                && com.sigmastrain.aiplayermod.brain.CombatSafety.firingEndangersPlayer(
+                        sl, player.getEyePosition(), aim, blast, 2.0);
+
         // Fire.
-        if (armed && dist <= range && st.fireCd <= 0 && target instanceof LivingEntity) {
+        if (armed && dist <= range && st.fireCd <= 0 && target instanceof LivingEntity && !friendlyTarget && !endangers) {
             if (SwVehicleCompat.canShoot(player)) {
                 SwVehicleCompat.fire(player, target.getUUID(), aim);
                 int rpm = SwVehicleCompat.rpm(player);
@@ -89,6 +97,11 @@ public final class VehicleCombat {
             } else {
                 st.fireCd = 5; // reloading / heat / charging
             }
+        } else if (armed && dist <= range && (friendlyTarget || endangers) && st.fireCd <= 0) {
+            if (!st.dryAnnounced) {   // reuse the throttle flag to avoid spam
+                bot.systemChat("Holding fire — friendly in the line", "yellow");
+            }
+            st.fireCd = 10;
         }
 
         // Move: only the driver of a drivable vehicle closes distance.
