@@ -641,8 +641,10 @@ public final class OverlayPayloads {
         public static final Type<SchemaPush> TYPE = new Type<>(id("overlay_schemas"));
         public static final StreamCodec<RegistryFriendlyByteBuf, SchemaPush> CODEC =
                 StreamCodec.of(
-                        (buf, p) -> { buf.writeVarLong(p.version); buf.writeUtf(p.json, 65535); },
-                        buf -> new SchemaPush(buf.readVarLong(), buf.readUtf(65535)));
+                        // The catalog carries every conjurable item, gun and craftable — no cap
+                        // below the payload maximum (a 65k cap silently dropped the whole push).
+                        (buf, p) -> { buf.writeVarLong(p.version); buf.writeUtf(p.json, 1_000_000); },
+                        buf -> new SchemaPush(buf.readVarLong(), buf.readUtf(1_000_000)));
 
         @Override
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
