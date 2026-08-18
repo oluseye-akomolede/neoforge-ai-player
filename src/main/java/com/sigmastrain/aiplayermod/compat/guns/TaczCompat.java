@@ -148,7 +148,7 @@ public final class TaczCompat {
                     Object key = pojoGetName.invoke(pojo);
                     if (key instanceof String k && !k.isBlank()) {
                         String t = net.minecraft.network.chat.Component.translatable(k).getString();
-                        if (!t.equals(k)) return t;
+                        if (!t.equals(k)) return t.replaceAll("§.", "").trim();
                     }
                 }
             }
