@@ -64,6 +64,7 @@ public class BotPlayer {
     private static final int MAX_INBOX_SIZE = 50;
 
     private volatile Map<String, Object> cachedStatus = new LinkedHashMap<>();
+    private volatile Map<String, Object> cachedVoxel = new LinkedHashMap<>();
     private volatile List<Map<String, Object>> cachedInventory = new ArrayList<>();
     private volatile List<Map<String, Object>> cachedEntities = new ArrayList<>();
     private volatile List<Map<String, Object>> cachedBlocks = new ArrayList<>();
@@ -606,7 +607,53 @@ public class BotPlayer {
         cachedInventory = getInventory();
         cachedEntities = getNearbyEntities(16.0);
         cachedBlocks = getNearbyBlocks(5);
+        cachedVoxel = sampleLocalVoxel(VOXEL_HR, VOXEL_DOWN, VOXEL_UP);
     }
+
+    // ── local voxel occupancy grid (for the neural compressor / L1 features) ──
+    // Sampled ON the server thread here (block reads must be) and cached; the
+    // HTTP layer and the agent read the cache off-thread, so the expensive scan
+    // is amortised into the 40-tick refresh and never on any consumer's hot
+    // path. A cell is 1 when the block blocks motion (a pathfinding obstacle).
+
+    private static final int VOXEL_HR = 6;    // horizontal radius -> 13 wide/deep
+    private static final int VOXEL_DOWN = 1;  // one below the feet
+    private static final int VOXEL_UP = 3;    // three above -> 5 tall
+
+    private Map<String, Object> sampleLocalVoxel(int hr, int down, int up) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        try {
+            var level = player.level();
+            int ox = player.getBlockX() - hr;
+            int oy = player.getBlockY() - down;
+            int oz = player.getBlockZ() - hr;
+            int sx = 2 * hr + 1, sy = down + up + 1, sz = 2 * hr + 1;
+            var mp = new net.minecraft.core.BlockPos.MutableBlockPos();
+            java.util.List<Object> layers = new java.util.ArrayList<>(sy);
+            for (int y = 0; y < sy; y++) {
+                java.util.List<Object> rows = new java.util.ArrayList<>(sz);
+                for (int z = 0; z < sz; z++) {
+                    java.util.List<Integer> row = new java.util.ArrayList<>(sx);
+                    for (int x = 0; x < sx; x++) {
+                        mp.set(ox + x, oy + y, oz + z);
+                        row.add(level.getBlockState(mp).blocksMotion() ? 1 : 0);
+                    }
+                    rows.add(row);
+                }
+                layers.add(rows);
+            }
+            out.put("o", java.util.List.of(ox, oy, oz));
+            out.put("dim", level.dimension().location().toString());
+            out.put("size", java.util.List.of(sx, sy, sz));
+            out.put("grid", layers);
+            out.put("tick", level.getGameTime());
+        } catch (Exception e) {
+            AIPlayerMod.LOGGER.debug("voxel sample failed for {}: {}", player.getName().getString(), e.toString());
+        }
+        return out;
+    }
+
+    public Map<String, Object> getCachedVoxel() { return cachedVoxel; }
 
     public Map<String, Object> getCachedStatus() { return cachedStatus; }
     public List<Map<String, Object>> getCachedInventory() { return cachedInventory; }

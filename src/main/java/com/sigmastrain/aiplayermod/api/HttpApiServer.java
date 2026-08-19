@@ -254,6 +254,7 @@ public class HttpApiServer {
         try {
         switch (action) {
             case "status" -> sendJson(exchange, 200, bot.getCachedStatus());
+            case "voxel" -> sendJson(exchange, 200, bot.getCachedVoxel());
             case "chat" -> {
                 String message = body.get("message").getAsString();
                 BotManager.getServer().execute(() -> bot.chat(message));

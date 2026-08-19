@@ -5,6 +5,7 @@ MOD_API_URL = os.getenv("MOD_API_URL", "http://localhost:3100")
 MOD_API_KEY = os.getenv("MOD_API_KEY", "")
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+NN_COMPRESSOR_URL = os.getenv("NN_COMPRESSOR_URL", "")  # empty disables state compression
 
 # L4 escalation (OpenAI)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")

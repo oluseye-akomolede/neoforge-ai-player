@@ -4027,6 +4027,26 @@ def run():
     # plan_orchestrator.execute_task — the same lane as chat tasks — so every
     # L4 escalation trigger covers them with zero extra wiring.
     threading.Thread(target=_push_schemas, name="schema-push", daemon=True).start()
+    # State compression (neural, off the hot path). A daemon thread compresses
+    # each live bot's status+voxel via the nn-compressor service and stashes the
+    # L3 summary. Disabled/no-op unless NN_COMPRESSOR_URL is set; any failure is
+    # a no-op, so the agent never depends on it.
+    def _compressor_fetch_state(name):
+        st = api.raw_get(f"/bot/{name}/status") or {}
+        vx = api.raw_get(f"/bot/{name}/voxel") or {}
+        state = {}
+        if st.get("position"): state["position"] = st["position"]
+        if st.get("dimension"): state["dimension"] = st["dimension"]
+        if vx.get("grid"): state["grid"] = vx["grid"]
+        return state or None
+
+    import nn_compressor as _nnc
+    if _nnc.enabled():
+        threading.Thread(
+            target=_nnc.run_worker,
+            args=(lambda: list(_all_runners.keys()), _compressor_fetch_state),
+            name="state-compression", daemon=True).start()
+
     threading.Thread(target=_order_worker, name="order-worker", daemon=True).start()
     threading.Thread(target=_standing_worker, name="standing-worker", daemon=True).start()
     threading.Thread(target=_drone_adoption_worker, name="drone-adoption", daemon=True).start()
