@@ -129,6 +129,11 @@ public final class BlockFusionCompat {
         boolean recv = e.canReceive();
         boolean ext = e.canExtract();
         long max = longMaxEnergy(level, pos);
+        // A recognised generator produces energy — divert it, never treat its
+        // buffer as storage (a furnator/magmator/reactor can also "receive").
+        if (NativeEnergy.isKnownGenerator(level, pos)) return Role.GENERATOR;
+        // Known storage (cells, matrices, cores, cubes) → capacity, even if it
+        // can also extract to supply machines.
         if (recv && (max >= 5_000_000L || NativeEnergy.isKnownStorage(level, pos))) return Role.STORAGE;
         if (ext) return Role.GENERATOR;
         if (recv) return Role.STORAGE;

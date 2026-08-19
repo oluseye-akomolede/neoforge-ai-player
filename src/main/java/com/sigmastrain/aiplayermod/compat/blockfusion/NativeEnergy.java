@@ -97,6 +97,29 @@ final class NativeEnergy {
                 || n.contains("CapacitorBank");
     }
 
+    /**
+     * A block that PRODUCES energy (a generator), distinguished from a battery by
+     * its block-entity class name. Both a generator and a battery can extract, so
+     * capability flags alone can't tell them apart; this recognises the common
+     * generator families so {@code roleOf} classifies them as GENERATOR (divert +
+     * amplify their output) instead of STORAGE (add their buffer to the FE cap).
+     * Names are matched case-insensitively as substrings of the BE class.
+     */
+    static boolean isKnownGenerator(ServerLevel level, BlockPos pos) {
+        BlockEntity be = level.getBlockEntity(pos);
+        if (be == null) return false;
+        String n = be.getClass().getName().toLowerCase();
+        // A battery/cell is never a generator, even if a token below matches.
+        if (n.contains("energycell") || n.contains("capacitor") || n.contains("accumulator")
+                || n.contains("energycube") || n.contains("fluxstorage")) return false;
+        return n.contains("furnator") || n.contains("magmator") || n.contains("reactor")
+                || n.contains("thermo") || n.contains("solar") || n.contains("dynamo")
+                || n.contains("generator") || n.contains("turbine") || n.contains("combustion")
+                || n.contains("reformer") || n.contains("windmill") || n.contains("waterwheel")
+                || n.contains("bioreactor") || n.contains("alternator") || n.contains("energizing")
+                || n.contains("photovoltaic");
+    }
+
     static long maxEnergy(ServerLevel level, BlockPos pos) {
         resolve();
         BlockEntity be = level.getBlockEntity(pos);
