@@ -30,8 +30,8 @@ log = logging.getLogger("aibot.nn-compressor")
 
 # Latest L3 summary per bot (thread-safe enough for single-writer/many-reader).
 _summaries: Dict[str, Dict[str, Any]] = {}
-_TIMEOUT = 3.0          # short — a slow worker must never stall us
-_INTERVAL = 30.0        # seconds between compression sweeps (well off any tick)
+_TIMEOUT = 60.0         # generous — off the hot path, so a slow GPU compress is fine
+_INTERVAL = 90.0        # seconds between sweeps (a full sweep of slow compresses fits)
 _DEGRADED_BACKOFF = 120.0  # after a failure, wait longer before retrying
 
 
