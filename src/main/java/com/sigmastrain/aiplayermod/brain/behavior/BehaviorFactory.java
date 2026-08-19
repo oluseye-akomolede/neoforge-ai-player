@@ -50,6 +50,9 @@ public final class BehaviorFactory {
             case MOUNT_VEHICLE -> ModCompat.isSuperbWarfareLoaded() ? new MountVehicleBehavior() : new FailFastBehavior("Superb Warfare not loaded");
             case DISMOUNT_VEHICLE -> new DismountVehicleBehavior();
             case REQUISITION -> new RequisitionBehavior();
+            case FUSE_BLOCK -> new FuseBlockBehavior();
+            case MANAGE_FUSION -> new ManageFusionBehavior();
+            case UNFUSE_BLOCK -> new UnfuseBlockBehavior();
             case DRIVE_VEHICLE -> ModCompat.isSuperbWarfareLoaded() ? new DriveVehicleBehavior() : new FailFastBehavior("Superb Warfare not loaded");
             case SKILL -> new SkillBehavior();
             case IDLE -> new IdleBehavior();

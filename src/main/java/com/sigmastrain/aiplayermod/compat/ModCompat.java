@@ -37,4 +37,26 @@ public final class ModCompat {
         }
         return superbWarfareLoaded;
     }
+
+    private static Boolean mekanismLoaded, mekanismGeneratorsLoaded, draconicLoaded, powahLoaded;
+
+    public static boolean isMekanismLoaded() {
+        if (mekanismLoaded == null) mekanismLoaded = ModList.get().isLoaded("mekanism");
+        return mekanismLoaded;
+    }
+
+    public static boolean isMekanismGeneratorsLoaded() {
+        if (mekanismGeneratorsLoaded == null) mekanismGeneratorsLoaded = ModList.get().isLoaded("mekanismgenerators");
+        return mekanismGeneratorsLoaded;
+    }
+
+    public static boolean isDraconicLoaded() {
+        if (draconicLoaded == null) draconicLoaded = ModList.get().isLoaded("draconicevolution");
+        return draconicLoaded;
+    }
+
+    public static boolean isPowahLoaded() {
+        if (powahLoaded == null) powahLoaded = ModList.get().isLoaded("powah");
+        return powahLoaded;
+    }
 }

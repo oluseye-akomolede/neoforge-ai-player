@@ -204,6 +204,22 @@ def combat_mode(bot, radius=24.0, hostile_only=True, target=None):
         data["target"] = target
     return _post(f"/bot/{bot}/combat_mode", data)
 
+def fusion_status(bot):
+    return _get(f"/bot/{bot}/fusion")
+
+def fuse_block(bot, x=None, y=None, z=None, role=None, mode=None):
+    data = {}
+    if x is not None: data.update({"x": x, "y": y, "z": z})
+    if role: data["role"] = role
+    if mode: data["mode"] = mode
+    return _post(f"/bot/{bot}/fuse_block", data)
+
+def unfuse_block(bot):
+    return _post(f"/bot/{bot}/unfuse_block", {})
+
+def manage_fusion(bot, **knobs):
+    return _post(f"/bot/{bot}/manage_fusion", knobs)
+
 def vehicle_status(bot):
     return _get(f"/bot/{bot}/vehicle")
 

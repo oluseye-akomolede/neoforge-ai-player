@@ -191,6 +191,7 @@ _VALID_DIRECTIVE_KINDS = frozenset({
     "IDLE", "PATROL", "WIDE_SEARCH", "LOCATE", "STORE_ALL", "ME_STORE",
     "ME_WITHDRAW", "CRAFT_REQUEST", "MEDITATE", "CULTIVATE",
     "MOUNT_VEHICLE", "DISMOUNT_VEHICLE", "DRIVE_VEHICLE", "REQUISITION",
+    "FUSE_BLOCK", "MANAGE_FUSION", "UNFUSE_BLOCK",
 })
 
 # Valid kinds that are nonetheless context-specific (a hardcoded coordinate,
@@ -603,6 +604,19 @@ RAW DIRECTIVE REFERENCE (fallback — use ONLY when NO skill above covers the su
                      Ask the hive to materialize something for FE and wait for
                      it (vehicle arrives repaired + charged, 3 blocks ahead).
                      Prefer SKILL summon_vehicle, which requisitions AND mounts.
+  FUSE_BLOCK       — {{ "kind":"FUSE_BLOCK", "extra":{{"mode":"capacity"}} }} (or "x/y/z", or "role":"generator|storage|reactor")
+                     Merge the bot with the energy block it is looking at / that
+                     the player marked (M) / at x,y,z. A GENERATOR or REACTOR
+                     feeds its output into the owner's hive reservoir (amplified);
+                     a STORAGE block adds its capacity to the reservoir cap
+                     (mode "capacity", default) or is charged FROM the reservoir
+                     (mode "output"). Reactors (Mekanism fission, Draconic) are
+                     regulated automatically and kept safe. Hive units only —
+                     a bot with no owner can fuse but earns nothing.
+  MANAGE_FUSION    — the running fusion directive; do not emit directly. Tune it
+                     live with the /bot/<name>/manage_fusion action (rate, mode,
+                     output_rate) — e.g. "run the reactor at 80%".
+  UNFUSE_BLOCK     — {{ "kind":"UNFUSE_BLOCK" }}  Break the fusion.
   DISMOUNT_VEHICLE — {{ "kind":"DISMOUNT_VEHICLE" }}
   DRIVE_VEHICLE    — {{ "kind":"DRIVE_VEHICLE", "x":<int>, "y":<int>, "z":<int>, "count":120 }}
                      Drive the vehicle you pilot to a point (or "target":

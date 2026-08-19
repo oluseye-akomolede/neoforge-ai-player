@@ -722,6 +722,8 @@ public class BotPlayer {
         }
         Map<String, Object> vehicle = getVehicleInfo();
         if (vehicle != null) status.put("vehicle", vehicle);
+        Map<String, Object> fusion = getFusionInfo();
+        if (fusion != null) status.put("fusion", fusion);
         return status;
     }
 
@@ -755,6 +757,57 @@ public class BotPlayer {
         m.put("engine", SwVehicleCompat.engineKind(v).name());
         m.put("position", formatPos(v.position()));
         return m;
+    }
+
+    /** The block the bot is currently aimed at (its yaw/pitch), within reach, or null. */
+    public net.minecraft.core.BlockPos blockLookingAt() {
+        double reach = 6.0;
+        net.minecraft.world.phys.Vec3 eye = player.getEyePosition();
+        net.minecraft.world.phys.Vec3 look = player.getViewVector(1.0f);
+        net.minecraft.world.phys.Vec3 end = eye.add(look.x * reach, look.y * reach, look.z * reach);
+        net.minecraft.world.level.ClipContext ctx = new net.minecraft.world.level.ClipContext(
+                eye, end, net.minecraft.world.level.ClipContext.Block.OUTLINE,
+                net.minecraft.world.level.ClipContext.Fluid.NONE, player);
+        net.minecraft.world.phys.BlockHitResult hit = player.level().clip(ctx);
+        return hit.getType() == net.minecraft.world.phys.HitResult.Type.BLOCK ? hit.getBlockPos() : null;
+    }
+
+    /** Snapshot of the block this bot is fused with, or null. Includes a reactor readout when applicable. */
+    public Map<String, Object> getFusionInfo() {
+        var st = com.sigmastrain.aiplayermod.brain.Fusion.of(player.getGameProfile().getName());
+        if (st == null) return null;
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("dimension", st.dimension());
+        m.put("x", st.pos().getX());
+        m.put("y", st.pos().getY());
+        m.put("z", st.pos().getZ());
+        m.put("role", st.role().name());
+        m.put("mode", st.mode().name());
+        if (player.level() instanceof ServerLevel sl && sl.dimension().location().toString().equals(st.dimension())) {
+            m.put("block", com.sigmastrain.aiplayermod.compat.blockfusion.BlockFusionCompat.blockName(sl, st.pos()));
+            m.put("energy", com.sigmastrain.aiplayermod.compat.blockfusion.BlockFusionCompat.longStored(sl, st.pos()));
+            m.put("max_energy", com.sigmastrain.aiplayermod.compat.blockfusion.BlockFusionCompat.longMaxEnergy(sl, st.pos()));
+            var reg = com.sigmastrain.aiplayermod.compat.blockfusion.RegulatorRegistry.regulatorFor(sl, st.pos());
+            if (reg != null) {
+                var be = sl.getBlockEntity(st.pos());
+                if (be != null) m.put("reactor", reg.read(be).toMap());
+            }
+        }
+        m.put("knobs", com.sigmastrain.aiplayermod.brain.FusionControl.toMap(player.getGameProfile().getName()));
+        return m;
+    }
+
+    /** Make the bot (in)visible while fused, so it reads as "merged" with the block. */
+    public void setFusedInvisible(boolean invisible) {
+        player.setInvisible(invisible);
+        broadcastEntityData();
+    }
+
+    private void broadcastEntityData() {
+        var data = player.getEntityData().getNonDefaultValues();
+        if (data == null) return;
+        var pkt = new net.minecraft.network.protocol.game.ClientboundSetEntityDataPacket(player.getId(), data);
+        for (ServerPlayer online : player.getServer().getPlayerList().getPlayers()) online.connection.send(pkt);
     }
 
     public List<Map<String, Object>> getNearbyEntities(double radius) {

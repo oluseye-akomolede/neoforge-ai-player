@@ -735,6 +735,13 @@ public class HttpApiServer {
                 });
                 sendJson(exchange, 200, vf.join());
             }
+            case "fuse_block", "unfuse_block", "manage_fusion", "fusion" -> {
+                var ff = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                final String act = action;
+                BotManager.getServer().execute(() -> ff.complete(
+                        com.sigmastrain.aiplayermod.api.FusionApi.act(bot, act, body)));
+                sendJson(exchange, 200, ff.join());
+            }
             case "vehicle_mount", "vehicle_dismount", "vehicle_seat", "vehicle_weapon", "vehicle_charge", "vehicle_input", "vehicle_repair" -> {
                 var vf = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
                 final String act = action;

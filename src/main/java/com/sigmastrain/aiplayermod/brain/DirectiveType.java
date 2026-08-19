@@ -34,5 +34,8 @@ public enum DirectiveType {
     MOUNT_VEHICLE,
     DISMOUNT_VEHICLE,
     DRIVE_VEHICLE,
-    REQUISITION
+    REQUISITION,
+    FUSE_BLOCK,
+    MANAGE_FUSION,
+    UNFUSE_BLOCK
 }
