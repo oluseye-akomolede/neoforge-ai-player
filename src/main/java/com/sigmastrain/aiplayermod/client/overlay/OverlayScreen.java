@@ -317,6 +317,10 @@ public class OverlayScreen extends Screen {
             boolean changed = before.aboard() != cur.aboard()
                     || before.vehicleNear() != cur.vehicleNear()
                     || !before.extActions().equals(cur.extActions())
+                    // STATUS-tab Cancel button appears only while a directive is
+                    // ACTIVE — rebuild when that changes so it shows/hides live.
+                    || !before.directiveType().equals(cur.directiveType())
+                    || !before.directiveStatus().equals(cur.directiveStatus())
                     || (cur.aboard() && before.aboard()
                         && (!before.vehicle().weapon().equals(cur.vehicle().weapon())
                             || before.vehicle().containerSize() != cur.vehicle().containerSize()));
@@ -674,6 +678,22 @@ public class OverlayScreen extends Screen {
                         })
                 .bounds(px + pw - 96, py + 82, 88, 14)
                 .build());
+
+        // Cancel the unit's currently-executing directive (Method 2). Shown only
+        // when a directive is actually ACTIVE; ends it as CANCELLED and idles the
+        // unit — the escape hatch for a stuck order (e.g. a follow that won't let go).
+        boolean hasActive = !unit.directiveType().isEmpty()
+                && "ACTIVE".equalsIgnoreCase(unit.directiveStatus());
+        if (hasActive) {
+            addRenderableWidget(Button.builder(
+                            Component.literal("§c✖ Cancel " + unit.directiveType()), b -> {
+                                OverlayPayloads.BotEntry cur = selectedBot();
+                                if (cur == null) return;
+                                PacketDistributor.sendToServer(new OverlayPayloads.CancelDirective(cur.id()));
+                            })
+                    .bounds(px + pw - 96, py + 118, 88, 14)
+                    .build());
+        }
 
         if (unit.aboard()) {
             addRenderableWidget(Button.builder(Component.literal("§b⛟ Vehicle…"), b -> switchUnitTab(UnitTab.VEHICLE))

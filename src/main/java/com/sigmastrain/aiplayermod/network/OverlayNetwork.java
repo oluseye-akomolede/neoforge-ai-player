@@ -387,6 +387,24 @@ public final class OverlayNetwork {
                 }));
 
         registrar.playToServer(
+                OverlayPayloads.CancelDirective.TYPE,
+                OverlayPayloads.CancelDirective.CODEC,
+                (payload, context) -> context.enqueueWork(() -> {
+                    if (!(context.player() instanceof ServerPlayer sp)) return;
+                    BotPlayer b = resolveBot(payload.bot());
+                    if (b == null) {
+                        PacketDistributor.sendToPlayer(sp, new OverlayPayloads.ControlAck(false, "no such unit"));
+                        return;
+                    }
+                    // Operator override: also drop any master-follow bookkeeping so
+                    // the unit doesn't silently resume following on its own.
+                    String cancelled = b.getBrain().cancelActiveDirective();
+                    PacketDistributor.sendToPlayer(sp, new OverlayPayloads.ControlAck(
+                            true, cancelled != null ? "cancelled " + cancelled : "nothing to cancel"));
+                    PacketDistributor.sendToPlayer(sp, buildSnapshot());
+                }));
+
+        registrar.playToServer(
                 OverlayPayloads.SubmitOrder.TYPE,
                 OverlayPayloads.SubmitOrder.CODEC,
                 (payload, context) -> context.enqueueWork(() -> {

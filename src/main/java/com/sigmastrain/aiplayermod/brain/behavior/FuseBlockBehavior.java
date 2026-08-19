@@ -84,6 +84,17 @@ public class FuseBlockBehavior implements Behavior {
                 return new BlockPos(Integer.parseInt(e.get("x").trim()), Integer.parseInt(e.get("y").trim()), Integer.parseInt(e.get("z").trim()));
             }
         } catch (NumberFormatException ignored) {}
+        // The operator's marked block (M hotkey) — this is what the overlay's
+        // "⚛ Fuse (marked block)" button means. Only honour a mark in the bot's
+        // own dimension, since the coords are dimension-relative.
+        if (com.sigmastrain.aiplayermod.telemetry.MarkStore.has()
+                && bot.getPlayer().level().dimension().location().toString()
+                        .equals(com.sigmastrain.aiplayermod.telemetry.MarkStore.dimension())) {
+            return new BlockPos(
+                    com.sigmastrain.aiplayermod.telemetry.MarkStore.x(),
+                    com.sigmastrain.aiplayermod.telemetry.MarkStore.y(),
+                    com.sigmastrain.aiplayermod.telemetry.MarkStore.z());
+        }
         return bot.blockLookingAt();
     }
 

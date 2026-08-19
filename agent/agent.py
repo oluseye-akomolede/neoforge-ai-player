@@ -398,7 +398,8 @@ class BotRunner:
         if not new_messages:
             return
 
-        _follow_phrases = ["follow me", "follow us", "keep following"]
+        _follow_phrases = ["follow me", "follow us", "keep following", "come with me",
+                           "with me", "escort me", "stick with me", "on me", "form up"]
         _goto_phrases = ["come to me", "come here", "get over here", "come over here",
                          "get to me", "walk to me", "run to me", "tp to me",
                          "to my location", "to me", "come to my"]
@@ -440,11 +441,21 @@ class BotRunner:
                 self._awaiting_taskboard = False
                 self._consume_message(msg)
                 if is_follow or is_goto:
-                    api.set_directive(self.name, "FOLLOW", target=sender,
+                    # Default: follow the commander. "follow <name>" (not me/us)
+                    # targets that unit/player instead — and, being handled here,
+                    # runs solo and supersedes any previous follow (Method 1).
+                    follow_target = sender
+                    mt = __import__("re").search(
+                        r"\bfollow(?:ing)?\s+(?:the\s+)?([A-Za-z0-9_]{2,20})", text_lower)
+                    if mt:
+                        who = mt.group(1)
+                        if who not in ("me", "us", "here", "the", "a", "an"):
+                            follow_target = who
+                    api.set_directive(self.name, "FOLLOW", target=follow_target,
                                      extra={"distance": "3.0"})
-                    self._following_player = sender
+                    self._following_player = follow_target
                     api.chat(self.name, f"On my way, {sender}!")
-                    print(f"[{self.name}/nav] FOLLOW directive for {sender} (shortcut)")
+                    print(f"[{self.name}/nav] FOLLOW directive for {follow_target} (shortcut)")
                 else:
                     self._following_player = None
                     api.stop(self.name)
@@ -3516,6 +3527,11 @@ def _run_squad_partition(officer, oid, params, player, kind):
         return
     members = [officer] + [d for d in runner.squad_members if d in _all_runners]
 
+    # Method 1: a follow order is the officer's alone — never disseminated to its
+    # drones (they stay on their own tasks / squad cohesion keeps them near).
+    if _is_follow_order(kind, params):
+        members = [officer]
+
     # Typed order → verbatim fan-out to every squad member (same as fleet).
     if kind != "TEXT":
         _status("RUNNING", f"fanning out '{kind}' to {len(members)} units")
@@ -3639,6 +3655,26 @@ def _order_text(kind, params):
     return f"Execute exactly this directive: {kind} " + " ".join(parts)
 
 
+_FOLLOW_ORDER_WORDS = ("follow", "come with", "come to me", "come here", "escort",
+                       "stick with", "on me", "form up", "keep following", "with me")
+
+
+def _is_follow_order(kind, params):
+    """A follow-intent order (typed FOLLOW, or a TEXT order whose words mean
+    'follow'). Officer follow orders run SOLO — never disseminated to drones."""
+    if str(kind).upper() == "FOLLOW":
+        return True
+    if str(kind).upper() != "TEXT":
+        return False
+    import json as _json
+    try:
+        p = _json.loads(params) if isinstance(params, str) else (params or {})
+    except Exception:
+        p = {}
+    txt = (p if isinstance(p, str) else str(p.get("text", ""))).lower()
+    return any(w in txt for w in _FOLLOW_ORDER_WORDS)
+
+
 def _order_worker():
     """Drain overlay orders and drive each through the plan orchestrator."""
     while True:
@@ -3681,7 +3717,12 @@ def _order_worker():
             # A fresh order to an officer commands its bound squad (fan-out).
             # The `fleet` field marks re-injected sub-orders from a fleet/squad
             # partition, so the officer's own share runs solo — never re-partition.
-            if runner and runner.squad_members and not order.get("fleet"):
+            # Method 1: a FOLLOW to an officer is NEVER disseminated to its drones
+            # and never routed through the LLM squad partition (which used to let
+            # the officer pick a drone as its follow target); it runs solo on the
+            # officer so the new follow cleanly supersedes the previous one.
+            if (runner and runner.squad_members and not order.get("fleet")
+                    and not _is_follow_order(kind, order.get("params"))):
                 threading.Thread(
                     target=_run_squad_partition,
                     args=(bot, oid, order.get("params"),

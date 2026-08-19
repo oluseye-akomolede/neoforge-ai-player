@@ -109,8 +109,51 @@ public class BotBrain {
                 activeBehavior = idleBehavior;
                 activeDirective = null;
             }
+            case CANCELLED -> {
+                if (activeDirective != null) {
+                    activeDirective.cancel();
+                    AIPlayerMod.LOGGER.info("[{}] Directive {} cancelled",
+                            bot.getPlayer().getName().getString(), activeDirective.getType());
+                    bot.systemChat("Directive cancelled: " + activeDirective.getType(), "yellow");
+                    lastDirective = activeDirective;
+                    lastProgress = activeBehavior.getProgress();
+                }
+                activeBehavior = idleBehavior;
+                activeDirective = null;
+            }
             case RUNNING -> {}
         }
+    }
+
+    /**
+     * Operator-initiated cancel (from the overlay's unit status window): end the
+     * active directive as CANCELLED — a distinct terminal outcome, RETAINED as
+     * the last directive so the UI and the agent poller both see that it was
+     * cancelled — and reset the bot to idle. Returns the cancelled type, or null
+     * if there was nothing active to cancel.
+     */
+    public String cancelActiveDirective() {
+        if (activeDirective == null || activeDirective.getStatus() != DirectiveStatus.ACTIVE) {
+            // Nothing active; also clear any lingering pending directive.
+            pendingDirective = null;
+            return null;
+        }
+        String type = activeDirective.getType().name();
+        activeDirective.cancel();
+        if (activeBehavior != null) {
+            lastProgress = activeBehavior.getProgress();
+            activeBehavior.stop();
+        }
+        // Reset bot state: drop any vehicle the cancelled directive was driving.
+        try { VehicleRide.release(bot.getPlayer()); } catch (Throwable ignored) {}
+        lastDirective = activeDirective;
+        pendingDirective = null;
+        AIPlayerMod.LOGGER.info("[{}] Directive {} cancelled by operator",
+                bot.getPlayer().getName().getString(), type);
+        bot.systemChat("Directive cancelled: " + type, "yellow");
+        activeDirective = null;
+        activeBehavior = idleBehavior;
+        return type;
     }
 
     private void applyDirective(Directive directive) {

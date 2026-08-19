@@ -668,6 +668,17 @@ public final class OverlayPayloads {
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
+    /** C2S: operator cancels the bot's active directive from its status window. */
+    public record CancelDirective(String bot) implements CustomPacketPayload {
+        public static final Type<CancelDirective> TYPE = new Type<>(id("overlay_cancel_directive"));
+        public static final StreamCodec<RegistryFriendlyByteBuf, CancelDirective> CODEC =
+                StreamCodec.of(
+                        (buf, p) -> buf.writeUtf(p.bot),
+                        buf -> new CancelDirective(buf.readUtf()));
+        @Override
+        public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
     public record OrderLine(String id, String kind, String status, String detail,
                             String fleetId, long atMillis) {
         static void write(RegistryFriendlyByteBuf buf, OrderLine e) {
