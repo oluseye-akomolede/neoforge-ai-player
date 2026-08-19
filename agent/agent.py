@@ -4037,7 +4037,15 @@ def run():
         state = {}
         if st.get("position"): state["position"] = st["position"]
         if st.get("dimension"): state["dimension"] = st["dimension"]
-        if vx.get("grid"): state["grid"] = vx["grid"]
+        # The raw voxel grid is a token-heavy binary blob the LLM codec predicts
+        # poorly and slowly — so we send its DENSITY scalar (computed here), not
+        # the grid. The grid stays available raw via /bot/<n>/voxel for L1's
+        # real-time local use. This keeps compressor payloads small + fast.
+        grid = vx.get("grid")
+        if grid:
+            cells = [c for layer in grid for row in layer for c in row]
+            if cells:
+                state["density"] = round(sum(cells) / len(cells), 3)
         return state or None
 
     import nn_compressor as _nnc
