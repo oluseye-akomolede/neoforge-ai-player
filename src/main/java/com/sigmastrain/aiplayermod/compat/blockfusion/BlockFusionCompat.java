@@ -134,6 +134,19 @@ public final class BlockFusionCompat {
         return Role.NONE;
     }
 
+    /**
+     * Instantaneous FE-equivalent production of a regulated reactor at pos
+     * (before hive's reactor buff), or 0 if the block is not a managed reactor.
+     * Lets hive credit reactor output without touching mod internals.
+     */
+    public static long reactorProduction(ServerLevel level, BlockPos pos) {
+        Regulator r = RegulatorRegistry.regulatorFor(level, pos);
+        if (r == null) return 0;
+        BlockEntity be = level.getBlockEntity(pos);
+        if (be == null) return 0;
+        try { return r.productionFe(be); } catch (Throwable t) { return 0; }
+    }
+
     public static String blockName(ServerLevel level, BlockPos pos) {
         BlockEntity be = level.getBlockEntity(pos);
         if (be != null) {

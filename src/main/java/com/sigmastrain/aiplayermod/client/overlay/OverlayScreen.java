@@ -701,6 +701,20 @@ public class OverlayScreen extends Screen {
                     .bounds(px + pw - 96, py + 62, 88, 16)
                     .build());
         }
+
+        // Mod-contributed buttons (hive: block fusion — ⚛ Fuse / ✂ Unfuse /
+        // 🔋 mode — plus vehicle charge/ammo when near one). Server-side
+        // visible() gating means only the currently-relevant ones arrive, so a
+        // unit fused to a generator well away from any vehicle still gets its
+        // fusion controls here on the default tab. Stacked in the left column.
+        int extY = py + 100;
+        for (OverlayPayloads.ExtAction a : unit.extActions()) {
+            final String id = a.id();
+            addRenderableWidget(Button.builder(Component.literal(a.label()), b ->
+                            PacketDistributor.sendToServer(new OverlayPayloads.VehicleOp(unit.id(), "ext", id)))
+                    .bounds(px + 8, extY, 120, 14).build());
+            extY += 18;
+        }
     }
 
     private void buildVaultWidgets(OverlayPayloads.BotEntry unit, int px, int py, int pw) {

@@ -17,6 +17,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import re
 import os
 import time
 from typing import Any, Callable
@@ -85,6 +86,83 @@ def _plan_from_skill(bot_name: str, task: str) -> Plan | None:
     return plan
 
 
+
+_RATE_RE = re.compile(r"\b(?:at|to)\s+(\d{1,3})\s*%")
+_RATE_FRAC_RE = re.compile(r"\b(?:at|to)\s+0?\.(\d{1,3})\b")
+_OUTPUT_RE = re.compile(r"\boutput\s+(?:rate\s+)?(?:of\s+|to\s+|at\s+)?(\d[\d,]{0,12})")
+
+
+def _manage_fusion_intercept(bot_name: str, task: str) -> "Plan | None":
+    """Live-tune a running fusion (the L3→L1 realtime knob path the user asked
+    for): natural phrases that adjust a fused unit map straight to the mod's
+    /manage_fusion action — no directive, no re-issue. Returns a completed Plan
+    on a hit, else None so the task plans normally. Only fires when the unit is
+    actually fused."""
+    t = re.sub(r"\s+", " ", str(task or "").strip().lower())
+    if not t or "fus" in t and re.search(r"\bunfuse\b", t):
+        return None
+    # Must look like a tuning verb aimed at a reactor/generator/output/burn/rate.
+    if not re.search(r"\b(?:run|set|dial|turn|throttle|hold|tune|ramp|drop|raise|lower|"
+                     r"output|scram|emergency|safe|unsafe|divert|stop\s+diverting)\b", t):
+        return None
+    if not re.search(r"\b(?:reactor|burn|rate|field|output|matrix|store|storage|fusion|it)\b", t):
+        return None
+    try:
+        if not (api.fusion_status(bot_name) or {}).get("fused"):
+            return None
+    except Exception:
+        return None
+
+    knobs: dict[str, Any] = {}
+    summary_bits: list[str] = []
+    m = _RATE_RE.search(t)
+    if m:
+        knobs["rate"] = max(0.0, min(1.0, int(m.group(1)) / 100.0))
+        summary_bits.append(f"rate {int(m.group(1))}%")
+    else:
+        mf = _RATE_FRAC_RE.search(t)
+        if mf:
+            frac = float("0." + mf.group(1))
+            knobs["rate"] = max(0.0, min(1.0, frac))
+            summary_bits.append(f"rate {int(frac*100)}%")
+    if re.search(r"\b(?:scram|emergency\s+stop|shut\s+down|shutdown)\b", t):
+        knobs["rate"] = 0.0
+        knobs["safe_mode"] = True
+        summary_bits.append("SCRAM")
+    if re.search(r"\bsafe\s*mode\s*(?:on|enabled?)?\b", t) and "off" not in t:
+        knobs["safe_mode"] = True; summary_bits.append("safe on")
+    if re.search(r"\b(?:unsafe|safe\s*mode\s*off|override\s+safety)\b", t):
+        knobs["safe_mode"] = False; summary_bits.append("safe OFF")
+    mo = _OUTPUT_RE.search(t)
+    if mo:
+        knobs["output_rate"] = int(mo.group(1).replace(",", ""))
+        knobs["mode"] = "output"
+        summary_bits.append(f"output {mo.group(1)} FE/s")
+    if re.search(r"\bstop\s+diverting\b", t):
+        knobs["divert"] = False; summary_bits.append("divert off")
+    elif re.search(r"\b(?:start\s+diverting|divert\s+on)\b", t):
+        knobs["divert"] = True; summary_bits.append("divert on")
+
+    if not knobs:
+        return None
+    try:
+        api.manage_fusion(bot_name, **knobs)
+    except Exception as e:
+        log.warning("[%s] manage_fusion live-tune failed: %s", bot_name, e)
+        return None
+    summary = "fusion tuned: " + ", ".join(summary_bits)
+    log.info("[%s] %s (0 LLM planning calls)", bot_name, summary)
+    plan = Plan(
+        task=task, bot=bot_name,
+        created_at=datetime.datetime.utcnow().isoformat(),
+        status="complete",
+        subtasks=[Subtask(id=1, description=task, criteria=summary,
+                          status="complete", directives=[])],
+        current_subtask_id=1,
+    )
+    return plan
+
+
 def _skill_criteria(skill_id: str, extra: dict[str, Any]) -> str:
     """A deterministic completion criterion for a matched skill.
 
@@ -139,6 +217,12 @@ def execute_task(
     # This is the only "0 LLM call" planning path: the deterministic
     # fast-planner shim is retired (v14), so every fresh task flows through L3
     # and raw-directive plans are never replayed.
+    plan = _manage_fusion_intercept(bot_name, task)
+    if plan is not None:
+        plan_store.write(plan)
+        plan_store.archive(plan)
+        on_finalized(plan)
+        return plan
     plan = plan_memory.lookup(bot_name, task)
     if plan is not None:
         log.info("[%s] plan-memory reuse (0 LLM planning calls)", bot_name)

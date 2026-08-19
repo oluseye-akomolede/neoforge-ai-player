@@ -29,7 +29,8 @@ final class NativeEnergy {
     private static Method deOpStored, deOpMax;
     // Powah
     private static Class<?> powahStorage;
-    private static Method powahGetEnergy, powahEnergyStored, powahEnergyCap;
+    private static Field powahEnergyField;
+    private static Method powahEnergyStored, powahEnergyCap;
 
     static synchronized void resolve() {
         if (resolved) return;
@@ -61,7 +62,8 @@ final class NativeEnergy {
             if (ModCompat.isPowahLoaded()) {
                 try {
                     powahStorage = Class.forName("owmii.powah.lib.block.AbstractEnergyStorage");
-                    powahGetEnergy = powahStorage.getMethod("getEnergy");
+                    powahEnergyField = powahStorage.getDeclaredField("energy");
+                    powahEnergyField.setAccessible(true);
                     Class<?> energy = Class.forName("owmii.powah.lib.logistics.energy.Energy");
                     powahEnergyStored = energy.getMethod("getStored");
                     powahEnergyCap = energy.getMethod("getCapacity");
@@ -109,7 +111,7 @@ final class NativeEnergy {
                 if (op != null) return ((Number) deOpMax.invoke(op)).longValue();
             }
             if (powahStorage != null && powahStorage.isInstance(be)) {
-                Object en = powahGetEnergy.invoke(be);
+                Object en = powahEnergyField.get(be);
                 if (en != null) return ((Number) powahEnergyCap.invoke(en)).longValue();
             }
         } catch (Throwable t) {
@@ -132,7 +134,7 @@ final class NativeEnergy {
                 if (op != null) return ((Number) deOpStored.invoke(op)).longValue();
             }
             if (powahStorage != null && powahStorage.isInstance(be)) {
-                Object en = powahGetEnergy.invoke(be);
+                Object en = powahEnergyField.get(be);
                 if (en != null) return ((Number) powahEnergyStored.invoke(en)).longValue();
             }
         } catch (Throwable t) {

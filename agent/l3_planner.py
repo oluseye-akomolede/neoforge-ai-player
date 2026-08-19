@@ -131,6 +131,9 @@ _SEED_SKILLS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "resupply_network": (("CHANNEL", "SEND_ITEM"), ("item", "count", "to")),
     "summon_vehicle": (("REQUISITION", "MOUNT_VEHICLE"), ("vehicle",)),
     "channel_gun": (("CHANNEL",), ("gun",)),
+    "fuse_generator": (("FUSE_BLOCK",), ()),
+    "fuse_reactor": (("FUSE_BLOCK",), ()),
+    "fuse_battery": (("FUSE_BLOCK",), ()),
 }
 
 

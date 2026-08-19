@@ -324,7 +324,45 @@ def _channel_gun(t: str) -> dict[str, str] | None:
     return {"gun": gun, "ammo": ammo}
 
 
+# ── block fusion ──────────────────────────────────────────────────────────
+# A fuse order carries no params — the target block is the one the unit is
+# marked on / looking at, resolved server-side. Return {} on a hit (match()
+# treats an empty-but-not-None dict as a valid no-param match).
+_FUSE_VERB = r"(?:fuse|merge|bond|meld|link|connect|plug)\s+(?:with|into|to)?"
+
+def _fuse_reactor(t: str) -> dict[str, str] | None:
+    """'fuse with that reactor' / 'regulate the fission reactor' → fuse_reactor."""
+    if re.search(_FUSE_VERB + r"\s+.*\breactor\b", t):
+        return {}
+    if re.search(r"\b(?:regulate|manage|stabili[sz]e|run|operate)\b.*\breactor\b", t) \
+            and not re.search(r"\b\d{1,3}\s*%|\bat\s+\d", t):
+        # "regulate the reactor" fuses; "run the reactor at 80%" is a live tune
+        # (handled by the manage-fusion intercept), so exclude an explicit rate.
+        return {}
+    return None
+
+def _fuse_generator(t: str) -> dict[str, str] | None:
+    """'fuse with the generator' → fuse_generator."""
+    if re.search(_FUSE_VERB + r"\s+.*\b(?:generator|reactor)\b", t) and "reactor" in t:
+        return None  # reactor rule owns it
+    if re.search(_FUSE_VERB + r"\s+.*\b(?:generator|dynamo|reactor|turbine|furnator|magmator|"
+                 r"solar|reformer|thermo|creative)\b", t) and "reactor" not in t:
+        return {}
+    return None
+
+def _fuse_battery(t: str) -> dict[str, str] | None:
+    """'fuse with the induction matrix / energy core / big battery' → fuse_battery."""
+    if re.search(_FUSE_VERB + r"\s+.*\b(?:battery|batteries|matrix|induction|energy\s*core|"
+                 r"energy\s*cell|cell|capacitor|accumulator|store|storage|energizer|"
+                 r"flux\s*(?:point|plug|storage))\b", t) and "reactor" not in t:
+        return {}
+    return None
+
+
 _RULES = [
+    ("fuse_reactor", _fuse_reactor),
+    ("fuse_generator", _fuse_generator),
+    ("fuse_battery", _fuse_battery),
     ("summon_vehicle", _summon_vehicle),
     ("channel_gun", _channel_gun),
     ("channel_ammo", _channel_ammo),
@@ -354,7 +392,7 @@ def match(text: str) -> dict[str, Any] | None:
         except Exception as e:  # noqa: BLE001 — a bad rule must never break planning
             log.debug("skill-matcher rule %s raised: %s", skill_id, e)
             continue
-        if extra:
+        if extra is not None:
             log.info("skill-match: %r -> %s (%r)", t[:80], skill_id, extra)
             return {"kind": "SKILL", "target": skill_id, "extra": extra}
     return None
