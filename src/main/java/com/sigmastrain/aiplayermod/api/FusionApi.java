@@ -59,6 +59,8 @@ public final class FusionApi {
                 if (body != null && body.has("safe_mode")) k.safeMode = bool(body, "safe_mode", k.safeMode);
                 if (body != null && body.has("divert")) k.divert = bool(body, "divert", k.divert);
                 if (body != null && body.has("output_rate")) k.outputRate = Math.max(0, (long) num(body, "output_rate", k.outputRate));
+                if (body != null && body.has("sim_mode")) k.simMode = "training".equalsIgnoreCase(str(body, "sim_mode", k.simMode)) ? "training" : "inference";
+                if (body != null && body.has("auto_matrix")) k.autoMatrix = bool(body, "auto_matrix", k.autoMatrix);
                 if (body != null && body.has("mode")) {
                     Fusion.Mode m = "output".equalsIgnoreCase(str(body, "mode", "")) ? Fusion.Mode.OUTPUT : Fusion.Mode.CAPACITY;
                     Fusion.setMode(name, m);

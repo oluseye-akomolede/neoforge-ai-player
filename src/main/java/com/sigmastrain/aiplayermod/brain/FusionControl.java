@@ -23,6 +23,10 @@ public final class FusionControl {
         public volatile long outputRate = 0;
         /** Whether the fused generator/reactor diverts its output into cultivation. */
         public volatile boolean divert = true;
+        /** Sim chamber: "inference" (produce loot) or "training" (level the model). */
+        public volatile String simMode = "inference";
+        /** Sim chamber: materialize blank prediction matrices from FE to keep it fed. */
+        public volatile boolean autoMatrix = false;
     }
 
     private static final Map<String, Knobs> KNOBS = new ConcurrentHashMap<>();
@@ -38,7 +42,13 @@ public final class FusionControl {
     public static Map<String, Object> toMap(String bot) {
         Knobs k = KNOBS.get(bot);
         if (k == null) return Map.of();
-        return Map.of("target_rate", k.targetRate, "safe_mode", k.safeMode,
-                "output_rate", k.outputRate, "divert", k.divert);
+        Map<String, Object> m = new java.util.LinkedHashMap<>();
+        m.put("target_rate", k.targetRate);
+        m.put("safe_mode", k.safeMode);
+        m.put("output_rate", k.outputRate);
+        m.put("divert", k.divert);
+        m.put("sim_mode", k.simMode);
+        m.put("auto_matrix", k.autoMatrix);
+        return m;
     }
 }

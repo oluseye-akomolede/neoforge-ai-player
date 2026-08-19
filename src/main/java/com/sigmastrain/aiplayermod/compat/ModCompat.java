@@ -38,7 +38,7 @@ public final class ModCompat {
         return superbWarfareLoaded;
     }
 
-    private static Boolean mekanismLoaded, mekanismGeneratorsLoaded, draconicLoaded, powahLoaded;
+    private static Boolean mekanismLoaded, mekanismGeneratorsLoaded, draconicLoaded, powahLoaded, hnnLoaded;
 
     public static boolean isMekanismLoaded() {
         if (mekanismLoaded == null) mekanismLoaded = ModList.get().isLoaded("mekanism");
@@ -53,6 +53,11 @@ public final class ModCompat {
     public static boolean isDraconicLoaded() {
         if (draconicLoaded == null) draconicLoaded = ModList.get().isLoaded("draconicevolution");
         return draconicLoaded;
+    }
+
+    public static boolean isHnnLoaded() {
+        if (hnnLoaded == null) hnnLoaded = ModList.get().isLoaded("hostilenetworks");
+        return hnnLoaded;
     }
 
     public static boolean isPowahLoaded() {

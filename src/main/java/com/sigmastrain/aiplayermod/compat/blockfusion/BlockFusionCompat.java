@@ -37,7 +37,7 @@ public final class BlockFusionCompat {
     private BlockFusionCompat() {}
 
     /** What kind of energy block this is (drives the fusion economy). */
-    public enum Role { GENERATOR, STORAGE, REACTOR, NONE }
+    public enum Role { GENERATOR, STORAGE, REACTOR, SIMCHAMBER, NONE }
 
     /** Any energy mod present makes fusion available (capability is universal). */
     public static boolean isAvailable() {
@@ -121,6 +121,7 @@ public final class BlockFusionCompat {
     // ── role + identity ───────────────────────────────────────────────────
 
     public static Role roleOf(ServerLevel level, BlockPos pos) {
+        if (SimChamberCompat.isSimChamber(level, pos)) return Role.SIMCHAMBER;
         if (RegulatorRegistry.regulatorFor(level, pos) != null) return Role.REACTOR;
         IEnergyStorage e = energy(level, pos);
         if (e == null) return Role.NONE;
@@ -132,6 +133,50 @@ public final class BlockFusionCompat {
         if (ext) return Role.GENERATOR;
         if (recv) return Role.STORAGE;
         return Role.NONE;
+    }
+
+    // ── item ports (for machine roles like the HNN sim chamber) ───────────
+
+    /** The block's item handler capability (null side, then each direction). */
+    public static net.neoforged.neoforge.items.IItemHandler itemHandler(ServerLevel level, BlockPos pos) {
+        var cap = level.getCapability(net.neoforged.neoforge.capabilities.Capabilities.ItemHandler.BLOCK, pos, null);
+        if (cap != null) return cap;
+        for (net.minecraft.core.Direction d : net.minecraft.core.Direction.values()) {
+            cap = level.getCapability(net.neoforged.neoforge.capabilities.Capabilities.ItemHandler.BLOCK, pos, d);
+            if (cap != null) return cap;
+        }
+        return null;
+    }
+
+    /** Insert a stack into the block's item ports; returns the count actually inserted. */
+    public static int insertItem(ServerLevel level, BlockPos pos, net.minecraft.world.item.ItemStack stack) {
+        var h = itemHandler(level, pos);
+        if (h == null || stack.isEmpty()) return 0;
+        int want = stack.getCount();
+        net.minecraft.world.item.ItemStack left = net.neoforged.neoforge.items.ItemHandlerHelper.insertItem(h, stack.copy(), false);
+        return want - left.getCount();
+    }
+
+    /**
+     * Extract every stack from the block's item ports EXCEPT the two ids named in
+     * {@code protectedIds} (the sim chamber's data model + blank matrix), so a
+     * fused bot harvests only the produced loot and never eats the machine's
+     * inputs. Returns the extracted stacks.
+     */
+    public static java.util.List<net.minecraft.world.item.ItemStack> collectOutputs(
+            ServerLevel level, BlockPos pos, java.util.Set<String> protectedIds) {
+        java.util.List<net.minecraft.world.item.ItemStack> out = new java.util.ArrayList<>();
+        var h = itemHandler(level, pos);
+        if (h == null) return out;
+        for (int i = 0; i < h.getSlots(); i++) {
+            net.minecraft.world.item.ItemStack in = h.getStackInSlot(i);
+            if (in.isEmpty()) continue;
+            String id = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(in.getItem()).toString();
+            if (protectedIds.contains(id)) continue;
+            net.minecraft.world.item.ItemStack got = h.extractItem(i, in.getCount(), false);
+            if (!got.isEmpty()) out.add(got);
+        }
+        return out;
     }
 
     /**

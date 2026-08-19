@@ -330,6 +330,15 @@ def _channel_gun(t: str) -> dict[str, str] | None:
 # treats an empty-but-not-None dict as a valid no-param match).
 _FUSE_VERB = r"(?:fuse|merge|bond|meld|link|connect|plug)\s+(?:with|into|to)?"
 
+def _fuse_simchamber(t: str) -> dict[str, str] | None:
+    """'fuse with the sim chamber' / 'run the simulation chamber' -> fuse_simchamber."""
+    if re.search(_FUSE_VERB + r"\s+.*\b(?:sim(?:ulation)?\s*chamber|neural\s*sim|sim\s*chamber)\b", t):
+        return {}
+    if re.search(r"\b(?:run|operate|farm\s+with)\b.*\b(?:sim(?:ulation)?\s*chamber)\b", t):
+        return {}
+    return None
+
+
 def _fuse_reactor(t: str) -> dict[str, str] | None:
     """'fuse with that reactor' / 'regulate the fission reactor' → fuse_reactor."""
     if re.search(_FUSE_VERB + r"\s+.*\breactor\b", t):
@@ -360,6 +369,7 @@ def _fuse_battery(t: str) -> dict[str, str] | None:
 
 
 _RULES = [
+    ("fuse_simchamber", _fuse_simchamber),
     ("fuse_reactor", _fuse_reactor),
     ("fuse_generator", _fuse_generator),
     ("fuse_battery", _fuse_battery),

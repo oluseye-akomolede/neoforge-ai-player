@@ -792,6 +792,9 @@ public class BotPlayer {
                 var be = sl.getBlockEntity(st.pos());
                 if (be != null) m.put("reactor", reg.read(be).toMap());
             }
+            if (st.role() == com.sigmastrain.aiplayermod.compat.blockfusion.BlockFusionCompat.Role.SIMCHAMBER) {
+                m.put("sim", com.sigmastrain.aiplayermod.compat.blockfusion.SimChamberCompat.read(sl, st.pos()));
+            }
         }
         m.put("knobs", com.sigmastrain.aiplayermod.brain.FusionControl.toMap(player.getGameProfile().getName()));
         return m;

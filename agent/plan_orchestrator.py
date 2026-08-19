@@ -105,7 +105,8 @@ def _manage_fusion_intercept(bot_name: str, task: str) -> "Plan | None":
     if not re.search(r"\b(?:run|set|dial|turn|throttle|hold|tune|ramp|drop|raise|lower|"
                      r"output|scram|emergency|safe|unsafe|divert|stop\s+diverting)\b", t):
         return None
-    if not re.search(r"\b(?:reactor|burn|rate|field|output|matrix|store|storage|fusion|it)\b", t):
+    if not re.search(r"\b(?:reactor|burn|rate|field|output|matrix|store|storage|fusion|"
+                     r"model|train|training|infer|inference|chamber|sim)\b", t):
         return None
     try:
         if not (api.fusion_status(bot_name) or {}).get("fused"):
@@ -142,6 +143,14 @@ def _manage_fusion_intercept(bot_name: str, task: str) -> "Plan | None":
         knobs["divert"] = False; summary_bits.append("divert off")
     elif re.search(r"\b(?:start\s+diverting|divert\s+on)\b", t):
         knobs["divert"] = True; summary_bits.append("divert on")
+    if re.search(r"\b(?:train|training)\b", t) and "chamber" not in t.replace("sim chamber",""):
+        knobs["sim_mode"] = "training"; summary_bits.append("training mode")
+    elif re.search(r"\b(?:infer|inference|produce\s+loot|make\s+loot|farm\s+loot)\b", t):
+        knobs["sim_mode"] = "inference"; summary_bits.append("inference mode")
+    if re.search(r"\bauto[-\s]?matrix\s*(?:on|enabled?)?\b", t) and "off" not in t:
+        knobs["auto_matrix"] = True; summary_bits.append("auto-matrix on")
+    elif re.search(r"\b(?:auto[-\s]?matrix\s*off|stop\s+making\s+matrices)\b", t):
+        knobs["auto_matrix"] = False; summary_bits.append("auto-matrix off")
 
     if not knobs:
         return None

@@ -73,6 +73,16 @@ public class ManageFusionBehavior implements Behavior {
                 }
             }
         }
+
+        // Sim chamber: apply the mode knob live (hive powers/feeds/collects).
+        if (st.role() == com.sigmastrain.aiplayermod.compat.blockfusion.BlockFusionCompat.Role.SIMCHAMBER) {
+            var k = FusionControl.get(botName);
+            com.sigmastrain.aiplayermod.compat.blockfusion.SimChamberCompat.setMode(level, pos, k.simMode);
+            if (ticks % 40 == 0) {
+                String fail = com.sigmastrain.aiplayermod.compat.blockfusion.SimChamberCompat.failState(level, pos);
+                progress.setPhase("sim " + (fail.isEmpty() || fail.equals("NONE") ? k.simMode : fail.toLowerCase()));
+            }
+        }
         return BehaviorResult.RUNNING;
     }
 

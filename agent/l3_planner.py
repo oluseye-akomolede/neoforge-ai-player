@@ -134,6 +134,7 @@ _SEED_SKILLS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "fuse_generator": (("FUSE_BLOCK",), ()),
     "fuse_reactor": (("FUSE_BLOCK",), ()),
     "fuse_battery": (("FUSE_BLOCK",), ()),
+    "fuse_simchamber": (("FUSE_BLOCK",), ()),
 }
 
 
@@ -619,6 +620,10 @@ RAW DIRECTIVE REFERENCE (fallback — use ONLY when NO skill above covers the su
   MANAGE_FUSION    — the running fusion directive; do not emit directly. Tune it
                      live with the /bot/<name>/manage_fusion action (rate, mode,
                      output_rate) — e.g. "run the reactor at 80%".
+  FUSE_BLOCK (sim) — a HNN Simulation Chamber is also fusable: the unit powers it
+                     from the reservoir and harvests its mob loot automatically.
+                     "train the model" levels it; "auto-matrix on" spends FE to
+                     keep it fed with prediction matrices.
   UNFUSE_BLOCK     — {{ "kind":"UNFUSE_BLOCK" }}  Break the fusion.
   DISMOUNT_VEHICLE — {{ "kind":"DISMOUNT_VEHICLE" }}
   DRIVE_VEHICLE    — {{ "kind":"DRIVE_VEHICLE", "x":<int>, "y":<int>, "z":<int>, "count":120 }}
