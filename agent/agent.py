@@ -1049,6 +1049,16 @@ class BotRunner:
         squad = self._squad_context()
         if squad:
             parts.append(squad.replace("\n", " "))
+        # Neural-compressor L3 summary: the background worker's distilled
+        # situational sentence ("boxed in", "player far away") — the compressor's
+        # payoff for the planner. Best-effort: absent when the service is down.
+        try:
+            import nn_compressor
+            situ = nn_compressor.latest_summary(self.name)
+            if situ:
+                parts.append("situation: " + situ)
+        except Exception:
+            pass
         return "  ".join(parts) or "(no state)"
 
     def _squad_context(self) -> str:
