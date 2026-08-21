@@ -46,14 +46,19 @@ public final class BotChunkTickets {
         ChunkPos pos = bot.chunkPosition();
         Held prev = HELD.get(bot.getUUID());
         if (prev != null && prev.level == level && prev.pos.equals(pos)) return;
-        if (prev != null) prev.level.getChunkSource().removeRegionTicket(PRESENCE, prev.pos, DISTANCE, prev.pos);
-        level.getChunkSource().addRegionTicket(PRESENCE, pos, DISTANCE, pos);
+        if (prev != null) prev.level.getChunkSource().removeRegionTicket(PRESENCE, prev.pos, DISTANCE, prev.pos, true);
+        // forceTicks=true: registers with the TICKING tickets tracker (what
+        // inEntityTickingRange consults). Without it a ticket only LOADS the chunk —
+        // entities there never tick. /forceload works because updateChunkForced
+        // does exactly this; plain addRegionTicket never did, which is why every
+        // earlier ticket (anchor, combat, two presence variants) left bullets frozen.
+        level.getChunkSource().addRegionTicket(PRESENCE, pos, DISTANCE, pos, true);
         HELD.put(bot.getUUID(), new Held(level, pos));
     }
 
     /** Drop the bot's presence ticket (bot despawned / removed). */
     public static void release(ServerPlayer bot) {
         Held prev = HELD.remove(bot.getUUID());
-        if (prev != null) prev.level.getChunkSource().removeRegionTicket(PRESENCE, prev.pos, DISTANCE, prev.pos);
+        if (prev != null) prev.level.getChunkSource().removeRegionTicket(PRESENCE, prev.pos, DISTANCE, prev.pos, true);
     }
 }
