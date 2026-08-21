@@ -84,6 +84,49 @@ public final class TaczCompat {
      * {@code ShootResult} name (SUCCESS, NO_AMMO, NOT_DRAW, NEED_BOLT, COOL_DOWN,
      * IS_RELOADING, ...) or "ERROR".
      */
+    // ── per-tick state machine for ghost bots ────────────────────────────
+    // TaCZ advances reload/bolt state in LivingEntityMixin.onTickServerSide,
+    // injected into LivingEntity.tick(). Bots are packet ghosts driven by
+    // BotManager.tick(), never by the entity tick loop, so a bot's reload sat in
+    // IS_RELOADING forever (live test: 300+ IS_RELOADING statuses, 0 gun kills).
+    // We tick the same two components the mixin does, via the mixin's merged
+    // fields on LivingEntity (tacz$reload / tacz$bolt).
+    private static java.lang.reflect.Field fReload, fBolt;
+    private static Method tickReloadState, tickBolt;
+    private static boolean tickResolved, tickBroken;
+
+    private static synchronized void resolveTick() {
+        if (tickResolved) return;
+        tickResolved = true;
+        try {
+            fReload = LivingEntity.class.getDeclaredField("tacz$reload");
+            fBolt = LivingEntity.class.getDeclaredField("tacz$bolt");
+            fReload.setAccessible(true);
+            fBolt.setAccessible(true);
+            tickReloadState = Class.forName("com.tacz.guns.entity.shooter.LivingEntityReload").getMethod("tickReloadState");
+            tickBolt = Class.forName("com.tacz.guns.entity.shooter.LivingEntityBolt").getMethod("tickBolt");
+            AIPlayerMod.LOGGER.info("[TaczCompat] ghost-bot reload/bolt tick resolved");
+        } catch (Throwable t) {
+            tickBroken = true;
+            AIPlayerMod.LOGGER.warn("[TaczCompat] cannot tick reload/bolt for bots (TaCZ internals changed?): {}", t.toString());
+        }
+    }
+
+    /** Advance a bot's TaCZ reload + bolt state one tick (what the mixin does for ticked entities). */
+    public static void tickOperator(ServerPlayer bot) {
+        if (!isAvailable()) return;
+        resolveTick();
+        if (tickBroken) return;
+        try {
+            Object reload = fReload.get(bot);
+            if (reload != null) tickReloadState.invoke(reload);
+            Object bolt = fBolt.get(bot);
+            if (bolt != null) tickBolt.invoke(bolt);
+        } catch (Throwable t) {
+            AIPlayerMod.LOGGER.debug("[TaczCompat] tickOperator failed: {}", t.toString());
+        }
+    }
+
     public static String shoot(ServerPlayer bot) {
         if (!isAvailable()) return "ERROR";
         try {

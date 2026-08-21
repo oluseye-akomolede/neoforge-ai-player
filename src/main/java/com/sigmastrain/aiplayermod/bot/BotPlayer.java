@@ -507,6 +507,12 @@ public class BotPlayer {
             AIPlayerMod.LOGGER.error("Action error for bot {}: {} ({})", player.getName().getString(), e.getMessage(), e.getClass().getSimpleName(), e);
         }
         scanInventoryForTransmutables();
+        // Ghost bots skip LivingEntity.tick(), so TaCZ's reload/bolt state never
+        // advances on its own — drive it here while a gun is in hand.
+        if (com.sigmastrain.aiplayermod.compat.guns.TaczCompat.isAvailable()
+                && com.sigmastrain.aiplayermod.compat.guns.TaczCompat.isGun(player.getMainHandItem())) {
+            com.sigmastrain.aiplayermod.compat.guns.TaczCompat.tickOperator(player);
+        }
         tickCounter++;
         boolean moved = hasMoved();
         if (moved || tickCounter % 20 == 0) {
