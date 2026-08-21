@@ -94,7 +94,7 @@ public final class SkillOutputResolver {
                 // the gun every retry. Resolve to the item that actually appears.
                 var g = com.sigmastrain.aiplayermod.compat.guns.GunConjure.resolve(target);
                 if (g != null) {
-                    yield g.kind == com.sigmastrain.aiplayermod.compat.guns.GunConjure.Kind.TACZ
+                    yield g.kind() == com.sigmastrain.aiplayermod.compat.guns.GunConjure.Kind.TACZ
                             ? "tacz:modern_kinetic_gun" : g.idString();
                 }
                 yield target;
