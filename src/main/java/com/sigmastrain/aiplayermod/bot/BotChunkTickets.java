@@ -1,64 +1,79 @@
 package com.sigmastrain.aiplayermod.bot;
 
+import com.sigmastrain.aiplayermod.AIPlayerMod;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.server.level.TicketType;
 import net.minecraft.world.level.ChunkPos;
 
-import java.util.Comparator;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Keeps the chunks around a bot at ENTITY-TICKING level while the bot exists.
  *
  * <p>Bots are packet ghosts: not in {@code level.players()}, so they hold no
  * player chunk tickets. Their chunks stayed loaded (FULL) but below
- * entity-ticking level, so every entity near a bot was frozen: bullets a bot
- * fired sat mid-air at their spawn point with full velocity (1,780 rounds,
- * 1,780 frozen bullets, 0 hits). {@code /forceload} on the chunk made them all
- * fly instantly.
+ * entity-ticking level, so every entity near a bot was frozen — bullets sat
+ * mid-air at their spawn point with full velocity (980 rounds → 980 frozen
+ * bullets, 0 hits), mobs beside bots never moved.
  *
- * <p>An EXPIRING custom ticket (first attempt, 300-tick timeout refreshed every
- * 100) did NOT confer entity ticking under this chunk system (C2ME), while the
- * non-expiring FORCED ticket did. So this uses a non-expiring ticket type with
- * an explicit lifecycle: added at the bot's chunk, moved when the bot changes
- * chunk, removed when the bot is despawned. Distance 2 → level 31 at the
- * bot's chunk (entity-ticking), exactly what /forceload grants.
+ * <p>Three custom-ticket variants (expiring, non-expiring, forceTicks=true via
+ * addRegionTicket) all failed to confer entity ticking under this chunk system
+ * (C2ME), while {@code /forceload} always worked. So this now takes EXACTLY the
+ * path /forceload takes — {@link ServerChunkCache#updateChunkForced} — minus
+ * the persistent ForcedChunksSavedData entry, with a per-chunk refcount so
+ * bots sharing a chunk don't drop each other's ticket. Released on despawn.
+ * Every change logs {@code isPositionEntityTicking} so the server log shows
+ * the chunk's true state.
  */
 public final class BotChunkTickets {
 
     private BotChunkTickets() {}
 
-    public static final int REFRESH_TICKS = 20;    // re-evaluate position every second
-    private static final int DISTANCE = 2;         // level 33 - 2 = 31 (entity-ticking), same as FORCED
-
-    private static final TicketType<ChunkPos> PRESENCE =
-            TicketType.create("aiplayermod_presence", Comparator.comparingLong(ChunkPos::toLong));
+    public static final int REFRESH_TICKS = 20;   // re-evaluate position every second
 
     private record Held(ServerLevel level, ChunkPos pos) {}
-    private static final Map<UUID, Held> HELD = new ConcurrentHashMap<>();
+    private static final Map<UUID, Held> HELD = new HashMap<>();
+    private static final Map<Held, Integer> REFS = new HashMap<>();
 
-    /** Ensure the bot's current chunk holds the presence ticket; move it if the bot moved. */
-    public static void refresh(ServerPlayer bot) {
-        if (!(bot.level() instanceof ServerLevel level)) return;
-        ChunkPos pos = bot.chunkPosition();
-        Held prev = HELD.get(bot.getUUID());
-        if (prev != null && prev.level == level && prev.pos.equals(pos)) return;
-        if (prev != null) prev.level.getChunkSource().removeRegionTicket(PRESENCE, prev.pos, DISTANCE, prev.pos, true);
-        // forceTicks=true: registers with the TICKING tickets tracker (what
-        // inEntityTickingRange consults). Without it a ticket only LOADS the chunk —
-        // entities there never tick. /forceload works because updateChunkForced
-        // does exactly this; plain addRegionTicket never did, which is why every
-        // earlier ticket (anchor, combat, two presence variants) left bullets frozen.
-        level.getChunkSource().addRegionTicket(PRESENCE, pos, DISTANCE, pos, true);
-        HELD.put(bot.getUUID(), new Held(level, pos));
+    private static void acquire(Held h) {
+        int n = REFS.merge(h, 1, Integer::sum);
+        if (n == 1) {
+            boolean before = h.level.isPositionEntityTicking(h.pos.getWorldPosition());
+            h.level.getChunkSource().updateChunkForced(h.pos, true);
+            boolean after = h.level.isPositionEntityTicking(h.pos.getWorldPosition());
+            AIPlayerMod.LOGGER.info("[BotChunkTickets] force-tick {} in {}: entityTicking {} -> {}",
+                    h.pos, h.level.dimension().location(), before, after);
+        }
     }
 
-    /** Drop the bot's presence ticket (bot despawned / removed). */
-    public static void release(ServerPlayer bot) {
+    private static void releaseHeld(Held h) {
+        Integer n = REFS.get(h);
+        if (n == null) return;
+        if (n <= 1) {
+            REFS.remove(h);
+            h.level.getChunkSource().updateChunkForced(h.pos, false);
+            AIPlayerMod.LOGGER.info("[BotChunkTickets] released {} in {}", h.pos, h.level.dimension().location());
+        } else {
+            REFS.put(h, n - 1);
+        }
+    }
+
+    /** Ensure the bot's current chunk is force-ticked; move the hold if the bot moved. Server thread. */
+    public static synchronized void refresh(ServerPlayer bot) {
+        if (!(bot.level() instanceof ServerLevel level)) return;
+        Held now = new Held(level, bot.chunkPosition());
+        Held prev = HELD.get(bot.getUUID());
+        if (now.equals(prev)) return;
+        acquire(now);
+        if (prev != null) releaseHeld(prev);
+        HELD.put(bot.getUUID(), now);
+    }
+
+    /** Drop the bot's hold (bot despawned / removed). */
+    public static synchronized void release(ServerPlayer bot) {
         Held prev = HELD.remove(bot.getUUID());
-        if (prev != null) prev.level.getChunkSource().removeRegionTicket(PRESENCE, prev.pos, DISTANCE, prev.pos, true);
+        if (prev != null) releaseHeld(prev);
     }
 }
