@@ -1,82 +1,91 @@
 package com.sigmastrain.aiplayermod.bot;
 
 import com.sigmastrain.aiplayermod.AIPlayerMod;
-import net.minecraft.core.SectionPos;
-import net.minecraft.server.level.DistanceManager;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.ChunkPos;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
- * Makes a bot anchor its surroundings the way a REAL player does, so entities
- * near it actually tick.
+ * Force-ticks a small radius of chunks around each bot so entities near it
+ * actually tick.
  *
- * <p>Bots are packet ghosts: never in {@code level.players()}, so
- * {@code ChunkMap.move(ServerPlayer)} — which registers a real player's section
- * with the {@link DistanceManager} — is never called for them. The result: the
- * bot's chunks are FULL-loaded (blocks/machines tick) but NOT entity-ticking, so
- * every entity near a bot is frozen. Proven with probes: a vanilla arrow with
- * motion and an AI zombie both sat still next to bots; bot-fired bullets hung in
- * the air (thousands fired, zero hits). Custom force-tick chunk tickets did not
- * help because this server runs C2ME's no-tick view distance, which drives
- * entity-ticking chunks from {@code DistanceManager.addPlayer} (its
- * {@code NoTickSystem.addPlayerSource} hook) — a method only real players reach.
+ * <p>Bots are packet ghosts: never in {@code level.players()}, so nothing drives
+ * their surroundings to ENTITY_TICKING and every entity near a bot freezes — a
+ * vanilla arrow with motion and an AI zombie both sat still next to bots, and
+ * bot-fired bullets hung in the air (thousands fired, zero hits). This server
+ * runs C2ME's chunk-system rewrite, under which vanilla's player/ticking tickets
+ * (what {@code DistanceManager.addPlayer} feeds) do NOT confer entity ticking —
+ * but {@code /forceload} (→ {@link net.minecraft.server.level.ServerChunkCache
+ * #updateChunkForced}) does: an RCON forceload of a single bot chunk made an AI
+ * zombie in it path immediately.
  *
- * <p>Fix: call the very methods {@code ChunkMap.move} calls. On the bot's tick we
- * compare its section to the last one and, on a change (or first registration),
- * {@code removePlayer(old)} + {@code addPlayer(new)}. That drives vanilla's
- * {@code PlayerTicketTracker} (the ENTITY_TICKING ticket source), the ticking
- * tracker, AND C2ME's no-tick hook — identical to a real player, minus any
- * client-facing packets (the bot stays a ghost). Released on despawn. All the
- * API used ({@code ServerChunkCache.chunkMap}, {@code getDistanceManager},
- * {@code add/removePlayer}) is public, so no mixin is needed.
+ * <p>A single chunk under the bot is not enough: combat TELEPORTS the bot chunk
+ * to chunk, and a bullet leaves its origin chunk within a tick — so we force a
+ * {@code (2R+1)²} block of chunks around the bot ({@code R=}{@value #RADIUS}),
+ * covering the short flight of a bullet even as the bot hops. Every forced chunk
+ * is REFERENCE-COUNTED across all bots (a {@code FORCED} ticket is not itself
+ * refcounted, so two bots sharing a chunk must not let one's release drop it):
+ * a chunk is forced on 0→1 refs and released on 1→0. Fully released on despawn.
  */
 public final class BotChunkTickets {
 
     private BotChunkTickets() {}
 
-    /** Only a section change matters; checking every tick is a cheap comparison. */
-    public static final int REFRESH_TICKS = 1;
+    public static final int REFRESH_TICKS = 5;   // re-evaluate the footprint 4x/second
+    private static final int RADIUS = 2;         // 5x5 chunks — covers a bullet's flight
 
-    private record Held(ServerLevel level, long section) {}
-    private static final Map<UUID, Held> HELD = new HashMap<>();
+    private record Chunk(ServerLevel level, long pos) {}
+    private static final Map<UUID, Set<Chunk>> HELD = new HashMap<>();
+    private static final Map<Chunk, Integer> REFS = new HashMap<>();
 
-    private static DistanceManager dm(ServerLevel level) {
-        return level.getChunkSource().chunkMap.getDistanceManager();
+    private static void acquire(Chunk c) {
+        if (REFS.merge(c, 1, Integer::sum) == 1) {
+            c.level.getChunkSource().updateChunkForced(new ChunkPos(c.pos), true);
+        }
     }
 
-    /** Register/refresh the bot as a player-like ticking source at its section. Server thread only. */
+    private static void releaseChunk(Chunk c) {
+        Integer n = REFS.get(c);
+        if (n == null) return;
+        if (n <= 1) {
+            REFS.remove(c);
+            c.level.getChunkSource().updateChunkForced(new ChunkPos(c.pos), false);
+        } else {
+            REFS.put(c, n - 1);
+        }
+    }
+
+    /** Force-tick the (2R+1)² chunks around the bot; drop chunks it no longer covers. Server thread only. */
     public static synchronized void refresh(ServerPlayer bot) {
         if (!(bot.level() instanceof ServerLevel level)) return;
-        SectionPos section = SectionPos.of(bot);
-        long key = section.asLong();
-        Held prev = HELD.get(bot.getUUID());
-        if (prev != null && prev.level == level && prev.section == key) return;
-
-        boolean before = level.isPositionEntityTicking(bot.blockPosition());
-        if (prev != null) {
-            dm(prev.level).removePlayer(SectionPos.of(prev.section), bot);
-        }
-        dm(level).addPlayer(section, bot);
-        HELD.put(bot.getUUID(), new Held(level, key));
-        boolean after = level.isPositionEntityTicking(bot.blockPosition());
-        AIPlayerMod.LOGGER.info("[BotChunkTickets] {} anchored section {} in {}: entityTicking {} -> {}",
-                bot.getGameProfile().getName(), section.chunk(), level.dimension().location(), before, after);
-    }
-
-    /** Drop the bot's player-source registration (bot despawned / removed). */
-    public static synchronized void release(ServerPlayer bot) {
-        Held prev = HELD.remove(bot.getUUID());
-        if (prev != null) {
-            try {
-                dm(prev.level).removePlayer(SectionPos.of(prev.section), bot);
-            } catch (Throwable t) {
-                AIPlayerMod.LOGGER.debug("[BotChunkTickets] release failed for {}: {}",
-                        bot.getGameProfile().getName(), t.toString());
+        ChunkPos center = bot.chunkPosition();
+        Set<Chunk> want = new HashSet<>();
+        for (int dx = -RADIUS; dx <= RADIUS; dx++) {
+            for (int dz = -RADIUS; dz <= RADIUS; dz++) {
+                want.add(new Chunk(level, new ChunkPos(center.x + dx, center.z + dz).toLong()));
             }
         }
+        Set<Chunk> have = HELD.computeIfAbsent(bot.getUUID(), k -> new HashSet<>());
+        if (have.equals(want)) return;
+        boolean firstEver = have.isEmpty();
+        for (Chunk c : want) if (!have.contains(c)) acquire(c);
+        for (Chunk c : have) if (!want.contains(c)) releaseChunk(c);
+        HELD.put(bot.getUUID(), want);
+        if (firstEver) {
+            AIPlayerMod.LOGGER.info("[BotChunkTickets] {} force-ticking {} chunks around {} in {}",
+                    bot.getGameProfile().getName(), want.size(), center, level.dimension().location());
+        }
+    }
+
+    /** Release every chunk this bot was force-ticking (bot despawned / removed). */
+    public static synchronized void release(ServerPlayer bot) {
+        Set<Chunk> have = HELD.remove(bot.getUUID());
+        if (have != null) for (Chunk c : have) releaseChunk(c);
     }
 }
