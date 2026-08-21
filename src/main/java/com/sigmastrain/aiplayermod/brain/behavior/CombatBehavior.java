@@ -59,6 +59,8 @@ public class CombatBehavior implements Behavior {
             TicketType.create("aiplayermod_bot", Comparator.comparingLong(ChunkPos::toLong), 200);
 
     private static final double MELEE_RANGE = 2.5;
+    private final java.util.Map<Integer, Integer> noDamageHits = new java.util.HashMap<>();
+    private final java.util.Map<Integer, Long> blacklistUntil = new java.util.HashMap<>();
     private static final double PATROL_RADIUS = 80.0;
     private static final int PATROL_INTERVAL = 60;
     private static final float RETREAT_HEALTH = 4.0f;
@@ -219,7 +221,22 @@ public class CombatBehavior implements Behavior {
                 damage = EnchantmentHelper.modifyDamage(sl, weapon, le, damageSource, baseDamage);
             }
 
+            float hpBefore = le.getHealth();
             boolean hurt = le.hurt(damageSource, damage);
+            // A target whose health doesn't move after repeated hits (regen/immune
+            // mobs such as the 86-HP "Corpse Maggot") is a sink: blacklist it for
+            // a minute so findTarget picks something killable.
+            if (le.getHealth() >= hpBefore) {
+                int n = noDamageHits.merge(le.getId(), 1, Integer::sum);
+                if (n >= 12) {
+                    noDamageHits.remove(le.getId());
+                    blacklistUntil.put(le.getId(), player.level().getGameTime() + 1200);
+                    AIPlayerMod.LOGGER.info("[{}] {} takes no damage after {} hits — ignoring it for 60s",
+                            player.getName().getString(), le.getName().getString(), n);
+                }
+            } else {
+                noDamageHits.remove(le.getId());
+            }
 
             // Apply enchantment post-attack effects (Fire Aspect, Knockback, etc.)
             if (hurt && player.level() instanceof ServerLevel sl && !weapon.isEmpty()) {
@@ -299,6 +316,8 @@ public class CombatBehavior implements Behavior {
                 boolean isHostile = (e instanceof Monster) || (e instanceof Enemy)
                         || e.getType().getCategory() == MobCategory.MONSTER;
                 if (!isHostile) continue;
+                Long bl = blacklistUntil.get(e.getId());
+                if (bl != null && bl > player.level().getGameTime()) continue;
             }
 
             matchedType++;

@@ -21,7 +21,10 @@ import java.util.function.Consumer;
  * hits (by what was hit — hostile vs another bot vs other), and kills per bot,
  * logs a line every 50 shots and on each kill, and rides along in bot status.
  * TaCZ is not on the compile classpath, so the event classes are bound by name
- * and read reflectively; absent TaCZ this is a no-op.
+ * and read reflectively; absent TaCZ this is a no-op. Hits bind to
+ * EntityHurtByGunEvent$Post: TaCZ posts the Pre/Post SUBCLASSES, and a listener
+ * on the parent class never fires (first telemetry run read 0 hits on 3,320
+ * shots for that reason alone).
  */
 public final class GunStats {
 
@@ -58,7 +61,7 @@ public final class GunStats {
                 Stats s = stats(bot);
                 if (s.shots % 50 == 0) log(bot, s);
             });
-            bind("com.tacz.guns.api.event.common.EntityHurtByGunEvent", "getAttacker", (bot, e, m) -> {
+            bind("com.tacz.guns.api.event.common.EntityHurtByGunEvent$Post", "getAttacker", (bot, e, m) -> {
                 Stats s = stats(bot);
                 s.hits++;
                 try {

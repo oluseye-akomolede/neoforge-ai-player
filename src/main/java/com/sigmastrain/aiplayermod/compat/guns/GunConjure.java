@@ -216,12 +216,23 @@ public final class GunConjure {
     public static boolean ensureGunInHand(com.sigmastrain.aiplayermod.bot.BotPlayer bot) {
         net.minecraft.server.level.ServerPlayer p = bot.getPlayer();
         var inv = p.getInventory();
-        if (GunHandler.isGun(p.getMainHandItem())) { ensureAmmoCarried(bot); return true; }
-        for (int i = 0; i < 9; i++) if (GunHandler.isGun(inv.getItem(i))) { inv.selected = i; ensureAmmoCarried(bot); return true; }
-        for (int i = 9; i < 36; i++) if (GunHandler.isGun(inv.getItem(i))) {
-            // Move it into the hotbar (swap with the selected slot) so it can be held.
-            ItemStack gun = inv.getItem(i); inv.setItem(i, inv.getItem(inv.selected)); inv.setItem(inv.selected, gun);
-            ensureAmmoCarried(bot); return true;
+        // Prefer a gun we can actually feed: one whose ammo is carried (or at
+        // least vaulted). Axiom owned seven P90s plus older guns; the first gun
+        // found had no matching ammo carried -> NO_AMMO -> dry -> fists.
+        int bestSlot = -1; int bestScore = -1;
+        for (int i = 0; i < 36; i++) {
+            ItemStack st = inv.getItem(i);
+            if (!GunHandler.isGun(st)) continue;
+            int score = ammoScore(bot, st) + (i < 9 ? 1 : 0) + (i == inv.selected ? 1 : 0);
+            if (score > bestScore) { bestScore = score; bestSlot = i; }
+        }
+        if (bestSlot >= 0) {
+            if (bestSlot != inv.selected) {
+                if (bestSlot < 9) inv.selected = bestSlot;
+                else { ItemStack gun = inv.getItem(bestSlot); inv.setItem(bestSlot, inv.getItem(inv.selected)); inv.setItem(inv.selected, gun); }
+            }
+            ensureAmmoCarried(bot);
+            return true;
         }
         var vault = bot.getVault();
         String gunId = null;
@@ -249,7 +260,11 @@ public final class GunConjure {
         for (int i = 0; i < 36; i++) { ItemStack st = inv.getItem(i); if (!st.isEmpty() && TaczCompat.isAmmoId(net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(st.getItem()))) carried += st.getCount(); }
         if (carried >= 60) return;
         var vault = bot.getVault();
-        for (String id : new java.util.ArrayList<>(vault.counts().keySet())) {
+        String want = null;
+        try { var gid = TaczCompat.gunIdOf(p.getMainHandItem()); var a = gid == null ? null : TaczCompat.ammoIdFor(gid); if (a != null) want = a.toString(); } catch (Throwable ignored) {}
+        java.util.List<String> ids = new java.util.ArrayList<>(vault.counts().keySet());
+        if (want != null && ids.remove(want)) ids.add(0, want);   // the held gun's ammo first
+        for (String id : ids) {
             if (!TaczCompat.isAmmoId(net.minecraft.resources.ResourceLocation.parse(id))) continue;
             if (inv.getFreeSlot() < 0 && !vaultJunk(bot)) return;
             vault.withdrawInto(inv, id, 120);
@@ -278,6 +293,26 @@ public final class GunConjure {
         inv.setItem(best, ItemStack.EMPTY);
         bot.getVault().deposit(junk);
         return true;
+    }
+
+
+    /** 4 = matching ammo carried, 2 = matching ammo in the vault, 0 = none known. */
+    private static int ammoScore(com.sigmastrain.aiplayermod.bot.BotPlayer bot, ItemStack gun) {
+        try {
+            if (!TaczCompat.isGun(gun)) return 1;  // SW guns manage their own ammo
+            var gid = TaczCompat.gunIdOf(gun);
+            if (gid == null) return 0;
+            var ammoId = TaczCompat.ammoIdFor(gid);
+            if (ammoId == null) return 0;
+            var inv = bot.getPlayer().getInventory();
+            for (int i = 0; i < 36; i++) {
+                ItemStack st = inv.getItem(i);
+                if (!st.isEmpty() && ammoId.equals(TaczCompat.ammoIdOf(st))) return 4;
+            }
+            if (bot.getVault().count(ammoId.toString()) > 0) return 2;
+            // a generic tacz:ammo stack whose id we can't read still beats nothing
+            return 0;
+        } catch (Throwable t) { return 0; }
     }
 
 }
