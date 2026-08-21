@@ -854,6 +854,23 @@ def _ground_skill_criteria(subtask: Subtask, directives: list[dict]) -> str | No
         if ":" not in item:
             item = "minecraft:" + item
         item = ITEM_SYNONYMS.get(item, item)
+        # A gun skill yields exactly ONE gun. L3 routinely fuses the ammo count
+        # onto the gun clause ("inventory has 200 tacz:modern_kinetic_gun"),
+        # which can never be satisfied — Axiom channeled SEVEN P90s chasing it.
+        # Pin the gun clause to 1 and express the rounds as their own clause.
+        if skill_id.startswith("channel_gun"):
+            gun_clause = f"inventory has 1 {output}"
+            if need != 1 or item != output:
+                changed = True
+            rewritten.append(gun_clause)
+            try:
+                ammo = int(str(extra.get("ammo", "0")).strip() or 0)
+            except ValueError:
+                ammo = 0
+            if ammo > 0 and output.startswith("tacz:"):
+                rewritten.append(f"inventory has {ammo} tacz:ammo")
+                changed = True
+            continue
         if item == output or _is_real_item(item):
             rewritten.append(clause)
             continue
