@@ -32,6 +32,20 @@ public final class GunHandler implements CombatExtensions.CombatHandler {
     private static final Map<UUID, Long> DRY_UNTIL = new ConcurrentHashMap<>();
     private static final Map<UUID, String> ANNOUNCED = new ConcurrentHashMap<>();
     private static final Map<UUID, Integer> NO_AMMO_STREAK = new ConcurrentHashMap<>();
+    private static final Map<UUID, Integer> DRAWN_SLOT = new ConcurrentHashMap<>();
+    private static final Map<UUID, Integer> STALL = new ConcurrentHashMap<>();
+    private static final Map<UUID, Long> LAST_LOG = new ConcurrentHashMap<>();
+    private static final int STALL_TICKS = 200;   // 10 s of non-SUCCESS statuses -> give melee a turn
+
+    /** One INFO line per bot per 5 s — enough to see WHY a gun isn't firing. */
+    private static void logThrottled(ServerPlayer bot, String msg) {
+        long now = bot.level().getGameTime();
+        Long last = LAST_LOG.get(bot.getUUID());
+        if (last == null || now - last >= 100) {
+            LAST_LOG.put(bot.getUUID(), now);
+            AIPlayerMod.LOGGER.info("[{}] [GunHandler] {}", bot.getName().getString(), msg);
+        }
+    }
 
     private static boolean registered;
 
@@ -89,7 +103,7 @@ public final class GunHandler implements CombatExtensions.CombatHandler {
     @Override
     public int tryAttack(ServerPlayer bot, LivingEntity target, double distance) {
         ItemStack gun = bot.getMainHandItem();
-        if (!isGun(gun) || dry(bot)) return -1;
+        if (!isGun(gun) || dry(bot)) { if (isGun(gun)) logThrottled(bot, "gun dry — yielding to melee"); return -1; }
         if (distance > GUN_RANGE) return -1;
 
         BotPlayer bp = BotManager.getBot(bot.getGameProfile().getName());
@@ -105,6 +119,7 @@ public final class GunHandler implements CombatExtensions.CombatHandler {
         if (bot.level() instanceof net.minecraft.server.level.ServerLevel sl) {
             net.minecraft.world.phys.Vec3 aim = target.position().add(0, target.getBbHeight() * 0.5, 0);
             if (com.sigmastrain.aiplayermod.brain.CombatSafety.firingEndangersPlayer(sl, bot.getEyePosition(), aim, 0.0, 1.5)) {
+                logThrottled(bot, "holding fire — a player is in the line of fire");
                 return 8; // hold; re-check shortly
             }
         }
@@ -114,14 +129,34 @@ public final class GunHandler implements CombatExtensions.CombatHandler {
     }
 
     private int fireTacz(ServerPlayer bot, BotPlayer bp, ItemStack gun) {
+        // Draw once per (slot, gun item). The old identity check (drawn != gun)
+        // re-drew whenever the stack object changed — which a magazine-count
+        // update or inventory sync can do — looping on "draw" forever.
         ItemStack drawn = DRAWN.get(bot.getUUID());
-        if (drawn == null || drawn != gun) {
+        Integer slot = DRAWN_SLOT.get(bot.getUUID());
+        int selected = bot.getInventory().selected;
+        if (drawn == null || slot == null || slot != selected || !ItemStack.isSameItem(drawn, gun)) {
             TaczCompat.draw(bot);
             DRAWN.put(bot.getUUID(), gun);
+            DRAWN_SLOT.put(bot.getUUID(), selected);
+            logThrottled(bot, "tacz draw " + gun.getHoverName().getString() + " (slot " + selected + ")");
             return 10; // draw time
         }
         String r = TaczCompat.shoot(bot);
+        logThrottled(bot, "tacz shoot=" + r + " gun=" + gun.getHoverName().getString());
         if (!"NO_AMMO".equals(r)) NO_AMMO_STREAK.remove(bot.getUUID());
+        // Stall breaker: a gun that never reaches SUCCESS must not freeze combat
+        // in standoff — after STALL_TICKS of anything else, go dry so the melee
+        // path (teleport + hit) gets a turn; the gun is retried after DRY_TICKS.
+        if ("SUCCESS".equals(r)) {
+            STALL.remove(bot.getUUID());
+        } else if (STALL.merge(bot.getUUID(), 1, Integer::sum) >= STALL_TICKS) {
+            STALL.remove(bot.getUUID());
+            markDry(bot);
+            AIPlayerMod.LOGGER.warn("[{}] [GunHandler] stalled on status {} for {} ticks — falling back to melee",
+                    bot.getName().getString(), r, STALL_TICKS);
+            return -1;
+        }
         switch (r) {
             case "SUCCESS":       return DEFAULT_INTERVAL;
             case "COOL_DOWN":     return 1;

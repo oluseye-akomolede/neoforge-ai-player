@@ -86,7 +86,20 @@ public final class SkillOutputResolver {
                 String input = held != null ? held : target;
                 yield SmeltBehavior.resolveOutput(input);
             }
-            case "FARM", "CHANNEL", "CONTAINER_SEARCH", "WITHDRAW",
+            case "CHANNEL" -> {
+                // A channeled GUN lands as the gun MOD's item (TaCZ: every gun is
+                // tacz:modern_kinetic_gun with the model in components), not as an
+                // item named after the gun id. Grounding criteria on "tacz:p90"
+                // produced an unsatisfiable "holdings 0/1" loop that re-channeled
+                // the gun every retry. Resolve to the item that actually appears.
+                var g = com.sigmastrain.aiplayermod.compat.guns.GunConjure.resolve(target);
+                if (g != null) {
+                    yield g.kind == com.sigmastrain.aiplayermod.compat.guns.GunConjure.Kind.TACZ
+                            ? "tacz:modern_kinetic_gun" : g.idString();
+                }
+                yield target;
+            }
+            case "FARM", "CONTAINER_SEARCH", "WITHDRAW",
                  "CONTAINER_WITHDRAW", "CONTAINER_EXTRACT" -> target; // acquire/put target in hand
             case "SEND_ITEM" -> null;                                 // item leaves the bot
             default -> held;                                          // TELEPORT / STORE_ALL / WIDE_SEARCH / ...
