@@ -531,6 +531,11 @@ public class BotPlayer {
         if (tickCounter % 40 == 0) {
             refreshCache();
         }
+        // Keep the bot's surroundings ENTITY-ticking (ghosts hold no player
+        // tickets; without this, bullets/mobs around a bot are frozen).
+        if (tickCounter % com.sigmastrain.aiplayermod.bot.BotChunkTickets.REFRESH_TICKS == 0) {
+            com.sigmastrain.aiplayermod.bot.BotChunkTickets.refresh(player);
+        }
         if (tickCounter % 200 == 0) {
             broadcastSpawn();
         }
