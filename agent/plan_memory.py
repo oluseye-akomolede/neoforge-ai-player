@@ -150,6 +150,19 @@ def lookup(bot_name: str, task: str) -> Plan | None:
     clone["task"] = task
     clone["bot"] = bot_name
     clone["created_at"] = datetime.datetime.utcnow().isoformat()
+    # A multi-clause order ("channel ..., then engage combat") must not replay a
+    # template with fewer steps than clauses: such a template is a truncated
+    # plan (recorded when a single-step skill swallowed the order), and
+    # replaying it silently drops the rest of what the player asked for —
+    # twice in a row, in the live combat test. Let L3 plan it instead.
+    try:
+        import skill_matcher as _sm
+        if _sm._is_compound(task.lower()) and len(clone.get("subtasks", [])) < 2:
+            log.info("[%s] plan-memory: compound task but %d-subtask template — not replaying",
+                     bot_name, len(clone.get("subtasks", [])))
+            return None
+    except Exception:
+        pass
     clone["status"] = "executing"
     for s in clone.get("subtasks", []):
         s["status"] = "pending"
