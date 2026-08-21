@@ -51,6 +51,7 @@ public class BotManager {
     public static void despawn(String name) {
         BotPlayer bot = bots.remove(name);
         if (bot != null) {
+            if (bot.getPlayer() != null) BotChunkTickets.release(bot.getPlayer());
             bot.remove();
             AIPlayerMod.LOGGER.info("Despawned bot: {}", name);
         }
