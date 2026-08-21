@@ -90,6 +90,7 @@ public class AIPlayerMod {
 
     @SubscribeEvent
     public void onServerStopping(ServerStoppingEvent event) {
+        com.sigmastrain.aiplayermod.bot.BotChunkTickets.releaseAll();
         if (apiServer != null) {
             apiServer.stop();
         }

@@ -47,14 +47,12 @@ public final class BotChunkTickets {
     private static void acquire(Chunk c) {
         if (REFS.merge(c, 1, Integer::sum) == 1) {
             ChunkPos pos = new ChunkPos(c.pos);
-            c.level.getChunkSource().updateChunkForced(pos, true);
-            // The ticket alone promotes the chunk LAZILY under C2ME's async chunk
-            // system and it then ticks throttled (an arrow moved ~1 block/3s).
-            // /forceload ticks it full-speed because setChunkForced also calls
-            // getChunk() synchronously — so do the same: force the promotion NOW.
-            // The chunk is already loaded (the bot is there), so this is a cheap
-            // cache hit; on the moving leading edge it blocks briefly.
-            c.level.getChunk(pos.x, pos.z);
+            // Use setChunkForced (the exact /forceload path), NOT a bare ticket:
+            // under C2ME's chunk-system rewrite only the persistent ForcedChunks
+            // set actually ticks entities full-speed (A/B probe: a ticket ticked
+            // an arrow ~1 block/3s, setChunkForced ~20 blocks/3s). Persistence is
+            // swept on shutdown (see release-all in AIPlayerMod's ServerStopping).
+            c.level.setChunkForced(pos.x, pos.z, true);
         }
     }
 
@@ -63,7 +61,8 @@ public final class BotChunkTickets {
         if (n == null) return;
         if (n <= 1) {
             REFS.remove(c);
-            c.level.getChunkSource().updateChunkForced(new ChunkPos(c.pos), false);
+            ChunkPos pos = new ChunkPos(c.pos);
+            c.level.setChunkForced(pos.x, pos.z, false);
         } else {
             REFS.put(c, n - 1);
         }
@@ -95,5 +94,17 @@ public final class BotChunkTickets {
     public static synchronized void release(ServerPlayer bot) {
         Set<Chunk> have = HELD.remove(bot.getUUID());
         if (have != null) for (Chunk c : have) releaseChunk(c);
+    }
+
+    /** Un-force EVERY chunk we forced — call on server stop so no bot-forced
+     *  chunk persists into level.dat and stays loaded forever after shutdown. */
+    public static synchronized void releaseAll() {
+        for (Chunk c : new java.util.HashSet<>(REFS.keySet())) {
+            try { c.level.setChunkForced(new ChunkPos(c.pos).x, new ChunkPos(c.pos).z, false); }
+            catch (Throwable ignored) {}
+        }
+        REFS.clear();
+        HELD.clear();
+        AIPlayerMod.LOGGER.info("[BotChunkTickets] released all force-ticked chunks (server stopping)");
     }
 }
