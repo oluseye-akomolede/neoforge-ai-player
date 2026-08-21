@@ -46,7 +46,15 @@ public final class BotChunkTickets {
 
     private static void acquire(Chunk c) {
         if (REFS.merge(c, 1, Integer::sum) == 1) {
-            c.level.getChunkSource().updateChunkForced(new ChunkPos(c.pos), true);
+            ChunkPos pos = new ChunkPos(c.pos);
+            c.level.getChunkSource().updateChunkForced(pos, true);
+            // The ticket alone promotes the chunk LAZILY under C2ME's async chunk
+            // system and it then ticks throttled (an arrow moved ~1 block/3s).
+            // /forceload ticks it full-speed because setChunkForced also calls
+            // getChunk() synchronously — so do the same: force the promotion NOW.
+            // The chunk is already loaded (the bot is there), so this is a cheap
+            // cache hit; on the moving leading edge it blocks briefly.
+            c.level.getChunk(pos.x, pos.z);
         }
     }
 
