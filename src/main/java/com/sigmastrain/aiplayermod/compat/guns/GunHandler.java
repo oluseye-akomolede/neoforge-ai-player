@@ -124,6 +124,7 @@ public final class GunHandler implements CombatExtensions.CombatHandler {
             }
         }
 
+        if (!bot.hasLineOfSight(target)) { logThrottled(bot, "no line of sight — holding"); return 2; }
         if (TaczCompat.isGun(gun)) return fireTacz(bot, bp, gun);
         return fireSw(bot, bp, gun);
     }

@@ -1706,6 +1706,12 @@ public class HttpApiServer {
      *  report; PUT = create (dashboard parity). */
     private void handleStanding(HttpExchange exchange) throws IOException {
         if (!checkAuth(exchange)) return;
+        if ("DELETE".equals(exchange.getRequestMethod())) {
+            String id = parseQuery(exchange.getRequestURI().getQuery()).get("id");
+            boolean ok = id != null && com.sigmastrain.aiplayermod.telemetry.StandingStore.delete(id);
+            sendJson(exchange, ok ? 200 : 404, Map.of("ok", ok, "id", id == null ? "" : id));
+            return;
+        }
         if ("GET".equals(exchange.getRequestMethod())) {
             List<Map<String, Object>> rows = new ArrayList<>();
             for (var st : com.sigmastrain.aiplayermod.telemetry.StandingStore.all()) {

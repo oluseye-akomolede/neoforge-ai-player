@@ -167,7 +167,7 @@ public class CombatBehavior implements Behavior {
         noTargetTicks = 0;
 
         progress.setPhase("fighting");
-        bot.lookAt(target.getX(), target.getEyeY(), target.getZ());
+        bot.lookAt(target.getX(), target.getY() + target.getBbHeight() * 0.55, target.getZ());
 
         double dist = player.distanceTo(target);
 
@@ -426,6 +426,8 @@ public class CombatBehavior implements Behavior {
 
     private void equipBestWeapon(BotPlayer bot) {
         ServerPlayer player = bot.getPlayer();
+        // A vaulted gun beats any carried melee weapon — draw it first.
+        com.sigmastrain.aiplayermod.compat.guns.GunConjure.ensureGunInHand(bot);
         int bestSlot = -1;
         double bestDamage = 0;
         // Gear this mod can't value by attack damage (guns) wins outright when

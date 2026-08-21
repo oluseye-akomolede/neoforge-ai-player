@@ -53,6 +53,7 @@ public class AIPlayerMod {
     public void onServerStarted(ServerStartedEvent event) {
         BotManager.init(event.getServer());
         com.sigmastrain.aiplayermod.compat.guns.GunHandler.register();
+        com.sigmastrain.aiplayermod.compat.guns.GunStats.register();
         BotShop.init(event.getServer().getServerDirectory());
         TransmuteRegistry.init(event.getServer().getServerDirectory());
         EnchantmentRegistry.init(event.getServer());

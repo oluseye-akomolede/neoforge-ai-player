@@ -202,4 +202,82 @@ public final class GunConjure {
     public static int defaultAmmo(Gun g) {
         return g.kind() == Kind.TACZ ? DEFAULT_TACZ_ROUNDS : DEFAULT_SW_BOXES;
     }
+
+    // ── gun-in-hand guarantee ────────────────────────────────────────────
+    /**
+     * Make sure the bot is HOLDING a gun with some ammo carried. A full pack
+     * routes a channeled gun to the vault (carried-first delivery) and the bot
+     * then fights with its fists — Scout punched an 86-HP Corpse Maggot for
+     * 2 dmg all test. Order: gun already in hand → select a carried gun → pull
+     * one from the vault (vaulting a junk stack if the pack is full) → then
+     * make sure some ammo is carried too (reload pulls from the inventory).
+     * Returns true when a gun is in the main hand afterwards.
+     */
+    public static boolean ensureGunInHand(com.sigmastrain.aiplayermod.bot.BotPlayer bot) {
+        net.minecraft.server.level.ServerPlayer p = bot.getPlayer();
+        var inv = p.getInventory();
+        if (GunHandler.isGun(p.getMainHandItem())) { ensureAmmoCarried(bot); return true; }
+        for (int i = 0; i < 9; i++) if (GunHandler.isGun(inv.getItem(i))) { inv.selected = i; ensureAmmoCarried(bot); return true; }
+        for (int i = 9; i < 36; i++) if (GunHandler.isGun(inv.getItem(i))) {
+            // Move it into the hotbar (swap with the selected slot) so it can be held.
+            ItemStack gun = inv.getItem(i); inv.setItem(i, inv.getItem(inv.selected)); inv.setItem(inv.selected, gun);
+            ensureAmmoCarried(bot); return true;
+        }
+        var vault = bot.getVault();
+        String gunId = null;
+        for (String id : vault.counts().keySet()) {
+            boolean sw = false;
+            if (SwGunCompat.isAvailable()) {
+                var it = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(net.minecraft.resources.ResourceLocation.parse(id));
+                sw = it != net.minecraft.world.item.Items.AIR && SwGunCompat.isGun(new ItemStack(it));
+            }
+            if (id.equals("tacz:modern_kinetic_gun") || sw) { gunId = id; break; }
+        }
+        if (gunId == null) return false;
+        if (inv.getFreeSlot() < 0 && !vaultJunk(bot)) return false;
+        if (vault.withdrawInto(inv, gunId, 1) <= 0) return false;
+        boolean ok = ensureGunInHand(bot);
+        if (ok) bot.systemChat("Drew " + p.getMainHandItem().getHoverName().getString() + " from the vault", "yellow");
+        return ok;
+    }
+
+    /** Carry at least a couple of magazines' worth of TaCZ ammo if the vault has it. */
+    private static void ensureAmmoCarried(com.sigmastrain.aiplayermod.bot.BotPlayer bot) {
+        net.minecraft.server.level.ServerPlayer p = bot.getPlayer();
+        var inv = p.getInventory();
+        int carried = 0;
+        for (int i = 0; i < 36; i++) { ItemStack st = inv.getItem(i); if (!st.isEmpty() && TaczCompat.isAmmoId(net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(st.getItem()))) carried += st.getCount(); }
+        if (carried >= 60) return;
+        var vault = bot.getVault();
+        for (String id : new java.util.ArrayList<>(vault.counts().keySet())) {
+            if (!TaczCompat.isAmmoId(net.minecraft.resources.ResourceLocation.parse(id))) continue;
+            if (inv.getFreeSlot() < 0 && !vaultJunk(bot)) return;
+            vault.withdrawInto(inv, id, 120);
+            return;
+        }
+    }
+
+    /** Vault the most expendable carried stack to free a slot. Never guns, ammo, or anything with attack damage. */
+    private static boolean vaultJunk(com.sigmastrain.aiplayermod.bot.BotPlayer bot) {
+        net.minecraft.server.level.ServerPlayer p = bot.getPlayer();
+        var inv = p.getInventory();
+        int best = -1; int bestCount = -1;
+        for (int i = 0; i < 36; i++) {
+            if (i == inv.selected) continue;
+            ItemStack st = inv.getItem(i);
+            if (st.isEmpty() || GunHandler.isGun(st)) continue;
+            if (TaczCompat.isAmmoId(net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(st.getItem()))) continue;
+            boolean weapon = false;
+            var attrs = st.getAttributeModifiers();
+            if (attrs != null) for (var e : attrs.modifiers()) if (e.attribute().is(net.minecraft.world.entity.ai.attributes.Attributes.ATTACK_DAMAGE)) weapon = true;
+            if (weapon || st.getItem() instanceof net.minecraft.world.item.ArmorItem) continue;
+            if (st.getCount() > bestCount) { bestCount = st.getCount(); best = i; }
+        }
+        if (best < 0) return false;
+        ItemStack junk = inv.getItem(best);
+        inv.setItem(best, ItemStack.EMPTY);
+        bot.getVault().deposit(junk);
+        return true;
+    }
+
 }

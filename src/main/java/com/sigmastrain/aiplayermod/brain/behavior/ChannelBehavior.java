@@ -232,8 +232,12 @@ public class ChannelBehavior implements Behavior {
                 // Vault-backed delivery: carried first, overflow to the vault.
                 // Never dropped (the entity-cleanup cronjob destroys ground items).
                 int before = bot.getVault().totalItems();
+                boolean isGun = com.sigmastrain.aiplayermod.compat.guns.GunHandler.isGun(stack);
                 bot.deliver(stack);
                 toVault += bot.getVault().totalItems() - before;
+                // A gun is for holding, not storing: if the pack was full it just
+                // went to the vault — pull it back into the hand (vaulting junk).
+                if (isGun) com.sigmastrain.aiplayermod.compat.guns.GunConjure.ensureGunInHand(bot);
             }
             remaining -= stackSize;
         }

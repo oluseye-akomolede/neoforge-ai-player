@@ -741,6 +741,8 @@ public class BotPlayer {
         float pitch = (float) (Math.atan2(-dy, dist) * (180.0 / Math.PI));
         player.setYRot(yaw);
         player.setXRot(pitch);
+        player.yHeadRot = yaw;
+        player.yBodyRot = yaw;
         player.setYHeadRot(yaw);
     }
 
@@ -777,6 +779,8 @@ public class BotPlayer {
         if (vehicle != null) status.put("vehicle", vehicle);
         Map<String, Object> fusion = getFusionInfo();
         if (fusion != null) status.put("fusion", fusion);
+        var gunStats = com.sigmastrain.aiplayermod.compat.guns.GunStats.summary(player.getGameProfile().getName());
+        if (!gunStats.isEmpty()) status.put("gun_stats", gunStats);
         return status;
     }
 
