@@ -396,6 +396,7 @@ def match(text: str) -> dict[str, Any] | None:
     t = re.sub(r"\s+", " ", str(text).strip().lower())
     if not t:
         return None
+    compound = _is_compound(t)
     for skill_id, rule in _RULES:
         try:
             extra = rule(t)
@@ -403,6 +404,26 @@ def match(text: str) -> dict[str, Any] | None:
             log.debug("skill-matcher rule %s raised: %s", skill_id, e)
             continue
         if extra is not None:
+            # A single-step skill must not swallow a multi-clause order: "channel
+            # me a p90, then engage combat mode" used to collapse to channel_gun
+            # and the combat clause was silently dropped. Let L3 plan compound
+            # orders (it can still emit this skill as step 1 via collapse).
+            if compound and skill_id in _SINGLE_STEP:
+                log.info("skill-match: %r matched %s but order is compound — deferring to L3",
+                         t[:80], skill_id)
+                return None
             log.info("skill-match: %r -> %s (%r)", t[:80], skill_id, extra)
             return {"kind": "SKILL", "target": skill_id, "extra": extra}
     return None
+
+
+# Skills whose seed covers ONE action; any further clause needs a planner.
+_SINGLE_STEP = frozenset({"channel_gun", "channel_ammo", "summon_vehicle", "cultivate",
+                          "fuse_generator", "fuse_reactor", "fuse_battery", "fuse_simchamber"})
+_CLAUSE_SPLIT = re.compile(r"\b(?:and then|then|after that|afterwards|next|finally)\b|[;]")
+
+
+def _is_compound(t: str) -> bool:
+    """True when the order has more than one actionable clause."""
+    parts = [p.strip(" ,.") for p in _CLAUSE_SPLIT.split(t)]
+    return sum(1 for p in parts if len(p) > 3) > 1

@@ -3213,6 +3213,7 @@ def _standing_worker():
     import json as _json
     fail_streak = {}
     cooldown_until = {}
+    last_fired = {}   # sid -> kind fired last round (to attribute a FAILED directive)
     COOLDOWN_S = 120
     while True:
         time.sleep(30)
@@ -3253,15 +3254,35 @@ def _standing_worker():
                 if now < cooldown_until.get(sid, 0):
                     continue
                 # only fire on an idle bot — standing orders yield to live work
-                d = (api.get_directive(bot) or {}).get("directive", {})
+                full = api.get_directive(bot) or {}
+                d = full.get("directive", {})
                 if str(d.get("status", "")).upper() == "ACTIVE":
                     continue
                 # CRAFT_REQUEST discipline: one job per bot stands
                 kind = str(st.get("actionKind", ""))
+                # A fired directive that FAILED counts toward the backoff streak.
+                # Previously only a refused SUBMISSION did, so a directive that
+                # can never succeed (e.g. CRAFT_REQUEST on a bot with no linked
+                # terminal) re-fired every COOLDOWN_S forever — a 2-minute nag.
+                if (last_fired.get(sid) == kind and str(d.get("type", "")) == kind
+                        and str(d.get("status", "")).upper() == "FAILED"):
+                    reason = (d.get("failure_reason") or d.get("reason")
+                              or (full.get("progress") or {}).get("failure_reason") or "failed")
+                    streak = fail_streak.get(sid, 0) + 1
+                    fail_streak[sid] = streak
+                    cooldown_until[sid] = now + COOLDOWN_S * (2 ** min(streak, 4))
+                    last_fired.pop(sid, None)
+                    api.raw_post("/telemetry/standing", {
+                        "id": sid, "reading": reading, "fired_at": int(now * 1000),
+                        "result": f"last fire FAILED ({str(reason)[:60]}); backing off x{2 ** min(streak, 4)}"})
+                    print(f"[{bot}/standing] {sid}: fired {kind} FAILED ({reason}) -> backoff streak {streak}")
+                    continue
                 r = api.raw_post("/telemetry/orders", {
                     "bot": bot, "kind": kind, "player": f"standing:{sid}",
                     "params": _json.loads(st.get("actionParams") or "{}")})
                 fired_ok = bool(r.get("ok"))
+                if fired_ok:
+                    last_fired[sid] = kind
                 streak = fail_streak.get(sid, 0) if fired_ok else fail_streak.get(sid, 0) + 1
                 fail_streak[sid] = 0 if fired_ok else streak
                 backoff = COOLDOWN_S * (2 ** min(streak, 4))
