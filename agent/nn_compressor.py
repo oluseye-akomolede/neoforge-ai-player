@@ -39,10 +39,19 @@ def enabled() -> bool:
     return bool(NN_COMPRESSOR_URL)
 
 
-def latest_summary(bot: str) -> Optional[str]:
-    """The most recent L3 situational summary for a bot, or None."""
+def latest_summary(bot: str, max_age_s: float = 180.0) -> Optional[str]:
+    """The most recent L3 situational summary for a bot, or None.
+
+    Returns None if the newest summary is older than ``max_age_s`` (the worker
+    sweeps every ~90s, so a healthy summary is well under that). This stops a
+    stale "situation:" line — e.g. a position from before a long teleport —
+    from being injected into the planner as if it were current."""
     entry = _summaries.get(bot)
-    return entry.get("summary") if entry else None
+    if not entry:
+        return None
+    if max_age_s and (time.time() - entry.get("at", 0)) > max_age_s:
+        return None
+    return entry.get("summary") or None
 
 
 def compress_state(state: Dict[str, Any]) -> Optional[Dict[str, Any]]:

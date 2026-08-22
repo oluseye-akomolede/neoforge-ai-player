@@ -3214,6 +3214,17 @@ def _standing_worker():
     fail_streak = {}
     cooldown_until = {}
     last_fired = {}   # sid -> kind fired last round (to attribute a FAILED directive)
+    # No-progress watchdog: a standing order can fire SUCCESSFULLY forever yet
+    # never converge (e.g. MEDITATE raises xp_level, but xp is spent just as
+    # fast, so the reading never crosses the threshold). fail_streak never arms
+    # because nothing FAILS. Track the reading at first breach + a fire count so
+    # we can spot "spinning with no net progress" and escalate/park it.
+    first_seen_reading = {}
+    first_seen_time = {}
+    fire_count = {}
+    STALE_FIRES = 3       # min successful fires before we judge
+    STALE_SECS = 900      # ...and at least 15 min elapsed
+    STALE_CLOSED = 0.10   # ...having closed <10% of the initial distance to threshold
     COOLDOWN_S = 120
     while True:
         time.sleep(30)
@@ -3250,7 +3261,15 @@ def _standing_worker():
                 api.raw_post("/telemetry/standing", {"id": sid, "reading": reading})
                 if not breached:
                     fail_streak.pop(sid, None)
+                    first_seen_reading.pop(sid, None)
+                    first_seen_time.pop(sid, None)
+                    fire_count.pop(sid, None)
                     continue
+                # breached: open (or continue) the no-progress observation window
+                if sid not in first_seen_time:
+                    first_seen_reading[sid] = reading
+                    first_seen_time[sid] = now
+                    fire_count[sid] = 0
                 if now < cooldown_until.get(sid, 0):
                     continue
                 # only fire on an idle bot — standing orders yield to live work
@@ -3283,6 +3302,42 @@ def _standing_worker():
                 fired_ok = bool(r.get("ok"))
                 if fired_ok:
                     last_fired[sid] = kind
+                    fire_count[sid] = fire_count.get(sid, 0) + 1
+                    _cmp = st.get("comparator", "gte")
+                    _dist = (lambda rv: (threshold - rv) if _cmp == "gte" else (rv - threshold))
+                    d0 = _dist(first_seen_reading.get(sid, reading))
+                    d1 = _dist(reading)
+                    closed = ((d0 - d1) / d0) if d0 > 0 else 1.0
+                    elapsed = now - first_seen_time.get(sid, now)
+                    if fire_count[sid] >= STALE_FIRES and elapsed >= STALE_SECS and closed < STALE_CLOSED:
+                        mins = int(elapsed / 60)
+                        print(f"[{bot}/standing] {sid}: STALE — fired {fire_count[sid]}x over {mins}m, "
+                              f"reading stuck ~{reading}/{threshold} (closed {closed:.0%}); parking + escalating")
+                        try:
+                            api.raw_post("/telemetry/event", {
+                                "bot": bot, "type": "standing_stale",
+                                "text": f"standing {sid} ({item} {'>=' if _cmp == 'gte' else '<'} {threshold}) "
+                                        f"spun {fire_count[sid]}x/{mins}m with no net progress"})
+                        except Exception:
+                            pass
+                        import escalation as _esc
+                        threading.Thread(
+                            target=_esc.ask,
+                            args=(bot, "standing_stale",
+                                  f"Standing order {sid} ({item}) fired {fire_count[sid]} times over {mins} min "
+                                  f"with no net progress — reading stuck at {reading} vs threshold {threshold}. "
+                                  f"It may never converge (e.g. the resource is consumed as fast as it is produced).",
+                                  ["disable it", "keep trying"]),
+                            daemon=True).start()
+                        # park for an hour so it stops nagging; re-arm the window fresh
+                        cooldown_until[sid] = now + 3600
+                        first_seen_reading[sid] = reading
+                        first_seen_time[sid] = now
+                        fire_count[sid] = 0
+                        api.raw_post("/telemetry/standing", {
+                            "id": sid, "reading": reading, "fired_at": int(now * 1000),
+                            "result": f"parked: no progress after {STALE_FIRES}+ fires / {mins}m (reading {reading}/{threshold})"})
+                        continue
                 streak = fail_streak.get(sid, 0) if fired_ok else fail_streak.get(sid, 0) + 1
                 fail_streak[sid] = 0 if fired_ok else streak
                 backoff = COOLDOWN_S * (2 ** min(streak, 4))
@@ -4066,7 +4121,8 @@ def run():
         st = api.raw_get(f"/bot/{name}/status") or {}
         vx = api.raw_get(f"/bot/{name}/voxel") or {}
         state = {}
-        if st.get("position"): state["position"] = st["position"]
+        pos = st.get("position")
+        if pos: state["position"] = pos
         if st.get("dimension"): state["dimension"] = st["dimension"]
         # The raw voxel grid is a token-heavy binary blob the LLM codec predicts
         # poorly and slowly — so we send its DENSITY scalar (computed here), not
@@ -4077,6 +4133,54 @@ def run():
             cells = [c for layer in grid for row in layer for c in row]
             if cells:
                 state["density"] = round(sum(cells) / len(cells), 3)
+        # Nearby entities (type + distance for the closest few). The service turns
+        # these into "Nearest entity: husk at 10 blocks." — threat/awareness the
+        # planner otherwise never saw. Capped small to keep the payload tiny.
+        try:
+            ents = (api.raw_get(f"/bot/{name}/entities") or {}).get("entities", [])
+            parsed = []
+            for e in ents:
+                try:
+                    d = float(e.get("distance", e.get("d", 1e9)))
+                except (TypeError, ValueError):
+                    continue
+                parsed.append({"t": e.get("type") or e.get("t") or "?", "d": round(d, 1)})
+            parsed.sort(key=lambda r: r["d"])
+            if parsed:
+                state["entities"] = parsed[:8]
+        except Exception:
+            pass
+        # Vehicle status only when actually aboard one (mounted combat/travel).
+        try:
+            v = api.raw_get(f"/bot/{name}/vehicle") or {}
+            if v.get("aboard"):
+                state["vehicle"] = {
+                    "type": v.get("type") or v.get("vehicle") or "vehicle",
+                    "energy": int(v.get("energy", 0) or 0),
+                    "hp": v.get("hp", v.get("health", 0.0)) or 0.0,
+                    "seat": int(v.get("seat", 0) or 0),
+                    "moving": bool(v.get("moving", False)),
+                }
+        except Exception:
+            pass
+        # Distance to the nearest logged-in player. Absent when nobody is online
+        # (the hive's normal state) — correctly yielding no "player nearby/far"
+        # sentence rather than a misleading one.
+        try:
+            if pos:
+                players = (api.raw_get("/server/players") or {}).get("players", [])
+                dists = []
+                for pl in players:
+                    pp = pl.get("position") or pl
+                    if isinstance(pp, dict) and pp.get("x") is not None:
+                        dx = pp["x"] - pos["x"]
+                        dy = pp.get("y", pos["y"]) - pos["y"]
+                        dz = pp["z"] - pos["z"]
+                        dists.append((dx * dx + dy * dy + dz * dz) ** 0.5)
+                if dists:
+                    state["player_dist"] = round(min(dists), 1)
+        except Exception:
+            pass
         return state or None
 
     import nn_compressor as _nnc

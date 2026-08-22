@@ -104,12 +104,32 @@ public final class BlockFusionCompat {
 
     // ── native long capacity (for >int storages) ──────────────────────────
 
+    private static final java.util.Set<String> SATURATED_LOGGED =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /** A storage whose int cap saturates at Integer.MAX_VALUE (2.14B) but has no
+     *  known native long accessor is UNDERCOUNTED toward the FE ceiling. Log it
+     *  once per block type so exotic >2.1B storages surface instead of silently
+     *  contributing only 2.14B. */
+    private static void warnSaturatedCap(ServerLevel level, BlockPos pos) {
+        String name = blockName(level, pos);
+        if (SATURATED_LOGGED.add(name)) {
+            AIPlayerMod.LOGGER.warn("[BlockFusion] storage '{}' has a saturated int capacity (2.14B) and no "
+                    + "known native long accessor -> its fused FE-cap contribution is UNDERCOUNTED to 2.14B. "
+                    + "Add it to NativeEnergy's long-accessor table for the true capacity.", name);
+        }
+    }
+
     /** Max energy as a long — reflects the mod-native accessor when the int cap saturates. */
     public static long longMaxEnergy(ServerLevel level, BlockPos pos) {
         long l = NativeEnergy.maxEnergy(level, pos);
         if (l > 0) return l;
         int cap = maxEnergy(level, pos);
-        return cap == Integer.MAX_VALUE ? Integer.MAX_VALUE : cap;
+        if (cap == Integer.MAX_VALUE) {
+            warnSaturatedCap(level, pos);   // big storage, no native long accessor -> undercounted
+            return Integer.MAX_VALUE;
+        }
+        return cap;
     }
 
     public static long longStored(ServerLevel level, BlockPos pos) {
