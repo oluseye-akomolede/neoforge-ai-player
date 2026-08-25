@@ -95,6 +95,23 @@ public final class BlockFusionCompat {
         return e.extractEnergy(amount, false);
     }
 
+    /**
+     * Capture energy from a generator even when it is push-only. Tries the normal
+     * capability extract first; if that yields nothing (Powah reactors and other
+     * auto-ejecting generators report canExtract=false), force-drains the native
+     * buffer via reflection. This is what makes fusing a Nitro Reactor actually
+     * feed FE instead of watching its buffer sit full.
+     */
+    public static long extractForce(ServerLevel level, BlockPos pos, long amount) {
+        if (amount <= 0) return 0;
+        IEnergyStorage e = energy(level, pos);
+        if (e != null && e.canExtract()) {
+            int d = e.extractEnergy((int) Math.min(amount, Integer.MAX_VALUE), false);
+            if (d > 0) return d;
+        }
+        return NativeEnergy.drain(level, pos, amount);
+    }
+
     /** Push up to {@code amount} FE into the block; returns the amount accepted. */
     public static int receive(ServerLevel level, BlockPos pos, int amount) {
         IEnergyStorage e = energy(level, pos);

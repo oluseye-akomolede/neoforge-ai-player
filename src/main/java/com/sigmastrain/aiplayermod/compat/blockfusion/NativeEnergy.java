@@ -30,7 +30,7 @@ final class NativeEnergy {
     // Powah
     private static Class<?> powahStorage;
     private static Field powahEnergyField;
-    private static Method powahEnergyStored, powahEnergyCap;
+    private static Method powahEnergyStored, powahEnergyCap, powahConsume;
 
     static synchronized void resolve() {
         if (resolved) return;
@@ -67,6 +67,7 @@ final class NativeEnergy {
                     Class<?> energy = Class.forName("owmii.powah.lib.logistics.energy.Energy");
                     powahEnergyStored = energy.getMethod("getStored");
                     powahEnergyCap = energy.getMethod("getCapacity");
+                    powahConsume = energy.getMethod("consume", long.class);   // raw drain, ignores push-only extract gating
                     BlockFusionCompat.logResolve("Powah", true);
                 } catch (Throwable t) {
                     BlockFusionCompat.logResolve("Powah", false);
@@ -141,6 +142,37 @@ final class NativeEnergy {
             AIPlayerMod.LOGGER.debug("[BlockFusion] native maxEnergy failed: {}", t.toString());
         }
         return -1;
+    }
+
+    /**
+     * Force-drain energy directly from a push-only generator's native buffer
+     * (Powah reactors auto-eject and refuse capability extraction, so the generic
+     * IEnergyStorage.extractEnergy returns 0). Consumes from the internal Energy
+     * object, measuring stored before/after so the returned amount is exact
+     * regardless of the consume() return contract. Returns FE removed.
+     */
+    static long drain(ServerLevel level, BlockPos pos, long amount) {
+        resolve();
+        if (amount <= 0) return 0;
+        BlockEntity be = level.getBlockEntity(pos);
+        if (be == null) return 0;
+        try {
+            if (powahStorage != null && powahStorage.isInstance(be) && powahConsume != null) {
+                Object en = powahEnergyField.get(be);
+                if (en != null) {
+                    long before = ((Number) powahEnergyStored.invoke(en)).longValue();
+                    if (before <= 0) return 0;
+                    powahConsume.invoke(en, Math.min(amount, before));
+                    long after = ((Number) powahEnergyStored.invoke(en)).longValue();
+                    long drained = before - after;
+                    if (drained > 0) be.setChanged();
+                    return drained;
+                }
+            }
+        } catch (Throwable t) {
+            AIPlayerMod.LOGGER.debug("[BlockFusion] native drain failed: {}", t.toString());
+        }
+        return 0;
     }
 
     static long stored(ServerLevel level, BlockPos pos) {
