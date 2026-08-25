@@ -153,26 +153,44 @@ final class NativeEnergy {
      */
     static long drain(ServerLevel level, BlockPos pos, long amount) {
         resolve();
-        if (amount <= 0) return 0;
-        BlockEntity be = level.getBlockEntity(pos);
+        if (amount <= 0 || powahStorage == null || powahConsume == null) return 0;
+        BlockEntity be = powahStorageAt(level, pos);
         if (be == null) return 0;
         try {
-            if (powahStorage != null && powahStorage.isInstance(be) && powahConsume != null) {
-                Object en = powahEnergyField.get(be);
-                if (en != null) {
-                    long before = ((Number) powahEnergyStored.invoke(en)).longValue();
-                    if (before <= 0) return 0;
-                    powahConsume.invoke(en, Math.min(amount, before));
-                    long after = ((Number) powahEnergyStored.invoke(en)).longValue();
-                    long drained = before - after;
-                    if (drained > 0) be.setChanged();
-                    return drained;
-                }
+            Object en = powahEnergyField.get(be);
+            if (en != null) {
+                long before = ((Number) powahEnergyStored.invoke(en)).longValue();
+                if (before <= 0) return 0;
+                powahConsume.invoke(en, Math.min(amount, before));
+                long after = ((Number) powahEnergyStored.invoke(en)).longValue();
+                long drained = before - after;
+                if (drained > 0) be.setChanged();
+                return drained;
             }
         } catch (Throwable t) {
             AIPlayerMod.LOGGER.debug("[BlockFusion] native drain failed: {}", t.toString());
         }
         return 0;
+    }
+
+    /** The Powah energy-storage BE at pos, or the nearest one in the surrounding
+     *  multiblock (a reactor fused on a structure PART forwards to its core, which
+     *  is the block that actually holds the Energy). Prefers the fullest one. */
+    private static BlockEntity powahStorageAt(ServerLevel level, BlockPos pos) {
+        BlockEntity direct = level.getBlockEntity(pos);
+        if (direct != null && powahStorage.isInstance(direct)) return direct;
+        BlockEntity best = null; long bestStored = -1;
+        for (int dx = -2; dx <= 2; dx++) for (int dy = -2; dy <= 2; dy++) for (int dz = -2; dz <= 2; dz++) {
+            BlockEntity be = level.getBlockEntity(pos.offset(dx, dy, dz));
+            if (be == null || !powahStorage.isInstance(be)) continue;
+            try {
+                Object en = powahEnergyField.get(be);
+                if (en == null) continue;
+                long st = ((Number) powahEnergyStored.invoke(en)).longValue();
+                if (st > bestStored) { bestStored = st; best = be; }
+            } catch (Throwable ignored) {}
+        }
+        return best;
     }
 
     static long stored(ServerLevel level, BlockPos pos) {
