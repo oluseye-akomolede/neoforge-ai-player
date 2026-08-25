@@ -303,12 +303,20 @@ public class OverlayScreen extends Screen {
     }
 
     private Button anchorBtn;
+    private static final int FH = 48;
+    private final java.util.Map<String, float[]> fusionHist = new java.util.HashMap<>();
 
     public void onSnapshot(OverlayPayloads.FleetSnapshot snap) {
         // Vehicle state changes the button set (Status + Vehicle tabs), so
         // rebuild when the selected bot boards/dismounts or its ext actions change.
         OverlayPayloads.BotEntry before = selectedBot();
         this.snapshot = snap;
+        for (OverlayPayloads.BotEntry b : snap.bots()) {
+            if (b.fusion() == null) continue;
+            float[] h = fusionHist.computeIfAbsent(b.id(), k -> new float[FH]);
+            System.arraycopy(h, 1, h, 0, FH - 1);
+            h[FH - 1] = b.fusion().feIncome();
+        }
         if (selected >= snap.bots().size()) selected = -1;
         refreshInterruptButton();
         OverlayPayloads.BotEntry cur = selectedBot();
@@ -1469,6 +1477,13 @@ public class OverlayScreen extends Screen {
                     + (v.driver() ? " (driver)" : "") + " §8· §e⚡ " + fmtLong(v.energy()) + "§8/§7" + fmtLong(v.maxEnergy())
                     + " §8· §c♥ " + (int) v.health() + "§8/§7" + (int) v.maxHealth(), pw - 24), px + 10, cy + 50, TEXT);
         }
+        if (e.fusion() != null) {
+            OverlayPayloads.FusionInfo f = e.fusion();
+            g.drawString(font, trim("§d\u269b fused §r" + f.block() + " §8\u00b7 §7" + f.role()
+                    + " §8\u00b7 §e\u26a1 " + fmtLong(f.energy()) + "§8/§7" + fmtLong(f.maxEnergy())
+                    + " §8\u00b7 §a+" + fmtLong(f.feIncome()) + " FE/t", pw - 62), px + 10, cy + 50, TEXT);
+            drawFusionSpark(g, e.id(), px + pw - 56, cy + 48, 48, 12);
+        }
         if (e.directiveId() < 0) {
             g.drawString(font, "standing by — no directive", px + 12, cy + 6, TEXT_DIM);
             return;
@@ -1642,6 +1657,22 @@ public class OverlayScreen extends Screen {
         boolean meOnline = vault != null && "online".equals(vault.meStatus());
         int by = panelY() + 62 + 18 + VAULT_ROWS * 12 + 6;
         return by + (meOnline ? 36 : 18) + 18;
+    }
+
+    private void drawFusionSpark(GuiGraphics g, String id, int x, int y, int w, int h) {
+        float[] hist = fusionHist.get(id);
+        if (hist == null) return;
+        float max = 1f;
+        for (float v : hist) max = Math.max(max, v);
+        g.fill(x - 1, y - 1, x + w + 1, y + h + 1, 0x99000000);
+        int n = Math.min(FH, w);
+        int bw = Math.max(1, w / n);
+        for (int i = 0; i < n; i++) {
+            float v = hist[FH - n + i];
+            int bh = (int) ((v / max) * h);
+            int bx = x + (int) (i * (w / (float) n));
+            g.fill(bx, y + h - bh, bx + bw, y + h, 0xFF39D98A);
+        }
     }
 
     private static String fmtLong(long n) {

@@ -471,6 +471,22 @@ public class HttpApiServer {
                 });
                 sendJson(exchange, 200, blockAtFuture.join());
             }
+            case "fusiondrain" -> {   // DEBUG: verify extractForce on a block (drains a small amount)
+                int fx = body.get("x").getAsInt(), fy = body.get("y").getAsInt(), fz = body.get("z").getAsInt();
+                long amt = body.has("amount") ? body.get("amount").getAsLong() : 1000L;
+                var fdFut = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
+                BotManager.getServer().execute(() -> {
+                    try {
+                        var lvl = (net.minecraft.server.level.ServerLevel) bot.getPlayer().level();
+                        var fp = new net.minecraft.core.BlockPos(fx, fy, fz);
+                        long before = com.sigmastrain.aiplayermod.compat.blockfusion.BlockFusionCompat.longStored(lvl, fp);
+                        long drained = com.sigmastrain.aiplayermod.compat.blockfusion.BlockFusionCompat.extractForce(lvl, fp, amt);
+                        long after = com.sigmastrain.aiplayermod.compat.blockfusion.BlockFusionCompat.longStored(lvl, fp);
+                        fdFut.complete(Map.of("stored_before", before, "drained", drained, "stored_after", after, "amount", amt));
+                    } catch (Exception e) { fdFut.complete(Map.of("error", String.valueOf(e))); }
+                });
+                sendJson(exchange, 200, fdFut.join());
+            }
             case "locate" -> {
                 // Synchronous structure lookup — same query as the LOCATE
                 // directive, without the plan pipeline. Lets L2 resolve a

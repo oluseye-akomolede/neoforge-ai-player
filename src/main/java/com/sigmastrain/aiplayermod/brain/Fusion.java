@@ -30,6 +30,8 @@ public final class Fusion {
     }
 
     private static final Map<String, State> FUSED = new ConcurrentHashMap<>();
+    /** bot name -> FE/tick the fusion is currently generating (pushed by hive's economy). */
+    private static final Map<String, Long> INCOME = new ConcurrentHashMap<>();
 
     public static void fuse(String bot, String dimension, BlockPos pos, Role role, Mode mode) {
         FUSED.put(bot, new State(bot, dimension, pos.immutable(), role, mode));
@@ -42,7 +44,12 @@ public final class Fusion {
 
     public static void unfuse(String bot) {
         FUSED.remove(bot);
+        INCOME.remove(bot);
     }
+
+    /** Hive reports the FE/tick this fusion generates; the overlay reads it. */
+    public static void setIncome(String bot, long fePerTick) { INCOME.put(bot, fePerTick); }
+    public static long income(String bot) { return INCOME.getOrDefault(bot, 0L); }
 
     public static State of(String bot) {
         return FUSED.get(bot);

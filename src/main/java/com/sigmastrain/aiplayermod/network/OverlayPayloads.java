@@ -86,7 +86,8 @@ public final class OverlayPayloads {
             boolean anchored,
             VehicleInfo vehicle,        // null when not aboard a Superb Warfare vehicle
             boolean vehicleNear,        // an SW vehicle/turret is within reach (board / charge)
-            List<ExtAction> extActions  // per-bot buttons contributed by other mods (hive)
+            List<ExtAction> extActions, // per-bot buttons contributed by other mods (hive)
+            FusionInfo fusion           // null when not fused with a block
     ) {
         /** Convenience: is this bot aboard a vehicle? */
         public boolean aboard() { return vehicle != null; }
@@ -116,6 +117,8 @@ public final class OverlayPayloads {
             List<ExtAction> ext = e.extActions == null ? List.of() : e.extActions;
             buf.writeVarInt(ext.size());
             for (ExtAction a : ext) { buf.writeUtf(a.id()); buf.writeUtf(a.label()); }
+            buf.writeBoolean(e.fusion != null);
+            if (e.fusion != null) FusionInfo.write(buf, e.fusion);
         }
 
         static BotEntry read(RegistryFriendlyByteBuf buf) {
@@ -140,7 +143,8 @@ public final class OverlayPayloads {
                     buf.readBoolean(),
                     buf.readBoolean() ? VehicleInfo.read(buf) : null,
                     buf.readBoolean(),
-                    readExt(buf));
+                    readExt(buf),
+                    buf.readBoolean() ? FusionInfo.read(buf) : null);
         }
 
         private static List<ExtAction> readExt(RegistryFriendlyByteBuf buf) {
@@ -153,6 +157,18 @@ public final class OverlayPayloads {
 
     /** A button another mod contributes to a bot's panel (see BotActionExtensions). */
     public record ExtAction(String id, String label) {}
+
+    /** Snapshot of the block a bot is fused with (energy + live FE/tick income). */
+    public record FusionInfo(String block, String role, String mode, long energy, long maxEnergy, long feIncome) {
+        static void write(RegistryFriendlyByteBuf buf, FusionInfo f) {
+            buf.writeUtf(f.block); buf.writeUtf(f.role); buf.writeUtf(f.mode);
+            buf.writeVarLong(f.energy); buf.writeVarLong(f.maxEnergy); buf.writeVarLong(f.feIncome);
+        }
+        static FusionInfo read(RegistryFriendlyByteBuf buf) {
+            return new FusionInfo(buf.readUtf(), buf.readUtf(), buf.readUtf(),
+                    buf.readVarLong(), buf.readVarLong(), buf.readVarLong());
+        }
+    }
 
     /** Snapshot of the Superb Warfare vehicle a bot is aboard. */
     public record VehicleInfo(

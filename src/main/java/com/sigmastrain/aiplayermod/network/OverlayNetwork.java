@@ -1141,6 +1141,21 @@ public final class OverlayNetwork {
                 com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.drivable(v));
     }
 
+    private static OverlayPayloads.FusionInfo fusionInfoOf(BotPlayer bot) {
+        String name = bot.getPlayer().getGameProfile().getName();
+        com.sigmastrain.aiplayermod.brain.Fusion.State st = com.sigmastrain.aiplayermod.brain.Fusion.of(name);
+        if (st == null) return null;
+        var level = bot.getPlayer().serverLevel();
+        var pos = st.pos();
+        long energy = com.sigmastrain.aiplayermod.compat.blockfusion.BlockFusionCompat.longStored(level, pos);
+        long max = com.sigmastrain.aiplayermod.compat.blockfusion.BlockFusionCompat.longMaxEnergy(level, pos);
+        return new OverlayPayloads.FusionInfo(
+                com.sigmastrain.aiplayermod.compat.blockfusion.BlockFusionCompat.blockName(level, pos),
+                st.role().name(), st.mode().name(),
+                Math.max(0, energy), Math.max(0, max),
+                com.sigmastrain.aiplayermod.brain.Fusion.income(name));
+    }
+
     /** An SW vehicle/turret within 4 blocks (chargeable) or 16 blocks (boardable). */
     private static boolean vehicleNear(ServerPlayer p) {
         if (!com.sigmastrain.aiplayermod.compat.superbwarfare.SwVehicleCompat.isAvailable()) return false;
@@ -1196,7 +1211,8 @@ public final class OverlayNetwork {
                     com.sigmastrain.aiplayermod.bot.AnchorManager.isAnchored(e.getKey()),
                     vehicleInfoOf(bot),
                     vehicleNear(p),
-                    extActionsFor(bot)));
+                    extActionsFor(bot),
+                    fusionInfoOf(bot)));
         }
         return new OverlayPayloads.FleetSnapshot(
                 com.sigmastrain.aiplayermod.telemetry.AgentPresence.silentSeconds(),
