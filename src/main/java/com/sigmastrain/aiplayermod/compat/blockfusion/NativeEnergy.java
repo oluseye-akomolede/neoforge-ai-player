@@ -178,9 +178,18 @@ final class NativeEnergy {
      *  is the block that actually holds the Energy). Prefers the fullest one. */
     private static BlockEntity powahStorageAt(ServerLevel level, BlockPos pos) {
         BlockEntity direct = level.getBlockEntity(pos);
-        if (direct != null && powahStorage.isInstance(direct)) return direct;
+        if (direct == null) return null;
+        if (powahStorage.isInstance(direct)) return direct;
+        // A multiblock structure PART (e.g. Powah ReactorPartTile) holds no energy
+        // itself but points at the core that does — follow getCorePos()/getCore().
+        BlockPos core = corePosOf(direct);
+        if (core != null) {
+            BlockEntity coreBe = level.getBlockEntity(core);
+            if (coreBe != null && powahStorage.isInstance(coreBe)) return coreBe;
+        }
+        // last-resort: scan the surrounding structure for the fullest storage
         BlockEntity best = null; long bestStored = -1;
-        for (int dx = -2; dx <= 2; dx++) for (int dy = -2; dy <= 2; dy++) for (int dz = -2; dz <= 2; dz++) {
+        for (int dx = -3; dx <= 3; dx++) for (int dy = -3; dy <= 3; dy++) for (int dz = -3; dz <= 3; dz++) {
             BlockEntity be = level.getBlockEntity(pos.offset(dx, dy, dz));
             if (be == null || !powahStorage.isInstance(be)) continue;
             try {
@@ -191,6 +200,17 @@ final class NativeEnergy {
             } catch (Throwable ignored) {}
         }
         return best;
+    }
+
+    /** A multiblock part's pointer to its controller/core, via common accessors. */
+    private static BlockPos corePosOf(BlockEntity be) {
+        for (String m : new String[]{"getCorePos", "getCore", "getMasterPos", "getControllerPos", "getControllerBlockPos"}) {
+            try {
+                Object r = be.getClass().getMethod(m).invoke(be);
+                if (r instanceof BlockPos bp) return bp;
+            } catch (Throwable ignored) {}
+        }
+        return null;
     }
 
     static long stored(ServerLevel level, BlockPos pos) {
