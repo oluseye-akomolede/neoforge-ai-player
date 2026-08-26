@@ -104,12 +104,16 @@ public final class BlockFusionCompat {
      */
     public static long extractForce(ServerLevel level, BlockPos pos, long amount) {
         if (amount <= 0) return 0;
+        // Native buffer FIRST: push-only generators (Powah reactors/generators)
+        // either refuse capability extraction or rate-limit it to their per-op
+        // eject rate — so the generic path would leave the buffer full. Draining
+        // the native Energy buffer captures the whole output.
+        long nd = NativeEnergy.drain(level, pos, amount);
+        if (nd > 0) return nd;
         IEnergyStorage e = energy(level, pos);
-        if (e != null && e.canExtract()) {
-            int d = e.extractEnergy((int) Math.min(amount, Integer.MAX_VALUE), false);
-            if (d > 0) return d;
-        }
-        return NativeEnergy.drain(level, pos, amount);
+        if (e != null && e.canExtract())
+            return e.extractEnergy((int) Math.min(amount, Integer.MAX_VALUE), false);
+        return 0;
     }
 
     /** Push up to {@code amount} FE into the block; returns the amount accepted. */
