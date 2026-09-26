@@ -20,6 +20,17 @@ Deployment MUST target exactly two namespaces: `minecraft` (prod) and
 `minecraft-test` (test). The legacy `mindcraft` namespace is retired and MUST
 NOT receive new work.
 
+#### Scenario: Mindcraft VM is decommissioned
+- GIVEN the KubeVirt VM `mindcraft-vm` in the `mindcraft` namespace, currently
+  Stopped
+- THEN it is DECOMMISSIONED as of 2026-09-26, per the owner: "no longer in use;
+  we went in a different direction"
+- AND it MUST NOT be booted
+- AND its credentials (the VM user password, cloud-init RCON, and
+  `MINDCRAFT_API_KEY`) are not maintained or rotated
+- AND its manifests (`~/clustering/manifests` base/mindcraft-vm) are being
+  removed from git by the ecs_hcm rig, not by this repo
+
 #### Scenario: Workloads per namespace
 - GIVEN the cluster is queried for AI-bot workloads
 - WHEN listing `minecraft-test`
