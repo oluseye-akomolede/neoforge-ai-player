@@ -33,9 +33,10 @@ NOT receive new work.
 
 #### Scenario: Mindcraft VM cannot currently start, and revival is credential-first
 - GIVEN the deprecated `mindcraft-vm` spec
-- THEN it cannot currently start: it requests 2x passthrough
-  `nvidia.com/GA107_GEFORCE_RTX_3050_6GB`, which no node advertises any more
-  (GPUs are now exposed as `nvidia.com/gpu`)
+- THEN it cannot currently start: it requests a passthrough
+  `nvidia.com/GA107_GEFORCE_RTX_3050_6GB` (one entry in the `gpus:` list of
+  `~/clustering/manifests` base/mindcraft-vm `vm.yaml`, `gpu0`), which no node
+  advertises any more (GPUs are now exposed as `nvidia.com/gpu`)
 - AND so the 2026-09-26 credential rotation could NOT change the VM user
   password on its disk, which therefore still holds an old, leaked password
 - IF the VM is ever revived
