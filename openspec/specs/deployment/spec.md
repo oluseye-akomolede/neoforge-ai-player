@@ -31,6 +31,19 @@ NOT receive new work.
 - AND its manifests (`~/clustering/manifests` base/mindcraft-vm) are being
   removed from git by the ecs_hcm rig, not by this repo
 
+#### Scenario: Mindcraft VM cannot currently start, and revival is credential-first
+- GIVEN the deprecated `mindcraft-vm` spec
+- THEN it cannot currently start: it requests 2x passthrough
+  `nvidia.com/GA107_GEFORCE_RTX_3050_6GB`, which no node advertises any more
+  (GPUs are now exposed as `nvidia.com/gpu`)
+- AND so the 2026-09-26 credential rotation could NOT change the VM user
+  password on its disk, which therefore still holds an old, leaked password
+- IF the VM is ever revived
+- THEN rotate the VM user password FIRST, using the new value in Secret
+  `mindcraft/mindcraft-vm-user`
+- AND note that the cloud-init RCON copy on the disk is STALE
+- AND `MINDCRAFT_API_KEY` was rotated in Secret `mindcraft/mindcraft-config`
+
 #### Scenario: Workloads per namespace
 - GIVEN the cluster is queried for AI-bot workloads
 - WHEN listing `minecraft-test`
