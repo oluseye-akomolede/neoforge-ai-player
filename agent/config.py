@@ -34,7 +34,7 @@ MAX_CHAT_HISTORY = 20
 MAX_CONVERSATION = 12
 MAX_MEMORY = 50
 
-PG_DSN = os.getenv("PG_DSN", "host=pgvector.minecraft-test.svc.cluster.local port=5432 dbname=botmemory user=aibot password=aibot-memory-2026")
+PG_DSN = os.getenv("PG_DSN", "")
 
 DASHBOARD_ENABLED = os.getenv("DASHBOARD_ENABLED", "true").lower() in ("true", "1", "yes")
 DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "5000"))

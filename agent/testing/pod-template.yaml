@@ -149,7 +149,7 @@ spec:
         - name: USE_L3_PLAN_LAYER
           value: "true"
         - name: PG_DSN
-          value: "postgresql://aibot:aibot-memory-2026@pgvector.minecraft-test.svc.cluster.local:5432/botmemory"
+          value: "set-by-world.py"
         - name: DASHBOARD_ENABLED
           value: "true"
         - name: DASHBOARD_PORT
