@@ -27,7 +27,8 @@ NOT receive new work.
   we went in a different direction"
 - AND it MUST NOT be booted
 - AND its credentials (the VM user password, cloud-init RCON, and
-  `MINDCRAFT_API_KEY`) are not maintained or rotated
+  `MINDCRAFT_API_KEY`) are no longer maintained or rotated (a one-time rotation
+  of `MINDCRAFT_API_KEY` happened on 2026-09-26)
 - AND its manifests (`~/clustering/manifests` base/mindcraft-vm) are being
   removed from git by the ecs_hcm rig, not by this repo
 
@@ -43,7 +44,8 @@ NOT receive new work.
 - THEN rotate the VM user password FIRST, using the new value in Secret
   `mindcraft/mindcraft-vm-user`
 - AND note that the cloud-init RCON copy on the disk is STALE
-- AND `MINDCRAFT_API_KEY` was rotated in Secret `mindcraft/mindcraft-config`
+- AND reissue `MINDCRAFT_API_KEY` from Secret `mindcraft/mindcraft-config` into
+  the VM's config
 
 #### Scenario: Workloads per namespace
 - GIVEN the cluster is queried for AI-bot workloads
