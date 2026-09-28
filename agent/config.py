@@ -12,7 +12,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 L4_ENABLED = os.getenv("L4_ENABLED", "true").lower() in ("true", "1", "yes")
 
-# Off-loop skill author (DeepSeek). Separation of concerns: L3 (local qwen2.5)
+# Off-loop skill author (DeepSeek). Separation of concerns: L3 (local qwen3-coder)
 # stays in the live loop for planning/dispatch; DeepSeek authors reusable skills
 # OFF-LOOP from logged trajectories. The key lives in ANTHROPIC_AUTH_TOKEN (a
 # DeepSeek token) by deliberate user choice — never in settings.json.

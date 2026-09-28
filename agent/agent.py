@@ -154,7 +154,7 @@ class BotRunner:
     def __init__(self, profile):
         self.profile = profile
         self.name = profile["name"]
-        self.model = profile.get("model", "llama3.1:8b")
+        self.model = profile.get("model", "qwen3-coder:30b")
         self.specializations = profile.get("specializations", ["general"])
         # Squad binding: a drone carries the name of its officer; an officer
         # carries the names of its drones. Synced from the hive mod's `squads`
@@ -3373,7 +3373,7 @@ def _drone_adoption_worker():
     whose unit is gone. Officers persist server-side (re-raised on login), so
     they keep semantic memory like the five originals; drones stay ephemeral
     (no semantic memory, no profile file)."""
-    base_model = next(iter(_all_runners.values())).model if _all_runners else "qwen2.5:32b-instruct"
+    base_model = next(iter(_all_runners.values())).model if _all_runners else "qwen3-coder:30b"
     while True:
         time.sleep(20)
         try:

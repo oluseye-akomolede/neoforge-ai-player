@@ -1,6 +1,6 @@
 """Off-loop skill author (v10 Phase 2, role-separated).
 
-Separation of concerns: L3 (local qwen2.5) stays in the live loop — it plans and
+Separation of concerns: L3 (local qwen3-coder) stays in the live loop — it plans and
 dispatches. Authoring new reusable skills is a *judgment* task L3 is too small to
 do reliably (it greedily seed-matches on one verb and drops the rest of a
 two-step task), so it moves OFF-LOOP to a stronger model (DeepSeek), fed by the
