@@ -183,6 +183,7 @@ class BotRunner:
         self._awaiting_taskboard = False
         self._current_task_id = None
         self._following_player = None
+        self._orch_cancel = None  # threading.Event for the live orch:<name> run
         self._cached_inventory = []  # updated on each observe tick
         self._terrain_tick = 0
         self._lock = threading.Lock()
@@ -257,6 +258,8 @@ class BotRunner:
     def reset(self):
         """Clear all planning state, cancel directives, and stop actions."""
         print(f"[{self.name}/reset] Clearing all state")
+        # Abort any in-flight orchestrator before clearing local state.
+        self._cancel_orchestrator(reason="reset")
         # If there was an active plan, mark it failed on disk before clearing
         if self._plan_steps:
             self._shadow_plan_finalize(success=False)
@@ -427,6 +430,11 @@ class BotRunner:
             is_stop = (any(p in text_lower for p in _stop_phrases)
                        or any(text_lower.strip() == p for p in _stop_exact))
             if is_follow or is_goto or is_stop:
+                # Abort any in-flight orchestrator first: clearing _plan_steps
+                # here only touches THIS thread, while the plan runs on the
+                # orch:<name> daemon thread and would otherwise replay for
+                # minutes after a "stop".
+                self._cancel_orchestrator(reason=f"nav shortcut: {text_lower[:30]}")
                 self._plan_steps = []
                 self._plan_step_idx = 0
                 self._plan_instruction = ""
@@ -463,7 +471,7 @@ class BotRunner:
                         api.cancel_directive(self.name)
                     except Exception:
                         pass
-                    api.chat(self.name, f"Standing by.")
+                    api.chat(self.name, "Stopping. Standing by.")
                     print(f"[{self.name}/nav] Direct stop (shortcut)")
                 return
 
@@ -560,6 +568,16 @@ class BotRunner:
                     for n in _all_runners
                 )
                 if applies_to_all or addressed_by_name or (not other_bot_named):
+                    # Talk/Order split (fix: bots must be able to just talk).
+                    # "Mystic, tell me about yourself" is addressed to the bot,
+                    # but it is conversation, not an instruction — planning it
+                    # produced a 1-step IDLE plan and no reply. One cheap L3
+                    # classification decides; only "task" starts a plan.
+                    if self._is_chat_message(text):
+                        print(f"[{self.name}/chat] L3 plan layer: conversation, replying in character")
+                        self._reply_in_character(text)
+                        self._consume_message(msg)
+                        return
                     print(f"[{self.name}/orchestrator] L3 plan layer accepting: {text[:80]}")
                     self._plan_instruction = text
                     shared_state.push_event({"bot": self.name, "type": "l3_plan_dispatched", "instruction": text[:100]})
@@ -753,6 +771,11 @@ class BotRunner:
                 # Spawns a worker thread that drives plan_orchestrator.execute_task
                 # to completion using this bot's mod API for dispatch.
                 if USE_L3_PLAN_LAYER:
+                    if self._is_chat_message(text):
+                        print(f"[{self.name}/chat] L3 plan layer: conversation, replying in character")
+                        self._reply_in_character(text)
+                        self._consume_message(msg)
+                        return
                     print(f"[{self.name}/orchestrator] dispatching to L3 plan layer: {text[:80]}")
                     self._plan_instruction = text
                     shared_state.push_event({"bot": self.name, "type": "l3_plan_dispatched", "instruction": text[:100]})
@@ -1120,6 +1143,73 @@ class BotRunner:
         return [f"{f['what']} at ({f['x']},{f['y']},{f['z']}) in {f['dimension']}"
                 for f in items]
 
+    def _cancel_orchestrator(self, reason: str = "") -> bool:
+        """Signal the running orchestrator thread to abort. Returns True if one
+        was running. The plan itself is finalized as 'cancelled' by
+        execute_task once it observes the flag."""
+        ev = getattr(self, "_orch_cancel", None)
+        if ev is None:
+            return False
+        if ev.is_set():
+            return True
+        print(f"[{self.name}/cancel] aborting orchestrator ({reason})")
+        ev.set()
+        return True
+
+    def _is_chat_message(self, text: str) -> bool:
+        """True when an addressed message is conversation, not an instruction.
+
+        Fails to False (i.e. "treat as task") on any error — a misread order
+        is visible and correctable, a misread chat silently drops an order."""
+        try:
+            import l3_planner
+            return l3_planner.classify_message(self.model, self.name, text) == "chat"
+        except Exception as e:
+            print(f"[{self.name}/chat] classify error: {e} — treating as task")
+            return False
+
+    def _reply_in_character(self, text: str) -> None:
+        """Answer a conversational message in the bot's persona via api.chat.
+
+        Uses the same l3_planner.converse path the dashboard Talk overlay
+        already drives; no plan, no orchestrator run."""
+        try:
+            import l3_planner
+            persona = l3_planner.BOT_PERSONAS.get(self.name.lower(), "a helpful bot")
+            world_state = ""
+            try:
+                world_state = self._l3_orchestrator_world_state()
+            except Exception:
+                pass
+            directive_line = ""
+            try:
+                st = api.status(self.name)
+                if isinstance(st, dict):
+                    directive_line = str(st.get("directive") or "")
+            except Exception:
+                pass
+            history = [{"who": self.name, "text": m} for m in self.conversation_history[-10:]]
+            reply = l3_planner.converse(
+                self.model, self.name, persona, text,
+                world_state=world_state,
+                directive_line=directive_line,
+                history=history,
+            )
+            if reply:
+                api.chat(self.name, reply[:400])
+                self.conversation_history.append(reply)
+                shared_state.push_event({
+                    "bot": self.name, "type": "chat_reply", "text": reply[:200],
+                })
+            else:
+                print(f"[{self.name}/chat] converse returned empty — no reply sent")
+        except Exception as e:
+            print(f"[{self.name}/chat] reply failed: {e}")
+            try:
+                api.chat(self.name, "I didn't catch that — say again?")
+            except Exception:
+                pass
+
     def _run_orchestrator(self, task_text: str, sender: str = "", order_id: str = "", order_kind: str = ""):
         """Worker target: drives plan_orchestrator.execute_task for a single task.
         Runs in its own daemon thread so the existing tick loop is unaffected.
@@ -1197,12 +1287,35 @@ class BotRunner:
 
         def on_finalized(plan):
             done = sum(1 for s2 in plan.subtasks if s2.status == "complete")
+            declined = plan.meta.get("declined")
+            if declined:
+                # L3 refused or asked a clarifying question — say its reason,
+                # which IS the whole answer. No step counts to report.
+                _order_status("FAILED", f"declined ({declined}): {plan.meta.get('reason','')[:120]}")
+                try:
+                    api.chat(self.name, str(plan.meta.get("reason") or "")[:300])
+                    shared_state.push_event({
+                        "bot": self.name, "type": "l3_plan_declined",
+                        "kind": declined, "reason": plan.meta.get("reason", "")[:200],
+                    })
+                except Exception as e:
+                    print(f"[{self.name}/orchestrator] decline chat error: {e}")
+                return
             _order_status("COMPLETED" if plan.status == "complete" else "FAILED",
                           f"{done}/{len(plan.subtasks)} steps")
             try:
                 ok = (plan.status == "complete")
                 done_count = sum(1 for s in plan.subtasks if s.status == "complete")
-                summary = f"Plan {plan.status}: {done_count}/{len(plan.subtasks)} steps"
+                cancelled = (plan.status == "cancelled")
+                if cancelled:
+                    summary = f"Stopped — {done_count}/{len(plan.subtasks)} steps done."
+                else:
+                    summary = f"Plan {plan.status}: {done_count}/{len(plan.subtasks)} steps"
+                    if not ok:
+                        # Say what didn't work, not just that something didn't.
+                        failed_ids = [str(s.id) for s in plan.subtasks if s.status != "complete"]
+                        if failed_ids:
+                            summary += f" (steps {', '.join(failed_ids)} unfinished)"
                 if ok:
                     # L2 Phase B render: same facts, this bot's voice. Identity
                     # fallback if the CPU model is slow/down — never blocks facts.
@@ -1216,6 +1329,11 @@ class BotRunner:
                 print(f"[{self.name}/orchestrator] finalize chat error: {e}")
 
         _order_status("RUNNING", task_text[:120])
+        # A fresh cancel flag per run, published on the bot so the stop
+        # shortcut and reset() (which run on OTHER threads) can abort this
+        # orchestrator between subtasks and between attempts.
+        cancel_event = threading.Event()
+        self._orch_cancel = cancel_event
         try:
             plan_orchestrator.execute_task(
                 bot_name=self.name,
@@ -1227,6 +1345,7 @@ class BotRunner:
                 on_subtask_start=on_subtask_start,
                 on_subtask_done=on_subtask_done,
                 on_finalized=on_finalized,
+                cancel_event=cancel_event,
             )
         except Exception as e:
             print(f"[{self.name}/orchestrator] crashed: {e}")
@@ -1236,6 +1355,9 @@ class BotRunner:
             except Exception:
                 pass
             shared_state.push_event({"bot": self.name, "type": "l3_plan_error", "error": str(e)[:200]})
+        finally:
+            if self._orch_cancel is cancel_event:
+                self._orch_cancel = None
 
     # ── shadow-plan persistence (L3 spec-driven planning visibility) ───────
 

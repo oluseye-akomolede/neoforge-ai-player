@@ -200,15 +200,21 @@ def execute_task(
     on_subtask_start: OnSubtaskStart | None = None,
     on_subtask_done: OnSubtaskDone | None = None,
     on_finalized: OnFinalized | None = None,
+    cancel_event=None,
 ) -> Plan:
     """
     Run a full task end-to-end: plan → exec subtasks → return Plan.
 
-    Returns the final Plan with status set to complete or failed. The plan
-    file is also archived on disk.
+    Returns the final Plan with status set to complete, failed, or cancelled.
+    The plan file is also archived on disk.
 
     The four optional callbacks let the caller surface progress to chat,
     dashboard, or anywhere else without coupling the orchestrator to UI.
+
+    `cancel_event` is an optional threading.Event. It is checked between
+    subtasks and between attempts; when set, the plan is finalized as
+    "cancelled" and execution stops. This is the only way a "stop" issued on
+    another thread can abort a running plan.
     """
     world_state_fn = world_state_fn or (lambda: "")
     noop = lambda *_a, **_kw: None
@@ -261,10 +267,29 @@ def execute_task(
                     log.info("[%s] retry plan still has %d geometry issue(s) — using it anyway",
                              bot_name, len(retry_violations))
                     plan = retry
+        except l3_planner.PlanClarification as e:
+            # L3 declined to plan (too vague / impossible / contradictory).
+            # Speak the reason to the player instead of inventing steps.
+            log.warning("[%s] planning declined (%s): %s", bot_name, e.kind, e.reason)
+            plan = Plan(
+                task=task, bot=bot_name,
+                created_at=datetime.datetime.utcnow().isoformat(),
+                status="failed",
+                subtasks=[],
+                current_subtask_id=0,
+                meta={"declined": e.kind, "reason": e.reason},
+            )
+            plan_store.write(plan)
+            plan_store.archive(plan)
+            trajectory_log.log_plan_close(
+                bot=bot_name, plan_ref=plan.created_at, status=plan.status,
+                task=task, subtasks_total=0, subtasks_complete=0,
+            )
+            on_finalized(plan)
+            return plan
         except PlanValidationError as e:
             log.warning("[%s] planning failed: %s", bot_name, e)
             # Synthetic failure plan so the caller has something to log
-            import datetime
             plan = Plan(
                 task=task, bot=bot_name,
                 created_at=datetime.datetime.utcnow().isoformat(),
@@ -302,6 +327,10 @@ def execute_task(
     # Phase 2: drive subtasks
     last_subtask_id = -1
     while plan.status == "executing":
+        if cancel_event is not None and cancel_event.is_set():
+            log.info("[%s] plan cancelled between subtasks", bot_name)
+            plan.status = "cancelled"
+            break
         subtask = plan.current_subtask()
         if subtask is None or plan.all_complete():
             plan.status = "complete"
@@ -317,8 +346,14 @@ def execute_task(
                            f"subtask {subtask.id}/{len(plan.subtasks)}: "
                            f"{subtask.description[:100]} | needs: {subtask.criteria[:80]}")
         prev_status = subtask.status
-        if not _step(plan, subtask, model, dispatch_fn, world_state_fn, dim_list):
-            # _step returns False when the plan needs to abort
+        if not _step(plan, subtask, model, dispatch_fn, world_state_fn, dim_list,
+                     cancel_event=cancel_event):
+            # _step returns False when the plan must abort. Most abort paths set
+            # plan.status themselves, but do not rely on it: if a subtask is
+            # left non-complete the honest-finalize block below catches it, and
+            # an executor that only returned False must still stop the loop.
+            if plan.status == "executing":
+                plan.status = "failed"
             break
         # Fire "subtask done" hook when this subtask reached terminal state
         if subtask.status in ("complete", "failed") and prev_status not in ("complete", "failed"):
@@ -326,6 +361,21 @@ def execute_task(
                 on_subtask_done(plan, subtask, subtask.status == "complete")
             except Exception:
                 log.exception("[%s] on_subtask_done hook raised", bot_name)
+
+    # Honest finalize (fix: never report false success). The loop exits
+    # "complete" when current_subtask() runs off the end, which also happens
+    # when a subtask was abandoned mid-failure — Scout's moon plan finalized
+    # complete with steps 3-4 unsucceeded. Any subtask left in a non-complete
+    # terminal state makes the WHOLE plan failed, regardless of how the loop
+    # exited.
+    if plan.status == "complete":
+        unfinished = [s for s in plan.subtasks if s.status != "complete"]
+        if unfinished:
+            ids = ", ".join(str(s.id) for s in unfinished)
+            log.warning("[%s] plan had unfinished subtasks (%s) at finalize — marking failed",
+                        bot_name, ids)
+            plan.status = "failed"
+            plan.meta["unfinished_subtasks"] = ids
 
     plan_store.write(plan)
     plan_store.archive(plan)
@@ -418,8 +468,14 @@ def _dispatch_skill_with_refine(d: dict[str, Any], dispatch_fn: DispatchFn,
 
 def _step(plan: Plan, subtask: Subtask, model: str,
           dispatch_fn: DispatchFn, world_state_fn: WorldStateFn,
-          dim_list: list[str] | None = None) -> bool:
+          dim_list: list[str] | None = None, cancel_event=None) -> bool:
     """Drive one subtask through one attempt. Returns False if the plan must abort."""
+    # Cancel check between attempts: a "stop" that lands while the previous
+    # attempt was failing should abort here rather than burn another L3 call.
+    if cancel_event is not None and cancel_event.is_set():
+        log.info("[%s] subtask %d cancelled before attempt", plan.bot, subtask.id)
+        plan.status = "cancelled"
+        return False
     # Replay path: a subtask that arrived with pre-baked directives (plan-memory
     # SKILL-only replay) on its first attempt skips the L3 exec call entirely.
     # Retries (attempts > 0) fall through to L3 so failures get intelligent

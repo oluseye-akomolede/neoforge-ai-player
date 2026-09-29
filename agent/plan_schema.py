@@ -10,7 +10,7 @@ import datetime
 from dataclasses import dataclass, field, asdict
 from typing import Any, Literal
 
-PlanStatus = Literal["planning", "executing", "complete", "failed"]
+PlanStatus = Literal["planning", "executing", "complete", "failed", "cancelled"]
 SubtaskStatus = Literal["pending", "executing", "complete", "failed"]
 
 
