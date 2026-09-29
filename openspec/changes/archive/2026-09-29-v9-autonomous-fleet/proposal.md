@@ -122,3 +122,26 @@ standing orders → drone job loops; fleet partition → swarm tasking with
 groups as first-class addresses. The two hard-won disciplines (generations
 + write-capture for parallelism; login-event announcement for
 `level.players()` entrants) are inherited constraints, not options.
+
+## Not verified at archive
+
+Added 2026-09-29 as part of the spec backfill (row `qitem-20260929143218-f02afaec`).
+This change carries a spec delta for the first time. What the delta claims, and
+how it was checked against `main` (`dd88be0`):
+
+- The delta describes the behaviour that is **live on main**, which for the agent
+  is also the prod image (`agent:qwen3coder-dd88be0`). The agent-side paths are
+  pointable in this repo: `_standing_worker` (`agent/agent.py:3207`), the
+  `ANCHOR_ON`/`ANCHOR_OFF` handling (`agent/agent.py:3155`), and `partition_fleet`
+  (`agent/l3_planner.py:704`, called from `agent/agent.py:3510`).
+- The **mod-side** mechanics — `AnchorManager` ticket metering and the mod's
+  `StandingStore` — are in this repo's Java sources and ship in
+  `aiplayermod-1.0.0.jar`, a different artifact from the agent image. Whether the
+  deployed server jar carries them is a deployment fact and is **not** proven
+  here, so the spec states the required behaviour without claiming the deployed
+  jar matches.
+- The three **headless proofs (2026-08-11)** are recorded runs, not reproducible
+  from the tree; the code paths exist, but the runs are the evidence.
+
+Per the backfill rule, no tick was added that the code cannot support. The
+in-game batch task stays unticked (it needs a live player).
