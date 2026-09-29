@@ -32,3 +32,37 @@ Spec domains touched:
 ## Out of scope for v1
 - Cross-bot plan dependencies (Forge's plan referencing Tiller's plan) — v2
 - Plan compaction (if a plan grows huge, summarize older subtasks) — v2
+
+## Not verified at archive
+
+Added 2026-09-29, when this change was reticked against `main`
+(`dd88be0`, which is also the prod image `agent:qwen3coder-dd88be0`). The
+feature is live — `agent/l3_planner.py` and `plan_orchestrator.py` landed on
+main in `2dc6a91` — but four items in the original `tasks.md` do **not** match
+what the code does, so those boxes are left unticked and listed here rather than
+being reconstructed:
+
+1. **`planner.plan_task` / `planner.execute_subtask`.** The plan-aware calls
+   exist, but as `l3_planner.call_plan` / `call_exec`, not as functions of those
+   names in `planner.py`.
+2. **`decompose` / `orchestrate` as plan-aware thin shims.** Not true: they
+   remain the older single-shot entry points in `agent/planner.py` and
+   `agent/openai_brain.py`, unwired to the plan layer.
+3. **Criteria "L3 fallback at priority=4".** The fallback call exists
+   (`_strategy_l3_fallback`); the `priority=4` label is nowhere in the code. The
+   code also runs a `kill_stat` strategy between world-state and result-text
+   that the original task sheet does not mention.
+4. **Replan "reset attempts, status=pending".** The in-place splice at the same
+   `id` exists (`plan_orchestrator.py:1078`), but the reset does not: `_replan`
+   increments a `replans` counter bounded by `MAX_REPLANS_PER_SUBTASK`
+   (line 1042) and does not reset `attempts` to 0.
+
+The Phase A round-trip test, the Phase H infra paths, the Phase G dashboard
+exercise, and the end-to-end acceptance test are environment/UI observations and
+are likewise not verifiable from the tree. Full per-task evidence is in
+`tasks.md`.
+
+The spec delta in this change describes the behaviour live on `dd88be0` — i.e.
+**before** v15. Where v15 changes the entry/exit contract (chat vs order, stop,
+clarify/refuse, honest finalize, `cancelled`), v15's own delta covers it and is
+deliberately not duplicated here.

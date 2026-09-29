@@ -159,6 +159,19 @@ distinct from `complete`: a cancelled plan stopped short of its subtasks.
 | `reason` | string | the short reason the bot spoke to the player |
 | `unfinished_subtasks` | string | ids of subtasks not `complete` when the plan was failed at finalize |
 
+#### Scenario: A written plan conforms to the schema
+
+- **GIVEN** a bot that has just planned a task
+- **WHEN** the plan file is read back
+- **THEN** it carries `task`, `bot`, `created_at`, `status`, `subtasks`, and `current_subtask_id`
+- **AND** each subtask carries `id`, `description`, `criteria`, `status`, `directives`, `attempts`, and `error`
+
+#### Scenario: Kill baseline is captured at creation
+
+- **GIVEN** a plan created for a bot with `mob_kills = 57`
+- **WHEN** the plan file is written
+- **THEN** `meta.kills_at_start` is 57
+
 #### Scenario: Cancelled plan is valid and terminal
 
 - **GIVEN** a plan cancelled by a stop
