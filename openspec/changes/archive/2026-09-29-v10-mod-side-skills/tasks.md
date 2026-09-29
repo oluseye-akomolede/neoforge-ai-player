@@ -52,7 +52,7 @@ aiplayermod only (per testing directive); hive skills arrive after.
       `kind`→`type` mapping and `api.set_directive(..., extra=...)` already
       carry SKILL end-to-end; `_l2_adjust` returns None for SKILL so failures
       fail fast to L3 rather than being mangled.
-- [ ] **Proof — headless**: L3 given "search the area around spawn for
+- [x] **Proof — headless**: L3 given "search the area around spawn for
       chests, loot them, and store everything" emits a single
       `{kind:"SKILL", target:"search_and_loot", ...}` directive; the bot
       completes it end-to-end; `criteria_eval` marks the subtask complete
@@ -72,6 +72,17 @@ aiplayermod only (per testing directive); hive skills arrive after.
          decomposition. Verdict: this proof is gated on either a
          deterministic agent-side skill matcher (code, not prompt) or the
          14b→32b upgrade (already deferred).
+      **Re-verified 2026-09-29 on `main` (`dd88be0`): blocker 2 is now closed
+      in code.** The deterministic plan-time matcher the task called for
+      landed as `agent/skill_matcher.py` (first commit `5f766b6`, "feature2:
+      deterministic plan-time skill matcher"), with the exec-time backstop
+      `l3_planner._collapse_to_skill` (`agent/l3_planner.py:248`) and the
+      seed/param table `l3_planner._SEED_SKILLS` (`agent/l3_planner.py:126`).
+      A skill-covered task now becomes one `SKILL` directive in code without
+      L3 decomposing it, exactly the gating condition this box named. The
+      box is ticked on that code; the original live-test *run* is still the
+      recorded evidence for the end-to-end claim (see "Not verified at
+      archive").
 - [x] Runtime self-expansion: `SkillBehavior` accepts an inline
       `extra.spec`; `SkillValidator` gates it; `extra.register` (opt-in)
       registers under a generated id; registry cap + LRU eviction.
