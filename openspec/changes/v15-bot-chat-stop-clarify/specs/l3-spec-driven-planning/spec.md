@@ -3,12 +3,11 @@
 ### Requirement: Chat Is Answered, Not Planned
 
 A player chat message addressed to a bot MUST first be classified as conversation
-or order. A conversational message SHALL be answered in the bot's persona via the
-L3 conversation path and sent to server chat, and MUST NOT start a plan.
+or order. A conversational message SHALL be answered in the bot's persona and
+sent to server chat, and MUST NOT start a plan.
 
 Classification MUST default to `task` on any error, timeout, or unrecognised
-reply, so an order is never silently dropped. The classifier is one L3 call per
-addressed message.
+reply, so an order is never silently dropped.
 
 #### Scenario: Character question is answered without a plan
 
@@ -120,13 +119,45 @@ subtasks.
 
 ### Requirement: Plan JSON Schema
 
-Plan artifacts MUST conform to `plan_schema.Plan`. Plan `status` MUST be one of
-`planning`, `executing`, `complete`, `failed`, or `cancelled`, where `complete`,
-`failed`, and `cancelled` are terminal.
+Plan files MUST conform to this schema:
 
-A plan MAY carry `declined` (`clarify` or `refuse`) and `reason` in its metadata
-when the planning step declined, and `unfinished_subtasks` when it was failed at
-finalize with work outstanding.
+```json
+{
+  "task": "string — original task text",
+  "bot": "string — bot name (forge, tiller, etc.)",
+  "created_at": "ISO8601 timestamp",
+  "status": "planning | executing | complete | failed | cancelled",
+  "subtasks": [
+    {
+      "id": "integer — 1-indexed",
+      "description": "string — what this subtask accomplishes",
+      "criteria": "string — explicit observable completion condition",
+      "status": "pending | executing | complete | failed",
+      "directives": ["array of directives emitted for this subtask"],
+      "attempts": 0,
+      "error": null
+    }
+  ],
+  "current_subtask_id": 1,
+  "meta": "object — free-form execution metadata (optional, defaults to {})"
+}
+```
+
+`meta` carries values captured at plan creation that criteria evaluation
+needs later. Known keys: `kills_at_start` (int — the bot's lifetime
+`mob_kills` stat when the plan was created; baseline for kill-count
+criteria).
+
+`complete`, `failed`, and `cancelled` are terminal statuses. `cancelled` is
+distinct from `complete`: a cancelled plan stopped short of its subtasks.
+
+`meta` MAY additionally carry:
+
+| key | type | meaning |
+|---|---|---|
+| `declined` | `clarify` \| `refuse` | the planning step declined instead of planning |
+| `reason` | string | the short reason the bot spoke to the player |
+| `unfinished_subtasks` | string | ids of subtasks not `complete` when the plan was failed at finalize |
 
 #### Scenario: Cancelled plan is valid and terminal
 
@@ -144,32 +175,40 @@ finalize with work outstanding.
 
 ### Requirement: Plan File Location and Lifecycle
 
-A plan MUST be written when planning completes and archived when it reaches a
-terminal state — `complete`, `failed`, or `cancelled`. A plan that never
-executed because the planning step declined MUST still be written and archived,
-so the decline is visible rather than vanishing.
+Each bot MUST have at most one active plan file at:
+`agent_plans/{bot_name}_current.json`
+
+Examples:
+- `agent_plans/forge_current.json`
+- `agent_plans/tiller_current.json`
+- `agent_plans/scout_current.json`
+
+A plan MUST be written to disk before any Phase 2 call, and any prior
+`_current.json` for that bot MUST be overwritten. A plan reaching a terminal
+state MUST be archived to `agent_plans/archive/{bot_name}_{timestamp}.json`,
+after which no `_current` file exists for that bot. The terminal states are
+`complete`, `failed`, and `cancelled`. A plan that never executed because the
+planning step declined MUST still be written and archived, so the decline is
+visible rather than vanishing.
 
 #### Scenario: Plan written on Phase 1 completion
-
-- GIVEN L3 returns a valid plan in Phase 1
-- WHEN the plan is parsed and validated
-- THEN it is written to `agent_plans/{bot_name}_current.json`
-- AND the plan status is set to `executing`
+- GIVEN a bot receives a new task
+- WHEN Phase 1 generates a valid plan
+- THEN the plan is written to disk before any Phase 2 call
+- AND any prior `_current.json` for that bot is overwritten
 
 #### Scenario: Plan archived on completion
-
-- GIVEN a bot's plan is marked complete
-- WHEN cleanup runs
-- THEN the file is moved to `agent_plans/archive/{bot_name}_{timestamp}.json` with `status = complete`
+- GIVEN a bot's plan reaches `status = complete`
+- WHEN the final subtask criterion is met
+- THEN the file is moved to `agent_plans/archive/{bot_name}_{timestamp}.json`
+- AND no `_current` file exists for that bot
 
 #### Scenario: Plan archived on abandonment
-
 - GIVEN a bot's plan is marked failed or cancelled
 - WHEN cleanup runs
 - THEN the file is moved to `agent_plans/archive/{bot_name}_{timestamp}.json` with `status = failed` or `status = cancelled`
 
 #### Scenario: Declined plan is archived
-
 - GIVEN a planning step that declined
 - WHEN the plan is finalized
 - THEN a failed plan carrying the decline is written and archived

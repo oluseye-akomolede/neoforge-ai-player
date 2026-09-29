@@ -37,8 +37,11 @@ P6 model limit is stated in "Known limits" below.
 - **Talk vs order split.** Before dispatching `_run_orchestrator`, one small L3
   call classifies the addressed message as `chat` or `task`. `chat` is answered
   via `l3_planner.converse` in the bot's persona and sent with `api.chat`; no
-  plan is started. `task` behaves exactly as today. One extra model round-trip
-  per addressed message, no extra call for a task beyond it.
+  plan is started. `task` behaves exactly as today.
+- **Cost: a chat message costs two L3 calls** — the classifier plus
+  `converse()` — and a task costs the classifier plus the plan it would have made
+  anyway. One extra round-trip per addressed message. This is implementation
+  detail, not spec'd behaviour; the spec states only the observable outcome.
 - **Cancellation.** A per-bot `threading.Event` is created for each orchestrator
   run and checked by `execute_task` at the top of the subtask loop and by `_step`
   before each attempt. The stop shortcuts and `reset()` set it. The plan is

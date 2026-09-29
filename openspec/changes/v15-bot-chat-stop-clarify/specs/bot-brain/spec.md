@@ -31,10 +31,16 @@ Forge (builder), Mystic (mage), Scout (explorer), Tiller (farmer).
 
 ### Requirement: Bot Stop Acknowledgements
 
-For the stop shortcuts the bot recognizes, the bot SHALL tell the player it is
-stopping, and the acknowledgement MUST reflect that a plan was or was not
-cancelled. The acknowledgement is a chat message from the bot, not only an agent
-log line.
+For the stop shortcuts the bot recognizes — `stop`, and the phrases `halt`,
+`go idle`, `stand still`, `stay here`, `stay put`, `wait here`, `stop what you`,
+`stop following` — the bot SHALL tell the player it is stopping, and the
+acknowledgement MUST reflect that a plan was or was not cancelled. The
+acknowledgement is a chat message from the bot, not only an agent log line.
+
+A cancellation of a running plan is not limited to those wordings: any stop
+signal the bot accepts SHALL cancel a running plan. This requirement covers only
+which wordings are *acknowledged in chat*; a wording outside this list gets no
+acknowledgement, which is the current intended scope.
 
 #### Scenario: Acknowledgement names the stopping state
 
@@ -48,6 +54,12 @@ log line.
 - **GIVEN** a bot is idle
 - **WHEN** a player says "stop"
 - **THEN** the bot acknowledges and remains idle
+
+#### Scenario: A recognized phrase also acknowledges
+
+- **GIVEN** a bot is executing a plan
+- **WHEN** a player says "halt"
+- **THEN** the bot says it is stopping, by the same path as "stop"
 
 ### Requirement: Bot Declines Are Spoken
 
