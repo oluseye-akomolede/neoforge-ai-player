@@ -145,3 +145,59 @@ how it was checked against `main` (`dd88be0`):
 
 Per the backfill rule, no tick was added that the code cannot support. The
 in-game batch task stays unticked (it needs a live player).
+
+## Test only; prod jar predates it (2026-09-29)
+
+**This change was NOT archived and its deltas were withdrawn from
+`openspec/specs/`.** The lead checked the deployed jars:
+
+- **prod** `minecraft-server` runs `aiplayermod-1.0.0.jar` built **2026-08-04**;
+  that jar contains **no** `AnchorManager` and **no** `StandingStore` classes
+  (confirmed against the saved prod class list,
+  `~/minecraft-wt-deepseek/docs/prod-aiplayermod-classes-2026-09-29.txt`, 120
+  classes).
+- **test** `minecraft-test-server` runs a newer jar built **2026-08-21**, which
+  **does** contain those classes.
+
+So v9's **mod half is live on test only, and v9 is not live in prod.** Because
+`openspec/specs/` must describe prod, the delta was withdrawn (bot-coordination
++2, bot-behaviors +1 reverted) and the change is held open. The agent-side half
+(the standing worker, the anchor directive handling, the fleet partition call)
+is live in prod via the agent image, but a change is archived only when it is
+fully live, so v9 stays open until the prod mod jar carries these classes.
+
+Re-fold the delta and re-tick the mod-side boxes only after a prod
+`aiplayermod` jar newer than 2026-08-04 deploys with these classes.
+
+## Anchor persistence across restart — checked, the requirement holds (2026-09-29)
+
+Row `qitem-20260929143757-1ae4afc4` asked me to record the anchor-restart
+contradiction the reviewer raised (their row `qitem-20260929143543-e53d0398`):
+the "Anchor persists across restart" scenario was called false on the grounds
+that `AnchorManager.ANCHORS` is a `static ConcurrentHashMap`
+(`AnchorManager.java:52`) and `AIPlayerMod.java:110` calls `releaseAll()` on
+server stop.
+
+**That reading is mistaken — the persistence is implemented, as a two-file
+handoff between the ticket registry and the bot-state JSON.** Verified on
+`main` (`dd88be0`):
+
+- **Save.** `AIPlayerMod.java:107-110` calls `BotManager.shutdown()` *before*
+  `AnchorManager.releaseAll()`. The in-code comment at lines 107-109 states the
+  order is deliberate: *"shutdown() SAVES bot state (including the anchored
+  flag) — releasing anchors first wrote anchored=false every time."*
+  `BotPlayer.java:300` writes `"anchored" = AnchorManager.isAnchored(name)`
+  into the saved state.
+- **Restore.** `BotPlayer.java:406-414`, on load, reads `root.get("anchored")`
+  and calls `AnchorManager.enable(this)`, with the same comment — *"A fleet that
+  believed it was anchored must not silently freeze across a restart."*
+- `AnchorManager` is a **live ticket registry**, not the durable store; the
+  durable copy is the bot-state JSON. `releaseAll()` on shutdown is correct
+  because shutdown has already captured the flag.
+
+So the requirement matches the code on main. **No spec delta and no
+implementation task are needed for this line** — the gap the row was raised for
+does not exist. Per the lead's instruction nothing was implemented; this note
+records the check and its result so the reopen row is not carried on a false
+premise. The reviewer is asked to re-verify at `BotPlayer.java:406-414` and
+`AIPlayerMod.java:107-110` before banking it.
