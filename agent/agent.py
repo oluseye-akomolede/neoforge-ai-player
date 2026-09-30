@@ -56,6 +56,7 @@ _logging.getLogger("httpx").setLevel(_logging.WARNING)
 
 from dashboard import start_dashboard
 from dashboard.state import shared_state
+import chat_filter
 
 # Chat command patterns (regex, processed before planner)
 _CMD_REMEMBER = re.compile(
@@ -489,9 +490,14 @@ class BotRunner:
                 continue
             text_lower = text.lower().strip()
             if len(text_lower) < 5:
+                print(f"[{self.name}/chat] ignored (too short): {text!r}")
                 continue
-            skip_words = ["hello", "hi ", "hey", "thanks", "thank you", "yes", "no", "ok"]
-            if any(text_lower.startswith(w) for w in skip_words):
+            # Skip only messages that are *entirely* a pleasantry/ack — not any
+            # message that merely STARTS with one. The old prefix test dropped
+            # "Hi Mystic! Who are you?" (startswith "hi "), silently and with no
+            # log line, so a real question to the bot got no reply (P4, 2026-09-30).
+            if chat_filter.is_pure_pleasantry(text, self.name):
+                print(f"[{self.name}/chat] ignored (pleasantry): {text!r}")
                 continue
 
             from_bot = sender in _all_runners

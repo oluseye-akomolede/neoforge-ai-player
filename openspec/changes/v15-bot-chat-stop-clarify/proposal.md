@@ -1,5 +1,26 @@
 # v15 — Bot chat, stop, and ask-or-refuse
 
+## Follow-up: in-game check of `df0bb8c` (2026-09-30)
+
+The in-game check of the `df0bb8c` image on `minecraft-test` passed P2 (craft),
+P5 (clarify), P6 (refuse) but **failed P7 and P4**:
+
+- **P7 (stop)** — the bot said "Stopping. Standing by." yet the orchestrator then
+  dispatched a `CHANNEL` directive and finalized the plan `complete`. The
+  `execute_task`/`_step` checks added at `df0bb8c` guarded only the *attempt*
+  boundary; a stop landing during the seconds-long L3 `call_exec` was set after
+  that guard and the directives the call returned were still sent. Fixed by
+  `b64f8c1` — checked after `call_exec` and before every dispatch, with a pending
+  stop for the pre-publication window.
+- **P4 (chat)** — "Hi Mystic! Who are you?" was dropped with no log line and no
+  reply. Cause was **pre-existing**, not introduced by `df0bb8c`: `_maybe_plan`
+  skipped any message whose lowercased text `startswith("hi ")` (or "hello",
+  "hey", …). Fixed by `chat_filter.is_pure_pleasantry` — only a message that is
+  *entirely* pleasantry is skipped — and both skip paths now log the drop.
+
+Both fixes are agent-side, add no schema change, and are covered by new unit
+tests in `agent/task_d_fixes_test.py`.
+
 ## Why
 
 The qwen3-coder in-game run (minecraft-test, 2026-09-29 02:46–03:00Z) showed four
@@ -44,8 +65,11 @@ P6 model limit is stated in "Known limits" below.
   detail, not spec'd behaviour; the spec states only the observable outcome.
 - **Cancellation.** A per-bot `threading.Event` is created for each orchestrator
   run and checked by `execute_task` at the top of the subtask loop and by `_step`
-  before each attempt. The stop shortcuts and `reset()` set it. The plan is
-  finalized `cancelled`, not `complete`, and the bot says "Stopping."
+  before each attempt, after the per-subtask planning call returns, and before
+  each directive is dispatched. A stop that arrives before the run publishes its
+  event is held as a pending stop and honored at publication. The stop shortcuts
+  and `reset()` set it. The plan is finalized `cancelled`, not `complete`, and
+  the bot says "Stopping."
 - **Clarify / refuse.** The Phase 1 prompt may return
   `{"kind": "clarify"|"refuse", "reason": "..."}` instead of a plan.
   `call_plan` raises `PlanClarification`; `execute_task` turns it into a failed

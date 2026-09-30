@@ -93,6 +93,43 @@ def test_classify_fails_to_task():
         check("unknown kind → 'task'", l3_planner.classify_message("m", "scout", "x") == "task")
 
 
+# ── 1c. Greeting filter must not swallow a real question ─────────────────────
+
+def test_greeting_prefix_does_not_drop_a_question():
+    """P4 in-game failure (2026-09-30): 'Hi Mystic! Who are you...' was dropped
+    with no log line, so the bot never replied. _maybe_plan skipped any message
+    that merely STARTED with a pleasantry (startswith 'hi '). A greeting that
+    carries a real question must reach the talk/order split, not be discarded.
+
+    Tests the real predicate agent.py calls (chat_filter.is_pure_pleasantry);
+    importing agent itself pulls psycopg2/uvicorn, absent on this VM.
+    """
+    print("1c. greeting prefix does not drop a question (P4)")
+    import chat_filter
+
+    cases = [
+        # (text, expected is-pure-pleasantry?)
+        ("Hi Mystic! Who are you?", False),   # the P4 message — must NOT be dropped
+        ("Hi Mystic!", True),                 # bare greeting to the bot — noise
+        ("hi mystic", True),
+        ("hello", True),                      # <5 chars, dropped earlier anyway
+        ("thanks", True),
+        ("ok", True),
+        ("Hey Mystic, mine 8 logs", False),   # starts 'hey' but is an order
+        ("Hi, could you build a shelter", False),
+        ("...", True),                        # punctuation only — noise
+        ("yes", True),
+    ]
+    bad = []
+    for text, expect_pleasantry in cases:
+        got = chat_filter.is_pure_pleasantry(text, "Mystic")
+        if got != expect_pleasantry:
+            bad.append(f"{text!r}: got {got}, want {expect_pleasantry}")
+    check("pleasantry predicate matches expectations", not bad, "; ".join(bad))
+    check("the P4 message is NOT treated as pure pleasantry",
+          not chat_filter.is_pure_pleasantry("Hi Mystic! Who are you?", "Mystic"))
+
+
 # ── 2. Stop cancels a running plan ──────────────────────────────────────────
 
 def test_cancel_event_aborts_running_plan():
@@ -347,6 +384,7 @@ def test_refuse_path():
 if __name__ == "__main__":
     test_classify_routes_chat_away_from_planning()
     test_classify_fails_to_task()
+    test_greeting_prefix_does_not_drop_a_question()
     test_cancel_event_aborts_running_plan()
     test_cancel_between_subtasks()
     test_stop_during_exec_call_dispatches_nothing()

@@ -16,6 +16,14 @@ reply, so an order is never silently dropped.
 - **AND** no plan file is written and no subtask is dispatched
 - **AND** the agent log shows the message was handled on the conversation path
 
+#### Scenario: A message that opens with a greeting is not discarded
+
+- **WHEN** a player says "Hi Mystic! Who are you?"
+- **THEN** the message is classified and answered on the conversation path
+- **AND** it is not dropped merely because it begins with a greeting
+- **AND** a message that is *only* a greeting or acknowledgement may be ignored,
+  and any ignored message is logged so the drop is visible
+
 #### Scenario: An instruction still plans
 
 - **WHEN** a player says "Scout, gather 4 oak logs"
@@ -35,8 +43,12 @@ A stop signal SHALL abort the bot's running plan. The plan MUST be finalized
 `cancelled` — never `complete` — and the bot SHALL confirm in chat.
 
 The abort is delivered by a per-run cancellation signal that the plan layer
-checks between subtasks and before each subtask attempt; clearing plan state on
-the agent's main thread is not sufficient on its own, because the plan runs on a
+checks between subtasks, before each subtask attempt, after the per-subtask
+planning call returns, and before each directive is dispatched. Checking only at
+the attempt boundary is not sufficient: a stop that lands while a long L3 call or
+an earlier directive is in flight is set after that check, and any directive the
+attempt produces would otherwise still be sent. Clearing plan state on the
+agent's main thread is not sufficient on its own, because the plan runs on a
 separate thread.
 
 #### Scenario: Stop during a running plan
@@ -47,6 +59,20 @@ separate thread.
 - **AND** the plan is finalized `cancelled`
 - **AND** the bot says "Stopping." in chat
 - **AND** the plan is not reported `complete`
+
+#### Scenario: Stop during a subtask's planning call is not overtaken by its directives
+
+- **GIVEN** a bot is executing a subtask and its plan-time L3 call is in flight
+- **WHEN** a player says "stop" before that call returns
+- **THEN** none of the directives the call returns are dispatched
+- **AND** the plan is finalized `cancelled`, not `complete`
+
+#### Scenario: Stop does not lose a signal that arrives before the plan thread is listening
+
+- **GIVEN** a stop or reset arrives in the window after the plan thread is
+  started but before it publishes its cancellation signal
+- **WHEN** the plan thread publishes the signal
+- **THEN** it observes the stop and does not dispatch a subtask
 
 #### Scenario: Reset cancels a running plan
 

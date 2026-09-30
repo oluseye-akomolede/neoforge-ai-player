@@ -20,12 +20,23 @@ Agent-side only; no mod change. Implemented by commit `df0bb8c` on
 - [x] **Both dispatch points** (~566 and ~759) — classify before
       `_run_orchestrator`; a `chat` message is replied to and consumed, and
       `execute_task` is never called.
+- [x] **Greeting filter** (`agent/chat_filter.py:is_pure_pleasantry`) — a message
+      that is *entirely* a pleasantry ("thanks", "ok", "hi Mystic!") is noise and
+      is skipped; a message that merely *starts* with a greeting but carries real
+      content ("Hi Mystic! Who are you?") is not. Replaces the old
+      `startswith("hi ")` prefix test, which silently dropped the P4 message.
+      Both skip paths now print a `[bot/chat] ignored (...)` line so a drop is
+      visible in the log.
 
 ## 2. Stop cancels a running plan
 
 - [x] **`agent._orch_cancel`** — a `threading.Event` created per run in
       `_run_orchestrator` and cleared in a `finally` when it is still the same
       object.
+- [x] **`agent._orch_stop_pending`** — a stop/reset that lands before the orch
+      thread has published its cancel Event (the window between thread spawn and
+      `_orch_cancel = …`) is recorded and honored the moment the event is
+      published, instead of being silently dropped.
 - [x] **`agent._cancel_orchestrator(reason)`** — returns `False` when no run is
       live, else logs and sets the event.
 - [x] **Stop shortcuts and `reset()`** — call `_cancel_orchestrator`; the stop
@@ -33,8 +44,12 @@ Agent-side only; no mod change. Implemented by commit `df0bb8c` on
 - [x] **`execute_task(cancel_event=)`** — checked at the top of the
       `while plan.status == "executing"` loop; sets `plan.status = "cancelled"`
       and breaks.
-- [x] **`_step(..., cancel_event=)`** — checked before each attempt; sets
-      `cancelled` and returns `False`.
+- [x] **`_step(..., cancel_event=)`** — checked before each attempt **and again
+      after the `call_exec` returns** (a stop during the seconds-long L3 call is
+      set after the pre-attempt check yet before any directive exists) **and
+      before every dispatch in the directive loop** (a stop while an earlier
+      directive runs must not let the next one go out). All three set `cancelled`
+      and return `False`.
 - [x] **Loop abort** — `failed` is only set when `_step` returns `False` and the
       plan is still `executing`, so a cancel is not overwritten by `failed`.
 - [x] **`on_finalized`** — `cancelled` reports
@@ -61,7 +76,7 @@ Agent-side only; no mod change. Implemented by commit `df0bb8c` on
 
 ## 4. Evidence
 
-- [x] **Unit tests** — `agent/task_d_fixes_test.py`, 22 checks, all pass:
+- [x] **Unit tests** — `agent/task_d_fixes_test.py`, 27 checks, all pass:
       `(ulimit -v 4194304; python3 agent/task_d_fixes_test.py)`. Covers the
       chat/task split, classifier failure defaulting to `task`, cancel mid-subtask
       and between subtasks, unfinished subtask forcing failure (both the silent
@@ -74,6 +89,22 @@ Agent-side only; no mod change. Implemented by commit `df0bb8c` on
       P4 chat, P5 clarify, P7 stop all pass; P1 gather regression passes; P6
       partly (see proposal "Known limits"). Log lines recorded verbatim in
       `~/minecraft-wt-deepseek/docs/task-d-chat-stop-clarify-results.md`.
+- [x] **In-game check of `df0bb8c`** (2026-09-30, `minecraft-test`, image
+      `chatstop-df0bb8c`, pod `aibot-agent-test-589846d4b7-lzql7`): **P7 and P4
+      FAILED.** P7 — "stop" printed "Stopping. Standing by." but the orchestrator
+      then sent a CHANNEL directive and finalized `complete`. P4 — "Hi Mystic!
+      Who are you...?" produced no log line and no reply. Both root-caused and
+      fixed on `minecraft-wt-deepseek`: P7 = `_step` only checked the cancel
+      event before an attempt (see §2); P4 = the `startswith("hi ")` greeting
+      filter (see §1). Evidence:
+      `~/minecraft-wt-deepseek/docs/v15-ingame-check-2026-09-30.md`.
+- [x] **Unit tests — regression additions** — `task_d_fixes_test.py`:
+      `test_stop_during_exec_call_dispatches_nothing` drives the **real** `_step`
+      (the earlier cancel test patched `_step` out, so it never exercised the
+      dispatch loop where P7 lived) with `call_exec` setting the cancel event
+      mid-call; asserts nothing is dispatched and the plan finalizes `cancelled`.
+      `test_greeting_prefix_does_not_drop_a_question` checks the pleasantry
+      predicate, including that the exact P4 message is *not* treated as noise.
 - [x] **Handoff** — review row `qitem-20260929045317-d08f6050` back to
       `minecraft-reviewer@minecraft` with the spec commit noted.
 
