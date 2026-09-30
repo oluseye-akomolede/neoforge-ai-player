@@ -135,7 +135,7 @@ not via MinIO. The agent image is `harbor.arcadia-ecs.local/aiplayermod/agent:la
 The prod `aibot-agent` (namespace `minecraft`) is intentionally NOT redeployed
 during the v10–v12 skill/RL development push. Two prod changes are already
 committed to `base/minecraft/agent.yaml` but NOT applied to the prod cluster;
-apply them together at promotion time:
+they MUST be applied together at promotion time:
 
 - `OLLAMA_URL` (prod `agent-config` secret) repointed from the retired
   `ollama.mindcraft` to `ollama-l3.minecraft-test.svc.cluster.local:11434`
@@ -149,6 +149,17 @@ image with `imagePullPolicy: Always`, so a prod pod restart already pulls the
 v12 agent (behavioral replay-memory retired, `plan_memory` replay skill-only).
 Safe for prod — it runs the legacy path, which never reaches `plan_memory` —
 but treat any prod restart as a mini-promotion and verify it.
+
+#### Scenario: Promote the prod agent
+- GIVEN the two committed-but-unapplied prod changes
+  (`OLLAMA_URL` repoint and `USE_L3_PLAN_LAYER="true"`) have been validated in
+  test
+- WHEN the operator applies them together at promotion time
+- THEN the prod `agent-config` secret points `OLLAMA_URL` at
+  `ollama-l3.minecraft-test.svc.cluster.local:11434`
+- AND `USE_L3_PLAN_LAYER` is set to `"true"` on prod
+- AND a prod pod restart is treated as a mini-promotion and verified before
+  being considered complete
 
 ### Requirement: Manifests Are The Source of Truth
 Cluster manifests MUST live in `~/clustering/manifests` (GitHub:

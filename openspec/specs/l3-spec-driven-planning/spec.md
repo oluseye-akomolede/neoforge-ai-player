@@ -366,7 +366,7 @@ rather than fail the call.
 - AND the call is not failed for lack of a persona
 
 ### Requirement: ollama_lock / Gateway Compatibility
-The two-phase pattern adds one extra LLM call per task (planning) + extra per-subtask calls. The existing global `ollama_lock` (or its replacement, llm-gateway priority queue) already serializes GPU access. No lock changes are required.
+The two-phase pattern adds one extra LLM call per task (planning) + extra per-subtask calls. The existing global `ollama_lock` (or its replacement, llm-gateway priority queue) already serializes GPU access. The plan layer MUST rely on that existing serialization and MUST NOT add a separate GPU lock.
 
 #### Scenario: Concurrent bots share gateway
 - GIVEN Forge and Tiller both have active plans

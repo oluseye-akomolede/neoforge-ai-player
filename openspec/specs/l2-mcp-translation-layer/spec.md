@@ -48,7 +48,7 @@ Every l2-mcp function MUST be classifiable as translation. The service MUST NOT:
 - AND it returns a structured flag: `{"ambiguous":"target","candidates":["iron_ore","gold_ore",...]}` for L3 to re-decide
 
 ### Requirement: Translation Functions
-The twelve functions, grouped by phase:
+The layer SHALL provide the twelve functions below, grouped by phase:
 
 **Phase A — deterministic templates (no model):**
 | Function | Behavior |
@@ -79,8 +79,20 @@ The twelve functions, grouped by phase:
 ### Requirement: Fail-Open Degradation
 If l2-mcp is down, the agent MUST bypass it: L3 receives raw L1 data and the static directive reference (today's behavior). Translation is an enhancement, never a dependency.
 
+#### Scenario: l2-mcp is unreachable
+- GIVEN `L2_MCP_URL` is set but the l2-mcp service does not answer
+- WHEN the agent builds an L3 call
+- THEN L3 receives raw L1 data and the static directive reference
+- AND the task proceeds exactly as it did before l2-mcp existed
+
 ### Requirement: Truth Preservation Property
 For every rendering function: any fact extractable from the output MUST be extractable from the input, and no fact in the output may contradict the input. Renderings carry the source payload alongside (`{"rendered": "...", "source": {...}}`) so L3 tooling and the dashboard can always reach ground truth.
+
+#### Scenario: Rendering carries its source
+- GIVEN any rendering function is called on a payload
+- WHEN it returns
+- THEN the result carries the original payload alongside the rendered text
+- AND every fact in the rendered text is present in the source and none contradicts it
 
 ### Requirement: Configuration
 | Env | Default | Meaning |
@@ -90,8 +102,20 @@ For every rendering function: any fact extractable from the output MUST be extra
 | `L2_OLLAMA_URL` | `http://localhost:11434` | MUST point at CPU or the 3050 instance — never the L3 GPU |
 | `L2_RENDER_TIMEOUT_MS` | 1500 | Per-render budget; on timeout, fall back to template/identity |
 
+#### Scenario: L2_OLLAMA_URL must not target the L3 GPU
+- GIVEN the deployment configures the L2 model backend
+- WHEN `L2_OLLAMA_URL` is set
+- THEN it points at a CPU instance or the 3050 instance
+- AND it never points at the L3 GPU
+
 ### Requirement: Latency Budget
 Phase A functions MUST complete in <10ms. Phase B renders MUST respect `L2_RENDER_TIMEOUT_MS` and fall back to the Phase A/identity path on breach — a slow translation must never add tail latency to an L3 round-trip.
+
+#### Scenario: A slow Phase B render does not block L3
+- GIVEN `L2_RENDER_TIMEOUT_MS` is configured
+- WHEN a Phase B render exceeds that budget
+- THEN the render falls back to the Phase A/identity path
+- AND the L3 round-trip is not delayed by the slow translation
 
 ## Migration path
 1. Extract existing translation logic (`_repair_directive`, dimension aliases, item normalization from fast_planner) into the l2-mcp Phase A service. Agent keeps in-process copies as the bypass path.
