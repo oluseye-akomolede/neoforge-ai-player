@@ -121,6 +121,11 @@ Agent-side only; no mod change. Implemented by commit `df0bb8c` on
       the fix. Also dropped the raw `len<5` gate in `agent.py:_maybe_plan`
       (reviewer note), which logged but still discarded short real commands
       (`go`, `dig`, `mine`).
+      **Evidence level: function-level only — NOT in game.** This seam cannot be
+      exercised from a chat harness (it needs a mod validator rejection, which
+      depends on L3's spec output, not deterministically triggerable). The
+      in-game run below covers P4 and P7 only; do not read it as covering the
+      refine seam.
 - [x] **Handoff** — review row `qitem-20260929045317-d08f6050` back to
       `minecraft-reviewer@minecraft` with the spec commit noted.
 
