@@ -76,7 +76,7 @@ Agent-side only; no mod change. Implemented by commit `df0bb8c` on
 
 ## 4. Evidence
 
-- [x] **Unit tests** — `agent/task_d_fixes_test.py`, 27 checks, all pass:
+- [x] **Unit tests** — `agent/task_d_fixes_test.py`, 31 checks, all pass:
       `(ulimit -v 4194304; python3 agent/task_d_fixes_test.py)`. Covers the
       chat/task split, classifier failure defaulting to `task`, cancel mid-subtask
       and between subtasks, unfinished subtask forcing failure (both the silent
@@ -105,6 +105,22 @@ Agent-side only; no mod change. Implemented by commit `df0bb8c` on
       mid-call; asserts nothing is dispatched and the plan finalizes `cancelled`.
       `test_greeting_prefix_does_not_drop_a_question` checks the pleasantry
       predicate, including that the exact P4 message is *not* treated as noise.
+- [x] **P7 refine-seam fix (reviewer blocker, 2026-09-30)** — `_step`'s guards
+      wrap the *call* to `_dispatch_skill_with_refine` but cannot see its
+      internal re-dispatch. A SKILL rejected by the mod validator triggers
+      `refine_skill` (seconds-long L3 call); a stop landing during it still sent
+      the corrected SKILL afterwards (up to `MAX_SPEC_REFINES=3` post-cancel
+      sends). Fixed in `394eb19` by threading `cancel_event` into
+      `_dispatch_skill_with_refine` and re-checking before the entry dispatch and
+      each re-dispatch, plus a post-dispatch re-check in `_step` so the plan
+      finalizes `cancelled`. Reproducer (real function) confirmed the gap
+      (`['SKILL','SKILL']` pre-fix; `['SKILL','SKILL','SKILL','SKILL']` = 1 + 3
+      refines with the in-function checks neutered). New test
+      `test_stop_during_skill_refine_dispatches_nothing` drives the real
+      `execute_task`→`_step`→`_dispatch_skill_with_refine` path and fails without
+      the fix. Also dropped the raw `len<5` gate in `agent.py:_maybe_plan`
+      (reviewer note), which logged but still discarded short real commands
+      (`go`, `dig`, `mine`).
 - [x] **Handoff** — review row `qitem-20260929045317-d08f6050` back to
       `minecraft-reviewer@minecraft` with the spec commit noted.
 
