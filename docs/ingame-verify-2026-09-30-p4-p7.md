@@ -1,12 +1,29 @@
 # In-game verification — v15 P4 + P7 fixes (2026-09-30)
 
-Image under test: `harbor.arcadia-ecs.local/aiplayermod/agent:chatstopfix-4215fd3`
-digest `sha256:c5811a1ffe050cc81cc01bba276c0a4d4feeca759a65474399bdf29b5e22d414`
-built from branch `minecraft-wt-deepseek` @ `4215fd3` (fixes `b64f8c1` P7, `4215fd3` P4).
+Image under test: `harbor.arcadia-ecs.local/aiplayermod/agent:chatstopfix-394eb19`
+digest `sha256:b7b9236a872938b1e4f77f1818d0f59b72fc639f4303bb0a6fa43b1e773d20cc`
+built from branch `minecraft-wt-deepseek` @ `394eb19` (fixes `b64f8c1` P7,
+`4215fd3` P4, `394eb19` P7 refine seam + short-message widening).
+
+An earlier identical run on `chatstopfix-4215fd3` (digest `c5811a1f…`) produced
+the same P4 and P7 results; this file records the re-run on the image that
+carries the reviewer's refine-seam fix.
 
 Environment: namespace `minecraft-test`, deployment `aibot-agent-test`
-(rolled from `chatstop-df0bb8c` → `chatstopfix-4215fd3`), 5 bots against the
-test Minecraft server. Chat driven through the real entry point `api.inject_chat`.
+(rolled `chatstop-df0bb8c` → `chatstopfix-4215fd3` → `chatstopfix-394eb19`),
+5 bots against the test Minecraft server. Chat driven through the real entry
+point `api.inject_chat`.
+
+## Scope note
+
+P4 and P7 are verified end-to-end in game. The **SKILL refine seam** (`394eb19`)
+is verified at the **function level only** — reproducing it in game requires
+forcing a mod validator rejection ("spec rejected"), which depends on L3's
+SKILL-spec output and is not deterministically triggerable from chat. Evidence
+for that seam: the reviewer's executed reproducer and
+`test_stop_during_skill_refine_dispatches_nothing`, which drives the real
+`execute_task`→`_step`→`_dispatch_skill_with_refine` path.
+
 
 ## P4 — greeting message dropped (fixed)
 
@@ -51,5 +68,5 @@ Mod log confirms every post-stop `cancelDirective` reports `active=none` and
     kubectl -n minecraft-test set image deploy/aibot-agent-test \
       agent=harbor.arcadia-ecs.local/aiplayermod/agent:chatstop-df0bb8c
 
-The test deployment was left on `chatstopfix-4215fd3` for the reviewer/lead to
+The test deployment was left on `chatstopfix-394eb19` for the reviewer/lead to
 re-check. Prod was not touched.
