@@ -165,6 +165,55 @@ def test_cancel_between_subtasks():
     check("plan cancelled", out.status == "cancelled", f"status={out.status}")
 
 
+def test_stop_during_exec_call_dispatches_nothing():
+    """P7 in-game failure (2026-09-30): a 'stop' that lands while the L3 exec
+    call is in flight must prevent EVERY directive that call returned from being
+    dispatched. The previous test patched _step out, so it never exercised the
+    real dispatch loop — the bug lived exactly there.
+
+    Real _step, real execute_task. call_exec simulates the stop arriving mid-call
+    (as the chat thread sets the Event), returns a CHANNEL + SEARCH_AND_MINE —
+    the two directives P7 saw sent post-cancel. Assert neither is dispatched and
+    the plan finalizes 'cancelled', not 'complete'.
+    """
+    print("2c. stop mid-exec-call dispatches nothing (P7)")
+    plan = _plan(1)
+    cancel = threading.Event()
+    dispatched = []
+
+    def fake_exec(**kw):
+        # The stop arrives from the chat poller during the (seconds-long) call.
+        cancel.set()
+        return ([{"kind": "CHANNEL", "target": "Tiller", "extra": {"channel": "chat"}},
+                 {"kind": "SEARCH_AND_MINE", "target": "oak_log", "extra": {}}],
+                "call-1")
+
+    def fake_dispatch(d):
+        dispatched.append(d.get("kind"))
+        return "accepted"
+
+    with mock.patch.object(l3_planner, "call_plan", return_value=plan), \
+         mock.patch.object(l3_planner, "call_exec", side_effect=fake_exec), \
+         mock.patch.object(plan_orchestrator.plan_store, "write"), \
+         mock.patch.object(plan_orchestrator.plan_store, "archive"), \
+         mock.patch.object(plan_orchestrator.trajectory_log, "log_plan_close"), \
+         mock.patch.object(plan_orchestrator.telemetry, "push"), \
+         mock.patch.object(plan_orchestrator.plan_memory, "lookup", return_value=None), \
+         mock.patch.object(plan_orchestrator.plan_memory, "record"), \
+         mock.patch.object(plan_orchestrator, "_plan_from_skill", return_value=None), \
+         mock.patch.object(plan_orchestrator, "_manage_fusion_intercept", return_value=None), \
+         mock.patch.object(plan_orchestrator.api, "status", side_effect=RuntimeError("no server")), \
+         mock.patch.object(plan_orchestrator, "_safe_get_dimensions", return_value=[]):
+        out = plan_orchestrator.execute_task(
+            bot_name="tiller", model="m", task="gather logs",
+            dispatch_fn=fake_dispatch, cancel_event=cancel,
+            world_state_fn=lambda: "world")
+
+    check("no directive dispatched after cancel", dispatched == [], f"dispatched={dispatched}")
+    check("plan finalized as cancelled", out.status == "cancelled", f"status={out.status}")
+    check("not reported complete", out.status != "complete")
+
+
 # ── 3. Honest finalize ──────────────────────────────────────────────────────
 
 def _exec_with_step(plan, fake_step):
@@ -300,6 +349,7 @@ if __name__ == "__main__":
     test_classify_fails_to_task()
     test_cancel_event_aborts_running_plan()
     test_cancel_between_subtasks()
+    test_stop_during_exec_call_dispatches_nothing()
     test_unfinished_subtask_forces_failure()
     test_silent_complete_exit_is_caught()
     test_clean_completion_still_completes()

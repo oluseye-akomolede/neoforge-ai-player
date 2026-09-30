@@ -531,6 +531,18 @@ def _step(plan: Plan, subtask: Subtask, model: str,
                  plan.bot, subtask.criteria, grounded)
         subtask.criteria = grounded
 
+    # Cancel check AFTER the L3 exec call. The check at the top of _step only
+    # guards the *start* of an attempt; a "stop" that lands while call_exec is
+    # in flight (seconds-long LLM call) is set after that check but before any
+    # directive exists. Without this, the directives call_exec just returned —
+    # plus any _provision_materials prepended — are dispatched post-cancel and
+    # the plan runs on (P7 in-game failure, 2026-09-30).
+    if cancel_event is not None and cancel_event.is_set():
+        log.info("[%s] subtask %d cancelled after exec call, before dispatch",
+                 plan.bot, subtask.id)
+        plan.status = "cancelled"
+        return False
+
     subtask.status = "executing"
     subtask.directives = list(directives)
     plan_store.write(plan)
@@ -540,6 +552,15 @@ def _step(plan: Plan, subtask: Subtask, model: str,
     # is fed back to L3 and the spec is corrected in place before retrying.
     last_result = ""
     for d in directives:
+        # Re-check before EVERY dispatch: a stop can land while an earlier
+        # directive in this same loop is executing (the mod-side L1 runner
+        # polls for chat and cancels its directive, but the orchestrator would
+        # otherwise go on to send the next one). This is the second P7 seam.
+        if cancel_event is not None and cancel_event.is_set():
+            log.info("[%s] subtask %d cancelled mid-dispatch, stopping before %s",
+                     plan.bot, subtask.id, d.get("kind"))
+            plan.status = "cancelled"
+            return False
         try:
             if (str(d.get("kind", "")).upper() == "SKILL"
                     and isinstance(d.get("extra"), dict)

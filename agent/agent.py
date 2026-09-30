@@ -184,6 +184,10 @@ class BotRunner:
         self._current_task_id = None
         self._following_player = None
         self._orch_cancel = None  # threading.Event for the live orch:<name> run
+        # Set when a stop/reset lands before the orch thread has published its
+        # cancel Event (the window between thread spawn and _orch_cancel=...).
+        # Without it, _cancel_orchestrator finds None and the stop is lost.
+        self._orch_stop_pending = False
         self._cached_inventory = []  # updated on each observe tick
         self._terrain_tick = 0
         self._lock = threading.Lock()
@@ -1149,6 +1153,11 @@ class BotRunner:
         execute_task once it observes the flag."""
         ev = getattr(self, "_orch_cancel", None)
         if ev is None:
+            # No orchestrator has published its cancel Event yet. It may be in
+            # the window between thread spawn and _orch_cancel=... — record a
+            # pending stop so that thread aborts the moment it publishes.
+            self._orch_stop_pending = True
+            print(f"[{self.name}/cancel] stop pending (no live orchestrator yet): {reason}")
             return False
         if ev.is_set():
             return True
@@ -1334,6 +1343,13 @@ class BotRunner:
         # orchestrator between subtasks and between attempts.
         cancel_event = threading.Event()
         self._orch_cancel = cancel_event
+        # A stop/reset that landed before we published the Event set this flag;
+        # honor it now so the plan is born already-cancelled rather than running
+        # one more subtask (the pre-publication race in P7).
+        if getattr(self, "_orch_stop_pending", False):
+            self._orch_stop_pending = False
+            cancel_event.set()
+            print(f"[{self.name}/cancel] honoring pending stop at orchestrator start")
         try:
             plan_orchestrator.execute_task(
                 bot_name=self.name,
