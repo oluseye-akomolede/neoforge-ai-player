@@ -434,12 +434,21 @@ def _is_spec_rejection(result_text: str) -> bool:
 
 
 def _dispatch_skill_with_refine(d: dict[str, Any], dispatch_fn: DispatchFn,
-                                model: str, bot_name: str) -> str:
+                                model: str, bot_name: str,
+                                cancel_event=None) -> str:
     """Dispatch a SKILL directive carrying an inline spec. On a validator
     rejection, feed the joined error back to L3 (refine_skill) to fix the spec
     and re-dispatch, up to MAX_SPEC_REFINES times. Falls back to the raw result
     when the spec can't be extracted or L3 gives up — never worse than the
-    existing single-shot path."""
+    existing single-shot path.
+
+    `cancel_event`: the refine call is a seconds-long L3 round trip, so a "stop"
+    can land *inside* it — after _step's own checks have passed. Re-check before
+    every dispatch here too (entry and each re-dispatch) so no directive is sent
+    post-cancel; the caller sees the last result and finalises the plan."""
+    if cancel_event is not None and cancel_event.is_set():
+        log.info("[%s] skill dispatch skipped — cancel set before send", bot_name)
+        return ""
     result = dispatch_fn(d)
     for _ in range(MAX_SPEC_REFINES):
         if not _is_spec_rejection(result):
@@ -461,6 +470,11 @@ def _dispatch_skill_with_refine(d: dict[str, Any], dispatch_fn: DispatchFn,
         # Re-normalize through _repair_directive so the mod's string contract
         # (spec → JSON string, register → "true") is re-applied to the fix.
         d = _repair_directive(new_d, bot_name, None)
+        # A "stop" may have landed during the L3 refine_skill call above (seconds
+        # long). Do not send the corrected SKILL after the cancel.
+        if cancel_event is not None and cancel_event.is_set():
+            log.info("[%s] skill spec refined but cancel set — not re-dispatching", bot_name)
+            return result
         log.info("[%s] skill spec refine — retrying: %s", bot_name, error[:100])
         result = dispatch_fn(d)
     return result
@@ -566,12 +580,20 @@ def _step(plan: Plan, subtask: Subtask, model: str,
                     and isinstance(d.get("extra"), dict)
                     and d["extra"].get("spec") is not None):
                 last_result = _dispatch_skill_with_refine(
-                    d, dispatch_fn, model, plan.bot)
+                    d, dispatch_fn, model, plan.bot, cancel_event=cancel_event)
             else:
                 last_result = dispatch_fn(d)
         except Exception as e:
             last_result = f"DISPATCH_ERROR: {e}"
             log.warning("[%s] dispatch failed for %s: %s", plan.bot, d.get("kind"), e)
+        # A stop can land while this dispatch (incl. an in-flight SKILL refine
+        # call) is running. Abort now rather than evaluate criteria on a result
+        # produced after the cancel — this is the third P7 seam.
+        if cancel_event is not None and cancel_event.is_set():
+            log.info("[%s] subtask %d cancelled after dispatch of %s",
+                     plan.bot, subtask.id, d.get("kind"))
+            plan.status = "cancelled"
+            return False
 
     # Evaluate criteria
     satisfied, strategy, reason = evaluate_criteria(

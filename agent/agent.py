@@ -489,9 +489,9 @@ class BotRunner:
             if sender == self.name:
                 continue
             text_lower = text.lower().strip()
-            if len(text_lower) < 5:
-                print(f"[{self.name}/chat] ignored (too short): {text!r}")
-                continue
+            # No raw length gate: short real instructions ("go", "dig", "mine")
+            # are legitimate. is_pure_pleasantry already drops empty/blank/ack
+            # noise ("k", "ok") — a length test here only lost real short chat.
             # Skip only messages that are *entirely* a pleasantry/ack — not any
             # message that merely STARTS with one. The old prefix test dropped
             # "Hi Mystic! Who are you?" (startswith "hi "), silently and with no

@@ -112,13 +112,17 @@ def test_greeting_prefix_does_not_drop_a_question():
         ("Hi Mystic! Who are you?", False),   # the P4 message — must NOT be dropped
         ("Hi Mystic!", True),                 # bare greeting to the bot — noise
         ("hi mystic", True),
-        ("hello", True),                      # <5 chars, dropped earlier anyway
+        ("hello", True),
         ("thanks", True),
         ("ok", True),
         ("Hey Mystic, mine 8 logs", False),   # starts 'hey' but is an order
         ("Hi, could you build a shelter", False),
         ("...", True),                        # punctuation only — noise
         ("yes", True),
+        ("go", False),                        # short real command — must NOT be dropped
+        ("dig", False),
+        ("mine", False),
+        ("k", True),                          # ack noise
     ]
     bad = []
     for text, expect_pleasantry in cases:
@@ -247,6 +251,64 @@ def test_stop_during_exec_call_dispatches_nothing():
             world_state_fn=lambda: "world")
 
     check("no directive dispatched after cancel", dispatched == [], f"dispatched={dispatched}")
+    check("plan finalized as cancelled", out.status == "cancelled", f"status={out.status}")
+    check("not reported complete", out.status != "complete")
+
+
+def test_stop_during_skill_refine_dispatches_nothing():
+    """Reviewer blocker (2026-09-30): _step's guards wrap the CALL to
+    _dispatch_skill_with_refine but cannot see its internal re-dispatch. A SKILL
+    rejected by the mod validator triggers refine_skill (a seconds-long L3 call);
+    a 'stop' landing during it must not send the corrected SKILL afterwards.
+
+    Real execute_task → _step → _dispatch_skill_with_refine. The dispatched SKILL
+    is rejected, refine_skill sets the cancel, and we assert the corrected spec
+    is NOT re-dispatched and the plan finalizes 'cancelled'.
+    """
+    print("2d. stop during skill refine dispatches nothing")
+    plan = _plan(1)
+    cancel = threading.Event()
+    dispatched = []
+
+    def fake_exec(**kw):
+        # One SKILL directive carrying an inline spec — takes the refine branch.
+        return ([{"kind": "SKILL", "target": "proposed",
+                  "extra": {"spec": '{"name":"x"}'}}], "call-1")
+
+    def fake_dispatch(d):
+        dispatched.append(d.get("kind"))
+        # First dispatch is rejected by the validator; a re-dispatch would mean
+        # the cancel was ignored.
+        return "FAILED SKILL spec rejected: bad spec"
+
+    def fake_refine(model, bot, spec, error):
+        # The stop arrives from the chat poller during this L3 round trip.
+        cancel.set()
+        return '{"name":"x","fixed":true}'
+
+    with mock.patch.object(l3_planner, "call_plan", return_value=plan), \
+         mock.patch.object(l3_planner, "call_exec", side_effect=fake_exec), \
+         mock.patch.object(l3_planner, "refine_skill", side_effect=fake_refine), \
+         mock.patch.object(plan_orchestrator, "_repair_directive",
+                           side_effect=lambda nd, bn, st: nd), \
+         mock.patch.object(plan_orchestrator.plan_store, "write"), \
+         mock.patch.object(plan_orchestrator.plan_store, "archive"), \
+         mock.patch.object(plan_orchestrator.trajectory_log, "log_plan_close"), \
+         mock.patch.object(plan_orchestrator.telemetry, "push"), \
+         mock.patch.object(plan_orchestrator.plan_memory, "lookup", return_value=None), \
+         mock.patch.object(plan_orchestrator.plan_memory, "record"), \
+         mock.patch.object(plan_orchestrator, "_plan_from_skill", return_value=None), \
+         mock.patch.object(plan_orchestrator, "_manage_fusion_intercept", return_value=None), \
+         mock.patch.object(plan_orchestrator.api, "status", side_effect=RuntimeError("no server")), \
+         mock.patch.object(plan_orchestrator, "_safe_get_dimensions", return_value=[]):
+        out = plan_orchestrator.execute_task(
+            bot_name="scout", model="m", task="craft something",
+            dispatch_fn=fake_dispatch, cancel_event=cancel,
+            world_state_fn=lambda: "world")
+
+    check("cancel fired during refine", cancel.is_set())
+    check("corrected spec NOT re-dispatched after cancel",
+          dispatched == ["SKILL"], f"dispatched={dispatched}")
     check("plan finalized as cancelled", out.status == "cancelled", f"status={out.status}")
     check("not reported complete", out.status != "complete")
 
@@ -388,6 +450,7 @@ if __name__ == "__main__":
     test_cancel_event_aborts_running_plan()
     test_cancel_between_subtasks()
     test_stop_during_exec_call_dispatches_nothing()
+    test_stop_during_skill_refine_dispatches_nothing()
     test_unfinished_subtask_forces_failure()
     test_silent_complete_exit_is_caught()
     test_clean_completion_still_completes()
