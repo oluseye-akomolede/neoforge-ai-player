@@ -42,7 +42,12 @@ A tick heartbeat, and a `/health` that reads it:
 3. **Never ticked** — before the first tick the heartbeat is unset and
    `/health` answers **200** with `"status":"starting"`. The API server starts
    at `ServerStartedEvent` (`AIPlayerMod.java:53,86-88`), which precedes the
-   first tick, and the startup probe has to keep passing.
+   first tick, and the startup probe has to keep passing. That state is
+   **bounded**: 900 s after the API server starts listening (exactly the
+   startup probe's own budget) a still-never-ticked server answers **503**
+   with `"reason":"never ticked"`. Unbounded, a server thread that hangs before
+   its first tick would answer 200 forever: the startup probe passes on the
+   first 200 and liveness never fires.
 4. **Threshold** — system property `aiplayermod.health.tickStallSeconds`, else
    env `AIPLAYER_HEALTH_TICK_STALL_SECONDS`, else **120**; an unparseable or
    non-positive value falls back to the default with one WARN. This follows the
@@ -58,15 +63,21 @@ The threshold is a **heartbeat age**, not a tick rate: TPS does not enter into
 it (20 TPS and the condenser baseline's 5-7 TPS behave the same as long as ticks
 complete). Three things set the floor:
 
-- **A stall is detected ~4 minutes after it starts, not 2.** Liveness needs four
+- **Detection is ~120 s; getting back to serving is 10-15 minutes.** The endpoint
+  turns 503 as soon as the age passes the threshold, and liveness then needs four
   consecutive failures at `periodSeconds: 30` (`deployment.yaml:223-229`), so the
-  pod restarts about 120 s after the first 503, i.e. ~240 s after a real stall at
-  the default. That is still an order of magnitude better than the fifteen
-  minutes of the incident this exists for, and it is bounded.
+  container is killed ~240 s after the stall began. That 240 s is kill time, not
+  recovery: on a hung server `preStop` can burn up to 240 s of its own
+  (30 + 180 + 30 s, `deployment.yaml:128-137`, inside the 300 s grace at `:21`),
+  and a modded boot is 5-10 minutes, so the pod is serving again roughly 10-15
+  minutes after the stall. That is the figure to judge this against — still far
+  better than the fifteen-minute incident it exists for, and the detection half
+  is bounded and observable.
 - **Save pauses must not trip it.** The prod world is 2.6 GiB on the `/data`
   volume (`du -sh /data/world` in the running prod pod, 2026-10-23), and vanilla
-  saves run on the server thread. A full save can block it for seconds to tens of
-  seconds. At 120 s there is an order-of-magnitude margin. A 30 s default would
+  saves run on the server thread. A full save is expected to block it for seconds
+  to tens of seconds (not measured on prod yet; the TEST save check measures it).
+  At 120 s there is an order-of-magnitude margin against that estimate. A 30 s default would
   sit inside that range: one slow autosave would produce 503s, and with probes at
   exactly 30 s a healthy server could reach four failures and be restarted
   mid-save — the outcome this probe exists to prevent.
@@ -76,32 +87,43 @@ complete). Three things set the floor:
   `test-server.yaml:247-253`). A 5-10 minute modded boot therefore never touches
   the heartbeat.
 
-120 s is also short enough to stay inside the 300 s grace period that the prod
-`preStop` save budget assumes (`deployment.yaml:127-135`): a stalled pod is
-restarted rather than sitting through it.
-
 ### Shutdown is unchanged
 
-`onServerStopping` stops the API server (`AIPlayerMod.java:92-97`), so during the
-shutdown save `/health` is already refusing connections — the heartbeat is not
-consulted after that point and this change does not alter that path.
+`onServerStopping` posts from `runServer` at `MinecraftServer:730`, before
+`stopServer()` saves at `:748`, and stops the API server (`AIPlayerMod.java:92-97`),
+so during the shutdown save `/health` is already refusing connections — the
+heartbeat is not consulted after that point and this change does not alter that
+path. Caveat: a hard JVM crash or `SIGKILL` skips that event, but it also takes the
+HTTP listener down with it, so no answer is served from a dead process. The case
+this change covers is the JVM that is alive with the server thread stalled — which
+is exactly the May 26 zombie.
 
 ## Consumers
 
-- `agent/agent.py:4141-4147` starts the agent by calling `api.health()` in a retry
-  loop and `break`s on **any** JSON reply (`agent/api.py:15-17` does not raise on
-  a non-2xx). A 503 body would therefore read as "mod API connected". It must
-  require `status == "ok"` (or HTTP 200). One task below.
+- `agent/agent.py:4141-4144` starts the agent by calling `api.health()` in a retry
+  loop and `break`s on **any** JSON reply (`_get` at `agent/api.py:15-17` does not
+  raise on a non-2xx). A 503 `stalled` body would therefore read as "mod API
+  connected", and so would a 200 `starting` one. The loop must require
+  `status == "ok"` before it stops retrying. One task below.
 - `agent/testing/harness.py:116-118` already waits for HTTP 200 — compatible as
   written.
-- The dashboard's own `/api/health` (`agent/dashboard/server.py:550`) is a
-  different endpoint and is untouched.
+- The dashboard's `/api/health` (`agent/dashboard/server.py:550-556`) is a
+  passthrough that returns whatever the mod's `/health` returns, so it now shows
+  `stalled`/`starting` too. That is the information the dashboard wants; no
+  dashboard change is needed.
 
 ## Impact
 
 - Spec: `api-http` gains one requirement (`Health Endpoint Reports Server Tick
-  Liveness`) plus its scenarios. The endpoint table entry for `/health`
-  (`openspec/specs/api-http/spec.md:33`) stays true.
+  Liveness`, seven scenarios) and **modifies** `Mod API Server`. The
+  modification adds the key-free probe exception and a `Probe access needs no API
+  key` scenario; it also amends the last step of `Mod API starts on configured
+  port` (`openspec/specs/api-http/spec.md:15`) to except `GET /health`. That step
+  read "requests without a valid API key MUST be rejected", which contradicted a
+  working probe — and `handleHealth` (`HttpApiServer.java:105-111`) never calls
+  the auth check (`:94-99`) today, so the live spec is already behind the code.
+  The endpoint table entry for `/health` (`openspec/specs/api-http/spec.md:33`)
+  stays true.
 - Code: two files (heartbeat + handler) and the agent readiness check. No jar, no
   image, no manifest, no probe change.
 - Rollback: revert the code commit; the endpoint returns to the unconditional 200.
