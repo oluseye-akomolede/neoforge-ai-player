@@ -33,6 +33,13 @@ public class HttpApiServer {
     private final String apiKey;
     private final TickHeartbeat heartbeat;
     private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
+    /**
+     * The writer for /health only. "No tick yet" has to reach the client as a real
+     * JSON null, and Gson's writer drops null fields unless serializeNulls is on.
+     * The shared gson above must stay as it is: turning serializeNulls on for every
+     * endpoint would add null fields across the whole API.
+     */
+    static final Gson HEALTH_GSON = new GsonBuilder().setPrettyPrinting().serializeNulls().create();
     private HttpServer server;
 
     public HttpApiServer(int port, String apiKey, TickHeartbeat heartbeat) {
@@ -112,7 +119,8 @@ public class HttpApiServer {
     private void handleHealth(HttpExchange exchange) throws IOException {
         TickHeartbeat.Probe probe = heartbeat.probe();
         sendJson(exchange, probe.httpStatus(),
-                healthBody(probe, AIPlayerMod.MOD_ID, BotManager.getAllBots().size()));
+                healthBody(probe, AIPlayerMod.MOD_ID, BotManager.getAllBots().size()),
+                HEALTH_GSON);
     }
 
     /** The /health body. Pure: its only inputs are the probe and two values. */
@@ -121,8 +129,9 @@ public class HttpApiServer {
         body.put("status", probe.status());
         body.put("mod", modId);
         body.put("bots", botCount);
-        // Gson drops null map values by default; JsonNull keeps the key present
-        // as a JSON null, which is what "null before the first tick" means.
+        // JsonNull is what "no age yet" means here. It only survives to the wire
+        // because handleHealth serialises this body with HEALTH_GSON: the shared
+        // gson's writer drops null values, key and all.
         body.put("tick_age_seconds", probe.ageSeconds() == null
                 ? com.google.gson.JsonNull.INSTANCE : probe.ageSeconds());
         if (probe.reason() != null) {
@@ -2023,7 +2032,12 @@ public class HttpApiServer {
     }
 
     private void sendJson(HttpExchange exchange, int status, Object data) throws IOException {
-        String json = gson.toJson(data);
+        sendJson(exchange, status, data, gson);
+    }
+
+    private void sendJson(HttpExchange exchange, int status, Object data, Gson serializer)
+            throws IOException {
+        String json = serializer.toJson(data);
         byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "application/json");
         exchange.sendResponseHeaders(status, bytes.length);

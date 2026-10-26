@@ -1,6 +1,8 @@
 package com.sigmastrain.aiplayermod.api;
 
-import com.google.gson.JsonNull;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -11,7 +13,6 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -168,12 +169,33 @@ class TickHeartbeatTest {
     }
 
     @Test
-    void healthBodyCarriesAnExplicitNullAgeBeforeTheFirstTick() {
+    void theStartingBodyKeepsAnExplicitNullAgeOnTheWire() {
         Map<String, Object> starting = HttpApiServer.healthBody(
                 new TickHeartbeat.Probe(200, "starting", null, null), "aiplayermod", 0);
 
-        assertTrue(starting.containsKey("tick_age_seconds"), "the key is present, not dropped");
-        assertSame(JsonNull.INSTANCE, starting.get("tick_age_seconds"));
+        // The map holding JsonNull proves nothing: only the serialised bytes reach
+        // the client. Use the writer /health actually uses.
+        String wire = HttpApiServer.HEALTH_GSON.toJson(starting);
+        JsonObject parsed = JsonParser.parseString(wire).getAsJsonObject();
+
+        assertTrue(parsed.has("tick_age_seconds"), "the wire body keeps the key: " + wire);
+        assertTrue(parsed.get("tick_age_seconds").isJsonNull(), "and it is a JSON null: " + wire);
+        assertEquals("starting", parsed.get("status").getAsString());
+        assertEquals(0, parsed.get("bots").getAsInt());
+    }
+
+    @Test
+    void theSharedWriterWouldDropTheNullWhichIsWhyHealthHasItsOwn() {
+        // Pins the trap this endpoint hit: with the shared config the field name is
+        // dropped entirely, not sent as null. If Gson ever changes this, the
+        // dedicated HEALTH_GSON above is no longer needed - and this test says so.
+        Map<String, Object> starting = HttpApiServer.healthBody(
+                new TickHeartbeat.Probe(200, "starting", null, null), "aiplayermod", 0);
+
+        String sharedWire = new GsonBuilder().setPrettyPrinting().create().toJson(starting);
+
+        assertFalse(sharedWire.contains("tick_age_seconds"),
+                "the shared writer still drops a null field: " + sharedWire);
     }
 
     @Test
@@ -210,7 +232,9 @@ class TickHeartbeatTest {
     void theHealthPathCannotReachTheServerThreadEvenIfSomebodyTries() {
         // Permanent guard, so the no-hop property outlives the temporary stall
         // hook: nothing the health answer depends on is allowed to hold a server
-        // or an executor handed in from outside.
+        // or an executor handed in from outside. Partial by construction: it sees
+        // signatures, not bodies, so a static server accessor inside a method would
+        // pass it. The wire-level test above covers the other half.
         for (var ctor : HttpApiServer.class.getDeclaredConstructors()) {
             for (var param : ctor.getParameterTypes()) {
                 assertFalse(isServerOrExecutor(param),
