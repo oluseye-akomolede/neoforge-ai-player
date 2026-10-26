@@ -42,6 +42,17 @@ raw_delete = _delete
 def health():
     return _get("/health")
 
+
+def health_is_ready(h):
+    """True only when /health reports status "ok".
+
+    The mod answers 200 "starting" before its first server tick and 503
+    "stalled" when the server thread is stuck. _get does not raise on a non-2xx,
+    so a body check is the only signal: both of those mean "not ready", even
+    though "starting" arrives with a 2xx.
+    """
+    return isinstance(h, dict) and h.get("status") == "ok"
+
 def spawn(name):
     return _post("/bots", {"name": name})
 

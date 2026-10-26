@@ -39,6 +39,7 @@ public class AIPlayerMod {
     private static final int SPAWN_PACKET_DELAY_TICKS = 40;
 
     private HttpApiServer apiServer;
+    private com.sigmastrain.aiplayermod.api.TickHeartbeat tickHeartbeat;
     private final Queue<PendingSpawn> pendingSpawns = new ConcurrentLinkedQueue<>();
 
     private record PendingSpawn(net.minecraft.server.level.ServerPlayer joiner, long sendAtTick) {}
@@ -83,7 +84,18 @@ public class AIPlayerMod {
             LOGGER.warn("Standing orders load failed", e);
         }
 
-        apiServer = new HttpApiServer(port, apiKey);
+        // Tick heartbeat for /health. Created here, so "listening since" is the
+        // moment the API server starts: the bounded "starting" state measures
+        // from exactly that point.
+        int stallSeconds = com.sigmastrain.aiplayermod.api.TickHeartbeat.resolveThresholdSeconds(
+                System.getProperty("aiplayermod.health.tickStallSeconds"),
+                System.getenv("AIPLAYER_HEALTH_TICK_STALL_SECONDS"),
+                com.sigmastrain.aiplayermod.api.TickHeartbeat.DEFAULT_STALL_SECONDS,
+                msg -> LOGGER.warn("{}", msg));
+        tickHeartbeat = new com.sigmastrain.aiplayermod.api.TickHeartbeat(stallSeconds, System::nanoTime);
+        LOGGER.info("Health tick stall threshold: {} s", stallSeconds);
+
+        apiServer = new HttpApiServer(port, apiKey, tickHeartbeat);
         apiServer.start();
         LOGGER.info("AI Player API server started on port {}", port);
     }
@@ -144,6 +156,12 @@ public class AIPlayerMod {
                     }
                 }
             }
+        }
+
+        // Last statement on purpose: the heartbeat records a COMPLETED tick, so
+        // a tick that throws before this point must not refresh it.
+        if (tickHeartbeat != null) {
+            tickHeartbeat.recordTick();
         }
     }
 

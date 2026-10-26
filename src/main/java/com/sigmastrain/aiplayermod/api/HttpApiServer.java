@@ -31,12 +31,14 @@ import java.util.concurrent.Executors;
 public class HttpApiServer {
     private final int port;
     private final String apiKey;
+    private final TickHeartbeat heartbeat;
     private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
     private HttpServer server;
 
-    public HttpApiServer(int port, String apiKey) {
+    public HttpApiServer(int port, String apiKey, TickHeartbeat heartbeat) {
         this.port = port;
         this.apiKey = apiKey;
+        this.heartbeat = heartbeat;
     }
 
     public void start() {
@@ -102,12 +104,31 @@ public class HttpApiServer {
 
     // ── /health ──
 
+    /**
+     * Answers from the heartbeat on this HTTP thread. It must never hop to the
+     * server thread: a hop would queue behind the stall it is meant to detect
+     * and time out instead of answering.
+     */
     private void handleHealth(HttpExchange exchange) throws IOException {
-        sendJson(exchange, 200, Map.of(
-                "status", "ok",
-                "mod", AIPlayerMod.MOD_ID,
-                "bots", BotManager.getAllBots().size()
-        ));
+        TickHeartbeat.Probe probe = heartbeat.probe();
+        sendJson(exchange, probe.httpStatus(),
+                healthBody(probe, AIPlayerMod.MOD_ID, BotManager.getAllBots().size()));
+    }
+
+    /** The /health body. Pure: its only inputs are the probe and two values. */
+    static Map<String, Object> healthBody(TickHeartbeat.Probe probe, String modId, int botCount) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("status", probe.status());
+        body.put("mod", modId);
+        body.put("bots", botCount);
+        // Gson drops null map values by default; JsonNull keeps the key present
+        // as a JSON null, which is what "null before the first tick" means.
+        body.put("tick_age_seconds", probe.ageSeconds() == null
+                ? com.google.gson.JsonNull.INSTANCE : probe.ageSeconds());
+        if (probe.reason() != null) {
+            body.put("reason", probe.reason());
+        }
+        return body;
     }
 
     // ── /skills ── (GET = catalog, POST = off-loop register)

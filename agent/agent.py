@@ -4140,6 +4140,10 @@ def run():
     for attempt in range(1, max_retries + 1):
         try:
             h = api.health()
+            # A 503 "stalled" body and a 200 "starting" body both mean the API
+            # answers but the server is not ready. Require "ok" (api.health_is_ready).
+            if not api.health_is_ready(h):
+                raise RuntimeError(f"mod API not ready: {h!r}")
             print(f"[agent] Mod API: {h}")
             break
         except Exception as e:
