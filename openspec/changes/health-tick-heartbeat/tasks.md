@@ -21,10 +21,10 @@ probe blocks in both live manifests; the reviewer gates it before any code exist
 
 ## Verification (TEST first, then prod)
 
-- [ ] TEST: normal boot passes the startup probe and `/health` reports `ok` with a small age
-- [ ] TEST: hold the server thread past the threshold (a temporary stall hook behind a system property, removed before merge) and watch `/health` turn 503/`stalled` and the pod restart; confirm the handler still answers within `timeoutSeconds: 10`
+- [x] TEST: normal boot passes the startup probe and `/health` reports `ok` with a small age (~/evidence/2026-10-27-health-test-deploy/phase-a.txt, 04:18:49Z: 200 `ok`, age 0, restartCount 0)
+- [ ] TEST: hold the server thread past the threshold (a temporary stall hook behind a system property, removed before merge) and watch `/health` turn 503/`stalled` and the pod restart; confirm the handler still answers within `timeoutSeconds: 10` — ran 04:31-04:43Z, FAILED (22 consecutive 15 s timeouts, no 503, liveness kill): phase-c.txt, probe-events.txt
 - [ ] TEST: a normal autosave, and a `/save-all` on the 2.6 GiB world, produce no 503 — this is the case the 120 s default exists for
-- [ ] TEST: `/health` on a fresh pod answers 200 `starting` before the first tick (restart the pod and curl it during boot)
+- [x] TEST: `/health` on a fresh pod answers 200 `starting` before the first tick (restart the pod and curl it during boot) (~/evidence/2026-10-27-health-test-deploy/phase-a.txt, 04:18:49Z: 200 `starting`, `tick_age_seconds` null; phase-b2.txt 04:29:50-04:30:22Z: 17 samples) — note: both runs hit the same API blackout before the procedure's 20-sample bar; see RESULT.md
 - [ ] TEST: hold the server thread from boot, before the first tick, past the 900 s startup budget and watch `/health` turn 503 `never ticked` and the startup probe fail — this is the bound that stops a pre-first-tick hang reporting 200 forever
 - [ ] Prod, after the owner's go: no restart caused by the probe over a 24 h window, the WorldTick age stays bounded in the logs, and a deliberate stall is measured end to end (expect ~10-15 min back to serving: ~240 s to kill plus preStop and boot)
 - [ ] `openspec archive health-tick-heartbeat` once the code ships, so `openspec/specs/api-http/spec.md` describes the live endpoint
