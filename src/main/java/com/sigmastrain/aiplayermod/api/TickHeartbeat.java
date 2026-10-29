@@ -104,6 +104,47 @@ public final class TickHeartbeat {
         return fallback;
     }
 
+    /**
+     * The probe port: system property, else environment variable, else the
+     * fallback. A blank value is not a misconfiguration and falls through
+     * silently. A non-numeric value, a value outside 1-65535, or a value equal
+     * to {@code resolvedApiPort} is rejected with exactly one warning.
+     *
+     * <p>The collision check compares against {@code resolvedApiPort}—itself
+     * configurable—rather than against the constant 3100, because the API port
+     * may have been moved by the same property/env mechanism. The collision is
+     * caught here rather than left to the bind because a bind failure cannot
+     * distinguish it from another process holding the port; only an early check
+     * makes the fallback reachable at all. Falling back rather than failing is
+     * deliberate: a probe listener that does not bind leaves /health unanswered,
+     * which is the failure the dedicated listener exists to prevent.
+     */
+    public static int resolveProbePort(String propertyValue, String envValue,
+                                       int resolvedApiPort, int fallback, Consumer<String> warn) {
+        String raw = propertyValue != null ? propertyValue : envValue;
+        if (raw == null || raw.isBlank()) {
+            return fallback;
+        }
+        try {
+            int parsed = Integer.parseInt(raw.trim());
+            if (parsed < 1 || parsed > 65535) {
+                warn.accept("Ignoring out-of-range probe port '" + raw
+                        + "'; using " + fallback);
+                return fallback;
+            }
+            if (parsed == resolvedApiPort) {
+                warn.accept("Ignoring probe port '" + raw
+                        + "' (collides with API port); using " + fallback);
+                return fallback;
+            }
+            return parsed;
+        } catch (NumberFormatException e) {
+            warn.accept("Ignoring unparseable probe port '" + raw
+                    + "'; using " + fallback);
+            return fallback;
+        }
+    }
+
     /** One answer for {@code GET /health}. {@code ageSeconds} is null until a tick lands. */
     public record Probe(int httpStatus, String status, String reason, Long ageSeconds) {
     }

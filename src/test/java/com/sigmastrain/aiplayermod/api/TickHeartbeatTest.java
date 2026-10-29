@@ -270,4 +270,74 @@ class TickHeartbeatTest {
         }
         throw new AssertionError(owner.getSimpleName() + "." + name + " is gone");
     }
+
+    // ── probe port resolution ──
+
+    private static int resolveProbePort(String property, String env, int resolvedApiPort, List<String> warnings) {
+        return TickHeartbeat.resolveProbePort(property, env, resolvedApiPort, 3101, warnings::add);
+    }
+
+    @Test
+    void blankPropertyFallsBackSilently() {
+        List<String> warnings = new ArrayList<>();
+        assertEquals(3101, resolveProbePort("   ", null, 3100, warnings));
+        assertTrue(warnings.isEmpty(), "no warnings for a blank property");
+    }
+
+    @Test
+    void blankEnvFallsBackSilently() {
+        List<String> warnings = new ArrayList<>();
+        assertEquals(3101, resolveProbePort(null, "", 3100, warnings));
+        assertTrue(warnings.isEmpty(), "no warnings for a blank env");
+    }
+
+    @Test
+    void collidesWithResolvedApiPort() {
+        List<String> warnings = new ArrayList<>();
+        assertEquals(3101, resolveProbePort("3200", null, 3200, warnings));
+        assertEquals(1, warnings.size(), "exactly one warning for a collision");
+        assertTrue(warnings.get(0).contains("3101"), "the warning names the fallback: " + warnings.get(0));
+    }
+
+    @Test
+    void doesNotCollideWithDefaultApiPort() {
+        List<String> warnings = new ArrayList<>();
+        assertEquals(3100, resolveProbePort("3100", null, 3200, warnings));
+        assertTrue(warnings.isEmpty(), "3100 is legal when the API moved off it");
+    }
+
+    @Test
+    void outOfRangePort() {
+        List<String> warnings = new ArrayList<>();
+        assertEquals(3101, resolveProbePort("70000", null, 3100, warnings));
+        assertEquals(1, warnings.size(), "exactly one warning for an out-of-range port");
+    }
+
+    @Test
+    void zeroPort() {
+        List<String> warnings = new ArrayList<>();
+        assertEquals(3101, resolveProbePort("0", null, 3100, warnings));
+        assertEquals(1, warnings.size(), "exactly one warning for port 0");
+    }
+
+    @Test
+    void unparseablePort() {
+        List<String> warnings = new ArrayList<>();
+        assertEquals(3101, resolveProbePort("abc", null, 3100, warnings));
+        assertEquals(1, warnings.size(), "exactly one warning for an unparseable port");
+    }
+
+    @Test
+    void propertyWinsOverEnv() {
+        List<String> warnings = new ArrayList<>();
+        assertEquals(3201, resolveProbePort("3201", "3202", 3100, warnings));
+        assertTrue(warnings.isEmpty(), "no warnings when property is valid and wins");
+    }
+
+    @Test
+    void envUsedWhenPropertyAbsent() {
+        List<String> warnings = new ArrayList<>();
+        assertEquals(3202, resolveProbePort(null, "3202", 3100, warnings));
+        assertTrue(warnings.isEmpty(), "no warnings when env is valid and used");
+    }
 }

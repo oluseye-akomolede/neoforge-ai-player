@@ -53,37 +53,44 @@ public class HttpApiServer {
             server = HttpServer.create(new InetSocketAddress("0.0.0.0", port), 0);
             server.setExecutor(Executors.newFixedThreadPool(4));
 
-            server.createContext("/health", this::handleHealth);
-            server.createContext("/bots", this::handleBots);
+            // /health is NOT registered here. It lives on its own listener
+            // (HealthProbeListener) with its own executor: sharing this fixed
+            // pool with routes that hop to the server thread and block is what
+            // silently defeated the probe during the 2026-10-27 and 2026-10-28
+            // stalls - it queued behind the very stall it was meant to report.
+            registerApiRoutes(server);
+            server.start();
+        } catch (IOException e) {
+            AIPlayerMod.LOGGER.error("Failed to start API server on port {}", port, e);
+        }
+    }
+
+    private void registerApiRoutes(HttpServer server) {
+        server.createContext("/bots", this::handleBots);
             server.createContext("/bot/", this::handleBotAction);
             server.createContext("/shop", this::handleShop);
             server.createContext("/transmute/names", this::handleTransmuteNames);
             server.createContext("/transmute", this::handleTransmute);
             server.createContext("/enchantments", this::handleEnchantments);
             server.createContext("/containers", this::handleContainers);
-            server.createContext("/telemetry/event", this::handleTelemetryEvent);
-            server.createContext("/telemetry/escalation", this::handleEscalation);
-            server.createContext("/telemetry/talk", this::handleTalk);
-            server.createContext("/telemetry/schemas", this::handleSchemas);
-            server.createContext("/telemetry/orders", this::handleOrders);
-            server.createContext("/telemetry/standing", this::handleStanding);
-            server.createContext("/server/items", this::handleServerItems);
-            server.createContext("/server/structures", this::handleServerStructures);
-            server.createContext("/server/tempad", this::handleTempadList);
-            server.createContext("/server/mark", this::handleMark);
-            server.createContext("/server/dimensions", this::handleDimensions);
-            server.createContext("/server/me_networks", this::handleMeNetworks);
-            server.createContext("/server/players", this::handlePlayers);
-            server.createContext("/skills", this::handleSkills);
-            server.createContext("/skills/resolve", this::handleSkillResolve);
+        server.createContext("/telemetry/event", this::handleTelemetryEvent);
+        server.createContext("/telemetry/escalation", this::handleEscalation);
+        server.createContext("/telemetry/talk", this::handleTalk);
+        server.createContext("/telemetry/schemas", this::handleSchemas);
+        server.createContext("/telemetry/orders", this::handleOrders);
+        server.createContext("/telemetry/standing", this::handleStanding);
+        server.createContext("/server/items", this::handleServerItems);
+        server.createContext("/server/structures", this::handleServerStructures);
+        server.createContext("/server/tempad", this::handleTempadList);
+        server.createContext("/server/mark", this::handleMark);
+        server.createContext("/server/dimensions", this::handleDimensions);
+        server.createContext("/server/me_networks", this::handleMeNetworks);
+        server.createContext("/server/players", this::handlePlayers);
+        server.createContext("/skills", this::handleSkills);
+        server.createContext("/skills/resolve", this::handleSkillResolve);
 
-            for (ApiExtensions.Route r : ApiExtensions.routes()) {
-                server.createContext(r.path(), r.handler());
-            }
-
-            server.start();
-        } catch (IOException e) {
-            AIPlayerMod.LOGGER.error("Failed to start API server on port {}", port, e);
+        for (ApiExtensions.Route r : ApiExtensions.routes()) {
+            server.createContext(r.path(), r.handler());
         }
     }
 
@@ -121,6 +128,21 @@ public class HttpApiServer {
         sendJson(exchange, probe.httpStatus(),
                 healthBody(probe, AIPlayerMod.MOD_ID, BotManager.getAllBots().size()),
                 HEALTH_GSON);
+    }
+
+    /**
+     * The same answer, handed to the dedicated listener. One implementation, so
+     * the two can never drift; the only difference between the two call sites is
+     * which executor the request is already running on.
+     */
+    public HealthHandler healthHandler() {
+        return this::handleHealth;
+    }
+
+    /** {@link com.sun.net.httpserver.HttpHandler} without the checked exception. */
+    @FunctionalInterface
+    public interface HealthHandler {
+        void handle(HttpExchange exchange) throws IOException;
     }
 
     /** The /health body. Pure: its only inputs are the probe and two values. */

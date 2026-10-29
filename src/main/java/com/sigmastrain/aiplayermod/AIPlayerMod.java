@@ -36,9 +36,11 @@ public class AIPlayerMod {
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
     private static final int DEFAULT_API_PORT = 3100;
+    private static final int DEFAULT_PROBE_PORT = 3101;
     private static final int SPAWN_PACKET_DELAY_TICKS = 40;
 
     private HttpApiServer apiServer;
+    private com.sigmastrain.aiplayermod.api.HealthProbeListener healthProbe;
     private com.sigmastrain.aiplayermod.api.TickHeartbeat tickHeartbeat;
     private final Queue<PendingSpawn> pendingSpawns = new ConcurrentLinkedQueue<>();
 
@@ -98,11 +100,36 @@ public class AIPlayerMod {
         apiServer = new HttpApiServer(port, apiKey, tickHeartbeat);
         apiServer.start();
         LOGGER.info("AI Player API server started on port {}", port);
+
+        // /health gets its own listener and executor. It takes the resolved API
+        // port as an input: the collision check is against `port`, not against
+        // the 3100 constant, because `port` is configurable.
+        int probePort = com.sigmastrain.aiplayermod.api.TickHeartbeat.resolveProbePort(
+                System.getProperty("aiplayermod.health.probePort"),
+                System.getenv("AIPLAYER_HEALTH_PROBE_PORT"),
+                port,
+                DEFAULT_PROBE_PORT,
+                msg -> LOGGER.warn("{}", msg));
+        healthProbe = new com.sigmastrain.aiplayermod.api.HealthProbeListener(
+                probePort, apiServer.healthHandler());
+        if (healthProbe.start(msg -> LOGGER.error("{}", msg))) {
+            LOGGER.info("Dedicated /health listener started on port {}", probePort);
+        } else {
+            // Deliberate: no fallback onto the shared listener. A silent fallback
+            // would restore the shared executor in the one case that matters, so
+            // the probe stays silent and the deployment's probes fail visibly.
+            healthProbe = null;
+        }
     }
 
     @SubscribeEvent
     public void onServerStopping(ServerStoppingEvent event) {
         com.sigmastrain.aiplayermod.bot.BotChunkTickets.releaseAll();
+        // Whichever listeners were actually created: a probe listener that
+        // failed to start is null here, not a half-built object.
+        if (healthProbe != null) {
+            healthProbe.stop();
+        }
         if (apiServer != null) {
             apiServer.stop();
         }
