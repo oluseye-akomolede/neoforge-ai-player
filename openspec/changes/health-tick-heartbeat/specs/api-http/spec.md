@@ -56,24 +56,46 @@ probe passes on the first 200 and the liveness probe never fires.
 
 The threshold MUST be configurable, resolved in this order: system property
 `aiplayermod.health.tickStallSeconds`, environment variable
-`AIPLAYER_HEALTH_TICK_STALL_SECONDS`, default **120** seconds. An unparseable or
-non-positive value MUST fall back to the default and MUST log exactly one WARN at
-startup. A blank value MUST be treated as unset: it falls back to the default and
-logs no WARN, because a set-but-empty variable is how a deployment says "not
-configured" rather than a mistake the operator needs to be told about.
+`AIPLAYER_HEALTH_TICK_STALL_SECONDS`, default **120** seconds. A blank or
+whitespace-only value MUST be treated as unset, and that check MUST come before
+the malformed-value rule: it is not a misconfiguration, it is how a deployment
+says "not configured", so it falls back to the default and logs no WARN. Any
+other unparseable or non-positive value MUST fall back to the default and MUST log
+exactly one WARN at startup.
 
 The dedicated listener's port MUST be configurable, resolved in this order:
 system property `aiplayermod.health.probePort`, environment variable
-`AIPLAYER_HEALTH_PROBE_PORT`, default **3101**. A value that is unparseable, not a
-valid TCP port (1-65535), or equal to the main API port MUST fall back to the
-default and MUST log exactly one WARN at startup. Falling back rather than failing
-is deliberate: a listener that cannot bind would leave `/health` unanswered, which
-is the failure this requirement exists to prevent, and the deployment's probe
-would then kill the pod it is meant to protect.
+`AIPLAYER_HEALTH_PROBE_PORT`, default **3101**. The resolver MUST be given the
+already-resolved main API port as an input, because that port is itself
+configurable (`aiplayermod.api.port` / `AIPLAYER_API_PORT` / 3100) and a
+comparison against the constant 3100 would be wrong on any deployment that sets
+it. A probe-port value that is blank, unparseable, outside the valid TCP range
+(1-65535), or equal to that resolved API port MUST fall back to the default and
+MUST log exactly one WARN at startup, naming the rejected value.
+
+The collision MUST be checked at resolution time rather than left to the bind to
+discover: a bind failure cannot tell a collision with this mod's own API listener
+from another process holding the port, so only an early check can make the
+fallback reachable at all. Falling back rather than failing to start is
+deliberate: a listener that cannot bind would leave `/health` unanswered, which is
+the failure this requirement exists to prevent.
+
+The deployment's probes and this mod move together. The pod spec's probe port is a
+literal, not something it reads from the mod, so `startupProbe` and `livenessProbe`
+MUST both name the same port the dedicated listener binds
+(`AIPLAYER_HEALTH_PROBE_PORT` in the deployment), and they MUST be changed in the
+same commit as the code that moves `/health`. A mod that binds 3101 while the
+kubelet still probes 3100 turns every probe into a connection refusal: that is a
+permanent CrashLoop, a worse outcome than the silence being fixed.
 
 If the dedicated listener cannot be created or started, the mod MUST log an ERROR
-naming the port and MUST keep the rest of the API running rather than abort
-startup, so that the outcome is a visibly failing probe instead of a dead server.
+naming the port, MUST keep the rest of the API running rather than abort startup,
+and MUST NOT serve `/health` from any other listener as a fallback. What the mod
+owns is that refusal; whether the pod then fails is the deployment's behaviour,
+produced by the kubelet probing a port nothing answers on, not something the mod
+can enact. Failing visibly is the point: a silent fallback onto the main listener
+would restore, in the one situation where it matters most, exactly the shared
+executor this requirement exists to avoid.
 
 #### Scenario: Healthy ticking
 - GIVEN the server thread has completed a tick within the threshold
@@ -145,10 +167,16 @@ startup, so that the outcome is a visibly failing probe instead of a dead server
 - AND no WARN line is logged for it
 
 #### Scenario: Probe port falls back when it is unusable
-- GIVEN `aiplayermod.health.probePort` (or its environment variable) is unparseable, outside 1-65535, or equal to the main API port
+- GIVEN `aiplayermod.health.probePort` (or its environment variable) is blank, unparseable, outside 1-65535, or equal to the resolved main API port
 - WHEN the mod starts
 - THEN the dedicated listener binds the default port 3101
-- AND exactly one WARN line records the ignored value
+- AND exactly one WARN line records the rejected value and the port actually used
+
+#### Scenario: Probe port collision is judged against the configured API port
+- GIVEN the main API port is configured to 3200 and the probe port is configured to 3200
+- WHEN the mod starts
+- THEN the probe port falls back to 3101, because the check compares against the resolved API port and not against the default 3100
+- AND exactly one WARN line records the collision
 
 #### Scenario: Probe keeps answering after the main listener's executor is saturated
 - GIVEN the main API listener's executor has no free thread
@@ -157,11 +185,17 @@ startup, so that the outcome is a visibly failing probe instead of a dead server
 - AND the answers are served by the dedicated listener, whose executor the main listener cannot reach
 
 #### Scenario: Probe listener cannot bind
-- GIVEN the dedicated listener's port is already in use by another process
+- GIVEN the port the dedicated listener must bind is already in use by another process
 - WHEN the mod starts
 - THEN an ERROR naming the port is logged
 - AND the rest of the API still serves its routes
-- AND the probe fails visibly (it is not answered by the main listener as a silent fallback)
+- AND the mod serves `/health` from no other listener, so a probe aimed at that port gets a connection refusal rather than an answer
+- AND the resulting probe failure belongs to the deployment, which is what makes the fault visible instead of silently reverting to the shared executor
+
+#### Scenario: Shutdown closes both listeners
+- GIVEN the mod is running with both the main API listener and the dedicated probe listener bound
+- WHEN the server stops
+- THEN both listeners are stopped and their bounds released, so a later start in the same process can bind the same ports
 
 #### Scenario: The agent does not treat a stall as ready
 - GIVEN the agent is starting and the mod API answers 503 because the server thread is stalled
@@ -172,15 +206,17 @@ startup, so that the outcome is a visibly failing probe instead of a dead server
 ## MODIFIED Requirements
 
 ### Requirement: Mod API Server
-The mod MUST expose a REST API on a configurable port (default: 3100) with optional API key authentication, except that probe endpoints MUST be answerable without an API key: the kubelet sends none, and a 401 on `GET /health` would fail every startup and liveness probe. `GET /health` is the probe endpoint this exception covers.
+The mod MUST expose a REST API on a configurable port (default: 3100) with optional API key authentication. `GET /health` is served by the dedicated listener described in Health Endpoint Reports Server Tick Liveness, on its own port, not by this listener; that separation is what keeps the probe answerable when this API is saturated. Because that listener needs no API key, the kubelet sends none, and a 401 on `GET /health` would fail every startup and liveness probe.
 
 #### Scenario: Mod API starts on configured port
 - GIVEN the mod is loaded with the API port configured to 3100
 - WHEN the server starts
 - THEN the REST API MUST be listening on port 3100
-- AND requests without a valid API key MUST be rejected when authentication is enabled, except `GET /health`
+- AND requests without a valid API key MUST be rejected when authentication is enabled
+- AND `GET /health` is served on the dedicated probe port rather than on 3100
 
 #### Scenario: Probe access needs no API key
 - GIVEN API key authentication is enabled for the rest of the API
-- WHEN `GET /health` is requested without an `X-Api-Key` header
+- WHEN `GET /health` is requested on the dedicated probe port without an `X-Api-Key` header
 - THEN the request is answered as described in Health Endpoint Reports Server Tick Liveness rather than rejected with 401
+- AND the probe port accepts no other route, so the key-free exception cannot widen into key-free access to the rest of the API
