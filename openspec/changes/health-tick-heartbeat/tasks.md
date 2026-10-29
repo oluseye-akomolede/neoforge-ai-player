@@ -7,7 +7,8 @@ probe blocks in both live manifests; the reviewer gates it before any code exist
 ## Spec (this change)
 
 - [x] `Health Endpoint Reports Server Tick Liveness` added to `api-http`, seven scenarios (healthy, stalled, before first tick, no tick before the startup budget, long save, misconfigured threshold, agent readiness), plus a MODIFIED `Mod API Server` with the key-free probe exception and two scenarios (the amended port scenario and `Probe access needs no API key`) (eb5f1cd, openspec/changes/health-tick-heartbeat/specs/api-http/spec.md:3)
-- [x] `openspec validate health-tick-heartbeat --strict` passes (eb5f1cd)
+- [x] Strengthen `Stalled tick` for listener isolation: the shared-executor implementation answered nothing at all on 2026-10-27 and 2026-10-28, so no-hop-off-the-server-thread is necessary but not sufficient. Adds the dedicated-listener requirement with its own executor, the configurable probe port (system property → env → **3101**, invalid or colliding with the API port falls back with one WARN), the bind-failure MUST (ERROR, API keeps running, probe fails visibly), and the blank-threshold rule (treated as unset: no WARN). Five new scenarios: stalled while the main listener is saturated, saturated with a healthy tick, probe survives a saturated main listener, probe port falls back, probe listener cannot bind. Lead ruling 2026-10-28 00:39Z: no second capture window, the dedicated listener is the guarantee (`.../api-http/spec.md:20-71,141-163`)
+- [x] `openspec validate health-tick-heartbeat --strict` passes (eb5f1cd; re-validated after the isolation delta)
 
 ## Implementation
 
@@ -18,6 +19,8 @@ probe blocks in both live manifests; the reviewer gates it before any code exist
 - [x] Unit test, permanent: `handleHealth` never calls `server.execute` or otherwise waits on the server thread (a fake executor that throws), so the no-hop property survives after the temporary stall hook is deleted (6ec20b3, TickHeartbeatTest.java:210)
 - [x] Agent readiness: `agent/agent.py:4141-4144` requires `status == "ok"` before it stops retrying — today any JSON reply ends the loop (`_get` at `agent/api.py:15-17`), so both a 503 `stalled` and a 200 `starting` body would be read as ready (6ec20b3, agent/agent.py:4145)
 - [x] Agent-side test for that readiness check (the harness's 200 requirement at `agent/testing/harness.py:116-118` already matches) (6ec20b3, agent/tests/test_health_readiness.py:20)
+- [ ] Dedicated `/health` listener: a second `HttpServer` on `aiplayermod.health.probePort` → `AIPLAYER_HEALTH_PROBE_PORT` → 3101, with its own executor, serving only `/health`; remove `/health` from the main listener's routes BEFORE the second bind so the two can never answer the same path; reject a probe port equal to the API port at resolution time, since resolving it first is the only way the fallback can fire (a bind failure is otherwise indistinguishable from another process holding the port); bind failure logs an ERROR naming the port and leaves the main API running; `stop()` closes both listeners. Note for step 2: the mod start happens well before the first tick, so the `starting` / `never ticked` clock starts at the dedicated listener
+- [ ] Unit tests for the listener split: the main listener no longer registers `/health`; the probe port resolver falls back on unparseable, out-of-range and API-port-collision values with exactly one WARN each; a bind failure leaves the main server serving; `stop()` closes both; `/health` still answers `stalled` when the dedicated executor is saturated but the main one is not (mirror of the TEST scenario)
 
 ## Verification (TEST first, then prod)
 
