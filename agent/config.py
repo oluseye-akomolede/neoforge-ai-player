@@ -1,8 +1,30 @@
 import json
 import os
+from urllib.parse import urlsplit, urlunsplit
 
 MOD_API_URL = os.getenv("MOD_API_URL", "http://localhost:3100")
 MOD_API_KEY = os.getenv("MOD_API_KEY", "")
+
+# GET /health lives on the mod's own dedicated listener, not on MOD_API_URL: the
+# probe port answers /health and nothing else, so the two cannot share a base.
+# Default ties to the mod's default (3101); a deployment that moves it must set
+# AIPLAYER_HEALTH_PROBE_PORT, the same variable the mod reads.
+HEALTH_PROBE_PORT = os.getenv("AIPLAYER_HEALTH_PROBE_PORT", "3101")
+
+
+def _health_url(api_url: str, probe_port: str) -> str:
+    """Swap the port on the API base, keeping scheme and host.
+
+    Parsed with urlsplit rather than split(":"): "http://host" has no port, and
+    rsplit on that yields ["http", "//host"], which would silently build a wrong
+    URL for any base without an explicit port.
+    """
+    parts = urlsplit(api_url)
+    return urlunsplit((parts.scheme, parts.netloc.rsplit(":", 1)[0] + ":" + probe_port,
+                       parts.path.rstrip("/"), "", ""))
+
+
+MOD_HEALTH_URL = os.getenv("MOD_HEALTH_URL") or _health_url(MOD_API_URL, HEALTH_PROBE_PORT)
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 NN_COMPRESSOR_URL = os.getenv("NN_COMPRESSOR_URL", "")  # empty disables state compression

@@ -2,6 +2,7 @@
 
 import json
 import time
+import os
 import requests
 import yaml
 from dataclasses import dataclass, field
@@ -111,10 +112,13 @@ class TestRunner:
         if not ip:
             return False
         base = f"http://{ip}:3100"
+        # /health moved to the mod's dedicated probe port; this poll waits on it
+        # specifically, so it must follow or it waits out its whole timeout.
+        probe = f"http://{ip}:{os.getenv('AIPLAYER_HEALTH_PROBE_PORT', '3101')}"
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
-                r = requests.get(f"{base}/health", timeout=5)
+                r = requests.get(f"{probe}/health", timeout=5)
                 if r.status_code == 200:
                     world.mod_api_url = base
                     world.agent_api_url = f"http://{ip}:5000"

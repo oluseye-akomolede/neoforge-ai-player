@@ -20,6 +20,10 @@ spec:
       port: 3100
       targetPort: 3100
       protocol: TCP
+    - name: mod-health
+      port: 3101
+      targetPort: 3101
+      protocol: TCP
     - name: dashboard
       port: 5000
       targetPort: 5000

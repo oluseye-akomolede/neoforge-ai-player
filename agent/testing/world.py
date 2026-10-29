@@ -36,6 +36,7 @@ class TestWorld:
     namespace: str = NAMESPACE
     pod_name: str = ""
     mod_api_url: str = ""
+    health_probe_url: str = ""
     agent_api_url: str = ""
     ready: bool = False
     test_db: str = ""
@@ -264,6 +265,7 @@ def wait_ready(world: TestWorld, timeout: int = 300) -> bool:
         if len(statuses) >= 2 and all(s == "true" for s in statuses):
             world.ready = True
             world.mod_api_url = f"http://{world.pod_name}.{world.namespace}.svc.cluster.local:3100"
+            world.health_probe_url = f"http://{world.pod_name}.{world.namespace}.svc.cluster.local:3101"
             world.agent_api_url = f"http://{world.pod_name}.{world.namespace}.svc.cluster.local:5000"
             print(f"[test-world] {world.pod_name} is ready")
             return True

@@ -41,6 +41,68 @@ class HealthIsReadyTest(unittest.TestCase):
         for body in (None, [], "ok", {}, {"error": "boom"}, {"status": "OK"}):
             self.assertFalse(api.health_is_ready(body), repr(body))
 
+    def test_a_404_body_is_not_ready_even_with_the_ok_shape_gone(self):
+        # What the wrong port actually returns: {"error": "not found"} at 404.
+        # The readiness gate must not read this as ready.
+        self.assertFalse(api.health_is_ready({"error": "not found"}))
+
+
+class HealthUrlTest(unittest.TestCase):
+    """The health URL must follow the mod's dedicated probe port, not the API base."""
+
+    def test_health_url_uses_the_probe_port_not_the_api_port(self):
+        api_url, health_url = _fresh_config({})
+        self.assertEqual("http://localhost:3101", health_url)
+        self.assertEqual("http://localhost:3100", api_url)
+
+    def test_health_url_follows_the_shared_probe_port_variable(self):
+        api_url, health_url = _fresh_config({"AIPLAYER_HEALTH_PROBE_PORT": "3201"})
+        self.assertEqual("http://localhost:3201", health_url)
+        # The API base does not move with it.
+        self.assertEqual("http://localhost:3100", api_url)
+
+    def test_health_url_swaps_the_port_on_any_host(self):
+        _, health_url = _fresh_config({"MOD_API_URL": "http://10.0.0.7:3100"})
+        self.assertEqual("http://10.0.0.7:3101", health_url)
+
+    def test_health_url_handles_a_base_with_no_port(self):
+        # split(":") on this yields ["http", "//10.0.0.7"], so a naive swap builds
+        # a wrong URL; the probe port must still land on the host.
+        _, health_url = _fresh_config({"MOD_API_URL": "http://10.0.0.7"})
+        self.assertEqual("http://10.0.0.7:3101", health_url)
+
+    def test_health_url_handles_a_trailing_colon(self):
+        # A base ending in ":" has an empty port, not a missing one.
+        _, health_url = _fresh_config({"MOD_API_URL": "http://10.0.0.7:"})
+        self.assertEqual("http://10.0.0.7:3101", health_url)
+
+    def test_health_url_keeps_an_explicit_override(self):
+        _, health_url = _fresh_config({"MOD_HEALTH_URL": "http://203.0.113.9:9999"})
+        self.assertEqual("http://203.0.113.9:9999", health_url)
+
+
+def _fresh_config(env):
+    """config.py reads os.environ at import time, so evaluate it under a patched env.
+
+    The values are captured BEFORE the environment is restored: importlib.reload
+    mutates the module object in place, so returning the reloaded module from
+    inside the try would hand back the object as it looks after the restore in
+    the finally, and every assertion would silently read the default.
+    """
+    import importlib
+    saved = dict(os.environ)
+    try:
+        os.environ.pop("MOD_API_URL", None)
+        os.environ.pop("AIPLAYER_HEALTH_PROBE_PORT", None)
+        os.environ.pop("MOD_HEALTH_URL", None)
+        os.environ.update(env)
+        module = importlib.reload(sys.modules["config"])
+        return module.MOD_API_URL, module.MOD_HEALTH_URL
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+        importlib.reload(sys.modules["config"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -113,6 +113,8 @@ spec:
           name: rcon
         - containerPort: 3100
           name: mod-api
+        - containerPort: 3101
+          name: mod-health
       volumeMounts:
         - name: mods
           mountPath: /mods
@@ -127,7 +129,7 @@ spec:
           memory: 3Gi
       readinessProbe:
         tcpSocket:
-          port: 3100
+          port: 3101
         initialDelaySeconds: 60
         periodSeconds: 10
         failureThreshold: 18
@@ -142,6 +144,8 @@ spec:
       env:
         - name: MOD_API_URL
           value: "http://localhost:3100"
+        - name: AIPLAYER_HEALTH_PROBE_PORT
+          value: "3101"
         - name: MOD_API_KEY
           value: ""
         - name: OLLAMA_URL

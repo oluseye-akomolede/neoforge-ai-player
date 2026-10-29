@@ -1,5 +1,5 @@
 import requests
-from config import MOD_API_URL, MOD_API_KEY
+from config import MOD_API_URL, MOD_API_KEY, MOD_HEALTH_URL
 
 
 def _headers():
@@ -40,7 +40,11 @@ raw_delete = _delete
 # ── Bot lifecycle ──
 
 def health():
-    return _get("/health")
+    # Not _get: /health is served by the mod's dedicated listener on its own
+    # port, so it cannot ride the API base URL. Still sends the agent beacon
+    # headers, which the probe port ignores.
+    r = requests.get(f"{MOD_HEALTH_URL}/health", headers=_headers(), timeout=5)
+    return r.json()
 
 
 def health_is_ready(h):
