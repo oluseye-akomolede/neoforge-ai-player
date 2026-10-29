@@ -97,7 +97,12 @@ def _fresh_config(env):
         os.environ.pop("MOD_HEALTH_URL", None)
         os.environ.update(env)
         module = importlib.reload(sys.modules["config"])
-        return module.MOD_API_URL, module.MOD_HEALTH_URL
+        # Capture into locals INSIDE the try. Returning the attributes directly
+        # also works (the tuple is built before the finally runs), but it is one
+        # edit away from the bug below the docstring warns about, and nothing in
+        # the test would catch that regression. Locals make the capture explicit.
+        api_url, health_url = module.MOD_API_URL, module.MOD_HEALTH_URL
+        return api_url, health_url
     finally:
         os.environ.clear()
         os.environ.update(saved)

@@ -128,7 +128,11 @@ spec:
           cpu: "2"
           memory: 3Gi
       readinessProbe:
-        tcpSocket:
+        # Must read a body, not just dial: a tcpSocket probe goes Ready as soon
+        # as the port binds, so a hung server would look Ready — the exact
+        # failure this change exists to remove.
+        httpGet:
+          path: /health
           port: 3101
         initialDelaySeconds: 60
         periodSeconds: 10

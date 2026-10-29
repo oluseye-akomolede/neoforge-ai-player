@@ -48,11 +48,15 @@ the observed age and the configured threshold, and for the never-started case it
 `never ticked`.
 
 The `starting` state MUST be bounded by the startup budget. Measured from the moment
-the API server starts listening, once 900 s (the `startupProbe`'s full 60 × 15 s
-budget) have passed with no completed tick, `GET /health` MUST answer 503 with
-`reason` `never ticked` and `tick_age_seconds` null. Without that bound a server
-thread that hangs before its first tick reports 200 `starting` forever: the startup
-probe passes on the first 200 and the liveness probe never fires.
+the API server starts listening, once 900 s have passed with no completed tick,
+`GET /health` MUST answer 503 with `reason` `never ticked` and `tick_age_seconds`
+null. Without that bound a server thread that hangs before its first tick reports
+200 `starting` forever: a startup probe passes on the first 200 and no liveness
+signal ever fires.
+
+900 s is the deployment's startup allowance (a 60 × 15 s probe budget in the
+production pod spec), so the bound is deliberately equal to it: the mod must not
+still be claiming `starting` at the moment the platform would give up on it.
 
 The threshold MUST be configurable, resolved in this order: system property
 `aiplayermod.health.tickStallSeconds`, environment variable
@@ -226,11 +230,23 @@ the mod in the same commit, for the same reason the pod spec's probes must: a
 health poll against a port that no longer serves `/health` does not fail loudly,
 it waits out its whole timeout and reports the server as down.
 
+A readiness probe on the probe port MUST use `httpGet`, not `tcpSocket`. A
+`tcpSocket` probe succeeds the moment the port binds, which is true of a listener
+whose server thread is held, so it reports Ready on exactly the failure this
+change exists to surface. The probe must read a body to tell them apart.
+
 #### Scenario: Agent readiness gate reaches the probe port
 - GIVEN the API port is 3100 and the probe port is 3101
 - WHEN the agent checks readiness during startup
 - THEN `GET /health` is issued to port 3101
 - AND an `{"status": "ok"}` body on that port is accepted as ready
+
+#### Scenario: A bound probe port alone is not readiness
+- GIVEN the probe port is listening but the server thread is stalled
+- WHEN the platform's readiness probe on that port evaluates the pod
+- THEN the probe reads `GET /health` and gets a 503 `stalled` body
+- AND the pod is not reported Ready, because a bound socket cannot distinguish a
+  stalled server from a healthy one
 
 #### Scenario: Bot calls still use the API port
 - GIVEN the API port is 3100 and the probe port is 3101

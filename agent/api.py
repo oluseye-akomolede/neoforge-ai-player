@@ -43,7 +43,9 @@ def health():
     # Not _get: /health is served by the mod's dedicated listener on its own
     # port, so it cannot ride the API base URL. Still sends the agent beacon
     # headers, which the probe port ignores.
-    r = requests.get(f"{MOD_HEALTH_URL}/health", headers=_headers(), timeout=5)
+    # Must be at least the kubelet's probe timeoutSeconds (10 s in the pod spec):
+    # a slow-but-healthy answer should not be cut off sooner than the probe allows.
+    r = requests.get(f"{MOD_HEALTH_URL}/health", headers=_headers(), timeout=10)
     return r.json()
 
 
