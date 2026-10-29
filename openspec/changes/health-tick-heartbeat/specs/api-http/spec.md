@@ -203,6 +203,50 @@ executor this requirement exists to avoid.
 - THEN it does not conclude the mod API is ready
 - AND it retries until the endpoint answers 200 with `status` `ok`
 
+### Requirement: Agent Health Readiness Survives The Port Move
+The Python agent's readiness gate MUST keep working when `/health` moves to the
+dedicated probe port. The agent reaches the mod over one configurable base URL
+(`MOD_API_URL`), not two, so a probe port that defaults to 3101 while the agent's
+base URL defaults to `http://localhost:3100` would turn the agent's startup probe
+into a permanent 404 `{"error": "not found"}`: `health_is_ready` requires
+`status == "ok"`, so the agent would retry 60 times and exit, on every server, with
+the mod itself healthy. The agent MUST resolve the `/health` request against the
+probe port, and the deployment MUST tell it that port with
+`AIPLAYER_HEALTH_PROBE_PORT`, resolved exactly as the mod resolves it (property,
+environment, default 3101).
+
+Every other route MUST continue to resolve against the API port: the dedicated
+listener serves `/health` and nothing else, so routing all agent traffic at the
+probe port would 404 on every bot call. The two ports are resolved from two
+settings, not one.
+
+In-repo harnesses that poll `GET /health` to wait for the mod (the agent's
+`agent/testing/harness.py` and the pod template's readiness probe) MUST move with
+the mod in the same commit, for the same reason the pod spec's probes must: a
+health poll against a port that no longer serves `/health` does not fail loudly,
+it waits out its whole timeout and reports the server as down.
+
+#### Scenario: Agent readiness gate reaches the probe port
+- GIVEN the API port is 3100 and the probe port is 3101
+- WHEN the agent checks readiness during startup
+- THEN `GET /health` is issued to port 3101
+- AND an `{"status": "ok"}` body on that port is accepted as ready
+
+#### Scenario: Bot calls still use the API port
+- GIVEN the API port is 3100 and the probe port is 3101
+- WHEN the agent lists bots or drives a bot action
+- THEN those requests are issued to port 3100, because the probe port serves no other route
+
+#### Scenario: Agent is told a moved probe port
+- GIVEN `AIPLAYER_HEALTH_PROBE_PORT` is 3201
+- WHEN the agent resolves its health URL
+- THEN it uses 3201, so a deployment that moves the probe port does not strand the agent on 3101
+
+#### Scenario: A 404 on the health path is not readiness
+- GIVEN a port serves something but not `/health`, answering 404 `{"error": "not found"}`
+- WHEN the agent evaluates readiness
+- THEN the server is reported not ready rather than ready, because readiness requires `status == "ok"`
+
 ## MODIFIED Requirements
 
 ### Requirement: Mod API Server
