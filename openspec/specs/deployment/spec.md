@@ -92,6 +92,22 @@ from the bucket on every restart.
 - THEN `mc ls minio/minecraft-mods/test/current/` shows both jars with fresh
   timestamps
 
+#### Scenario: Verify an uploaded mod by content, not ETag
+- GIVEN a jar uploaded with `mc cp`
+- WHEN the operator confirms that MinIO holds the intended bytes, the check is
+  on content: `mc cat minio/minecraft-mods/test/current/<jar> | md5sum`, or a
+  pull to a file followed by `md5sum`
+- THEN the result matches the local file's `md5sum`
+- AND the object's ETag is NOT used for this comparison: a single-part PUT
+  returns an ETag equal to the content md5, but a multipart upload returns
+  `<md5 of part 1>-<part count>`, so after any re-upload the ETag is no longer
+  the file's md5 and comparing the two reports a false mismatch
+- AND an upload to the wrong alias or bucket is not caught by this: `mc cp`
+  to a path that does not exist can silently no-op and still exit 0, so the
+  target is `minio/minecraft-mods/...` (the `minio` alias, `minecraft-mods`
+  bucket) and the absence is confirmed with `mc stat` or `mc ls` rather than
+  from the exit code
+
 #### Scenario: Promote test to prod
 - GIVEN the test server has been validated with the new jars
 - WHEN the operator runs the mod manager
