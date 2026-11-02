@@ -127,3 +127,12 @@ is exactly the May 26 zombie.
 - Code: two files (heartbeat + handler) and the agent readiness check. No jar, no
   image, no manifest, no probe change.
 - Rollback: revert the code commit; the endpoint returns to the unconditional 200.
+
+  **The rollback is not symmetric while a test hold is in play.** The deployment is restored by
+  applying the captured manifest, but the server's mod jar does not live in the deployment: the
+  `mod-sync` init container clears `/mods` and re-pulls from MinIO on every start. Applying a
+  manifest therefore restores the Deployment and still leaves the test jar in place, because the
+  next pod fetches it again. Restoring a test run means restoring the **artifact**: save the real
+  jar, `mc cp` it back to `minio/minecraft-mods/test/current/`, and only then re-roll. Back the
+  object up (`*.pre-kill4`) before overwriting the only copy, and verify by content md5 — an
+  aborted run that overwrote the jar without a backup has no way back.
