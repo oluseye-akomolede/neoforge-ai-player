@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 from urllib.parse import urlsplit, urlunsplit
 
 MOD_API_URL = os.getenv("MOD_API_URL", "http://localhost:3100")
@@ -10,6 +11,25 @@ MOD_API_KEY = os.getenv("MOD_API_KEY", "")
 # Default ties to the mod's default (3101); a deployment that moves it must set
 # AIPLAYER_HEALTH_PROBE_PORT, the same variable the mod reads.
 HEALTH_PROBE_PORT = os.getenv("AIPLAYER_HEALTH_PROBE_PORT", "3101")
+
+
+def _float_env(name: str, default: float) -> float:
+    """Read a numeric setting without crashing the process that reads it.
+
+    This module is imported before the health gate runs, so an unparseable value
+    here would kill the agent at startup -- before the very gate the setting is
+    meant to configure could report why. A bad value is a misconfiguration, not a
+    reason to be unable to say so: warn loudly and fall back to the default.
+    """
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        print(f"config: {name}={raw!r} is not a number; using default {default}",
+              file=sys.stderr)
+        return default
 
 
 def _health_url(api_url: str, probe_port: str) -> str:
@@ -31,7 +51,7 @@ MOD_HEALTH_URL = os.getenv("MOD_HEALTH_URL") or _health_url(MOD_API_URL, HEALTH_
 # cut off sooner than the probe allows. A named setting, not a literal at the call
 # site: the retry budget is derived from it (max_retries in agent.py), so anyone
 # tuning it must be able to find and change what the code actually reads.
-HEALTH_TIMEOUT = float(os.getenv("AIPLAYER_HEALTH_TIMEOUT", "10"))
+HEALTH_TIMEOUT = _float_env("AIPLAYER_HEALTH_TIMEOUT", 10.0)
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 NN_COMPRESSOR_URL = os.getenv("NN_COMPRESSOR_URL", "")  # empty disables state compression

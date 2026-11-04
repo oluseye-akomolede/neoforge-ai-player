@@ -229,5 +229,47 @@ def _fresh_config(env):
         importlib.reload(sys.modules["config"])
 
 
+class HealthTimeoutSettingTest(unittest.TestCase):
+    """A numeric setting must not be able to kill the process that reads it.
+
+    config.py is imported before the startup health gate runs, so an
+    unparseable AIPLAYER_HEALTH_TIMEOUT used to raise ValueError at import and
+    take the agent down before the gate it configures could report anything.
+    """
+
+    def _timeout_under(self, env):
+        """Import config with the given env and return HEALTH_TIMEOUT."""
+        import contextlib
+        import importlib
+        import io
+        saved = dict(os.environ)
+        try:
+            os.environ.pop("AIPLAYER_HEALTH_TIMEOUT", None)
+            os.environ.update(env)
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                module = importlib.reload(sys.modules["config"])
+            return module.HEALTH_TIMEOUT, stderr.getvalue()
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+            importlib.reload(sys.modules["config"])
+
+    def test_defaults_to_ten_when_unset(self):
+        self.assertEqual(self._timeout_under({})[0], 10.0)
+
+    def test_reads_a_valid_value(self):
+        self.assertEqual(self._timeout_under({"AIPLAYER_HEALTH_TIMEOUT": "25"})[0], 25.0)
+
+    def test_bad_value_falls_back_and_warns_instead_of_crashing(self):
+        value, err = self._timeout_under({"AIPLAYER_HEALTH_TIMEOUT": "abc"})
+        self.assertEqual(value, 10.0)
+        self.assertIn("AIPLAYER_HEALTH_TIMEOUT", err)
+        self.assertIn("not a number", err)
+
+    def test_empty_value_falls_back_to_default(self):
+        self.assertEqual(self._timeout_under({"AIPLAYER_HEALTH_TIMEOUT": ""})[0], 10.0)
+
+
 if __name__ == "__main__":
     unittest.main()
