@@ -1,5 +1,5 @@
 import requests
-from config import MOD_API_URL, MOD_API_KEY, MOD_HEALTH_URL
+from config import MOD_API_URL, MOD_API_KEY, MOD_HEALTH_URL, HEALTH_TIMEOUT
 
 
 def _headers():
@@ -10,6 +10,19 @@ def _headers():
     # with this header stop arriving. Dashboard traffic must NOT set it.
     h["X-Agent-Id"] = "aibot-agent"
     return h
+
+
+def _beacon_headers():
+    """Headers for the dedicated probe port: the beacon, and no credential.
+
+    /health is served by the mod's own listener, which performs no
+    authentication and ignores the beacon headers entirely. Sending X-Api-Key
+    there puts the live shared key across a port boundary into a component that
+    never checks it - harmless on one host today, but it is one listener change
+    or forwarded port away from being an exposure nobody remembers creating.
+    X-Agent-Id MUST stay: it is the presence beacon the overlay reads.
+    """
+    return {"Content-Type": "application/json", "X-Agent-Id": "aibot-agent"}
 
 
 def _get(path):
@@ -41,11 +54,12 @@ raw_delete = _delete
 
 def health():
     # Not _get: /health is served by the mod's dedicated listener on its own
-    # port, so it cannot ride the API base URL. Still sends the agent beacon
-    # headers, which the probe port ignores.
-    # Must be at least the kubelet's probe timeoutSeconds (10 s in the pod spec):
-    # a slow-but-healthy answer should not be cut off sooner than the probe allows.
-    r = requests.get(f"{MOD_HEALTH_URL}/health", headers=_headers(), timeout=10)
+    # port, so it cannot ride the API base URL. Sends the presence beacon only -
+    # no X-Api-Key, because that listener authenticates nothing (see
+    # _beacon_headers). Timeout comes from config so the retry budget is tunable
+    # from one place, and defaults to the kubelet's probe timeoutSeconds (10 s).
+    r = requests.get(f"{MOD_HEALTH_URL}/health", headers=_beacon_headers(),
+                     timeout=HEALTH_TIMEOUT)
     return r.json()
 
 

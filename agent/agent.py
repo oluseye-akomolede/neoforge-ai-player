@@ -4136,10 +4136,12 @@ def run():
         print(f"[error] Cannot reach ollama: {models}")
 
     print(f"[agent] Connecting to mod API...")
-    # Each attempt costs up to HEALTH_TIMEOUT (10 s) plus the 5 s sleep below, so
-    # 90 attempts is ~1350 s worst case — comfortably beyond the mod's 900 s
-    # "starting" window. At 60 the loop could give up (~600 s) while a cold
-    # server was still legitimately starting, and exit 1 on a healthy boot.
+    # Each attempt costs up to config.HEALTH_TIMEOUT (default 10 s) plus the 5 s
+    # sleep below, so 90 attempts is ~1350 s worst case — comfortably beyond the
+    # mod's 900 s "starting" window. At 60 the loop could give up (~600 s) while a
+    # cold server was still legitimately starting, and exit 1 on a healthy boot.
+    # Raising that timeout lengthens this budget proportionally: tune it in
+    # config.py, where the call site actually reads it.
     max_retries = 90
     for attempt in range(1, max_retries + 1):
         try:

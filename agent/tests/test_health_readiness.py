@@ -81,6 +81,126 @@ class HealthUrlTest(unittest.TestCase):
         self.assertEqual("http://203.0.113.9:9999", health_url)
 
 
+class HealthRequestHeaderTest(unittest.TestCase):
+    """The probe port authenticates nothing, so /health must not carry the key.
+
+    The receiving listener has no apiKey/auth reference at all, so the header is
+    never checked. Sending it is harmless on one host today, but it is a live
+    credential one listener change or forwarded port away from being exposed.
+    """
+
+    def test_health_request_carries_the_beacon_and_not_the_api_key(self):
+        sent = _capture_health_request(env={"MOD_API_KEY": "live-secret-value"})
+        self.assertNotIn("X-Api-Key", sent["headers"],
+                         "the probe port ignores credentials; sending one is exposure with no benefit")
+        self.assertEqual("aibot-agent", sent["headers"].get("X-Agent-Id"),
+                         "dropping the beacon would make a healthy agent show as agent down")
+
+    def test_health_request_has_no_api_key_even_when_the_key_is_empty(self):
+        sent = _capture_health_request(env={"MOD_API_KEY": ""})
+        self.assertNotIn("X-Api-Key", sent["headers"])
+        self.assertEqual("aibot-agent", sent["headers"].get("X-Agent-Id"))
+
+    def test_bot_calls_still_authenticate(self):
+        # The fix must not leak into the API-port calls, which DO enforce auth.
+        sent = _capture_api_request(env={"MOD_API_KEY": "live-secret-value"})
+        self.assertEqual("live-secret-value", sent["headers"].get("X-Api-Key"))
+
+
+class HealthTimeoutSettingTest(unittest.TestCase):
+    """The startup gate's per-attempt timeout is a named setting, default 10 s."""
+
+    def test_default_is_ten_seconds(self):
+        sent = _capture_health_request(env={})
+        self.assertEqual(10, sent["timeout"])
+
+    def test_setting_is_honoured(self):
+        # A defined-but-unread constant cannot satisfy this.
+        sent = _capture_health_request(env={"AIPLAYER_HEALTH_TIMEOUT": "20"})
+        self.assertEqual(20, sent["timeout"])
+
+    def test_the_comment_names_the_setting_the_code_reads(self):
+        # Read the file as text rather than importing it: agent.py pulls in
+        # psycopg2 via semantic_memory, which this VM does not have, and the
+        # comment is what is under test, not the module's import graph.
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, "..", "agent.py"), encoding="utf-8") as f:
+            src = f.read()
+        # The retry comment used to name HEALTH_TIMEOUT with no definition
+        # anywhere, so a reader who added one got a silent no-op.
+        self.assertNotIn("HEALTH_TIMEOUT (10 s)", src)
+        self.assertIn("config.HEALTH_TIMEOUT", src)
+
+
+def _capture_health_request(env):
+    """Call api.health() against a stubbed transport and return what was sent."""
+    import importlib
+    saved = dict(os.environ)
+    try:
+        for k in ("MOD_API_KEY", "AIPLAYER_HEALTH_TIMEOUT", "MOD_HEALTH_URL"):
+            os.environ.pop(k, None)
+        os.environ.update(env)
+        importlib.reload(sys.modules["config"])
+        api_mod = importlib.reload(sys.modules["api"])
+        cap = {}
+
+        class _Resp:
+            @staticmethod
+            def json():
+                return {"status": "ok"}
+
+        def _fake_get(url, headers=None, timeout=None, **kw):
+            cap.update(url=url, headers=dict(headers or {}), timeout=timeout)
+            return _Resp()
+
+        real = api_mod.requests.get
+        api_mod.requests.get = _fake_get
+        try:
+            api_mod.health()
+        finally:
+            api_mod.requests.get = real
+        return cap
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+        importlib.reload(sys.modules["config"])
+        importlib.reload(sys.modules["api"])
+
+
+def _capture_api_request(env):
+    """Same, for an API-port call, to prove the key is still sent there."""
+    import importlib
+    saved = dict(os.environ)
+    try:
+        os.environ.pop("MOD_API_KEY", None)
+        os.environ.update(env)
+        importlib.reload(sys.modules["config"])
+        api_mod = importlib.reload(sys.modules["api"])
+        cap = {}
+
+        class _Resp:
+            @staticmethod
+            def json():
+                return {}
+
+        def _fake_get(url, headers=None, timeout=None, **kw):
+            cap.update(url=url, headers=dict(headers or {}), timeout=timeout)
+            return _Resp()
+
+        real = api_mod.requests.get
+        api_mod.requests.get = _fake_get
+        try:
+            api_mod._get("/bots")
+        finally:
+            api_mod.requests.get = real
+        return cap
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+        importlib.reload(sys.modules["config"])
+        importlib.reload(sys.modules["api"])
+
+
 def _fresh_config(env):
     """config.py reads os.environ at import time, so evaluate it under a patched env.
 

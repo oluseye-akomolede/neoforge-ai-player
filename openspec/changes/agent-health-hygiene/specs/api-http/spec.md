@@ -6,7 +6,7 @@ dedicated probe port. The agent reaches the mod over one configurable base URL
 (`MOD_API_URL`), not two, so a probe port that defaults to 3101 while the agent's
 base URL defaults to `http://localhost:3100` would turn the agent's startup probe
 into a permanent 404 `{"error": "not found"}`: `health_is_ready` requires
-`status == "ok"`, so the agent would retry 60 times and exit, on every server, with
+`status == "ok"`, so the agent would exhaust its retry budget and exit, on every server, with
 the mod itself healthy. The agent MUST resolve the `/health` request against the
 probe port, and the deployment MUST tell it that port with
 `AIPLAYER_HEALTH_PROBE_PORT`, resolved exactly as the mod resolves it (property,

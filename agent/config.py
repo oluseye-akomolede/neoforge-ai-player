@@ -26,6 +26,13 @@ def _health_url(api_url: str, probe_port: str) -> str:
 
 MOD_HEALTH_URL = os.getenv("MOD_HEALTH_URL") or _health_url(MOD_API_URL, HEALTH_PROBE_PORT)
 
+# Per-attempt timeout for the startup health gate. Must be at least the kubelet's
+# probe timeoutSeconds (10 s in the pod spec) so a slow-but-healthy answer is not
+# cut off sooner than the probe allows. A named setting, not a literal at the call
+# site: the retry budget is derived from it (max_retries in agent.py), so anyone
+# tuning it must be able to find and change what the code actually reads.
+HEALTH_TIMEOUT = float(os.getenv("AIPLAYER_HEALTH_TIMEOUT", "10"))
+
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 NN_COMPRESSOR_URL = os.getenv("NN_COMPRESSOR_URL", "")  # empty disables state compression
 
