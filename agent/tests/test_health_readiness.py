@@ -270,6 +270,29 @@ class HealthTimeoutSettingTest(unittest.TestCase):
     def test_empty_value_falls_back_to_default(self):
         self.assertEqual(self._timeout_under({"AIPLAYER_HEALTH_TIMEOUT": ""})[0], 10.0)
 
+    def test_surrounding_whitespace_is_accepted(self):
+        self.assertEqual(self._timeout_under({"AIPLAYER_HEALTH_TIMEOUT": " 15 "})[0], 15.0)
+
+    def test_non_finite_values_fall_back(self):
+        # nan and inf parse cleanly, then raise inside requests.get. Catching
+        # only ValueError pins the fallback path, not what counts as usable,
+        # and a mutation that drops the finiteness check would survive it.
+        for bad in ("nan", "inf", "-inf", "Infinity", "NaN"):
+            with self.subTest(bad=bad):
+                value, err = self._timeout_under({"AIPLAYER_HEALTH_TIMEOUT": bad})
+                self.assertEqual(value, 10.0)
+                self.assertIn("not a usable timeout", err)
+
+    def test_non_positive_values_fall_back(self):
+        # A negative or zero connect timeout raises inside requests.get with
+        # "connect timeout cannot be set to N", which the gate reports as
+        # "Mod API not ready" for the whole retry budget.
+        for bad in ("0", "-1", "-0.5"):
+            with self.subTest(bad=bad):
+                value, err = self._timeout_under({"AIPLAYER_HEALTH_TIMEOUT": bad})
+                self.assertEqual(value, 10.0)
+                self.assertIn("not a usable timeout", err)
+
 
 if __name__ == "__main__":
     unittest.main()

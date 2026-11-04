@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import sys
 from urllib.parse import urlsplit, urlunsplit
@@ -25,11 +26,23 @@ def _float_env(name: str, default: float) -> float:
     if raw is None or raw == "":
         return default
     try:
-        return float(raw)
+        value = float(raw)
     except ValueError:
         print(f"config: {name}={raw!r} is not a number; using default {default}",
               file=sys.stderr)
         return default
+    # Reparsing is not enough. nan and inf parse cleanly and then raise inside
+    # requests.get (ValueError / OverflowError); zero and negatives parse and
+    # raise "connect timeout cannot be set to". Those are caught by the health
+    # gate, so the process survives -- but every retry fails before any request
+    # is made, and the agent spends the whole budget reporting "Mod API not
+    # ready", which is a lie about the cause. A bad number must fail here, where
+    # the message can name it.
+    if not math.isfinite(value) or value <= 0:
+        print(f"config: {name}={raw!r} is not a usable timeout; using default {default}",
+              file=sys.stderr)
+        return default
+    return value
 
 
 def _health_url(api_url: str, probe_port: str) -> str:
