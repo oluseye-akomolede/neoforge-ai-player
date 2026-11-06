@@ -48,6 +48,37 @@ class BoundedWaitTest {
                 "must not wait far past the bound: elapsed " + elapsedMs + " ms");
     }
 
+    /**
+     * The bound must be <em>honoured</em>, not merely applied.
+     *
+     * <p>The short-bound test above uses 100 ms with seconds of slack, so it can
+     * only show that a bound exists: an implementation that waited
+     * {@code timeoutMs * 20} still passed it. Here the bound is large enough
+     * (2000 ms) that a 20x error would overshoot by 38 s, so the margin proves the
+     * value is used rather than merely consulted. Both sides are asserted: not
+     * early (which would be a spurious timeout on a healthy server) and not late
+     * (which is the bug this whole change exists to prevent).
+     */
+    @Test
+    void theBoundIsHonouredNotMerelyApplied() {
+        long boundMs = 2_000;
+        long started = System.nanoTime();
+
+        BoundedWait.Timeout e = assertThrows(BoundedWait.Timeout.class,
+                () -> BoundedWait.await(neverCompletes(), boundMs));
+
+        long elapsedMs = (System.nanoTime() - started) / 1_000_000;
+        assertEquals(boundMs, e.timeoutMs());
+        assertTrue(elapsedMs >= boundMs,
+                "gave up before the bound: " + elapsedMs + " ms < " + boundMs + " ms");
+        // 500 ms of slack dominates CI jitter but is nowhere near the 38 s that a
+        // 20x-errored bound would add. This is the assertion that makes the
+        // elapsed-time check bite.
+        assertTrue(elapsedMs < boundMs + 500,
+                "bound was not honoured: waited " + elapsedMs + " ms for a " + boundMs
+                        + " ms bound, which is " + (elapsedMs - boundMs) + " ms over");
+    }
+
     @Test
     void completedFutureReturnsItsValueWithoutWaiting() {
         CompletableFuture<String> done = CompletableFuture.completedFuture("ok");

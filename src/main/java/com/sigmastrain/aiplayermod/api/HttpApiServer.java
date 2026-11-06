@@ -99,25 +99,8 @@ public class HttpApiServer {
      */
     private void registerBounded(HttpServer server, String path,
                                  com.sun.net.httpserver.HttpHandler handler) {
-        server.createContext(path, exchange -> {
-            try {
-                handler.handle(exchange);
-            } catch (BoundedWait.Timeout e) {
-                // The request may already have been answered if the timeout raced a
-                // send that then completed. sendResponseHeaders declares only
-                // IOException; we treat any throw here as "the response could not be
-                // replaced" and log it, so a racing send can never turn into an
-                // unhandled exception on the pool thread.
-                try {
-                    sendJson(exchange, 503, Map.of(
-                            "error", "server thread did not respond within " + joinTimeoutMs + " ms",
-                            "timeout_ms", joinTimeoutMs));
-                } catch (IOException | RuntimeException unanswered) {
-                    AIPlayerMod.LOGGER.warn("API timeout could not be reported to client: {}",
-                            unanswered.toString());
-                }
-            }
-        });
+        server.createContext(path, new BoundedHandler(handler, joinTimeoutMs, gson,
+                msg -> AIPlayerMod.LOGGER.warn("{}", msg)));
     }
 
     private void registerApiRoutes(HttpServer server) {
