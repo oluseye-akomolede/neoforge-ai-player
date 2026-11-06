@@ -4,6 +4,10 @@ Spec-only change. These tasks become work only after the lead approves implement
 
 ## 1. Prove the cause before changing a handler
 
+> **Deferred by the lead, 2026-11-06.** Section 1 is not part of the code change. It
+> touches TEST, so it moves into the deploy run plan that the reviewer gates later.
+> Keep it here as the first step of that plan; do not retire it.
+
 - [ ] 1.1 Capture a thread dump during a live stall:
       `kubectl -n minecraft-test exec deploy/minecraft-test-server -c mc-server -- kill -3 1`
       then read the pod log tail for `http-pool-N` stacks awaiting
@@ -14,26 +18,38 @@ Spec-only change. These tasks become work only after the lead approves implement
 
 ## 2. Bound the waits
 
-- [ ] 2.1 Add one configured timeout value in the API server's configuration, with a
+- [x] 2.1 Add one configured timeout value in the API server's configuration, with a
       default that a healthy server never reaches. No per-handler literals.
-- [ ] 2.2 Bound the 43 `join()` sites in `handleBotAction` (`/bot/`).
-- [ ] 2.3 Bound the single `join()` in each of `handleServerStructures` (`/server/structures`),
+- [x] 2.2 Bound the 43 `join()` sites in `handleBotAction` (`/bot/`).
+- [x] 2.3 Bound the single `join()` in each of `handleServerStructures` (`/server/structures`),
       `handleTempadList` (`/server/tempad`), `handleMeNetworks` (`/server/me_networks`)
       and `handlePlayers` (`/server/players`).
-- [ ] 2.4 Confirm each wait still does its work on the server thread; only the waiting is bounded.
+- [x] 2.4 Confirm each wait still does its work on the server thread; only the waiting is bounded.
 
 ## 3. Report timeouts honestly
 
-- [ ] 3.1 Return HTTP `503` with a JSON `error` naming the timeout when a bound expires.
-- [ ] 3.2 Confirm a healthy server never produces this response under normal traffic.
+- [x] 3.1 Return HTTP `503` with a JSON `error` naming the timeout when a bound expires.
+- [~] 3.2 **Partly done (unit layer).** `BoundedWait.DEFAULT_TIMEOUT_MS` is guarded
+      at >= 1000 ms so ordinary latency cannot trip it
+      (`defaultTimeoutIsFarAboveOrdinaryLatency`); confirming no `503` under real
+      traffic needs TEST and is part of the deploy run plan.
+      Original: Confirm a healthy server never produces this response under normal traffic.
 
 ## 4. Tests
 
-- [ ] 4.1 A test that stalls the server thread and asserts a hopped request returns `503`
+- [~] 4.1 **Partly done (unit layer).** The wait itself is covered by
+      `BoundedWaitTest.fourBlockedWaitersAllReleaseAtTheBound` and
+      `expiredBoundRaisesTimeoutRatherThanHanging`; the HTTP `503` body end-to-end
+      needs a running server and belongs to the deploy run plan.
+      Original: A test that stalls the server thread and asserts a hopped request returns `503`
       with an `error` body inside the bound.
-- [ ] 4.2 A test that four concurrent hopped requests all get the timeout outcome and the
+- [x] 4.2 A test that four concurrent hopped requests all get the timeout outcome and the
       pool accepts new work afterwards.
-- [ ] 4.3 A test that a healthy server returns the normal success body for the same endpoints.
+- [~] 4.3 **Partly done (unit layer).** A completed future returns its value
+      unchanged (`BoundedWaitTest.completedFutureReturnsItsValueWithoutWaiting`); the
+      endpoint-level healthy-server check needs a running server and moves to the
+      deploy run plan with 4.1.
+      Original: A test that a healthy server returns the normal success body for the same endpoints.
 
 ## 5. Verify on TEST before any prod consideration
 

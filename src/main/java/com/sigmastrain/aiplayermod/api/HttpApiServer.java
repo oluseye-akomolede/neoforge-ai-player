@@ -42,10 +42,33 @@ public class HttpApiServer {
     static final Gson HEALTH_GSON = new GsonBuilder().setPrettyPrinting().serializeNulls().create();
     private HttpServer server;
 
+    /**
+     * How long a handler may wait for the main server thread before giving up.
+     * The value and its rationale live in {@link BoundedWait}; this is the
+     * default this server is constructed with.
+     */
+    public static final int DEFAULT_JOIN_TIMEOUT_MS = BoundedWait.DEFAULT_TIMEOUT_MS;
+
+    private final long joinTimeoutMs;
+
     public HttpApiServer(int port, String apiKey, TickHeartbeat heartbeat) {
+        this(port, apiKey, heartbeat, DEFAULT_JOIN_TIMEOUT_MS);
+    }
+
+    public HttpApiServer(int port, String apiKey, TickHeartbeat heartbeat, long joinTimeoutMs) {
         this.port = port;
         this.apiKey = apiKey;
         this.heartbeat = heartbeat;
+        this.joinTimeoutMs = joinTimeoutMs;
+    }
+
+    /**
+     * Wait for {@code future}, but not past {@link #joinTimeoutMs}. Throws
+     * {@link BoundedWait.Timeout} on expiry, which {@link #registerBounded}
+     * turns into the 503 the api-http spec defines.
+     */
+    private <T> T boundedJoin(java.util.concurrent.CompletableFuture<T> future) {
+        return BoundedWait.await(future, joinTimeoutMs);
     }
 
     public void start() {
@@ -65,32 +88,64 @@ public class HttpApiServer {
         }
     }
 
+    /**
+     * Register a handler so that a bounded-wait expiry becomes the 503 the api-http
+     * spec defines, rather than a dropped connection or a 500.
+     *
+     * <p>The catch lives here, at the single point every route passes through, so it
+     * cannot be forgotten at one of the 47 waiting call sites. An extension route
+     * registered through {@link ApiExtensions} is wrapped too: it runs on the same
+     * pool and is bounded by the same value.
+     */
+    private void registerBounded(HttpServer server, String path,
+                                 com.sun.net.httpserver.HttpHandler handler) {
+        server.createContext(path, exchange -> {
+            try {
+                handler.handle(exchange);
+            } catch (BoundedWait.Timeout e) {
+                // The request may already have been answered if the timeout raced a
+                // send that then completed. sendResponseHeaders declares only
+                // IOException; we treat any throw here as "the response could not be
+                // replaced" and log it, so a racing send can never turn into an
+                // unhandled exception on the pool thread.
+                try {
+                    sendJson(exchange, 503, Map.of(
+                            "error", "server thread did not respond within " + joinTimeoutMs + " ms",
+                            "timeout_ms", joinTimeoutMs));
+                } catch (IOException | RuntimeException unanswered) {
+                    AIPlayerMod.LOGGER.warn("API timeout could not be reported to client: {}",
+                            unanswered.toString());
+                }
+            }
+        });
+    }
+
     private void registerApiRoutes(HttpServer server) {
-        server.createContext("/bots", this::handleBots);
-            server.createContext("/bot/", this::handleBotAction);
-            server.createContext("/shop", this::handleShop);
-            server.createContext("/transmute/names", this::handleTransmuteNames);
-            server.createContext("/transmute", this::handleTransmute);
-            server.createContext("/enchantments", this::handleEnchantments);
-            server.createContext("/containers", this::handleContainers);
-        server.createContext("/telemetry/event", this::handleTelemetryEvent);
-        server.createContext("/telemetry/escalation", this::handleEscalation);
-        server.createContext("/telemetry/talk", this::handleTalk);
-        server.createContext("/telemetry/schemas", this::handleSchemas);
-        server.createContext("/telemetry/orders", this::handleOrders);
-        server.createContext("/telemetry/standing", this::handleStanding);
-        server.createContext("/server/items", this::handleServerItems);
-        server.createContext("/server/structures", this::handleServerStructures);
-        server.createContext("/server/tempad", this::handleTempadList);
-        server.createContext("/server/mark", this::handleMark);
-        server.createContext("/server/dimensions", this::handleDimensions);
-        server.createContext("/server/me_networks", this::handleMeNetworks);
-        server.createContext("/server/players", this::handlePlayers);
-        server.createContext("/skills", this::handleSkills);
-        server.createContext("/skills/resolve", this::handleSkillResolve);
+        registerBounded(server, "/bots", this::handleBots);
+        registerBounded(server, "/bot/", this::handleBotAction);
+        registerBounded(server, "/shop", this::handleShop);
+        registerBounded(server, "/transmute/names", this::handleTransmuteNames);
+        registerBounded(server, "/transmute", this::handleTransmute);
+        registerBounded(server, "/enchantments", this::handleEnchantments);
+        registerBounded(server, "/containers", this::handleContainers);
+        registerBounded(server, "/telemetry/event", this::handleTelemetryEvent);
+        registerBounded(server, "/telemetry/escalation", this::handleEscalation);
+        registerBounded(server, "/telemetry/talk", this::handleTalk);
+        registerBounded(server, "/telemetry/schemas", this::handleSchemas);
+        registerBounded(server, "/telemetry/orders", this::handleOrders);
+        registerBounded(server, "/telemetry/standing", this::handleStanding);
+        registerBounded(server, "/server/items", this::handleServerItems);
+        registerBounded(server, "/server/structures", this::handleServerStructures);
+        registerBounded(server, "/server/tempad", this::handleTempadList);
+        registerBounded(server, "/server/mark", this::handleMark);
+        registerBounded(server, "/server/dimensions", this::handleDimensions);
+        registerBounded(server, "/server/me_networks", this::handleMeNetworks);
+        registerBounded(server, "/server/players", this::handlePlayers);
+        registerBounded(server, "/skills", this::handleSkills);
+        registerBounded(server, "/skills/resolve", this::handleSkillResolve);
 
         for (ApiExtensions.Route r : ApiExtensions.routes()) {
-            server.createContext(r.path(), r.handler());
+            registerBounded(server, r.path(), r.handler());
         }
     }
 
@@ -382,7 +437,7 @@ public class HttpApiServer {
                         try { future.complete(bot.teleportToDimension(dimKey, x, y, z)); }
                         catch (Exception e) { future.complete(false); AIPlayerMod.LOGGER.error("teleportDimension error", e); }
                     });
-                    boolean ok = future.join();
+                    boolean ok = boundedJoin(future);
                     sendJson(exchange, ok ? 200 : 500, Map.of("status", ok ? "teleported" : "failed", "dimension", dim));
                 } else {
                     BotManager.getServer().execute(() -> bot.teleport(x, y, z));
@@ -426,7 +481,7 @@ public class HttpApiServer {
                         future.complete(Map.of("error", String.valueOf(e)));
                       }
                     });
-                    sendJson(exchange, 200, future.join());
+                    sendJson(exchange, 200, boundedJoin(future));
                 } else {
                     sendJson(exchange, 200, Map.of("inventory", bot.getCachedInventory()));
                 }
@@ -461,7 +516,7 @@ public class HttpApiServer {
                     future.complete(Map.of("error", String.valueOf(e)));
                   }
                 });
-                sendJson(exchange, 200, future.join());
+                sendJson(exchange, 200, boundedJoin(future));
             }
             case "entities" -> sendJson(exchange, 200, Map.of("entities", bot.getCachedEntities()));
             case "blocks" -> sendJson(exchange, 200, Map.of("blocks", bot.getCachedBlocks()));
@@ -473,18 +528,18 @@ public class HttpApiServer {
                             "total_items", v.totalItems(),
                             "distinct_items", v.distinctItems()));
                 });
-                sendJson(exchange, 200, vf.join());
+                sendJson(exchange, 200, boundedJoin(vf));
             }
             case "vault_search" -> {
                 String query = body.has("query") ? body.get("query").getAsString() : "";
                 var vsf = new java.util.concurrent.CompletableFuture<List<Map<String, Object>>>();
                 BotManager.getServer().execute(() -> vsf.complete(bot.getVault().search(query)));
-                sendJson(exchange, 200, Map.of("results", vsf.join()));
+                sendJson(exchange, 200, Map.of("results", boundedJoin(vsf)));
             }
             case "effective_inventory" -> {
                 var eif = new java.util.concurrent.CompletableFuture<List<Map<String, Object>>>();
                 BotManager.getServer().execute(() -> eif.complete(bot.getEffectiveInventory()));
-                sendJson(exchange, 200, Map.of("inventory", eif.join()));
+                sendJson(exchange, 200, Map.of("inventory", boundedJoin(eif)));
             }
             case "vault_store" -> {
                 // Page carried items into the vault. No item = flush everything
@@ -499,7 +554,7 @@ public class HttpApiServer {
                         vstf.complete(Map.of("error", String.valueOf(e.getMessage())));
                     }
                 });
-                sendJson(exchange, 200, vstf.join());
+                sendJson(exchange, 200, boundedJoin(vstf));
             }
             case "vault_withdraw" -> {
                 String item = body.get("item").getAsString();
@@ -510,7 +565,7 @@ public class HttpApiServer {
                             bot.getPlayer().getInventory(), item, amount);
                     vwf.complete(Map.of("withdrawn", moved, "item", item));
                 });
-                sendJson(exchange, 200, vwf.join());
+                sendJson(exchange, 200, boundedJoin(vwf));
             }
             case "block_at" -> {
                 int bx = body.get("x").getAsInt();
@@ -521,7 +576,7 @@ public class HttpApiServer {
                     try { blockAtFuture.complete(bot.blockAt(bx, by, bz)); }
                     catch (Exception e) { blockAtFuture.complete(Map.of("error", String.valueOf(e.getMessage()))); }
                 });
-                sendJson(exchange, 200, blockAtFuture.join());
+                sendJson(exchange, 200, boundedJoin(blockAtFuture));
             }
             case "fusiondrain" -> {   // DEBUG: verify extractForce on a block (drains a small amount)
                 int fx = body.get("x").getAsInt(), fy = body.get("y").getAsInt(), fz = body.get("z").getAsInt();
@@ -537,7 +592,7 @@ public class HttpApiServer {
                         fdFut.complete(Map.of("stored_before", before, "drained", drained, "stored_after", after, "amount", amt));
                     } catch (Exception e) { fdFut.complete(Map.of("error", String.valueOf(e))); }
                 });
-                sendJson(exchange, 200, fdFut.join());
+                sendJson(exchange, 200, boundedJoin(fdFut));
             }
             case "locate" -> {
                 // Synchronous structure lookup — same query as the LOCATE
@@ -581,7 +636,7 @@ public class HttpApiServer {
                         locFuture.complete(Map.of("found", false, "error", String.valueOf(e.getMessage())));
                     }
                 });
-                sendJson(exchange, 200, locFuture.join());
+                sendJson(exchange, 200, boundedJoin(locFuture));
             }
             case "tempad_share" -> {
                 // Write an arbitrary waypoint into a player's TemPad. The bot
@@ -625,7 +680,7 @@ public class HttpApiServer {
                         shareFuture.complete(Map.of("ok", false, "error", String.valueOf(e.getMessage())));
                     }
                 });
-                sendJson(exchange, 200, shareFuture.join());
+                sendJson(exchange, 200, boundedJoin(shareFuture));
             }
             case "tempad_remove" -> {
                 String player = body.has("player") ? body.get("player").getAsString() : "";
@@ -650,7 +705,7 @@ public class HttpApiServer {
                         remFuture.complete(Map.of("ok", false, "error", String.valueOf(e.getMessage())));
                     }
                 });
-                sendJson(exchange, 200, remFuture.join());
+                sendJson(exchange, 200, boundedJoin(remFuture));
             }
             case "diag" -> {
                 // v7 Phase 0 probes. Temporary — remove once the answers are
@@ -695,7 +750,7 @@ public class HttpApiServer {
                         diagFuture.complete(Map.of("error", String.valueOf(e.getMessage())));
                     }
                 });
-                sendJson(exchange, 200, diagFuture.join());
+                sendJson(exchange, 200, boundedJoin(diagFuture));
             }
             case "me_craftables" -> {
                 String q = body.has("query") ? body.get("query").getAsString() : "";
@@ -710,7 +765,7 @@ public class HttpApiServer {
                                 "error", String.valueOf(e.getMessage())));
                     }
                 });
-                sendJson(exchange, 200, mcFuture.join());
+                sendJson(exchange, 200, boundedJoin(mcFuture));
             }
             case "anchor_on" -> {
                 var aFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
@@ -721,7 +776,7 @@ public class HttpApiServer {
                                     com.sigmastrain.aiplayermod.bot.AnchorManager.xpPerHour())
                             : Map.of("ok", false, "error", err));
                 });
-                sendJson(exchange, 200, aFuture.join());
+                sendJson(exchange, 200, boundedJoin(aFuture));
             }
             case "anchor_off" -> {
                 var aoFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
@@ -729,7 +784,7 @@ public class HttpApiServer {
                     com.sigmastrain.aiplayermod.bot.AnchorManager.disable(bot);
                     aoFuture.complete(Map.of("ok", true));
                 });
-                sendJson(exchange, 200, aoFuture.join());
+                sendJson(exchange, 200, boundedJoin(aoFuture));
             }
             case "provision_terminal" -> {
                 // network: "dim@x,y,z"; empty = first/random available.
@@ -771,7 +826,7 @@ public class HttpApiServer {
                         ptFuture.complete(Map.of("ok", false, "error", String.valueOf(e.getMessage())));
                     }
                 });
-                sendJson(exchange, 200, ptFuture.join());
+                sendJson(exchange, 200, boundedJoin(ptFuture));
             }
             case "vehicle" -> {
                 var vf = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
@@ -802,14 +857,14 @@ public class HttpApiServer {
                     out.put("nearby", near);
                     vf.complete(out);
                 });
-                sendJson(exchange, 200, vf.join());
+                sendJson(exchange, 200, boundedJoin(vf));
             }
             case "fuse_block", "unfuse_block", "manage_fusion", "fusion" -> {
                 var ff = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
                 final String act = action;
                 BotManager.getServer().execute(() -> ff.complete(
                         com.sigmastrain.aiplayermod.api.FusionApi.act(bot, act, body)));
-                sendJson(exchange, 200, ff.join());
+                sendJson(exchange, 200, boundedJoin(ff));
             }
             case "vehicle_mount", "vehicle_dismount", "vehicle_seat", "vehicle_weapon", "vehicle_charge", "vehicle_input", "vehicle_repair" -> {
                 var vf = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
@@ -817,7 +872,7 @@ public class HttpApiServer {
                 BotManager.getServer().execute(() -> {
                     vf.complete(com.sigmastrain.aiplayermod.api.VehicleApi.act(bot, act, body));
                 });
-                sendJson(exchange, 200, vf.join());
+                sendJson(exchange, 200, boundedJoin(vf));
             }
             case "vehicle_inventory" -> {
                 var vf = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
@@ -825,7 +880,7 @@ public class HttpApiServer {
                 BotManager.getServer().execute(() -> {
                     vf.complete(com.sigmastrain.aiplayermod.api.VehicleApi.inventory(bot, get ? null : body));
                 });
-                sendJson(exchange, 200, vf.join());
+                sendJson(exchange, 200, boundedJoin(vf));
             }
             case "curios_list" -> {
                 var clFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
@@ -844,7 +899,7 @@ public class HttpApiServer {
                                     .CuriosCompat.isAvailable(),
                             "worn", rows));
                 });
-                sendJson(exchange, 200, clFuture.join());
+                sendJson(exchange, 200, boundedJoin(clFuture));
             }
             case "curios_equip" -> {
                 String item = body.has("item") ? body.get("item").getAsString() : "";
@@ -856,7 +911,7 @@ public class HttpApiServer {
                             ? Map.of("ok", true, "equipped", item)
                             : Map.of("ok", false, "error", err));
                 });
-                sendJson(exchange, 200, ceFuture.join());
+                sendJson(exchange, 200, boundedJoin(ceFuture));
             }
             case "curios_unequip" -> {
                 String slot = body.has("slot") ? body.get("slot").getAsString() : "";
@@ -869,7 +924,7 @@ public class HttpApiServer {
                             ? Map.of("ok", true, "slot", slot)
                             : Map.of("ok", false, "error", err));
                 });
-                sendJson(exchange, 200, cuFuture.join());
+                sendJson(exchange, 200, boundedJoin(cuFuture));
             }
             case "me_status" -> {
                 // Superset of the old interface-scan status: wireless access
@@ -893,7 +948,7 @@ public class HttpApiServer {
                     }
                     meFuture.complete(result);
                 });
-                sendJson(exchange, 200, meFuture.join());
+                sendJson(exchange, 200, boundedJoin(meFuture));
             }
             case "me_search" -> {
                 String q = body.has("query") ? body.get("query").getAsString() : "";
@@ -909,7 +964,7 @@ public class HttpApiServer {
                             "results", com.sigmastrain.aiplayermod.compat.ae2.WirelessME
                                     .search(access, q, 50)));
                 });
-                sendJson(exchange, 200, msFuture.join());
+                sendJson(exchange, 200, boundedJoin(msFuture));
             }
             case "me_push" -> {
                 // Carried → network, via the worn terminal.
@@ -943,7 +998,7 @@ public class HttpApiServer {
                     }
                     mpFuture.complete(Map.of("pushed", pushed, "item", item));
                 });
-                sendJson(exchange, 200, mpFuture.join());
+                sendJson(exchange, 200, boundedJoin(mpFuture));
             }
             case "me_pull" -> {
                 // Network → carried (vault overflow), via the worn terminal.
@@ -965,7 +1020,7 @@ public class HttpApiServer {
                     }
                     mlFuture.complete(Map.of("pulled", pulled, "item", item));
                 });
-                sendJson(exchange, 200, mlFuture.join());
+                sendJson(exchange, 200, boundedJoin(mlFuture));
             }
             case "actions" -> {
                 String lastResult = bot.getActionQueue().consumeLastResult();
@@ -1049,7 +1104,7 @@ public class HttpApiServer {
                     try { blockFuture.complete(bot.findBlocks(block, radius, max)); }
                     catch (Exception e) { blockFuture.complete(List.of()); AIPlayerMod.LOGGER.error("findBlocks error", e); }
                 });
-                sendJson(exchange, 200, Map.of("blocks", blockFuture.join()));
+                sendJson(exchange, 200, Map.of("blocks", boundedJoin(blockFuture)));
             }
             case "find_entities" -> {
                 String target = body.get("target").getAsString();
@@ -1059,7 +1114,7 @@ public class HttpApiServer {
                     try { entityFuture.complete(bot.findEntities(target, radius)); }
                     catch (Exception e) { entityFuture.complete(List.of()); AIPlayerMod.LOGGER.error("findEntities error", e); }
                 });
-                sendJson(exchange, 200, Map.of("entities", entityFuture.join()));
+                sendJson(exchange, 200, Map.of("entities", boundedJoin(entityFuture)));
             }
             case "swap" -> {
                 int from = body.get("from").getAsInt();
@@ -1083,7 +1138,7 @@ public class HttpApiServer {
                     try { contFuture.complete(bot.readContainer(x, y, z)); }
                     catch (Exception e) { contFuture.complete(List.of()); AIPlayerMod.LOGGER.error("readContainer error", e); }
                 });
-                sendJson(exchange, 200, Map.of("items", contFuture.join(), "position", Map.of("x", x, "y", y, "z", z)));
+                sendJson(exchange, 200, Map.of("items", boundedJoin(contFuture), "position", Map.of("x", x, "y", y, "z", z)));
             }
             case "container_insert" -> {
                 int x = body.get("x").getAsInt();
@@ -1096,7 +1151,7 @@ public class HttpApiServer {
                     try { insFuture.complete(bot.insertIntoContainer(x, y, z, slot, count)); }
                     catch (Exception e) { insFuture.complete(Map.of("error", e.getMessage())); AIPlayerMod.LOGGER.error("insertContainer error", e); }
                 });
-                sendJson(exchange, 200, insFuture.join());
+                sendJson(exchange, 200, boundedJoin(insFuture));
             }
             case "container_extract" -> {
                 int x = body.get("x").getAsInt();
@@ -1117,7 +1172,7 @@ public class HttpApiServer {
                         catch (Exception e) { extFuture.complete(Map.of("error", e.getMessage())); AIPlayerMod.LOGGER.error("extractContainer error", e); }
                     });
                 }
-                sendJson(exchange, 200, extFuture.join());
+                sendJson(exchange, 200, boundedJoin(extFuture));
             }
             case "list_recipes" -> {
                 String filter = body.has("filter") ? body.get("filter").getAsString() : "";
@@ -1127,7 +1182,7 @@ public class HttpApiServer {
                     try { recFuture.complete(bot.listRecipes(filter, craftableOnly)); }
                     catch (Exception e) { recFuture.complete(List.of()); AIPlayerMod.LOGGER.error("listRecipes error", e); }
                 });
-                sendJson(exchange, 200, Map.of("recipes", recFuture.join()));
+                sendJson(exchange, 200, Map.of("recipes", boundedJoin(recFuture)));
             }
             case "craft_chain" -> {
                 String item = body.get("item").getAsString();
@@ -1142,7 +1197,7 @@ public class HttpApiServer {
                     try { eqFuture.complete(bot.getEquipment()); }
                     catch (Exception e) { eqFuture.complete(Map.of("error", e.getMessage())); }
                 });
-                sendJson(exchange, 200, eqFuture.join());
+                sendJson(exchange, 200, boundedJoin(eqFuture));
             }
             case "extended_inventory" -> {
                 var extInvFuture = new java.util.concurrent.CompletableFuture<List<Map<String, Object>>>();
@@ -1150,7 +1205,7 @@ public class HttpApiServer {
                     try { extInvFuture.complete(bot.getExtendedInventoryItems()); }
                     catch (Exception e) { extInvFuture.complete(List.of()); }
                 });
-                sendJson(exchange, 200, Map.of("items", extInvFuture.join()));
+                sendJson(exchange, 200, Map.of("items", boundedJoin(extInvFuture)));
             }
             case "combat_mode" -> {
                 double radius = body.has("radius") ? body.get("radius").getAsDouble() : 24.0;
@@ -1221,7 +1276,7 @@ public class HttpApiServer {
                                 "next_level_cost", player.getXpNeededForNextLevel()
                         ));
                     });
-                    sendJson(exchange, 200, xpFuture.join());
+                    sendJson(exchange, 200, boundedJoin(xpFuture));
                 } else {
                     int amount = body.has("levels") ? body.get("levels").getAsInt() : 0;
                     int points = body.has("points") ? body.get("points").getAsInt() : 0;
@@ -1298,7 +1353,7 @@ public class HttpApiServer {
                 } else if ("GET".equals(exchange.getRequestMethod())) {
                     var dirFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
                     BotManager.getServer().execute(() -> dirFuture.complete(bot.getBrain().toMap()));
-                    sendJson(exchange, 200, dirFuture.join());
+                    sendJson(exchange, 200, boundedJoin(dirFuture));
                 } else {
                     String type = body.get("type").getAsString().toUpperCase();
                     var builder = com.sigmastrain.aiplayermod.brain.Directive.builder(
@@ -1323,7 +1378,7 @@ public class HttpApiServer {
             case "brain" -> {
                 var brainFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
                 BotManager.getServer().execute(() -> brainFuture.complete(bot.getBrain().toMap()));
-                sendJson(exchange, 200, brainFuture.join());
+                sendJson(exchange, 200, boundedJoin(brainFuture));
             }
             case "scan_data" -> {
                 var sdFuture = new java.util.concurrent.CompletableFuture<Map<String, Object>>();
@@ -1346,7 +1401,7 @@ public class HttpApiServer {
                         sdFuture.complete(Map.of("blocks", java.util.List.of(), "count", 0, "error", e.getMessage()));
                     }
                 });
-                sendJson(exchange, 200, sdFuture.join());
+                sendJson(exchange, 200, boundedJoin(sdFuture));
             }
             case "surface_scan" -> {
                 int radius = body.has("radius") ? body.get("radius").getAsInt() : 12;
@@ -1357,7 +1412,7 @@ public class HttpApiServer {
                     var dim = bot.getPlayer().level().dimension().location().toString();
                     scanFuture.complete(Map.of("blocks", blocks, "dimension", dim));
                 });
-                sendJson(exchange, 200, scanFuture.join());
+                sendJson(exchange, 200, boundedJoin(scanFuture));
             }
             case "nearby_containers" -> {
                 int radius = body.has("radius") ? body.get("radius").getAsInt() : 8;
@@ -1368,7 +1423,7 @@ public class HttpApiServer {
                     var dim = bot.getPlayer().level().dimension().location().toString();
                     future.complete(Map.of("containers", containers, "dimension", dim));
                 });
-                sendJson(exchange, 200, future.join());
+                sendJson(exchange, 200, boundedJoin(future));
             }
             default -> sendJson(exchange, 400, Map.of("error", "Unknown action: " + action));
         }
@@ -1492,7 +1547,7 @@ public class HttpApiServer {
                 future.complete(Map.of("error", String.valueOf(e.getMessage())));
             }
         });
-        sendJson(exchange, 200, future.join());
+        sendJson(exchange, 200, boundedJoin(future));
     }
 
     /**
@@ -1767,7 +1822,7 @@ public class HttpApiServer {
                 future.complete(List.of());
             }
         });
-        sendJson(exchange, 200, Map.of("networks", future.join()));
+        sendJson(exchange, 200, Map.of("networks", boundedJoin(future)));
     }
 
     /** Standing orders: GET = definitions (agent poll); POST = reading/result
@@ -1857,7 +1912,7 @@ public class HttpApiServer {
             future.complete(Map.of("available", true, "player", profile.getName(),
                     "waypoints", rows, "count", rows.size()));
         });
-        sendJson(exchange, 200, future.join());
+        sendJson(exchange, 200, boundedJoin(future));
     }
 
     private static Map<String, String> parseQuery(String raw) {
@@ -2024,7 +2079,7 @@ public class HttpApiServer {
             }
             future.complete(players);
         });
-        sendJson(exchange, 200, Map.of("players", future.join()));
+        sendJson(exchange, 200, Map.of("players", boundedJoin(future)));
     }
 
     // ── /server/mark ──

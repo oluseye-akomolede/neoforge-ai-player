@@ -145,6 +145,35 @@ public final class TickHeartbeat {
         }
     }
 
+    /**
+     * The bounded wait for the main server thread: system property, else environment
+     * variable, else the fallback. A blank value falls through silently. A
+     * non-numeric or non-positive value falls back with exactly one warning.
+     *
+     * <p>This lives beside the other resolvers rather than in the API server so all
+     * configurable health/timeout values are read the same way. It stays a plain
+     * number of milliseconds: the caller owns what it means.
+     */
+    public static int resolveJoinTimeoutMs(String propertyValue, String envValue,
+                                           int fallback, Consumer<String> warn) {
+        String raw = propertyValue != null ? propertyValue : envValue;
+        if (raw == null || raw.isBlank()) {
+            return fallback;
+        }
+        try {
+            int parsed = Integer.parseInt(raw.trim());
+            if (parsed > 0) {
+                return parsed;
+            }
+            warn.accept("Ignoring non-positive API join timeout '" + raw
+                    + "'; using " + fallback + " ms");
+        } catch (NumberFormatException e) {
+            warn.accept("Ignoring unparseable API join timeout '" + raw
+                    + "'; using " + fallback + " ms");
+        }
+        return fallback;
+    }
+
     /** One answer for {@code GET /health}. {@code ageSeconds} is null until a tick lands. */
     public record Probe(int httpStatus, String status, String reason, Long ageSeconds) {
     }

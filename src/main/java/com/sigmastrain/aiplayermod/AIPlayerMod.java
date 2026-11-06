@@ -97,7 +97,18 @@ public class AIPlayerMod {
         tickHeartbeat = new com.sigmastrain.aiplayermod.api.TickHeartbeat(stallSeconds, System::nanoTime);
         LOGGER.info("Health tick stall threshold: {} s", stallSeconds);
 
-        apiServer = new HttpApiServer(port, apiKey, tickHeartbeat);
+        // Bound on how long any API handler may wait for the server thread. One
+        // value, resolved once: the api-http spec requires a single configured
+        // value, and the alternative (a literal per handler) is what let a stall
+        // hold all four pool threads with no way to describe or test the bound.
+        int joinTimeoutMs = com.sigmastrain.aiplayermod.api.TickHeartbeat.resolveJoinTimeoutMs(
+                System.getProperty("aiplayermod.api.joinTimeoutMs"),
+                System.getenv("AIPLAYER_API_JOIN_TIMEOUT_MS"),
+                com.sigmastrain.aiplayermod.api.HttpApiServer.DEFAULT_JOIN_TIMEOUT_MS,
+                msg -> LOGGER.warn("{}", msg));
+        LOGGER.info("API join timeout: {} ms", joinTimeoutMs);
+
+        apiServer = new HttpApiServer(port, apiKey, tickHeartbeat, joinTimeoutMs);
         apiServer.start();
         LOGGER.info("AI Player API server started on port {}", port);
 
