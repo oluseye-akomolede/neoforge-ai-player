@@ -23,7 +23,13 @@ remaining API routes. It does not revisit that fix and must not be folded into i
 
 This work was filed as "bound the 22 remaining endpoints". Reading the current code
 shows that figure is not a scope. Across the 22 registered routes there are 47
-`.join()` calls, and **all 47 sit inside 5 handlers**:
+`CompletableFuture.join()` calls, and **all 47 sit inside 5 handlers**:
+
+A note for anyone re-deriving these counts: `join()` here means
+`CompletableFuture.join()` only. A plain grep for `.join(` returns **48**, because
+`handleSkillRegister` (`:205`) uses `String.join("; ", errors)`, which shares the name
+and blocks nothing. Counting that one would inflate the total and make the five-handler
+scope look wrong.
 
 | Route | Handler | `join()` calls |
 |---|---|---|

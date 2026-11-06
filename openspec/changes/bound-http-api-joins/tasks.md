@@ -41,3 +41,8 @@ Spec-only change. These tasks become work only after the lead approves implement
 - [ ] 5.2 Re-run the 2026-10-27 stall procedure: with the server thread held, a hopped
       request must answer `503` inside the bound instead of hanging.
 - [ ] 5.3 Confirm `/health` behaviour is unchanged (it is on its own listener and out of scope).
+      Re-read this before starting: the 2026-11-06 review reported that `minecraft-test`
+      has no `minecraft-server` Service. That was true before 2026-11-05, when the
+      crash-loop fix added it. As of 2026-11-05 the Service is `minecraft-test-server`
+      (NodePort, 217d) and it carries `3101:31049`, the probe port. Do not plan around
+      the stale reading; check the live Service at the time this task runs.
