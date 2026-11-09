@@ -4,17 +4,27 @@ Spec-only change. These tasks become work only after the lead approves implement
 
 ## 1. Prove the cause before changing a handler
 
-> **Deferred by the lead, 2026-11-06.** Section 1 is not part of the code change. It
-> touches TEST, so it moves into the deploy run plan that the reviewer gates later.
-> Keep it here as the first step of that plan; do not retire it.
+> **CLOSED as "cause inferred, never observed" — lead decision, 2026-11-09T04:21Z
+> (option 1).** The cause remains *inferred from the 2026-10-27 evidence and never
+> observed* in a thread dump. It is **not reproducible by API load**: `future.complete(...)`
+> is the last statement in every `server.execute(...)` lambda, so `boundedJoin` returns as
+> soon as the server thread runs and no API-only burst parks a pool thread. The
+> 2026-10-27 evidence agrees it was never captured
+> (`~/evidence/2026-10-27-health-test-deploy/RESULT.md:94`: "Not proven. No thread dump
+> was captured during a live stall"), so there is no existing dump to close this against.
+> The bound is still worth having: on a *slow or lagging* server thread the lambda's work
+> (AE2 extraction ~`:995`, player-list iteration ~`:2051`) runs before `complete()`, so the
+> join genuinely waits and the bound fires. What cannot happen is provoking it from API
+> load alone.
 
-- [ ] 1.1 Capture a thread dump during a live stall:
-      `kubectl -n minecraft-test exec deploy/minecraft-test-server -c mc-server -- kill -3 1`
-      then read the pod log tail for `http-pool-N` stacks awaiting
-      `CompletableFuture.join()`.
-- [ ] 1.2 Record the dump in the evidence directory beside the 2026-10-27 files.
-      If the dump does **not** show pool threads blocked in `join()`, stop and report:
-      the pool explanation is then wrong and this change must be re-scoped.
+- [~] 1.1 Capture a thread dump during a live stall — **DROPPED, not done.** No live
+      stall was captured. `diag-stall.txt` and `diag-threaddump.txt` are boot-state
+      captures and must **not** be read as stall evidence.
+- [~] 1.2 Record the dump beside the 2026-10-27 files — **not applicable; no dump
+      exists.** The re-scope warning below is retained because it still applies if a
+      future revision ever does observe the cause: if a dump does **not** show pool
+      threads blocked in `join()`, the pool explanation is wrong and this change must be
+      re-scoped.
 
 ## 2. Bound the waits
 
