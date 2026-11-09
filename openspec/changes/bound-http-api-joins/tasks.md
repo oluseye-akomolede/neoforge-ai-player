@@ -17,10 +17,16 @@ Spec-only change. These tasks become work only after the lead approves implement
 > join genuinely waits and the bound fires. What cannot happen is provoking it from API
 > load alone.
 
-- [~] 1.1 Capture a thread dump during a live stall — **DROPPED, not done.** No live
+**Task marker legend:** `[x]` done · `[ ]` not done · `[~]` **DROPPED or partly
+done — read the line, do not assume a pass.** A bare `[~]` with no note would be read
+as a tick by the next reader.
+
+- [~] DROPPED (cause stays inferred, lead decision 2026-11-09T04:21Z — never observed)
+      1.1 Capture a thread dump during a live stall — **DROPPED, not done.** No live
       stall was captured. `diag-stall.txt` and `diag-threaddump.txt` are boot-state
       captures and must **not** be read as stall evidence.
-- [~] 1.2 Record the dump beside the 2026-10-27 files — **not applicable; no dump
+- [~] DROPPED (cause stays inferred, lead decision 2026-11-09T04:21Z — never observed)
+      1.2 Record the dump beside the 2026-10-27 files — **not applicable; no dump
       exists.** The re-scope warning below is retained because it still applies if a
       future revision ever does observe the cause: if a dump does **not** show pool
       threads blocked in `join()`, the pool explanation is wrong and this change must be
