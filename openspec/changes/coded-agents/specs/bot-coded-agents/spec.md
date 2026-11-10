@@ -120,7 +120,7 @@ a host ceiling**. Both regimes matter and the limit rows below record both.
 | CPU per tick | 20 | ms | runner interrupt handler; per-tick CPU reported to the game, which applies its own cap |
 | Wall clock per host call | 2 | s | runner |
 | Host calls per tick | 8 | count | runner |
-| Tick rate per bot | ≤ 1 | per second | runner owns the loop; the mod schedules directive work |
+| Tick rate per bot | ≤ 1 per second (a ceiling; every active script is also ticked at this cadence, never less) | rate | the game drives the tick and sends it; "runner owns the loop" means the sandbox-execution loop, not tick initiation |
 | `api.log` | 1 KB/line, 100 lines/min | size, rate | server |
 | Script source | 64 KB, 20 versions | size, count | server |
 | Script memory (`api.remember`) | 16 | KB per bot | server |
@@ -411,6 +411,12 @@ count time from any other source, such as a wall clock reading between ticks.
 A bot whose script is paused, disabled, deleted or fallen back to the planner
 accrues nothing for the time it is not running one.
 
+The converse direction is required too. **Given an active script, the game MUST
+send a tick at the stated cadence** (the per-bot tick rate in the limits table is
+a ceiling, not a floor). The cap counts ticks, so an active script that is
+simply not ticked accrues nothing and the hours-per-day allowance would silently
+not apply — the same failure as counting CPU, reached from the other side.
+
 The runner MUST also report each tick's CPU time and where it was spent. That is
 a **reported field for visibility and abuse checks, not the cap's unit**: a
 few milliseconds of CPU per tick would take many days of wall-clock time to
@@ -434,6 +440,12 @@ so that a cap enabled later has a measured basis.
 - **THEN** no tick is sent for that bot
 - **AND** its code hours stop increasing for that period
 - **AND** its previously recorded usage is unchanged
+
+#### Scenario: An active script is ticked, so its hours accrue
+- **WHEN** a bot's script is active
+- **THEN** the game sends it a tick at the stated cadence
+- **AND** its usage keeps increasing at the wall-clock rate, rather than
+  standing still for want of ticks
 
 #### Scenario: Execution time is recorded per bot
 - **WHEN** a bot runs a script for a measurable duration
