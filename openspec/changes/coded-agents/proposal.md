@@ -15,6 +15,23 @@ tested.
 Nothing is built yet. This change is **step 1: the design as an OpenSpec
 change** — proposal, tasks and spec deltas — for review before any code.
 
+## What Changes
+
+- **NEW `bot-coded-agents`** — the whole capability is new. A bot runs an
+  LLM-authored JavaScript script per tick inside a sandbox, instead of the LLM
+  choosing every action; the script acts only through the existing bot action
+  dispatch. The capability covers authoring (LLM-only), validation before
+  storage, the sandbox and per-tick bound, the read-only snapshot and action
+  bindings, the runner, metering and the daily cap, the read-only script view,
+  tick-boundary script swaps with revision identity, and planner fallback.
+- **Existing behaviour: unchanged.** No live requirement is modified or removed.
+  The `agent/agent.py` action dispatch, the dashboard, the planner and
+  `bot-identity` are consumed as they stand — the change adds a capability
+  beside them, it does not alter them. Where the spec needs an existing surface
+  (the 51-action dispatch set, the `aiplayermod-*.json` settings convention) it
+  pins that surface as a ceiling, and a change to those surfaces would need its
+  own spec delta.
+
 ## Owner decisions (2026-11-10, `qitem-human-answer-181fe641fe26089fc36b`)
 
 1. **Only the LLM writes scripts.** Players do not author scripts.
