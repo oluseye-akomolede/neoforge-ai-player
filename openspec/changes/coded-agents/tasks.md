@@ -16,12 +16,12 @@ dependencies, and are not started until this change is approved.
       (`serverDir/config/aiplayermod-*.json`, e.g. `aiplayermod-shop.json`).
 - [x] 1.3 Write the spec delta under the new capability `bot-coded-agents`.
 - [x] 1.4 Reviewer PASS on this change. **Gate: no code until this is ticked.**
-      **TICKED at `7ad1b73`** (reviews/REVIEW-gate-7ad1b73.md, 11:16Z), which
-      carries the corrected stack measurement. Verified at head: the spec delta
-      is byte-identical between `cc68e1f` (the PASS the confirm carries forward)
-      and `e0efaf9` — `git diff cc68e1f..e0efaf9 -- …/specs/` is empty — so the
-      PASS covers the spec content as it stands, and only task-tracking text has
-      moved since.
+      **TICKED at `e0efaf9`** (head confirm, reviews/REVIEW-head-confirm-
+      e0efaf9.md; carried forward from the `7ad1b73` PASS), which carries the
+      corrected stack measurement. Verified: the spec delta is byte-identical
+      between `cc68e1f` (the gated PASS) and `e0efaf9` — `git diff … -- …/specs/`
+      is empty — so the PASS covers the spec content as it stands. Only
+      task-tracking text has moved since, including this entry.
       History, because this came down three times and each reason
       differs: ticked at `8967b61` on the `7371af7` PASS, unticked because
       `e68222f`/`7698f81` came after that PASS (a PASS covers its own revision);
@@ -45,16 +45,18 @@ dependencies, and are not started until this change is approved.
       other does not close this task.
       Reviewer leg: **PASS at `cc68e1f`** (reviews/REVIEW-gate-cc68e1f.md).
       The only change after it is the 2.6 re-base, which is the correction that
-      PASS named; whether that needs its own PASS is for the reviewer, and a
-      head confirm of `7ad1b73` is queued. This text does **not** claim a
-      re-confirmation — none had been given when it was written.
+      PASS named. Head confirm **given**: PASS at `e0efaf9`
+      (reviews/REVIEW-head-confirm-e0efaf9.md), which found the spec delta
+      byte-identical to `cc68e1f`. This text does **not** claim a
+      re-confirmation of `e95b435` — the reviewer never gated that revision, and
+      ancestry does not turn a confirmation into one.
       Cardgame leg: **MET 2026-11-10 11:15Z** —
       `qitem-20261110111504-e2b64f42efd3f500` sent to `cardgame-lead` with the
       `e95b435` text. The earlier row (`…110447`) cited the `e0e4a4e` draft and
       was closed `superseded`.
 - [x] 1b.2 Settle the limits before the contract freezes. **Ticked at `e95b435`
-      on a PASS of `cc68e1f`**; the 2.6 re-base is the correction that PASS
-      named, and a head confirm of `7ad1b73` is queued for the reviewer. History: PASSed at `243e6bd`, then **corrected** — the
+      on a PASS of `cc68e1f`**, head-confirmed by PASS at `e0efaf9`. History:
+      PASSed at `243e6bd`, then **corrected** — the
       first measurement was wrong and its PASS covered the wrong finding. The
       reviewer's confirmation at `243e6bd` does not stand as independent
       evidence for the corrected claim: they re-ran my `probe-stack5.mjs`
