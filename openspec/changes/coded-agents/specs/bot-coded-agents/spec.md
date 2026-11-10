@@ -119,8 +119,10 @@ field; none may be enforced as a default the contract does not name.
 | **`api.say` rate** | **TBD** | calls/min per bot | **TBD — as above.** |
 | **`api.send` rate** | **TBD** | calls/min per bot | **TBD — as above.** |
 
-The three rate rows are this binding's own: cardgame's `api.ask` and `api.log`
-limits belong to its namespace, not ours, and were not carried across.
+The three rate rows are this binding's own. `api.log` is a shared name whose
+limit was carried across from cardgame's table because both games cap it the
+same way; cardgame's `api.ask` limit belongs to its namespace and was not carried
+across.
 
 Rows marked TBD are deliberately open. Inventing a number is worse than naming
 it open: a stack limit nobody measured fails as a crash rather than as a
@@ -144,8 +146,12 @@ Contract v1 fixes the **shared** runner and sandbox surface: tick delivery,
 snapshot envelope, the limits table and the transport. It does not fix any
 game's action vocabulary. Each game binds its own `api` namespace; for this
 capability that namespace is Minecraft's, and it MUST NOT be cardgame's
-(`api.battle.act`, `api.world.*`, `api.log`, `api.ask`) — those name a board, a
-world order and a strategic question that this game does not have.
+(`api.battle.act`, `api.world.*`, `api.ask`) — those name a board, a world order
+and a strategic question that this game does not have.
+
+`api.log` is shared by name but not by meaning: both games log, so it appears in
+both namespaces and is not evidence that either was copied from the other. The
+limit on it differs per game and is this binding's own (see the limits table).
 
 The Minecraft binding is:
 
