@@ -384,9 +384,15 @@ This is a clarification of an already-shipped field, not a new one.
   deadline row in §8 because there is no runner-side breach to report.
 - **What keeps a tick short is on the runner's side:** `tick_cpu_ms` (20 ms)
   bounds the script's CPU, and host calls answer immediately (§3). The main
-  wall cost above CPU is therefore a cold sandbox start — measured at
-  **138–148 ms** for a bot's first tick in today's container run, against a
-  250 ms `deadline_ms`.
+  wall cost above CPU is therefore a cold first tick — spawn plus the first
+  evaluation, since start-up is paid at spawn rather than inside the script's
+  budget. Measured on image `4aa76b6` (20 fresh workers each run, `return 1;`):
+  **107 ms median, 158 ms max** with default CPU, against a 250 ms
+  `deadline_ms`.
+  A single-CPU cap is a different story: the same measurement gives **212 ms
+  median, 279 ms max**, so a cold tick can overrun `deadline_ms` when the pod
+  is CPU-starved. The game's response is the one below — abandon and fall back
+  — not a wrong result, and the tick is warm from then on.
   A cold start that lands near or past the deadline costs the game **one
   abandoned tick, not a wrong one**: it abandons, falls back, and the runner's
   late answer is discarded.
