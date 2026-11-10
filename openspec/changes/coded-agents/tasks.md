@@ -36,7 +36,7 @@ dependencies, and are not started until this change is approved.
 ## Step 1b — runner contract v1 (blocks steps 2 and 4; numbered 1b rather than
 ## renumbering, because 1.4 is cited elsewhere as the gate)
 
-- [ ] 1b.1 Write runner contract v1 **as a document, `contract-v1.md`**: tick
+- [x] 1b.1 Write runner contract v1 **as a document, `contract-v1.md`**: tick
       delivery and cadence, transport, runner↔server authentication, snapshot
       schema, `api.*` call shapes including the rejection return, `script.get` /
       `script.put` / `script.logs`, the per-tick outcome classes, and the limits
@@ -51,16 +51,35 @@ dependencies, and are not started until this change is approved.
       **The fix is `contract-v1.md`**; this task re-ticks only when that file
       exists, is PASSed by the reviewer against the item list at spec:85, and
       has gone to `cardgame-lead` as a row.
-      Still true, for when it re-ticks: reviewer leg PASS at `cc68e1f`
-      (reviews/REVIEW-gate-cc68e1f.md), head confirm PASS at `e0efaf9`, and a
-      cardgame row was sent at 11:15Z (`…111504`). Those establish that the
-      *requirement text* was reviewed and shared; they do not establish that a
-      contract was written.
-- [ ] 1b.2 Settle the limits before the contract freezes. **UNTICKED
-      2026-11-10 11:18Z**: the values are settled and cardgame has agreed them,
-      but "settled in the contract" needs the contract to exist. Re-ticks when
-      the limits appear in `contract-v1.md` as rows with value, unit and
-      enforcement point. History of the measurement (the finding is
+      **TICKED 2026-11-10 14:29Z at `0281152`.** Both conditions checked against
+      the bytes, not against the earlier rows:
+      (a) *exists and is PASSed against the item list at spec:85 and cardgame's
+      8 points* — `contract-v1.md` exists and was PASSed at `2f595a4`, then again
+      at `0e42337`/`d029546`, and the final authority is the reviewer's close on
+      `0281152`: "Nothing left on the contract from me".
+      (b) *has gone to `cardgame-lead` as a row* — `qitem-20261110141913-
+      7643a690ecee72ee`, destination `cardgame-lead@cardgame`, state `done`,
+      carrying the `0e42337..c5c9f96` diff; cardgame's answers came back on
+      `qitem-20261110142143-2fb67b47187ded20`.
+      **What that row did NOT carry, stated plainly:** five sections landed
+      AFTER the `c5c9f96` send — metering derivation (`349581a`), the tick
+      floor (`3580398`), the card-hour notes (`aabcba5`), the settled §10 values
+      and the freeze mark (`81a5905`), the retention-row table fix
+      (`e2541fb`), the memory-limit owner (`2a196f4`) and the quota-paragraph
+      fix (`0281152`). The lead ruled the contract re-send was moot and that
+      `3580398`-onward is spec-only, so the row above is the record of what
+      cardgame was sent and this list is the record of what it was not.
+      Still true and unchanged: reviewer leg PASS at `cc68e1f`
+      (reviews/REVIEW-gate-cc68e1f.md) and head confirm PASS at `e0efaf9`; one
+      earlier cardgame row went at 11:15Z (`…111504`) carrying `e95b435`.
+- [x] 1b.2 Settle the limits before the contract freezes. **TICKED 2026-11-10
+      14:29Z.** The gate was: the limits appear in `contract-v1.md` as rows with
+      value, unit and enforcement point. Checked at `0281152` — §8 is thirteen
+      limit rows, each with value, unit, enforcing party and on-breach; §7.1
+      carries the capacity numbers and, since `2a196f4`, the owner of the
+      instance memory limit. All six §10 values were settled by cardgame
+      (`qitem-20261110142143-2fb67b47187ded20`), and the contract is marked
+      FROZEN at the top. History of the measurement (the finding is
       unaffected by this untick):
       PASSed at `243e6bd`, then **corrected** — the
       first measurement was wrong and its PASS covered the wrong finding. The
@@ -96,6 +115,12 @@ dependencies, and are not started until this change is approved.
       "the setting is inert" rather than "my setting never reached the code".
 - [ ] 1b.3 Freeze and publish v1 so both games pin the same version. A change
       after freeze is a new version and a re-review by both sides, not an edit.
+      **PARTIAL: frozen, not published.** The freeze is marked in the document
+      itself (`0281152`) and cardgame has the values through §10. What is not
+      done is *publish*: a stable reference both games pin, and cardgame's
+      confirmation of the pinned version — their §10 answers settle values, not
+      the version. This is why 2.1 stays unticked, since its second leg is
+      "shared with cardgame".
 
 ## Step 2 — shared engine and sandbox
 
