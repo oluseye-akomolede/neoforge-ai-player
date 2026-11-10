@@ -403,10 +403,13 @@ Mutations to the snapshot by the script MUST NOT affect the bot's real state.
 ### Requirement: Code Time Is Metered Per Bot
 
 **A code hour is wall-clock time during which a bot's script is active** — not
-CPU time. The game MUST count it: for each tick the bot's script runs, the game
-adds that tick's period to the bot's usage. A bot whose script is paused,
-disabled, deleted or fallen back to the planner accrues nothing for the time it
-is not running one.
+CPU time. **The game MUST send no tick for a bot whose script is not active**,
+so that every tick sent is an active-script tick. Given that, the game MUST count
+each tick it sends by adding that tick's period to the bot's usage; it MUST NOT
+count time from any other source, such as a wall clock reading between ticks.
+
+A bot whose script is paused, disabled, deleted or fallen back to the planner
+accrues nothing for the time it is not running one.
 
 The runner MUST also report each tick's CPU time and where it was spent. That is
 a **reported field for visibility and abuse checks, not the cap's unit**: a
@@ -426,8 +429,10 @@ so that a cap enabled later has a measured basis.
 - **AND** the CPU time is recorded separately as a reported field
 
 #### Scenario: An inactive script accrues nothing
-- **WHEN** a bot's script is paused, disabled, or fallen back to the planner
-- **THEN** its code hours stop increasing for that period
+- **WHEN** a bot's script is paused, disabled, deleted, or fallen back to the
+  planner
+- **THEN** no tick is sent for that bot
+- **AND** its code hours stop increasing for that period
 - **AND** its previously recorded usage is unchanged
 
 #### Scenario: Execution time is recorded per bot
