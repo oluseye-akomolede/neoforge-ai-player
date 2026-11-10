@@ -46,12 +46,18 @@ bot-to-player relation that does not exist" and that the unit "waits on the
 decision". So the new table states as a fixed condition kind something the
 requirement it names as its source cannot yet raise.
 
-Two consequences, one small and one worth a line:
+**Superseded on 2026-11-10 by `3c00e33`:** the owner answered, the cap is per
+bot, the requirement is no longer hedged, and `2cd6d8f` pointed that table row at
+the settled decision. The note below is kept as written at the time, because the
+defect was real when raised and the next rev's fix is what closed it. See
+`REVIEW-spec-11e7073.md`.
+
+Two consequences, one small and one worth a line, as they stood at `d2180ef`:
 
 - **Small:** a reader at `:418` learns the cap's unit is undecided; a reader at
-  `:591` learns the condition kind is fixed for v1. The spec is now confident in
+  `:591` learns the condition kind is fixed for v1. The spec was then confident in
   one place and hedged in another about the same mechanism. A pointer from the
-  table row to the pending decision would cost one clause.
+  table row to the pending decision would have cost one clause.
 - **Worth a line:** if the owner chooses a unit other than per-player, the kind
   name `allowance_exhausted` still holds — it says the allowance ran out, not
   whose. So the *vocabulary* survives the decision. What does not survive is the
