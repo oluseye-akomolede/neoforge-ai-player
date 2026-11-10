@@ -379,7 +379,7 @@ regardless of quota, and recompiled on its next tick, also reported as
 | consecutive errors before fallback | 3 | count | game binding | `disabled` |
 | `api.log` line | 1 | KB | runner | truncated |
 | `api.log` rate | 100 | lines/min | runner | dropped, `logs_dropped` |
-| `api.log` retention | **unstated for v1** | 7 days | the game, in its own store; the runner stores none and only forwards lines in the tick result |
+| `api.log` retention | unstated (minecraft) / 7 days (cardgame, their own store) | days | each game, in its own store | the runner stores nothing and forwards lines in the tick result, so it has no retention to breach |
 
 **MINECRAFT BINDING** rates: `api.do` 30/min, `api.say` 30/min, `api.send`
 20/min per bot, anchored to the 30 decisions/minute the 2.0 s cadence permits.
