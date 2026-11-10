@@ -6,9 +6,13 @@ reviewed PASS, cardgame by `cardgame-lead`'s answers to §10
 
 Frozen means the SHARED shape and every per-game value in §7 are agreed and may
 not change without a new version of this document. It does **not** freeze the
-implementation: the per-game numbers (`max_sandboxes`, `deadline_ms`,
-`tick_cpu_ms`) may be raised later by the game that owns them, which is a value
-change in that game's binding, not a wire change.
+implementation: `deadline_ms` and `tick_cpu_ms` may be raised later by the game
+that owns them, which is a value change in its binding, not a wire change.
+`max_sandboxes` is **not** in that set: a game that wants a larger quota raises a
+request with the runner's owner (minecraft), and the new quota takes effect only
+once the owner has confirmed the instance memory limit still covers it, raising
+that limit first if it does not. The limit itself is owned by minecraft as
+runner owner and is a value change there, never a game's own decision.
 
 **SHARED** marks the part both games consume and neither may change alone.
 **MINECRAFT BINDING** marks this game's choices inside the shared shape; cardgame
@@ -352,6 +356,14 @@ state is one an implementer will set from whatever the node happens to have.
 It is **4Gi**. At full occupancy the two pools request ~2.3 GB of QuickJS heap
 (8 minecraft + 64 cardgame sandboxes x 32 MB), leaving the rest for Node and
 the QuickJS runtimes themselves — headroom, not a coincidence.
+
+**Owner: minecraft, as runner owner.** This is why the memory limit and the
+quota cannot be raised independently: `max_sandboxes` (8 + 64) is what the 4Gi
+is sized against, so a game raising its quota without the limit moving would
+size the instance past its own limit and turn a cap into an OOM kill. A quota
+rise is therefore a request to the owner, granted only once the limit covering
+it is confirmed or raised (see the freeze statement above). The limit is a value
+change in minecraft's binding; it is never a calling game's decision.
 
 `idle_evict_minutes` remains: a sandbox untouched for 10 minutes is evicted
 regardless of quota, and recompiled on its next tick, also reported as
