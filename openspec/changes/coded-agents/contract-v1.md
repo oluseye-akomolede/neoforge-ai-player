@@ -274,13 +274,13 @@ cap live in its own binding; the runner knows about neither.
 
 ---
 
-## 7. Timeouts and capacity (**SHARED fields, per-game values**)
+## 7. Timeouts and capacity (**SHARED fields**; `deadline_ms` and `tick_cpu_ms` are per-game values, `max_sandboxes` and `idle_evict_minutes` are not)
 
 | field | minecraft | cardgame | meaning |
 |---|---|---|---|
 | `deadline_ms` | **250** | 250 | the game's wall budget for one tick call |
 | `tick_cpu_ms` | 20 | 20 | CPU budget inside the sandbox |
-| `max_sandboxes` | **32** | 32 | concurrent sandboxes per runner instance |
+| `max_sandboxes` | **32** | 32 | concurrent sandboxes **per runner instance, shared by both games** — see below |
 | `idle_evict_minutes` | **10** | 10 | idle sandbox eviction |
 
 **Why minecraft's `deadline_ms` is 250 ms:** the agent's decision cadence is
@@ -293,6 +293,20 @@ first incident is not a silent cap. Over capacity the runner refuses a **new**
 bot with `429 sandbox_limit`; existing bots are never evicted to make room.
 An evicted idle sandbox is recompiled on the next tick (cold, counted in
 `cpu_ms`).
+
+> **`max_sandboxes` is a pool jointly held by both games, not 32 each.** One
+> runner instance serves both games (§1), so the 32 concurrent sandboxes are
+> shared. Combined with the refusal rule above — refuse new bots, never evict a
+> live one — **the game that fills the pool first locks the other out** until
+> its sandboxes go idle. There is **no reservation, per-game quota or fairness
+> rule in this contract.** Cardgame is asked to sign this knowing the capacity
+> is jointly held; if a per-game reservation is wanted, it is a contract change
+> (a `max_sandboxes_minecraft` / `max_sandboxes_cardgame` split), not a
+> deployment setting, and it must be agreed before freeze.
+>
+> The value 32 is **proposed, not measured** (§10): against cardgame's stated
+> expectation of hundreds of characters, a shared 32 is very likely too low, and
+> the first symptom would be refusals under load rather than an error.
 
 ---
 
@@ -351,6 +365,12 @@ defence in depth, not as the primary control.
 - `api.log` retention for v1 (minecraft states "unstated"; cardgame has 7-day).
 - Their pod selector for the NetworkPolicy ingress rule.
 - Whether their `deadline_ms` stays 250 or their battle path wants its own.
+- **Whether to split `max_sandboxes` per game.** As written it is one pool of 32
+  shared by both games (§7), with no reservation or fairness rule: the game that
+  fills it first locks the other out until its sandboxes idle. A per-game quota
+  is a contract change, not a deployment value, and must be agreed before
+  freeze. Both the 32 and the split are unmeasured — cardgame expects hundreds
+  of characters.
 
 ---
 
