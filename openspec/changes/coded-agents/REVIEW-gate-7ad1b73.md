@@ -50,9 +50,9 @@ tick notes.
 
 ## Validators
 
-`openspec validate coded-agents --strict` valid; `openspec show` clean
-(reported by the builder, both re-run by me in the review for cc68e1f; the diff
-here is tasks.md prose and a review file, so no delta-parse surface changed).
+Run by me at head, now, not inherited: `openspec validate coded-agents --strict`
+-> "Change 'coded-agents' is valid", and `openspec show coded-agents` renders
+from the title with no `show_error`.
 
 ## Standing
 

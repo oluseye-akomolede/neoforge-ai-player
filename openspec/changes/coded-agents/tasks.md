@@ -15,13 +15,14 @@ dependencies, and are not started until this change is approved.
       (`agent/dashboard/server.py`), mod-settings convention
       (`serverDir/config/aiplayermod-*.json`, e.g. `aiplayermod-shop.json`).
 - [x] 1.3 Write the spec delta under the new capability `bot-coded-agents`.
-- [ ] 1.4 Reviewer PASS on this change. **Gate: no code until this is ticked.**
-      **UNTICKED 2026-11-10 (third time):** the `243e6bd` PASS covered a stack
-      finding that was wrong. The measurement is corrected and the spec's
-      design consequence changed with it, so nothing about that PASS still
-      describes this change. It re-ticks only on a PASS of the commit that
-      carries the corrected measurement.
-      Full history, because it has now come down three times and each reason
+- [x] 1.4 Reviewer PASS on this change. **Gate: no code until this is ticked.**
+      **TICKED at `7ad1b73`** (reviews/REVIEW-gate-7ad1b73.md, 11:16Z), which
+      carries the corrected stack measurement. Verified at head: the spec delta
+      is byte-identical between `cc68e1f` (the PASS the confirm carries forward)
+      and `e0efaf9` — `git diff cc68e1f..e0efaf9 -- …/specs/` is empty — so the
+      PASS covers the spec content as it stands, and only task-tracking text has
+      moved since.
+      History, because this came down three times and each reason
       differs: ticked at `8967b61` on the `7371af7` PASS, unticked because
       `e68222f`/`7698f81` came after that PASS (a PASS covers its own revision);
       ticked at `5763bce` on the `e0e4a4e` PASS, unticked again; ticked at
