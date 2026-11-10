@@ -154,9 +154,24 @@ dependencies, and are not started until this change is approved.
       typeof process")()` evaluates into the same stripped global (`this ===
       globalThis`), so it reaches no host object. That is asserted as a
       reaching-nowhere result rather than as a thrown error.
-- [ ] 2.4 Per-bot sandbox with memory limit and per-tick CPU limit; prove a
+- [x] 2.4 Per-bot sandbox with memory limit and per-tick CPU limit; prove a
       hanging script is terminated for that tick without stalling a simulated
       server tick.
+      Deadline is `deadline_ms` 250 from contract §7, armed per evaluation and
+      removed in a `finally` — a handler left installed would eventually
+      interrupt a later tick that was not the one that ran long. A hanging
+      script returns `cpu_exceeded` (its own contract class) and the context
+      stays usable. Proven at three consecutive hanging ticks that each get
+      their own full budget, so the deadline is per tick and not cumulative.
+      Two findings recorded rather than smoothed over: (a) `cpu_exceeded` and
+      `stack_overflow` are **both** `InternalError`, so the interrupt is
+      matched on the message and the stack case on `/stack/i` — matching the
+      name alone would report a CPU overrun as a stack overflow; (b) 2.5's heap
+      test began failing because at 250 ms the allocator is interrupted before
+      it reaches 32 MB. That is a real interaction, not flake: the deadline is
+      the production backstop, so OOM is only reachable by a script allocating
+      fast enough to beat it. The heap test now runs with a long deadline and
+      says why.
 - [x] 2.5 Per-bot isolation: one sandbox exhausting memory does not affect
       another. Proven with two sandboxes sharing one runtime: the first hits
       the 32 MB heap limit and the second still evaluates correctly.
