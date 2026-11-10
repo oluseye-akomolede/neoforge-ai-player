@@ -386,9 +386,21 @@ one sandbox exceeds the instance's memory limit.
 The instance memory limit is a **contract term**, not a deployment detail:
 this rule is enforced against it, and a term the contract enforces but does not
 state is one an implementer will set from whatever the node happens to have.
-It is **4Gi**. At full occupancy the two pools request ~2.3 GB of QuickJS heap
-(8 minecraft + 64 cardgame sandboxes x 32 MB), leaving the rest for Node and
-the QuickJS runtimes themselves — headroom, not a coincidence.
+It is **12Gi, with a 4Gi request**.
+
+The earlier 4Gi was sized against "72 sandboxes x 32 MB = 2.3 GB of QuickJS
+heap". **That arithmetic was wrong**: `setMemoryLimit` bounds only what QuickJS
+*counts*, not what the process holds. Each sandbox's wasm heap is a separate
+`WebAssembly.Memory`, and anything the script allocates outside QuickJS's
+accounting lands in it (measured: a runaway script reached ~2110 MB RSS while
+still reporting `memory_exceeded`). The bound is now the wasm memory maximum
+itself — **128 MiB per bot**, supplied explicitly — and the measured cost is
+46.7 MiB idle and 113.9 MiB at the cap. 72 bots at the cap is **8.01 GiB**,
+which does not fit 4Gi. 12Gi covers that worst case plus the supervisor.
+
+`request: 4Gi` is deliberately below the limit: the scheduler places the pod on
+the idle footprint, and the limit is the ceiling it may burst to. See the
+runner's LAYOUT for the full table and the supervisor's eviction guard.
 
 **Owner: minecraft, as runner owner.** This is why the memory limit and the
 quota cannot be raised independently: `max_sandboxes` (8 + 64) is what the 4Gi
@@ -475,8 +487,10 @@ section 10 as circulated at `c5c9f96`). None of these is a wire change:
   server already tolerates for a turn.
 - **`max_sandboxes`:** cardgame **64**, not the 256 proposed here. Their live
   traffic is one agent; 64 covers 2026 load at full occupancy with room.
-- **Instance memory limit: 4Gi.** 72 sandboxes x 32 MB = 2.3 GB of heap, plus
-  Node and QuickJS overhead.
+- **Instance memory limit: 12Gi, request 4Gi** (§7.1). The 4Gi this list
+  originally carried was sized on a 2.3 GB heap arithmetic that measurement
+  disproved — the real per-bot bound is the 128 MiB wasm maximum, and 72 bots
+  at their cap measure 8.01 GiB.
 - **Their cap** counts wall-clock time from the ticks their match server sends,
   metered on their side. Their driver never ticks an inactive script, so it
   needs no runner field. This is the same shape as minecraft's, reached

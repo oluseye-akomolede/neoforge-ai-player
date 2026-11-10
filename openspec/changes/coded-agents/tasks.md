@@ -130,10 +130,12 @@ dependencies, and are not started until this change is approved.
 - [x] 2.1 Choose and pin the QuickJS binding, shared with cardgame so both teams
       use one engine. Record the exact version.
       **Pinned and measured: `quickjs-emscripten@0.32.0`,
-      release-asyncify variant, Node 22.23.3** (see 1b.2). Our leg is built and
-      tested against it (`agent-script-runner` 66b9549: `package.json` pins the
-      exact version, the installed package resolves to it, and the suite
-      asserts the pin rather than trusting it).
+      release-asyncify variant, Node 22.23.3** (see 1b.2). Our leg pins the
+      exact **version** (`agent-script-runner` 66b9549: `package.json` pins it,
+      the installed package resolves to it, and the suite asserts the version
+      rather than trusting it). 66b9549 establishes the version pin **and
+      nothing about the variant** — it is the commit that imports
+      `getQuickJS()`, the sync loader. The variant needed 9782ce4; see below.
       **The variant claim was FALSE until `9782ce4`**: `getQuickJS()` loads the
       **release-sync** build, not release-asyncify, so "we run the pinned
       variant" was untrue while the suite passed. `9782ce4` loads the variant
