@@ -15,17 +15,21 @@ dependencies, and are not started until this change is approved.
       (`agent/dashboard/server.py`), mod-settings convention
       (`serverDir/config/aiplayermod-*.json`, e.g. `aiplayermod-shop.json`).
 - [x] 1.3 Write the spec delta under the new capability `bot-coded-agents`.
-- [x] 1.4 Reviewer PASS on this change. **Gate: no code until this is ticked.**
-      Ticked at `e0e4a4e` on the reviewer's head confirm
-      (REVIEW-head-e0e4a4e.md), which is a PASS of that exact sha.
-      History: first ticked at `8967b61` on the `7371af7` PASS, then
-      **unticked** by lead decision — `e68222f` and `7698f81` came after that
-      PASS, and `7698f81`'s api regression post-dates it, so the PASS could not
-      have covered it. **This ticks only on a PASS of the current head** — not
-      on a PASS of an ancestor, and not on an argument that the delta "is
-      confined to" what the earlier PASS named. Any commit changing this change
-      after `e0e4a4e` needs a fresh head PASS before code; whether a later
-      commit reopens the gate is for the reviewer to say, not the builder.
+- [ ] 1.4 Reviewer PASS on this change. **Gate: no code until this is ticked.**
+      **UNTICKED 2026-11-10 (third time):** the `243e6bd` PASS covered a stack
+      finding that was wrong. The measurement is corrected and the spec's
+      design consequence changed with it, so nothing about that PASS still
+      describes this change. It re-ticks only on a PASS of the commit that
+      carries the corrected measurement.
+      Full history, because it has now come down three times and each reason
+      differs: ticked at `8967b61` on the `7371af7` PASS, unticked because
+      `e68222f`/`7698f81` came after that PASS (a PASS covers its own revision);
+      ticked at `5763bce` on the `e0e4a4e` PASS, unticked again; ticked at
+      `c7f5bc8` on the `243e6bd` PASS, unticked now because that PASS reviewed a
+      **wrong measurement**. **The rule, unchanged:** it ticks only on a PASS of
+      the current head, and not on an argument that the delta "is confined to"
+      what an earlier PASS named. Whether a later commit reopens the gate is for
+      the reviewer to say, not the builder to decide in the task text.
 
 ## Step 1b — runner contract v1 (blocks steps 2 and 4; numbered 1b rather than
 ## renumbering, because 1.4 is cited elsewhere as the gate)
@@ -45,17 +49,27 @@ dependencies, and are not started until this change is approved.
       isolation, the hosting answer. Cardgame has not seen the contract as
       PASSed. Re-send the `243e6bd` text before this task ticks; do not tick it
       on a draft they were never given.
-- [x] 1b.2 Settle the limits before the contract freezes. **PASSed at `243e6bd`**
-      (reviews/REVIEW-gate-243e6bd.md); the reviewer re-ran the probe
-      independently on Node 22.23.3 and reproduced 2362 across every stack size.
-      Done 2026-11-10 with a
-      throwaway probe (`agent-script-runner/probe/`, no remote), pinned
-      `quickjs-emscripten@0.32.0` release-asyncify, Node 22.23.3, each run in a
-      forked child so the failure was observed rather than fatal to the probe.
-      **Stack: 2362 frames, and the finding is not the number.** Overflow is not
-      catchable in-script and `setMaxStackSize()` does not move the depth
-      (256 KB–4 MB all failed at 2362) — it kills the host process. Contained by
-      process isolation (2.6), not by a stack setting.
+- [x] 1b.2 Settle the limits before the contract freezes. PASSed at `243e6bd`,
+      then **corrected**: the first measurement was wrong and its PASS covered
+      the wrong finding (below). The reviewer's confirmation at `243e6bd` does
+      not stand as independent evidence for the corrected claim — they re-ran
+      my `probe-stack5.mjs` unmodified, so they reproduced **the bug**, not the
+      engine's behaviour. What corrected it was an independent probe with the
+      runtime wired correctly (`probe-stack-lead.mjs`, re-checked here with
+      `verify-rt.mjs` / `verify-curve.mjs`). This needs a fresh review.
+      Done 2026-11-10 with a throwaway probe (`agent-script-runner/probe/`, no
+      remote), pinned `quickjs-emscripten@0.32.0` release-asyncify, Node
+      22.23.3, each run forked so the failure was observed rather than fatal.
+      **Stack: the limit IS a control, and my first probe said otherwise because
+      of a bug in the probe.** It set `setMaxStackSize` on a runtime, then
+      evaluated in a context from `mod.newContext()`, which carries its own
+      runtime — so the limit never applied and every value gave the same
+      ~2362-frame host death. Corrected (`probe-stack-lead.mjs`, re-checked
+      here): 64 KB → 338 frames, 256 KB → 1362 frames, both a **catchable
+      `InternalError`** with the runtime usable afterwards; 512 KB and above or
+      unset → host dies at ~2362. Shipped value 256 KB. Process isolation (2.6)
+      is retained as defence in depth for what the limit cannot govern, **not**
+      because the limit fails.
       **Rates: policy, anchored to `TICK_DELAY=2.0s`** (`agent/config.py:89`, so
       ≤30 actions/min for an LLM bot): `api.do` 30, `api.say` 30, `api.send` 20
       per bot per minute, reasoning recorded in the spec.
@@ -63,6 +77,10 @@ dependencies, and are not started until this change is approved.
       not to be inherited from cardgame's 7-day term.
       Re-measure in shadow mode against real 4-thread pool load; a revision must
       beat the reasoning, not just change the number.
+      **Owning the error:** the wrong finding was mine, and it was the kind this
+      rig has a rule against — I trusted one projection of my own instrument.
+      The probe printed identical numbers for every input and I read that as
+      "the setting is inert" rather than "my setting never reached the code".
 - [ ] 1b.3 Freeze and publish v1 so both games pin the same version. A change
       after freeze is a new version and a re-review by both sides, not an edit.
 
@@ -81,16 +99,27 @@ dependencies, and are not started until this change is approved.
       server tick.
 - [ ] 2.5 Per-bot isolation: one sandbox exhausting memory does not affect
       another.
-- [ ] 2.6 **Contain stack exhaustion by process isolation, not by a stack
-      setting.** 1b.2 measured that unbounded recursion kills the host with
-      `RangeError` that an in-script `try/catch` cannot catch, at a fixed 2362
-      frames regardless of `setMaxStackSize()`. So the runner MUST execute each
-      bot's script in a process/worker it can lose and restart, and MUST treat a
-      dead worker as an error counted toward the 3-consecutive-error fallback —
-      not as a healthy bot. Do **not** implement this as a host-side `try/catch`
-      around the call: that does catch the error and the process survives, but
-      the surviving runtime's state is already unwound. Lose and replace. Prove: a recursive script kills only its own worker,
-      the bot falls back, and other bots' scripts keep running.
+- [ ] 2.6 **Process isolation as defence in depth for host-level crashes.**
+      Kept, but on a corrected basis: the stack limit (2.7) is the first line,
+      and this covers what the limit cannot — a Wasm abort, an OOM, or a crash
+      past the ~2362-frame host ceiling where Node dies before QuickJS can act.
+      The runner MUST execute each bot's script in a process/worker it can lose
+      and restart, and MUST treat a dead worker as an error counted toward the
+      3-consecutive-error fallback — not as a healthy bot. Do **not** implement
+      this as a host-side `try/catch` around the call: that can catch the error
+      and continue in a runtime whose state is already unwound. Lose and
+      replace. Prove: a worker killed from outside takes only that bot down, the
+      bot falls back, and other bots' scripts keep running.
+- [ ] 2.7 **Set the stack limit, and prove the context shares the runtime.**
+      `setMaxStackSize(256 KB)` on the runtime, contexts created with
+      `rt.newContext()` from that same runtime. Measured: 64 KB → 338 frames,
+      256 KB → 1362 frames, both a catchable `InternalError` with the runtime
+      usable afterwards; 512 KB and above or unset → host dies at ~2362 frames.
+      Tests: (a) unbounded recursion at the configured limit raises a catchable
+      error and a later evaluation in the same context still succeeds;
+      (b) **every context is created from the limited runtime** — the setting is
+      silently inert otherwise, which is the exact bug the first probe had and
+      why it wrongly reported the limit as having no effect.
 
 ## Step 3 — script contract
 

@@ -102,12 +102,13 @@ capability's own proposal
 limit, a stack limit, a CPU budget per tick and per-bot rate limits. Each is a
 field; none may be enforced as a default the contract does not name.
 
-**One of the four did not survive measurement.** The proposal assumed a stack
-limit was a settable control. It is not: on the pinned build the overflow depth
-is fixed at 2362 frames, `setMaxStackSize()` does not move it, and the overflow
-is not catchable in-script — it kills the host process. The limit rows below
-record what was measured, and stack exhaustion is contained by process
-isolation instead. See "Measured: stack depth and its failure mode".
+**The stack limit IS a settable control — and one earlier measurement of mine
+was wrong about that.** A first probe reported that `setMaxStackSize()` had no
+effect. It had none *in that probe*: it set the limit on a runtime and then
+evaluated in a context created by a different call, which carries its own
+runtime, so the limit never applied. Corrected and re-measured (see "Measured:
+stack depth and its failure mode"), the limit works, and it works **only below
+a host ceiling**. Both regimes matter and the limit rows below record both.
 
 | Limit | Value | Unit | Enforced by |
 |---|---|---|---|
@@ -121,7 +122,7 @@ isolation instead. See "Measured: stack depth and its failure mode".
 | Script memory (`api.remember`) | 16 | KB per bot | server |
 | Consecutive errors before fallback | 3 | count | server; the LLM is woken on the first |
 | Daily code hours per player | unlimited | hours/day | server metering (owner decision B) |
-| **Stack depth per script call** | **2362 frames (measured)** — but see the note: the limit is **not settable** and overflow is **not catchable** | frames | runner: must be contained by process isolation, not by a stack setting |
+| **Stack size per runtime** | **256 KB** (measured: 1362 frames, overflow **catchable**, runtime survives) | bytes | runner: `setMaxStackSize` on the runtime that also creates the context |
 | **`api.do` rate** | 30 | calls/min per bot | runner (see the rate reasoning below) |
 | **`api.say` rate** | 30 | calls/min per bot | runner |
 | **`api.send` rate** | 20 | calls/min per bot | runner |
@@ -133,30 +134,41 @@ Measured on `quickjs-emscripten@0.32.0`, release-asyncify variant, Node
 22.23.3, throwaway probe under `agent-script-runner/probe/` (forked child per
 run so the failure was observed rather than fatal to the probe).
 
-- A script that recurses without a base case reaches **depth 2362** and dies
-  with `RangeError: Maximum call stack size exceeded`.
-- **The failure is not catchable inside the script.** A `try { rec(0) }
-  catch (e) {}` around the recursion does not contain it; the error surfaces as
-  a host-level `uncaughtException` and **the Node process exits**. A script can
-  therefore kill the runner process, not just its own tick.
-- **Nor may the runner rely on catching it at the host.** Wrapping `evalCode`
-  in a host-side `try/catch` *does* catch it as an ordinary `RangeError` and the
-  process survives — but what survives is a runtime whose state is already
-  unwound, which is not a supervisor that can safely continue serving that bot.
-  An implementer who tests the host-side wrapper first is the one most likely to
-  over-generalise from it. The runner MUST lose and replace the worker rather
-  than catch and continue; that is what 2.6 requires, and this names why.
-- **`runtime.setMaxStackSize()` does not change the depth.** Values from
-  256 KB to 4 MB all failed at exactly 2362 frames — the call exists and
-  accepts the argument but the asyncify build's stack is fixed. Picking a
-  "safe" number here is not available, because there is no number to pick.
+There are **two regimes**, and the first probe only ever saw the second, which
+is why its conclusion was wrong.
 
-**Consequence for the design, and it is a design change not a table value:**
-stack exhaustion MUST be contained by **process isolation** (the runner runs
-each bot's script in a child/worker process it can lose), not by a stack-depth
-setting or an in-script try/catch. The per-tick CPU limit alone does not cover
-this: a recursion overflow is not a slow tick, it is a dead process. This
-constrains 4.1's service shape and is recorded as task 2.6.
+**Below the host ceiling the limit works.** With `setMaxStackSize` applied to
+the runtime that also created the evaluating context (see `probe-stack-lead.mjs`,
+and our re-check `verify-rt.mjs` / `verify-curve.mjs`):
+
+| `setMaxStackSize` | depth reached | outcome |
+|---|---|---|
+| 64 KB | 338 | `InternalError` caught in-script, runtime usable afterwards (`1+1` = 2) |
+| 256 KB | 1362 | `InternalError` caught in-script, runtime usable afterwards |
+| 512 KB and above, or unset | ~2362 | **host stack overflows first**; Node dies, uncatchable |
+
+So 256 KB is a real control with margin below the ~2362-frame host ceiling: a
+runaway script raises an ordinary `InternalError` the script can catch, and the
+runtime stays usable afterwards.
+
+**Above the ceiling, no setting helps.** Past roughly 2362 frames the Wasm/Node
+stack overflows before QuickJS can install its own guard. That is a dead
+process, not a caught error, and no `setMaxStackSize` value prevents it — the
+larger the limit, the more surely it happens.
+
+**The bug the first probe had, now a required test.** It set the limit on a
+runtime and then evaluated in a context created by a different call, which
+carries its own runtime, so the limit never applied and every value behaved
+identically. The only defence is to assert the relationship, so a test must
+prove **every context is created from the limited runtime**
+(`rt.newContext()`, not `mod.newContext()`).
+
+**Consequence for the design — both parts, and they are not alternatives.**
+The stack limit is the **first line**: it turns the common runaway script into a
+catchable error inside the sandbox. Process isolation is **defence in depth** for
+the regime the limit cannot govern — a host-level crash, a Wasm abort or OOM —
+and is justified by *that*, not by the stack finding. Task 2.6 keeps process
+isolation on that basis.
 
 **How the three rates were chosen.** These are policy, not measurements, and
 each is anchored to the existing directive cadence rather than to a round number.
@@ -285,15 +297,21 @@ the overrun MUST NOT propagate into the game server tick.
 The runner MUST execute scripts outside the game server process, so that a
 script that hangs cannot stall the server.
 
+Each runtime MUST set a stack size (256 KB, measured) and MUST create every
+context from that same runtime, so that a runaway script raises a catchable
+`InternalError` inside the sandbox rather than reaching the host stack. This is
+the first line, and the test that proves it is specifically that the context
+shares the limited runtime — the setting is silently inert otherwise.
+
 Isolation MUST also survive a script that **kills its execution context**, not
-only one that hangs or overruns. Measurement on the pinned engine (see "Measured:
-stack depth and its failure mode") shows unbounded recursion raises a host-level
-error that an in-script `try/catch` cannot catch, at a fixed depth, and that the
-engine's stack-size setting does not change it. The runner MUST therefore run
-each bot's script in a process or worker it can lose and replace, MUST NOT
-depend on a stack-depth setting or an in-script catch to contain this, and MUST
-count a dead worker as an error toward the consecutive-error fallback rather
-than as a healthy bot.
+only one that hangs or overruns. Past the host stack ceiling (~2362 frames on
+the pinned build) the Wasm/Node stack overflows before QuickJS can act: a dead
+process, uncatchable, and no `setMaxStackSize` value prevents it. The runner MUST
+therefore also run each bot's script in a process or worker it can lose and
+replace, and MUST count a dead worker as an error toward the consecutive-error
+fallback rather than as a healthy bot. This containment is defence in depth for
+host-level crashes (Wasm abort, OOM), which the stack limit cannot govern — not
+a substitute for the limit.
 
 #### Scenario: A hanging script does not stall the server
 - **WHEN** a bot's script does not return within its per-tick CPU limit
@@ -310,8 +328,24 @@ than as a healthy bot.
 - **THEN** only that bot's sandbox is terminated
 - **AND** other bots' scripts continue to run
 
+#### Scenario: Unbounded recursion is a catchable error inside the sandbox
+- **WHEN** a bot's script recurses without a base case at the configured 256 KB
+  stack size
+- **THEN** the script receives a catchable `InternalError`
+- **AND** the runtime is still usable afterwards — a subsequent evaluation in
+  the same context succeeds
+- **AND** the runner process does not die
+
+#### Scenario: Every context is created from the limited runtime
+- **WHEN** the runner creates a context for a script
+- **THEN** that context was created from the runtime carrying the stack size
+- **AND** a context created from any other runtime is treated as a defect, not
+  as a script error — the limit is silently inert in that case, and this is the
+  exact bug the first probe had
+
 #### Scenario: A script that kills its execution context is contained
-- **WHEN** a bot's script recurses until the engine raises a stack error
+- **WHEN** a bot's script exhausts the host stack despite the limit (Wasm abort,
+  OOM, or any crash past the ~2362-frame ceiling)
 - **THEN** only that bot's worker dies and is replaced
 - **AND** the death is counted toward the consecutive-error fallback for that bot
 - **AND** other bots' scripts keep running and the runner process survives
