@@ -105,11 +105,17 @@ dependencies, and are not started until this change is approved.
       past the ~2362-frame host ceiling where Node dies before QuickJS can act.
       The runner MUST execute each bot's script in a process/worker it can lose
       and restart, and MUST treat a dead worker as an error counted toward the
-      3-consecutive-error fallback — not as a healthy bot. Do **not** implement
-      this as a host-side `try/catch` around the call: that can catch the error
-      and continue in a runtime whose state is already unwound. Lose and
-      replace. Prove: a worker killed from outside takes only that bot down, the
-      bot falls back, and other bots' scripts keep running.
+      3-consecutive-error fallback — not as a healthy bot. Do **not** rely on a
+      host-side `try/catch` around the call as the containment. Not because the
+      runtime is left broken — it is not; after a host-caught overflow at 256 KB
+      the same context still evaluates correctly — but because that catch only
+      works **below** the host ceiling. In the regime this task exists for (512 KB
+      and above, or unset, where Node dies at ~2362 frames) there is no error to
+      catch: the process is gone. A supervisor that catches below the ceiling and
+      treats the bot as healthy would be relying on a mechanism that provides
+      nothing exactly where it is needed. Lose and replace. Prove: a worker
+      killed from outside takes only that bot down, the bot falls back, and other
+      bots' scripts keep running.
 - [ ] 2.7 **Set the stack limit, and prove the context shares the runtime.**
       `setMaxStackSize(256 KB)` on the runtime, contexts created with
       `rt.newContext()` from that same runtime. Measured: 64 KB → 338 frames,
