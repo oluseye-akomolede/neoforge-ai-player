@@ -186,6 +186,25 @@ the bots MUST fall back to keeping themselves safe.
 - **AND** each bot continues to keep itself safe
 - **AND** the condition is reported in the bot interface
 
+### Requirement: A Script Swap Takes Effect At A Tick Boundary
+When the LLM replaces a bot's script, the new revision MUST take effect at a
+tick boundary, never part-way through a tick. A bot MUST NOT execute one
+revision's actions under another revision's state.
+
+Each stored script MUST carry a revision identifier that changes when its
+content changes, so that "the revision the bot is currently executing" is
+answerable. The identifier MUST NOT change when the content does not.
+
+#### Scenario: A swap does not split a tick
+- **WHEN** a new revision is stored while a tick is in progress
+- **THEN** the in-progress tick completes under the old revision
+- **AND** the next tick begins under the new revision
+
+#### Scenario: The executed revision is identifiable
+- **WHEN** a player or operator asks which script a bot is running
+- **THEN** the answer names a specific revision
+- **AND** a stored script whose content did not change reports the same revision
+
 ### Requirement: The Existing Planner Remains Available As A Fallback
 When a bot has no script, or its script is paused, the bot MUST remain
 operable by the existing planner rather than becoming idle or unsafe.

@@ -83,6 +83,15 @@ dependencies, and are not started until this change is approved.
       replacing per-step action choice.
 - [ ] 7.2 Existing planner remains the fallback when there is no runnable
       script.
+- [ ] 7.3 Validate each proposal before storing or executing: reject
+      unparseable source, action names outside the dispatch set, and
+      filesystem/network reach. Prove the previous script stays in force on
+      rejection, and that a failed attempt cannot disarm a working bot.
+- [ ] 7.4 Prove the sandbox still denies at execution time for code that
+      passed validation — validation is a first line, not the only one.
+- [ ] 7.5 Script swap applies at a tick boundary, never mid-tick; stored
+      scripts carry a revision identifier that changes only when content
+      changes.
 
 ## Step 8 — test environment
 
