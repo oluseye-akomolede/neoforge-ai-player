@@ -6,10 +6,19 @@ path by which a player or any other client supplies script source.
 
 Players MUST be able to read the scripts, and MUST NOT be able to write them.
 
+The dashboard currently exposes no authentication of any kind: all 47 routes are
+undecorated handlers taking no auth dependency, and the process binds 0.0.0.0.
+Whichever way the owner settles the owner-cap question, this requirement cannot
+be satisfied on the dashboard as it stands — "only the LLM path" needs a caller
+identity to distinguish the LLM from everyone else. Implementers MUST NOT treat
+the absence of a player-facing script endpoint as sufficient.
+
 #### Scenario: No player write path exists
 - **WHEN** the bot interface is enumerated for endpoints that accept script text
 - **THEN** no endpoint accepts script source from a player
 - **AND** every script-mutating operation is reachable only from the LLM path
+- **AND** the script-mutating path is distinguishable from any other caller by an
+  identity check, not merely by not existing
 
 #### Scenario: A player reads the script their bot ran
 - **WHEN** a player opens the script view for a bot they own
@@ -36,6 +45,36 @@ Players MUST be able to read the scripts, and MUST NOT be able to write them.
 - **THEN** the request is refused
 - (Deferred with the ownership question above. If the owner chooses (c), this
   scenario is removed by a spec delta and the cap is specified per-bot.)
+
+### Requirement: Authoring Rejects Code That Cannot Run
+When the LLM proposes a script, the system MUST validate it before it is stored
+or executed. A proposal that fails validation MUST be discarded, and the bot's
+previously working script MUST remain in force.
+
+Validation MUST reject, at minimum: syntax that does not parse, invocation of an
+action name outside the dispatch set, and attempts to reach the filesystem or
+network. Validation MUST NOT be the only defence — the sandbox remains
+authoritative at execution time.
+
+The system MUST NOT store a script that failed validation, and MUST NOT leave a
+bot with no script as a result of a failed authoring attempt.
+
+#### Scenario: A syntactically invalid proposal is refused
+- **WHEN** the LLM proposes a script that does not parse
+- **THEN** the proposal is discarded and the reason is reported
+- **AND** the bot keeps executing its previous script
+
+#### Scenario: A failed authoring attempt does not disarm a working bot
+- **WHEN** a bot is executing a valid script and a new authoring attempt fails
+  validation
+- **THEN** the bot continues executing the previously stored script
+- **AND** no tick is missed and no task is interrupted
+
+#### Scenario: Validation is not the only defence
+- **WHEN** a script passes validation and later attempts a denied operation at
+  execution time
+- **THEN** the sandbox denies it at execution, exactly as for an unvalidated
+  attempt
 
 ### Requirement: Script Execution Is Sandboxed And Tick-Bounded
 Each bot's script MUST run in its own sandbox with a memory limit and a CPU
@@ -108,9 +147,12 @@ so that a cap enabled later has a measured basis.
 - **WHEN** the daily cap is set to unlimited
 - **THEN** usage is still recorded
 
-### Requirement: Daily Code-Hour Cap Is Per Player And Set In Mod Settings
-The daily cap MUST be per player, not per bot: a player owning several bots MUST
-have their bots' usage summed against one daily allowance.
+### Requirement: Daily Code-Hour Cap Is Set In Mod Settings (unit pending owner decision)
+The daily cap is a single per-player allowance in the decision this text encodes:
+a player owning several bots MUST have their bots' usage summed against one
+daily allowance. **The unit of summation is decision-dependent and not yet
+settled** — see the note below. The cap's existence, its configuration surface
+and its default do not depend on that decision.
 
 The cap MUST be configured in the mod settings, following the existing
 `serverDir/config/aiplayermod-*.json` convention, and MUST default to unlimited.
