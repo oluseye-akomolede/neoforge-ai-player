@@ -277,6 +277,20 @@ continue. Rejections do not end the tick and do not count as script errors.
 `setTimeout`, `setInterval`, `eval` and `Function` on host strings. Attempting
 any of them fails inside the sandbox.
 
+### 4.4 How a script runs
+
+Script `source` is the **body of a function**, executed **once per tick in a
+fresh context**. A top-level `return` ends the tick and its value is ignored:
+it is not an action and appears in no result field. Nothing persists between
+ticks except through `api.remember`.
+
+The fresh context is what makes the last sentence true rather than aspirational.
+A top-level `var` becomes a non-configurable property of the global object, so
+it cannot be deleted; only discarding the context removes it. The cost is
+measured: a fresh context adds about 0.5 ms median over a reused one for a
+small script and about 0.3 ms for a 17.5 KB script, against a 250 ms tick
+deadline.
+
 ---
 
 ## 5. Result fields (**SHARED**)
