@@ -14,11 +14,28 @@ Players MUST be able to read the scripts, and MUST NOT be able to write them.
 #### Scenario: A player reads the script their bot ran
 - **WHEN** a player opens the script view for a bot they own
 - **THEN** the source returned is the revision that bot is currently executing
-- **AND** the response is read-only
+- **AND** the response does not allow the script to be modified (read-only in
+  the sense of not-writable; it is NOT immutable between views, because the LLM
+  may have rewritten the script since the previous view)
+
+> **OPEN QUESTION — ownership (blocks this requirement and the cap).** There is
+> no bot-to-player ownership relation anywhere in the codebase: no ownership
+> column in the agent state, no owner field in `bot-identity` (which specifies
+> identity properties only), and the dashboard has no authentication at all —
+> every route is an unguarded `@app.get`/`@app.post` with no user identity.
+> "The player who owns the bot" therefore names something that does not exist.
+> This requirement is deferred until the owner decides:
+> (a) bots are bound to a player's Minecraft UUID, (b) bots are bound to a
+> dashboard user, which requires building authentication, or (c) bots are not
+> player-owned and the script view and cap are per-bot.
+> Decision needed from the owner; **not** available for the implementer to
+> invent.
 
 #### Scenario: A player cannot read another player's script
 - **WHEN** a player requests the script view for a bot they do not own
 - **THEN** the request is refused
+- (Deferred with the ownership question above. If the owner chooses (c), this
+  scenario is removed by a spec delta and the cap is specified per-bot.)
 
 ### Requirement: Script Execution Is Sandboxed And Tick-Bounded
 Each bot's script MUST run in its own sandbox with a memory limit and a CPU
@@ -101,6 +118,14 @@ The cap MUST be configured in the mod settings, following the existing
 When a player's daily allowance is exhausted, their bots' scripts MUST pause and
 the bots MUST fall back to keeping themselves safe.
 
+> **The unit of the cap is deferred with the ownership question above.** The
+> owner's decision was a *per-player daily* cap, and that is what this text
+> encodes — but summing "a player's bots" requires the bot-to-player relation
+> that does not exist. Metering and pause-on-exhaustion are specified now and are
+> unaffected; only the summation unit waits on the decision. If the owner chooses
+> (c), the unit becomes per-bot and the scenario below is rewritten as a spec
+> delta, not silently dropped.
+
 #### Scenario: Cap defaults to unlimited
 - **WHEN** no cap is configured
 - **THEN** scripts run without being stopped by the cap
@@ -110,6 +135,8 @@ the bots MUST fall back to keeping themselves safe.
 - **WHEN** a player owning two bots has both run scripts
 - **THEN** both durations count against that player's single daily allowance
 - **AND** one bot's usage reduces the allowance available to the other
+> (Deferred with the ownership question. Becomes a per-bot scenario if the owner
+> chooses (c).)
 
 #### Scenario: Exhausted allowance pauses the script safely
 - **WHEN** a player's daily allowance is exhausted

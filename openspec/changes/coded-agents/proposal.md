@@ -39,6 +39,17 @@ the runner's hosting location (see Open question).
 `cardgame-lead`'s answer, because cardgame uses the same JavaScript engine and
 the two teams may share a runner deployment. Everything else is specifiable now.
 
+**Open question, blocking an owner decision (tasks 5.2 and 6.2):** the owner's
+decisions say the cap is *per player* and that a player sees *their* bot's
+script, but **no bot-to-player relation exists in the codebase** — no ownership
+field in agent state or `bot-identity`, and the dashboard has no authentication
+(no user identity, no token, every route unguarded). So "the owning player" and
+"refused because they do not own it" currently name nothing. The owner must
+choose: bind bots to a player's Minecraft UUID, bind them to a dashboard user
+(which requires building authentication), or treat bots as not player-owned and
+specify the cap and script view **per bot**. Metering, sandboxing, the script
+contract and the LLM-only authoring rule are unaffected and specified now.
+
 ## Design summary
 
 1. **Scripts run outside the game server**, in a separate runner service, so a
@@ -50,10 +61,14 @@ the two teams may share a runner deployment. Everything else is specifiable now.
 3. **Per tick**, the script sees a read-only snapshot: the bot's health, food,
    position, inventory, nearby blocks and mobs, task progress and recent events.
 4. **Scripts act only through the existing bot actions** — the dispatcher's
-   `case` set in `agent/agent.py` (50 distinct actions at the time of writing —
-   51 `case` labels, because `goto` is dispatched twice; e.g. `goto`, `mine`,
-   `craft`, `container_extract`). The script cannot reach past that surface into
-   the server.
+   `case` set in `agent/agent.py`: **52 `case` arms** at the time of writing,
+   **51** excluding the `_` default, naming **51 distinct actions** (`goto` is
+   dispatched twice — a guard arm `case "goto" if "target" in p` plus the plain
+   arm). Examples only: `goto`, `mine`, `craft`, `container_extract`. The
+   examples are a sample, not the list — `container_insert`, `delegate`,
+   `send_item`, `trade`, `shop_buy` and `conjure` are also in the set. What the
+   requirement fixes is a **ceiling** (nothing outside that set), not an
+   enumeration. The script cannot reach past that surface into the server.
 5. **The LLM rewrites the script** every few minutes, or when a new goal
    arrives, rather than choosing each step.
 6. **Code hours** are metered per bot; when a bot's allowance runs out the
