@@ -121,8 +121,9 @@ field; none may be enforced as a default the contract does not name.
 
 The three rate rows are this binding's own. `api.log` is a shared name whose
 limit was carried across from cardgame's table because both games cap it the
-same way; cardgame's `api.ask` limit belongs to its namespace and was not carried
-across.
+same way, except that **retention is unstated here** — cardgame's table carries a
+7-day term that this one does not. cardgame's `api.ask` limit belongs to its
+namespace and was not carried across.
 
 Rows marked TBD are deliberately open. Inventing a number is worse than naming
 it open: a stack limit nobody measured fails as a crash rather than as a
@@ -150,8 +151,13 @@ capability that namespace is Minecraft's, and it MUST NOT be cardgame's
 and a strategic question that this game does not have.
 
 `api.log` is shared by name but not by meaning: both games log, so it appears in
-both namespaces and is not evidence that either was copied from the other. The
-limit on it differs per game and is this binding's own (see the limits table).
+both namespaces and is not evidence that either was copied from the other. Its
+limit **was** carried across from cardgame's table because both games cap logging
+the same way (see the limits table) — with one difference: **retention is
+unstated in this binding for now.** Cardgame's table carries a 7-day retention
+term and this one does not. An implementer MUST NOT adopt cardgame's retention
+value by default; if retention is needed it is added to this table by a spec
+delta, with its own measurement.
 
 The Minecraft binding is:
 

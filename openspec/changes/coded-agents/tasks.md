@@ -15,7 +15,15 @@ dependencies, and are not started until this change is approved.
       (`agent/dashboard/server.py`), mod-settings convention
       (`serverDir/config/aiplayermod-*.json`, e.g. `aiplayermod-shop.json`).
 - [x] 1.3 Write the spec delta under the new capability `bot-coded-agents`.
-- [ ] 1.4 Reviewer PASS on this change. **Gate: no code until this is ticked.**
+- [x] 1.4 Reviewer PASS on this change. **Gate: no code until this is ticked.**
+      Ticked at `e0e4a4e` on the reviewer's head confirm (REVIEW-head-e0e4a4e.md),
+      which is a PASS of that exact sha. It ticks only on a PASS of the current
+      head — not on a PASS of an ancestor, and not on an argument that the delta
+      "is confined to" what the earlier PASS named. It was unticked once for
+      exactly that reason (`7371af7` PASS used to cover `7698f81`). Any commit
+      that changes this change after `e0e4a4e` requires a fresh head PASS before
+      any code is written. Whether a later commit reopens the gate is for the
+      reviewer to say, not for the builder to decide in the task text.
       Ticked at 8967b61 on the 7371af7 PASS, then **unticked** by lead decision:
       a PASS is a verdict on a specific revision, and `e68222f` (contract step,
       limits table, async host calls) and `7698f81` (minecraft api binding) came
@@ -42,6 +50,10 @@ dependencies, and are not started until this change is approved.
       pool rather than picking a plausible number: the limit exists to stop one
       bot saturating a pool the other bots share.
       Do not freeze the contract with any of them still open.
+      Also settle `api.log` retention: the spec states it is unstated in this
+      binding and MUST NOT inherit cardgame's 7-day term by default. Either add a
+      measured retention row or record explicitly that retention is out of scope
+      for v1. Do not freeze while the two `api.log` paragraphs disagree.
 - [ ] 1b.3 Freeze and publish v1 so both games pin the same version. A change
       after freeze is a new version and a re-review by both sides, not an edit.
 
