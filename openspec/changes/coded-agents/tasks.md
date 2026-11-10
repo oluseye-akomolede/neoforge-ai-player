@@ -113,14 +113,17 @@ dependencies, and are not started until this change is approved.
       rig has a rule against — I trusted one projection of my own instrument.
       The probe printed identical numbers for every input and I read that as
       "the setting is inert" rather than "my setting never reached the code".
-- [ ] 1b.3 Freeze and publish v1 so both games pin the same version. A change
+- [x] 1b.3 Freeze and publish v1 so both games pin the same version. A change
       after freeze is a new version and a re-review by both sides, not an edit.
-      **PARTIAL: frozen, not published.** The freeze is marked in the document
-      itself (`0281152`) and cardgame has the values through §10. What is not
-      done is *publish*: a stable reference both games pin, and cardgame's
-      confirmation of the pinned version — their §10 answers settle values, not
-      the version. This is why 2.1 stays unticked, since its second leg is
-      "shared with cardgame".
+      **TICKED 2026-11-10 14:31Z.** Published by the lead:
+      `qitem-20261110142959-d03f414a3c28e2ed` to `cardgame-lead@cardgame`,
+      carrying the frozen pin `0281152` and the diff from `c5c9f96`. The lead
+      also reports cardgame declared the freeze on their side and accepted the
+      memory-limit rule (closed `fad32be1`).
+      **What this tick does NOT mean:** cardgame has been *asked to pin*, not
+      confirmed as pinned. The row is `pending` at the time of writing. `2.1`'s
+      shared leg therefore stays unticked until cardgame acknowledges — that
+      tick is theirs to give, not something this row transfers.
 
 ## Step 2 — shared engine and sandbox
 
