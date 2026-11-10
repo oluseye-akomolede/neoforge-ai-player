@@ -520,19 +520,24 @@ the bot already took before the interruption.
 - **THEN** every affected bot falls back to the existing planner
 - **AND** the condition is reported as a single runner-level condition, not as
   an independent per-bot fault raised simultaneously by every affected bot
-- **AND** the system's behaviour under this event is bounded by the number of
-  bots: it MUST NOT issue one dead-endpoint request per bot per tick for the
-  duration of the interruption
+- **AND** the number of dead-endpoint requests issued during the interruption
+  does not grow with the number of affected bots: the runner is probed at a
+  bounded rate, the same bound regardless of whether 2 bots or 264 are affected
 - **AND** the operator can distinguish this instance-wide event from a fault
-  confined to one bot
+  confined to one bot, because the two arrive as different reported conditions:
+  a **runner-level** condition naming the instance, and a **bot-level** fault
+  naming the individual bot
 
 > **Why this scenario exists.** Every other scenario in this requirement is
 > about one bot or one waiting agent, and an instance loss is the one failure
 > that hits all of them at once — up to 8 + 256 sandboxes across both games,
 > every scripted bot falling back simultaneously. "The condition MUST be
 > reported in the bot interface" then means 264 simultaneous reports, and a
-> per-bot retry loop means 264 requests per tick against an endpoint known to
-> be dead. Neither is the failure the single-bot scenarios describe.
+> per-bot retry loop means the request count scales with the fleet against an
+> endpoint known to be dead. Neither is the failure the single-bot scenarios
+> describe. The bound above is stated as *does not grow with fleet size* rather
+> than "at most N per tick" deliberately: the latter sets the ceiling at N while
+> the prohibition is N, which are the same number and satisfy neither.
 
 ### Requirement: The Existing Planner Remains Available As A Fallback
 When a bot has no script, or its script is paused, the bot MUST remain
