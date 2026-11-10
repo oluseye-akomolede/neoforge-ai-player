@@ -16,21 +16,16 @@ dependencies, and are not started until this change is approved.
       (`serverDir/config/aiplayermod-*.json`, e.g. `aiplayermod-shop.json`).
 - [x] 1.3 Write the spec delta under the new capability `bot-coded-agents`.
 - [x] 1.4 Reviewer PASS on this change. **Gate: no code until this is ticked.**
-      Ticked at `e0e4a4e` on the reviewer's head confirm (REVIEW-head-e0e4a4e.md),
-      which is a PASS of that exact sha. It ticks only on a PASS of the current
-      head — not on a PASS of an ancestor, and not on an argument that the delta
-      "is confined to" what the earlier PASS named. It was unticked once for
-      exactly that reason (`7371af7` PASS used to cover `7698f81`). Any commit
-      that changes this change after `e0e4a4e` requires a fresh head PASS before
-      any code is written. Whether a later commit reopens the gate is for the
-      reviewer to say, not for the builder to decide in the task text.
-      Ticked at 8967b61 on the 7371af7 PASS, then **unticked** by lead decision:
-      a PASS is a verdict on a specific revision, and `e68222f` (contract step,
-      limits table, async host calls) and `7698f81` (minecraft api binding) came
-      after it. The api regression fixed in `7698f81` post-dates the PASS, so
-      the PASS could not have covered it. **This ticks only on a PASS of the
-      current head** — not on a PASS of an ancestor, and not on an argument that
-      the delta "is confined to" what the earlier PASS named.
+      Ticked at `e0e4a4e` on the reviewer's head confirm
+      (REVIEW-head-e0e4a4e.md), which is a PASS of that exact sha.
+      History: first ticked at `8967b61` on the `7371af7` PASS, then
+      **unticked** by lead decision — `e68222f` and `7698f81` came after that
+      PASS, and `7698f81`'s api regression post-dates it, so the PASS could not
+      have covered it. **This ticks only on a PASS of the current head** — not
+      on a PASS of an ancestor, and not on an argument that the delta "is
+      confined to" what the earlier PASS named. Any commit changing this change
+      after `e0e4a4e` needs a fresh head PASS before code; whether a later
+      commit reopens the gate is for the reviewer to say, not the builder.
 
 ## Step 1b — runner contract v1 (blocks steps 2 and 4; numbered 1b rather than
 ## renumbering, because 1.4 is cited elsewhere as the gate)
@@ -43,17 +38,21 @@ dependencies, and are not started until this change is approved.
       **Acceptance requires both:** reviewed and PASSed by the minecraft
       reviewer, **and** sent to `cardgame-lead` as a queue row. One without the
       other does not close this task.
-- [ ] 1b.2 Settle the TBD limits before the contract freezes. Measure stack
-      depth on the pinned QuickJS build by driving a known recursion until the
-      engine fails, and record the depth and the failure mode. Set the
-      `api.do`, `api.say` and `api.send` rates by measuring the 4-thread API
-      pool rather than picking a plausible number: the limit exists to stop one
-      bot saturating a pool the other bots share.
-      Do not freeze the contract with any of them still open.
-      Also settle `api.log` retention: the spec states it is unstated in this
-      binding and MUST NOT inherit cardgame's 7-day term by default. Either add a
-      measured retention row or record explicitly that retention is out of scope
-      for v1. Do not freeze while the two `api.log` paragraphs disagree.
+- [x] 1b.2 Settle the limits before the contract freezes. Done 2026-11-10 with a
+      throwaway probe (`agent-script-runner/probe/`, no remote), pinned
+      `quickjs-emscripten@0.32.0` release-asyncify, Node 22.23.3, each run in a
+      forked child so the failure was observed rather than fatal to the probe.
+      **Stack: 2362 frames, and the finding is not the number.** Overflow is not
+      catchable in-script and `setMaxStackSize()` does not move the depth
+      (256 KB–4 MB all failed at 2362) — it kills the host process. Contained by
+      process isolation (2.6), not by a stack setting.
+      **Rates: policy, anchored to `TICK_DELAY=2.0s`** (`agent/config.py:89`, so
+      ≤30 actions/min for an LLM bot): `api.do` 30, `api.say` 30, `api.send` 20
+      per bot per minute, reasoning recorded in the spec.
+      **`api.log` retention: unstated for v1** — a decision, not an omission, and
+      not to be inherited from cardgame's 7-day term.
+      Re-measure in shadow mode against real 4-thread pool load; a revision must
+      beat the reasoning, not just change the number.
 - [ ] 1b.3 Freeze and publish v1 so both games pin the same version. A change
       after freeze is a new version and a re-review by both sides, not an edit.
 
@@ -61,6 +60,10 @@ dependencies, and are not started until this change is approved.
 
 - [ ] 2.1 Choose and pin the QuickJS binding, shared with cardgame so both teams
       use one engine. Record the exact version.
+      **Pinned and measured on our side: `quickjs-emscripten@0.32.0`,
+      release-asyncify variant, Node 22.23.3** (see 1b.2). Not ticked: "shared
+      with cardgame" needs their confirmation of the same version through
+      contract v1 — pinning it here does not pin it for them.
 - [ ] 2.2 Configure the engine with no filesystem and no network bindings.
 - [ ] 2.3 Escape-attempt test set; each attempt must fail inside the sandbox.
 - [ ] 2.4 Per-bot sandbox with memory limit and per-tick CPU limit; prove a
@@ -68,6 +71,14 @@ dependencies, and are not started until this change is approved.
       server tick.
 - [ ] 2.5 Per-bot isolation: one sandbox exhausting memory does not affect
       another.
+- [ ] 2.6 **Contain stack exhaustion by process isolation, not by a stack
+      setting.** 1b.2 measured that unbounded recursion kills the host with
+      `RangeError` that an in-script `try/catch` cannot catch, at a fixed 2362
+      frames regardless of `setMaxStackSize()`. So the runner MUST execute each
+      bot's script in a process/worker it can lose and restart, and MUST treat a
+      dead worker as a error counted toward the 3-consecutive-error fallback —
+      not as a healthy bot. Prove: a recursive script kills only its own worker,
+      the bot falls back, and other bots' scripts keep running.
 
 ## Step 3 — script contract
 
@@ -83,11 +94,13 @@ dependencies, and are not started until this change is approved.
 
 - [ ] 4.1 Runner service that executes scripts outside the game server process
       and feeds ticks.
-- [ ] 4.2 **BLOCKED — needs `cardgame-lead`'s answer on hosting.** Decide where
-      the runner is deployed (own deployment vs shared with cardgame) and
-      whether the two teams share one instance. Do not design the deployment
-      manifest before this answer: if it is shared, the wrong choice here is a
-      rebuild rather than a move.
+- [ ] 4.2 Runner hosting — **ANSWERED, no longer blocked.** Minecraft **owns and
+      hosts** the runner: one Node service in local repo
+      `~/minecraft/agent-script-runner` (no remote), its own k8s namespace,
+      consumed by cardgame through contract v1 (`cardgame-lead` 05:22Z/05:28Z;
+      control-operator agreed 05:32Z). Remaining work is the deployment manifest
+      and namespace, which can now be designed — the answer that would have made
+      a wrong choice a rebuild has been given.
 - [ ] 4.3 Runner reachability detection with a bounded wait. Prove a bot falls
       back to the planner when the runner is down, and that the bot interface
       reports it — a player must not have to infer a stalled bot from a

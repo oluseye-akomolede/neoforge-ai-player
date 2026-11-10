@@ -102,6 +102,13 @@ capability's own proposal
 limit, a stack limit, a CPU budget per tick and per-bot rate limits. Each is a
 field; none may be enforced as a default the contract does not name.
 
+**One of the four did not survive measurement.** The proposal assumed a stack
+limit was a settable control. It is not: on the pinned build the overflow depth
+is fixed at 2362 frames, `setMaxStackSize()` does not move it, and the overflow
+is not catchable in-script — it kills the host process. The limit rows below
+record what was measured, and stack exhaustion is contained by process
+isolation instead. See "Measured: stack depth and its failure mode".
+
 | Limit | Value | Unit | Enforced by |
 |---|---|---|---|
 | Heap per sandbox | 32 | MB | runner memory limit |
@@ -114,10 +121,53 @@ field; none may be enforced as a default the contract does not name.
 | Script memory (`api.remember`) | 16 | KB per bot | server |
 | Consecutive errors before fallback | 3 | count | server; the LLM is woken on the first |
 | Daily code hours per player | unlimited | hours/day | server metering (owner decision B) |
-| **Stack depth per script call** | **TBD** | frames | **TBD — no number in the source.** Measure before setting one: drive a known recursion on the pinned QuickJS build until the engine fails, and record the depth and the failure mode. |
-| **`api.do` rate** | **TBD** | calls/min per bot | **TBD — rate-limited per bot, no number in the source.** Measure against the 4-thread API pool during shadow mode; a rate that saturates the pool is the failure this limits. |
-| **`api.say` rate** | **TBD** | calls/min per bot | **TBD — as above.** |
-| **`api.send` rate** | **TBD** | calls/min per bot | **TBD — as above.** |
+| **Stack depth per script call** | **2362 frames (measured)** — but see the note: the limit is **not settable** and overflow is **not catchable** | frames | runner: must be contained by process isolation, not by a stack setting |
+| **`api.do` rate** | 30 | calls/min per bot | runner (see the rate reasoning below) |
+| **`api.say` rate** | 30 | calls/min per bot | runner |
+| **`api.send` rate** | 20 | calls/min per bot | runner |
+| **`api.log` retention** | **unstated for v1** | — | not specified; an implementer MUST NOT adopt cardgame's 7-day term by default |
+
+#### Measured limits and their sources (probe, 2026-11-10)
+
+Measured on `quickjs-emscripten@0.32.0`, release-asyncify variant, Node
+22.23.3, throwaway probe under `agent-script-runner/probe/` (forked child per
+run so the failure was observed rather than fatal to the probe).
+
+- A script that recurses without a base case reaches **depth 2362** and dies
+  with `RangeError: Maximum call stack size exceeded`.
+- **The failure is not catchable inside the script.** A `try { rec(0) }
+  catch (e) {}` around the recursion does not contain it; the error surfaces as
+  a host-level `uncaughtException` and **the Node process exits**. A script can
+  therefore kill the runner process, not just its own tick.
+- **`runtime.setMaxStackSize()` does not change the depth.** Values from
+  256 KB to 4 MB all failed at exactly 2362 frames — the call exists and
+  accepts the argument but the asyncify build's stack is fixed. Picking a
+  "safe" number here is not available, because there is no number to pick.
+
+**Consequence for the design, and it is a design change not a table value:**
+stack exhaustion MUST be contained by **process isolation** (the runner runs
+each bot's script in a child/worker process it can lose), not by a stack-depth
+setting or an in-script try/catch. The per-tick CPU limit alone does not cover
+this: a recursion overflow is not a slow tick, it is a dead process. This
+constrains 4.1's service shape and is recorded as task 2.6.
+
+**How the three rates were chosen.** These are policy, not measurements, and
+each is anchored to the existing directive cadence rather than to a round number.
+`TICK_DELAY` is 2.0 s (`agent/config.py:89`), so an LLM-driven bot issues at most
+**30 actions per minute** — one per tick. A script must not be able to exceed the
+rate at which the bot it replaces already acts, or scripted bots would load the
+shared 4-thread API pool harder than the LLM bots do:
+
+- **`api.do` = 30/min per bot** — one per tick at the existing 2.0 s cadence,
+  i.e. parity with the LLM path, not headroom above it.
+- **`api.say` = 30/min per bot** — same bound; chat is capped by the same tick
+  loop and there is no reason for it to outpace action.
+- **`api.send` = 20/min per bot** — below the tick rate: messages between bots
+  are coordination, not the bot's primary act, and `api.send` is the call most
+  likely to be used in a burst.
+
+These are revisable in shadow mode once real pool load is observed; the
+reasoning above is what a reviser must beat, not just the number.
 
 The three rate rows are this binding's own. `api.log` is a shared name whose
 limit was carried across from cardgame's table because both games cap it the
@@ -125,10 +175,12 @@ same way, except that **retention is unstated here** — cardgame's table carrie
 7-day term that this one does not. cardgame's `api.ask` limit belongs to its
 namespace and was not carried across.
 
-Rows marked TBD are deliberately open. Inventing a number is worse than naming
-it open: a stack limit nobody measured fails as a crash rather than as a
-refusal, and a rate chosen without measuring the pool it protects is not
-enforcing anything. All are settled in 1b.2 before the contract freezes.
+**No row is TBD as of the 2026-11-10 probe.** The stack row was resolved by
+measurement into something stronger than a number — a design constraint that it
+cannot be set or caught. The three rates are policy values with the reasoning
+above. `api.log` retention is recorded as *unstated for v1*, which is a decision,
+not a gap: it is not to be inherited from cardgame. 1b.2 now means "re-measure
+and confirm", and reopens a row by adding a measurement, not by guessing.
 
 #### Scenario: Contract v1 is frozen before the runner code exists
 - **WHEN** implementation of the runner or the sandbox begins
@@ -226,6 +278,16 @@ the overrun MUST NOT propagate into the game server tick.
 The runner MUST execute scripts outside the game server process, so that a
 script that hangs cannot stall the server.
 
+Isolation MUST also survive a script that **kills its execution context**, not
+only one that hangs or overruns. Measurement on the pinned engine (see "Measured:
+stack depth and its failure mode") shows unbounded recursion raises a host-level
+error that an in-script `try/catch` cannot catch, at a fixed depth, and that the
+engine's stack-size setting does not change it. The runner MUST therefore run
+each bot's script in a process or worker it can lose and replace, MUST NOT
+depend on a stack-depth setting or an in-script catch to contain this, and MUST
+count a dead worker as an error toward the consecutive-error fallback rather
+than as a healthy bot.
+
 #### Scenario: A hanging script does not stall the server
 - **WHEN** a bot's script does not return within its per-tick CPU limit
 - **THEN** that script's tick is terminated
@@ -240,6 +302,12 @@ script that hangs cannot stall the server.
 - **WHEN** one bot's script exhausts its memory limit
 - **THEN** only that bot's sandbox is terminated
 - **AND** other bots' scripts continue to run
+
+#### Scenario: A script that kills its execution context is contained
+- **WHEN** a bot's script recurses until the engine raises a stack error
+- **THEN** only that bot's worker dies and is replaced
+- **AND** the death is counted toward the consecutive-error fallback for that bot
+- **AND** other bots' scripts keep running and the runner process survives
 
 ### Requirement: Scripts Act Only Through The Existing Bot Actions
 A script MUST act on the world only by invoking the bot actions the agent
