@@ -231,12 +231,21 @@ for why, and the spec delta.
 | `api.say(text)` | `{ok:true, seq}` or rejection | |
 | `api.send(otherBot, msg)` | `{ok:true, seq}` or rejection | |
 | `api.remember(blob)` | `{ok:true}` or rejection | ≤16 KB, rides the tick |
+| `api.recall()` | `string` \| `null` | the blob this tick started with |
 | `api.log(level, text)` | `void` | ≤1 KB/line, counted |
 
 `api.do` takes a directive name from the existing agent dispatch set (51 names,
 `agent/agent.py`). The runner does **not** validate directive names against the
 set — that is the game's job, because the set is the game's — but it does bound
 the *shape* (JSON, size, call count).
+
+`api.recall()` returns the blob this tick **started** with — the same UTF-8
+string `api.remember` accepts, so recall-and-remember is a byte-identical round
+trip — or `null` when the game sent no `memory` for this tick. A `remember` in
+the same tick does **not** change what `recall` returns: the game supplies the
+next tick's value, the script cannot rewrite the state it started from.
+`recall` is **not** an action and **not** a host call: it reads bytes the runner
+already holds, so it costs nothing and appears in no count.
 
 #### The shape inside `actions[]`
 
@@ -282,7 +291,7 @@ any of them fails inside the sandbox.
 Script `source` is the **body of a function**, executed **once per tick in a
 fresh context**. A top-level `return` ends the tick and its value is ignored:
 it is not an action and appears in no result field. Nothing persists between
-ticks except through `api.remember`.
+ticks except through `api.remember`; the next tick reads it with `api.recall()`.
 
 The fresh context is what makes the last sentence true rather than aspirational.
 A top-level `var` becomes a non-configurable property of the global object, so
@@ -330,7 +339,7 @@ The runner reports a **per-tick outcome**, never a bot state. Fixed class list
 | `ok` | the tick completed |
 | `script_error` | the script threw |
 | `cpu_exceeded` | exceeded 20 ms CPU |
-| `memory_exceeded` | exceeded 32 MB heap |
+| `memory_exceeded` | exceeded the 32 MB QuickJS heap **or** the 128 MiB wasm cap (§7.1) |
 | `stack_overflow` | recursion exceeded the 256 KB stack |
 | `host_call_timeout` | a host call exceeded 2 s |
 | `host_calls_exceeded` | more than 8 host calls in one tick |
@@ -460,6 +469,7 @@ regardless of quota, and recompiled on its next tick, also reported as
 | limit | value | unit | enforced by | on breach |
 |---|---|---|---|---|
 | heap | 32 | MB | QuickJS runtime | `memory_exceeded` |
+| wasm linear memory | 128 | MiB | runner (`setMemoryLimit`) | `memory_exceeded` |
 | CPU per tick | 20 | ms | runner supervisor | `cpu_exceeded` |
 | stack | 256 | KB | QuickJS `setMaxStackSize` on the owning runtime | catchable `InternalError`, else `stack_overflow` |
 | wall per host call | 2 | s | runner | `host_call_timeout` |
