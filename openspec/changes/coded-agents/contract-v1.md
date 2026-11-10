@@ -363,6 +363,25 @@ cap live in its own binding; the runner knows about neither.
 | `max_sandboxes` | **8** | **64** | concurrent sandboxes **per game** (keyed by `game_id`) — see below |
 | `idle_evict_minutes` | **10** | 10 | idle sandbox eviction |
 
+**`deadline_ms` is the CALLER's timeout. The runner does not enforce it.**
+This is a clarification of an already-shipped field, not a new one.
+
+- **The game is the one holding the clock.** It sets its HTTP client timeout
+  to `deadline_ms`. If the call has not answered by then, the game abandons
+  it and treats that tick as a **transport error under its own fallback**. It
+  applies none of a late result: no actions, no `memory_out`.
+- **The runner needs no knowledge of it.** It does not read `deadline_ms`,
+  does not interrupt on it, and reports no outcome class for it. There is no
+  deadline row in §8 because there is no runner-side breach to report.
+- **What keeps a tick short is on the runner's side:** `tick_cpu_ms` (20 ms)
+  bounds the script's CPU, and host calls answer immediately (§3). The main
+  wall cost above CPU is therefore a cold sandbox start — measured at
+  **138–148 ms** for a bot's first tick in today's container run, against a
+  250 ms `deadline_ms`.
+  A cold start that lands near or past the deadline costs the game **one
+  abandoned tick, not a wrong one**: it abandons, falls back, and the runner's
+  late answer is discarded.
+
 **Why minecraft's `deadline_ms` is 250 ms:** the agent's decision cadence is
 2.0 s (`agent/config.py:89`, `TICK_DELAY`), so 250 ms leaves 87.5 % of each
 interval for the game server's own work and for network slack, while still
