@@ -415,6 +415,11 @@ defence in depth, not as the primary control.
   a contract term, not a deployment detail — an unstated term is one an
   implementer sets from whatever the node happens to have. Must be stated
   before the freeze; cardgame should see the arithmetic before confirming 256.
+  **This value also decides whether an instance loss is a node event or a
+  routine one.** It is the one failure that hits every scripted bot in both
+  games simultaneously — the spec requires that to be handled as a single
+  runner-level condition rather than as a per-bot fault raised 264 times at
+  once. A limit with no headroom turns an ordinary load spike into that event.
 
 ---
 
