@@ -588,7 +588,7 @@ delta, not an addition to this table in passing.
 
 | Condition kind | Scope | Raised when |
 |---|---|---|
-| `allowance_exhausted` | bot | the owning player's daily code-time allowance is exhausted, so that player's bots stop executing scripts (see "Daily Code-Hour Cap Is Set In Mod Settings") |
+| `allowance_exhausted` | bot | the allowance covering this bot is exhausted, so its script stops (see "Daily Code-Hour Cap Is Set In Mod Settings", whose **unit of summation is owner-pending** and may be per-player or per-bot; the kind name and its bot scope hold under either, but this reason text is rewritten by spec delta if the unit changes) |
 | `script_disabled` | bot | a bot's ticks return non-`ok` outcomes three times consecutively, and the game disables scripting for it (see "The Existing Planner Remains Available As A Fallback") |
 | `runner_unreachable` | runner | the runner instance is unreachable or not answering, deliberately not reported as one per-bot fault (see "An Unreachable Runner Is Detected And Falls Back") |
 
