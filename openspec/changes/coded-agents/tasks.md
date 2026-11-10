@@ -34,7 +34,7 @@ dependencies, and are not started until this change is approved.
 ## Step 1b — runner contract v1 (blocks steps 2 and 4; numbered 1b rather than
 ## renumbering, because 1.4 is cited elsewhere as the gate)
 
-- [ ] 1b.1 Write runner contract v1: tick delivery and cadence, transport,
+- [x] 1b.1 Write runner contract v1: tick delivery and cadence, transport,
       runner↔server authentication, snapshot schema, `api.*` call shapes
       including the rejection return, `script.get` / `script.put` /
       `script.logs`, the active/degraded/disabled fallback states, and the
@@ -42,18 +42,18 @@ dependencies, and are not started until this change is approved.
       **Acceptance requires both:** reviewed and PASSed by the minecraft
       reviewer, **and** sent to `cardgame-lead` as a queue row. One without the
       other does not close this task.
-      Reviewer leg: **PASS at `cc68e1f`, re-confirmed at `e95b435`**
-      (reviews/REVIEW-gate-cc68e1f.md).
-      Cardgame leg: **NOT MET FOR THIS CONTENT.** The row sent at 11:04Z
-      (`qitem-20261110110447-5efa024dea09831d`) cites the draft at `e0e4a4e`,
-      and this contract has since changed twice: the corrected stack
-      measurement, worker isolation, the hosting answer, and then the 2.6
-      re-base at `e95b435`. Cardgame has not seen the contract as PASSed.
-      Re-send the `e95b435` text before this task ticks; do not tick it on a
-      draft they were never given.
+      Reviewer leg: **PASS at `cc68e1f`** (reviews/REVIEW-gate-cc68e1f.md).
+      The only change after it is the 2.6 re-base, which is the correction that
+      PASS named; whether that needs its own PASS is for the reviewer, and a
+      head confirm of `7ad1b73` is queued. This text does **not** claim a
+      re-confirmation — none had been given when it was written.
+      Cardgame leg: **MET 2026-11-10 11:15Z** —
+      `qitem-20261110111504-e2b64f42efd3f500` sent to `cardgame-lead` with the
+      `e95b435` text. The earlier row (`…110447`) cited the `e0e4a4e` draft and
+      was closed `superseded`.
 - [x] 1b.2 Settle the limits before the contract freezes. **Ticked at `e95b435`
-      on a PASS of `cc68e1f`** (the 2.6 re-base is text the PASS named as its
-      one correction). History: PASSed at `243e6bd`, then **corrected** — the
+      on a PASS of `cc68e1f`**; the 2.6 re-base is the correction that PASS
+      named, and a head confirm of `7ad1b73` is queued for the reviewer. History: PASSed at `243e6bd`, then **corrected** — the
       first measurement was wrong and its PASS covered the wrong finding. The
       reviewer's confirmation at `243e6bd` does not stand as independent
       evidence for the corrected claim: they re-ran my `probe-stack5.mjs`
