@@ -76,6 +76,83 @@ bot with no script as a result of a failed authoring attempt.
 - **THEN** the sandbox denies it at execution, exactly as for an unvalidated
   attempt
 
+### Requirement: Runner Contract v1 Is Frozen Before The Runner Is Built
+The runner is one shared service consumed by more than one game. Its interface
+MUST be frozen as **contract v1** before the runner or the sandbox is built,
+because a change to a contract another team has pinned is a rebuild for them,
+not a version bump.
+
+Contract v1 MUST specify, at minimum: tick delivery and cadence; transport;
+runner↔server authentication; the snapshot schema; the `api.*` call shapes
+including what a call returns when it is rejected; `script.get`, `script.put`
+and `script.logs`; the active/degraded/disabled fallback states; and the limits
+table below. Every limit MUST be a contract field with a value and a unit, not
+an adverb.
+
+The contract is not frozen until it has been reviewed by the minecraft reviewer
+**and** sent to `cardgame-lead` as a queue row. Both are acceptance conditions.
+
+#### Contract v1 — limits
+
+Initial values are the cardgame proposal's Limits table
+(`~/evidence/2026-11-10-js-agent-scripts/cardgame-PROPOSAL.md:110-124`), so both
+games start from the same numbers. Each is a field; none may be enforced as a
+default the contract does not name.
+
+| Limit | Value | Unit | Enforced by |
+|---|---|---|---|
+| Heap per sandbox | 32 | MB | runner memory limit |
+| CPU per tick | 20 | ms | runner interrupt handler; per-tick CPU reported to the game, which applies its own cap |
+| Wall clock per host call | 2 | s | runner |
+| Host calls per tick | 8 | count | runner |
+| Tick rate per bot | ≤ 1 | per second | server schedules ticks; in battle, only on a state change |
+| `api.ask` | 1 per 10 min | per bot | server |
+| `api.log` | 1 KB/line, 100 lines/min | size, rate | server |
+| Script source | 64 KB, 20 versions | size, count | server |
+| Script memory (`api.remember`) | 16 | KB | server |
+| Consecutive errors before fallback | 3 | count | server; the LLM is woken on the first |
+| Daily code hours per player | unlimited | hours/day | server metering (owner decision B) |
+| **Stack depth per script call** | **TBD** | frames | **TBD — not in the cardgame table.** Depth must be measured before a value is set: drive a known recursion until QuickJS fails, on the pinned build, and record the depth and how it failed. |
+| **`api.send` rate** | **TBD** | calls/min | **TBD — this capability has no `api.send`.** The cardgame proposal defines `api.battle.act`, `api.world.*`, `api.log`, `api.remember` and `api.ask`; `api.send` is not among them. If v1 needs one, it is defined in the contract, with its rate, not assumed here. |
+
+Two rows above are marked TBD on purpose. Inventing a number is worse than
+naming it open: a stack limit that is never measured fails as a crash rather
+than as a refusal, and a rate limit for a call that does not exist cannot be
+tested. Both are settled in contract v1, before step 2.
+
+#### Scenario: Contract v1 is frozen before the runner code exists
+- **WHEN** implementation of the runner or the sandbox begins
+- **THEN** contract v1 is frozen and carries both acceptance marks: reviewer
+  PASS, and a `cardgame-lead` queue row recording that it was sent
+- **AND** both games pin the same contract version
+
+#### Scenario: A limit is a field, not an adverb
+- **WHEN** the contract is read for any limit in the table
+- **THEN** it names a value, a unit and where the limit is enforced
+- **AND** a limit that is not yet measured is marked TBD with how it will be
+  measured, rather than given a plausible number
+
+### Requirement: Host Calls Are Asynchronous
+Host calls from a script to the game MUST be asynchronous: the script awaits
+them, and the runner does not block its event loop while a game server answers.
+This is why the asyncify build of the engine is pinned.
+
+An awaited host call MUST count against both the per-call wall-clock limit and
+the per-tick budget of the script that issued it. A script that awaits must not
+escape metering by doing so.
+
+#### Scenario: A script awaits a host call
+- **WHEN** a script calls a host function and awaits it
+- **THEN** the call is asynchronous and the runner serves other bots while it is
+  outstanding
+- **AND** the time the call takes counts toward its per-call wall clock and its
+  per-tick budget
+
+#### Scenario: Awaiting does not escape the tick budget
+- **WHEN** a script issues host calls that together exceed its per-tick budget
+- **THEN** the budget is exhausted exactly as for CPU the script spends itself
+- **AND** the script is stopped for that tick
+
 ### Requirement: Script Execution Is Sandboxed And Tick-Bounded
 Each bot's script MUST run in its own sandbox with a memory limit and a CPU
 limit per tick. The script MUST NOT have filesystem access and MUST NOT have
@@ -227,6 +304,18 @@ the bot already took before the interruption.
 - **WHEN** the runner becomes reachable again
 - **THEN** each bot resumes under its stored script without being restarted
 - **AND** actions completed before the interruption are not replayed
+- **AND** the revision the bot resumes under is the one identified by the
+  revision-identity rule below ("A Script Swap Takes Effect At A Tick
+  Boundary"), so an interruption cannot make a bot resume under a revision
+  other than the one it reports
+
+#### Scenario: Repeated flapping does not leave a bot waiting
+- **WHEN** the runner becomes unreachable and reachable three consecutive times
+  while the agent has a bot waiting on it
+- **THEN** each timeout releases the waiting agent
+- **AND** no bot is left waiting on a request that will never answer
+- **AND** the third flap leaves the bot in a defined state, not an accumulating
+  one
 
 #### Scenario: An unresponsive runner is not mistaken for a slow tick
 - **WHEN** the runner accepts a connection but does not answer within the bound

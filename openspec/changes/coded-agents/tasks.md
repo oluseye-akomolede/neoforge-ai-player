@@ -17,6 +17,25 @@ dependencies, and are not started until this change is approved.
 - [x] 1.3 Write the spec delta under the new capability `bot-coded-agents`.
 - [ ] 1.4 Reviewer PASS on this change. **Gate: no code until this is ticked.**
 
+## Step 1b — runner contract v1 (blocks steps 2 and 4; numbered 1b rather than
+## renumbering, because 1.4 is cited elsewhere as the gate)
+
+- [ ] 1b.1 Write runner contract v1: tick delivery and cadence, transport,
+      runner↔server authentication, snapshot schema, `api.*` call shapes
+      including the rejection return, `script.get` / `script.put` /
+      `script.logs`, the active/degraded/disabled fallback states, and the
+      limits table from the spec.
+      **Acceptance requires both:** reviewed and PASSed by the minecraft
+      reviewer, **and** sent to `cardgame-lead` as a queue row. One without the
+      other does not close this task.
+- [ ] 1b.2 Settle the two TBD limits before the contract freezes: measure stack
+      depth on the pinned QuickJS build by driving a known recursion until the
+      engine fails, and record the depth and the failure mode; and resolve
+      whether `api.send` exists in v1 at all, giving it a rate only if it does.
+      Do not freeze the contract with either still open.
+- [ ] 1b.3 Freeze and publish v1 so both games pin the same version. A change
+      after freeze is a new version and a re-review by both sides, not an edit.
+
 ## Step 2 — shared engine and sandbox
 
 - [ ] 2.1 Choose and pin the QuickJS binding, shared with cardgame so both teams
@@ -57,6 +76,11 @@ dependencies, and are not started until this change is approved.
       agent waits. Verify against a listener that accepts and never replies,
       not only against a closed port: the closed port is the easy case and
       fails fast.
+      **Also prove the waiting agent is released (joined) on timeout**, and run
+      the flap test across 3 consecutive flaps: a timed-out request must not
+      stay outstanding, and three flaps in a row must not accumulate waiters.
+      A timeout that stops waiting without releasing its joiner is the failure
+      this test exists to catch.
 
 ## Step 5 — metering and the daily cap
 
