@@ -329,8 +329,11 @@ sized for the current fleet with headroom. Cardgame states "hundreds of
 characters, mostly idle"; idle eviction means the ceiling they need is the
 number *awake at once*, not the number that exist. cardgame confirmed **64**
 (2026-11-10): live traffic today is one agent, and 64 covers 2026 load with room
-under the 10-minute idle eviction. Both per-game numbers are now theirs and ours
-to set; **raising either later is a per-game number, not a wire change**.
+under the 10-minute idle eviction. Both games own their timeouts:
+**`deadline_ms` and `tick_cpu_ms` are each game's own to raise, and doing so is a
+value change, not a wire change.** `max_sandboxes` is not in that set — a quota
+rise is a request to the runner owner, granted only once the instance memory
+limit covering it is confirmed or raised (§7.1, and the freeze statement).
 
 ### 7.1 Quota is per game, and full means evict — not refuse
 
