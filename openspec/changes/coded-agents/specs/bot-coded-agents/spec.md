@@ -85,9 +85,13 @@ not a version bump.
 Contract v1 MUST specify, at minimum: tick delivery and cadence; transport;
 runner↔server authentication; the snapshot schema; the `api.*` call shapes
 including what a call returns when it is rejected; `script.get`, `script.put`
-and `script.logs`; the active/degraded/disabled fallback states; and the limits
-table below. Every limit MUST be a contract field with a value and a unit, not
-an adverb.
+and `script.logs`; the per-tick outcome classes (the runner reports these rather
+than owning bot states); and the limits table below. Every limit MUST be a
+contract field with a value and a unit, not an adverb.
+
+The contract itself is written in `contract-v1.md` beside this change. Stating
+the requirements without the document was a defect: this section says what the
+contract must contain, and a list of requirements is not a contract.
 
 The contract is not frozen until it has been reviewed by the minecraft reviewer
 **and** sent to `cardgame-lead` as a queue row. Both are acceptance conditions.
@@ -102,6 +106,14 @@ capability's own proposal
 limit, a stack limit, a CPU budget per tick and per-bot rate limits. Each is a
 field; none may be enforced as a default the contract does not name.
 
+**The stack limit IS a settable control — and one earlier measurement of mine
+was wrong about that.** A first probe reported that `setMaxStackSize()` had no
+effect. It had none *in that probe*: it set the limit on a runtime and then
+evaluated in a context created by a different call, which carries its own
+runtime, so the limit never applied. Corrected and re-measured (see "Measured:
+stack depth and its failure mode"), the limit works, and it works **only below
+a host ceiling**. Both regimes matter and the limit rows below record both.
+
 | Limit | Value | Unit | Enforced by |
 |---|---|---|---|
 | Heap per sandbox | 32 | MB | runner memory limit |
@@ -114,18 +126,84 @@ field; none may be enforced as a default the contract does not name.
 | Script memory (`api.remember`) | 16 | KB per bot | server |
 | Consecutive errors before fallback | 3 | count | server; the LLM is woken on the first |
 | Daily code hours per player | unlimited | hours/day | server metering (owner decision B) |
-| **Stack depth per script call** | **TBD** | frames | **TBD — no number in the source.** Measure before setting one: drive a known recursion on the pinned QuickJS build until the engine fails, and record the depth and the failure mode. |
-| **`api.do` rate** | **TBD** | calls/min per bot | **TBD — rate-limited per bot, no number in the source.** Measure against the 4-thread API pool during shadow mode; a rate that saturates the pool is the failure this limits. |
-| **`api.say` rate** | **TBD** | calls/min per bot | **TBD — as above.** |
-| **`api.send` rate** | **TBD** | calls/min per bot | **TBD — as above.** |
+| **Stack size per runtime** | **256 KB** (measured: 1362 frames, overflow **catchable**, runtime survives) | bytes | runner: `setMaxStackSize` on the runtime that also creates the context |
+| **`api.do` rate** | 30 | calls/min per bot | runner (see the rate reasoning below) |
+| **`api.say` rate** | 30 | calls/min per bot | runner |
+| **`api.send` rate** | 20 | calls/min per bot | runner |
+| **`api.log` retention** | **unstated for v1** | — | not specified; an implementer MUST NOT adopt cardgame's 7-day term by default |
 
-The three rate rows are this binding's own: cardgame's `api.ask` and `api.log`
-limits belong to its namespace, not ours, and were not carried across.
+#### Measured limits and their sources (probe, 2026-11-10)
 
-Rows marked TBD are deliberately open. Inventing a number is worse than naming
-it open: a stack limit nobody measured fails as a crash rather than as a
-refusal, and a rate chosen without measuring the pool it protects is not
-enforcing anything. All are settled in 1b.2 before the contract freezes.
+Measured on `quickjs-emscripten@0.32.0`, release-asyncify variant, Node
+22.23.3, throwaway probe under `agent-script-runner/probe/` (forked child per
+run so the failure was observed rather than fatal to the probe).
+
+There are **two regimes**, and the first probe only ever saw the second, which
+is why its conclusion was wrong.
+
+**Below the host ceiling the limit works.** With `setMaxStackSize` applied to
+the runtime that also created the evaluating context (see `probe-stack-lead.mjs`,
+and our re-check `verify-rt.mjs` / `verify-curve.mjs`):
+
+| `setMaxStackSize` | depth reached | outcome |
+|---|---|---|
+| 64 KB | 338 | `InternalError` caught in-script, runtime usable afterwards (`1+1` = 2) |
+| 256 KB | 1362 | `InternalError` caught in-script, runtime usable afterwards |
+| 512 KB and above, or unset | ~2362 | **host stack overflows first**; Node dies, uncatchable |
+
+So 256 KB is a real control with margin below the ~2362-frame host ceiling: a
+runaway script raises an ordinary `InternalError` the script can catch, and the
+runtime stays usable afterwards.
+
+**Above the ceiling, no setting helps.** Past roughly 2362 frames the Wasm/Node
+stack overflows before QuickJS can install its own guard. That is a dead
+process, not a caught error, and no `setMaxStackSize` value prevents it — the
+larger the limit, the more surely it happens.
+
+**The bug the first probe had, now a required test.** It set the limit on a
+runtime and then evaluated in a context created by a different call, which
+carries its own runtime, so the limit never applied and every value behaved
+identically. The only defence is to assert the relationship, so a test must
+prove **every context is created from the limited runtime**
+(`rt.newContext()`, not `mod.newContext()`).
+
+**Consequence for the design — both parts, and they are not alternatives.**
+The stack limit is the **first line**: it turns the common runaway script into a
+catchable error inside the sandbox. Process isolation is **defence in depth** for
+the regime the limit cannot govern — a host-level crash, a Wasm abort or OOM —
+and is justified by *that*, not by the stack finding. Task 2.6 keeps process
+isolation on that basis.
+
+**How the three rates were chosen.** These are policy, not measurements, and
+each is anchored to the existing directive cadence rather than to a round number.
+`TICK_DELAY` is 2.0 s (`agent/config.py:89`), so an LLM-driven bot issues at most
+**30 actions per minute** — one per tick. A script must not be able to exceed the
+rate at which the bot it replaces already acts, or scripted bots would load the
+shared 4-thread API pool harder than the LLM bots do:
+
+- **`api.do` = 30/min per bot** — one per tick at the existing 2.0 s cadence,
+  i.e. parity with the LLM path, not headroom above it.
+- **`api.say` = 30/min per bot** — same bound; chat is capped by the same tick
+  loop and there is no reason for it to outpace action.
+- **`api.send` = 20/min per bot** — below the tick rate: messages between bots
+  are coordination, not the bot's primary act, and `api.send` is the call most
+  likely to be used in a burst.
+
+These are revisable in shadow mode once real pool load is observed; the
+reasoning above is what a reviser must beat, not just the number.
+
+The three rate rows are this binding's own. `api.log` is a shared name whose
+limit was carried across from cardgame's table because both games cap it the
+same way, except that **retention is unstated here** — cardgame's table carries a
+7-day term that this one does not. cardgame's `api.ask` limit belongs to its
+namespace and was not carried across.
+
+**No row is TBD as of the 2026-11-10 probe.** The stack row was resolved by
+measurement into something stronger than a number — a design constraint that it
+cannot be set or caught. The three rates are policy values with the reasoning
+above. `api.log` retention is recorded as *unstated for v1*, which is a decision,
+not a gap: it is not to be inherited from cardgame. 1b.2 now means "re-measure
+and confirm", and reopens a row by adding a measurement, not by guessing.
 
 #### Scenario: Contract v1 is frozen before the runner code exists
 - **WHEN** implementation of the runner or the sandbox begins
@@ -144,8 +222,17 @@ Contract v1 fixes the **shared** runner and sandbox surface: tick delivery,
 snapshot envelope, the limits table and the transport. It does not fix any
 game's action vocabulary. Each game binds its own `api` namespace; for this
 capability that namespace is Minecraft's, and it MUST NOT be cardgame's
-(`api.battle.act`, `api.world.*`, `api.log`, `api.ask`) — those name a board, a
-world order and a strategic question that this game does not have.
+(`api.battle.act`, `api.world.*`, `api.ask`) — those name a board, a world order
+and a strategic question that this game does not have.
+
+`api.log` is shared by name but not by meaning: both games log, so it appears in
+both namespaces and is not evidence that either was copied from the other. Its
+limit **was** carried across from cardgame's table because both games cap logging
+the same way (see the limits table) — with one difference: **retention is
+unstated in this binding for now.** Cardgame's table carries a 7-day retention
+term and this one does not. An implementer MUST NOT adopt cardgame's retention
+value by default; if retention is needed it is added to this table by a spec
+delta, with its own measurement.
 
 The Minecraft binding is:
 
@@ -182,26 +269,42 @@ Every call MUST be rate-limited per bot, and the rate MUST be a contract field
 - **THEN** the call fails as an unknown host function
 - **AND** the failure is reported in the same way as any other unknown call
 
-### Requirement: Host Calls Are Asynchronous
-Host calls from a script to the game MUST be asynchronous: the script awaits
-them, and the runner does not block its event loop while a game server answers.
-This is why the asyncify build of the engine is pinned.
+### Requirement: Host Calls Are Synchronous And Return Actions
+A host call from a script MUST return inside the tick. It MUST NOT block waiting
+for the game server to answer, and it MUST NOT cause the runner to call back into
+the game. `api.do`, `api.say` and `api.send` MUST return an acceptance, and the
+action they accept MUST be carried in the tick result for the game to execute.
 
-An awaited host call MUST count against both the per-call wall-clock limit and
-the per-tick budget of the script that issued it. A script that awaits must not
-escape metering by doing so.
+A rejected call MUST return a rejection value the script can inspect and continue
+from. A rejection is not an exception and MUST NOT end the tick.
 
-#### Scenario: A script awaits a host call
-- **WHEN** a script calls a host function and awaits it
-- **THEN** the call is asynchronous and the runner serves other bots while it is
-  outstanding
-- **AND** the time the call takes counts toward its per-call wall clock and its
-  per-tick budget
+Action outcomes MUST reach the script as events in a later tick's snapshot, not
+as return values, because the action is executed by the game after the tick.
 
-#### Scenario: Awaiting does not escape the tick budget
-- **WHEN** a script issues host calls that together exceed its per-tick budget
-- **THEN** the budget is exhausted exactly as for CPU the script spends itself
-- **AND** the script is stopped for that tick
+> **This requirement replaces "Host Calls Are Asynchronous".** The asynchronous
+> design required the runner to call back into the game mid-tick, which needs a
+> second transport, a second authentication leg in the opposite direction, an
+> inbound endpoint on each game's server, and a callback timeout. Returning the
+> actions in the tick result needs none of those, is one network direction, and
+> works for cardgame, whose battle loop cannot tick on a runner clock. The
+> asyncify build stays pinned (it is the build the stack limit was measured on),
+> but it is no longer justified by host-call callbacks.
+
+#### Scenario: A host call returns inside the tick
+- **WHEN** a script calls `api.do` and reads the result on the next line
+- **THEN** the call has already returned an acceptance or a rejection
+- **AND** no round trip to the game server occurred during the tick
+
+#### Scenario: A rejected call is a value, not a throw
+- **WHEN** a script exceeds its host-call count and calls `api.do` again
+- **THEN** the call returns a rejection the script can inspect
+- **AND** the script continues executing that tick
+- **AND** the tick is not recorded as a script error
+
+#### Scenario: An accepted action is executed and its outcome arrives later
+- **WHEN** a script's `api.do` is accepted in one tick
+- **THEN** the game executes that action after the tick
+- **AND** its outcome appears among the events of a later tick's snapshot
 
 ### Requirement: Script Execution Is Sandboxed And Tick-Bounded
 Each bot's script MUST run in its own sandbox with a memory limit and a CPU
@@ -213,6 +316,22 @@ the overrun MUST NOT propagate into the game server tick.
 
 The runner MUST execute scripts outside the game server process, so that a
 script that hangs cannot stall the server.
+
+Each runtime MUST set a stack size (256 KB, measured) and MUST create every
+context from that same runtime, so that a runaway script raises a catchable
+`InternalError` inside the sandbox rather than reaching the host stack. This is
+the first line, and the test that proves it is specifically that the context
+shares the limited runtime — the setting is silently inert otherwise.
+
+Isolation MUST also survive a script that **kills its execution context**, not
+only one that hangs or overruns. Past the host stack ceiling (~2362 frames on
+the pinned build) the Wasm/Node stack overflows before QuickJS can act: a dead
+process, uncatchable, and no `setMaxStackSize` value prevents it. The runner MUST
+therefore also run each bot's script in a process or worker it can lose and
+replace, and MUST count a dead worker as an error toward the consecutive-error
+fallback rather than as a healthy bot. This containment is defence in depth for
+host-level crashes (Wasm abort, OOM), which the stack limit cannot govern — not
+a substitute for the limit.
 
 #### Scenario: A hanging script does not stall the server
 - **WHEN** a bot's script does not return within its per-tick CPU limit
@@ -228,6 +347,28 @@ script that hangs cannot stall the server.
 - **WHEN** one bot's script exhausts its memory limit
 - **THEN** only that bot's sandbox is terminated
 - **AND** other bots' scripts continue to run
+
+#### Scenario: Unbounded recursion is a catchable error inside the sandbox
+- **WHEN** a bot's script recurses without a base case at the configured 256 KB
+  stack size
+- **THEN** the script receives a catchable `InternalError`
+- **AND** the runtime is still usable afterwards — a subsequent evaluation in
+  the same context succeeds
+- **AND** the runner process does not die
+
+#### Scenario: Every context is created from the limited runtime
+- **WHEN** the runner creates a context for a script
+- **THEN** that context was created from the runtime carrying the stack size
+- **AND** a context created from any other runtime is treated as a defect, not
+  as a script error — the limit is silently inert in that case, and this is the
+  exact bug the first probe had
+
+#### Scenario: A script that kills its execution context is contained
+- **WHEN** a bot's script exhausts the host stack despite the limit (Wasm abort,
+  OOM, or any crash past the ~2362-frame ceiling)
+- **THEN** only that bot's worker dies and is replaced
+- **AND** the death is counted toward the consecutive-error fallback for that bot
+- **AND** other bots' scripts keep running and the runner process survives
 
 ### Requirement: Scripts Act Only Through The Existing Bot Actions
 A script MUST act on the world only by invoking the bot actions the agent
@@ -373,10 +514,46 @@ the bot already took before the interruption.
 - **THEN** the runner is treated as unreachable for that bot
 - **AND** the per-tick bound still holds for the game server
 
+#### Scenario: An instance loss is one event, not one failure per bot
+- **WHEN** the runner instance is lost while many bots across both games have
+  scripts stored
+- **THEN** every affected bot falls back to the existing planner
+- **AND** the condition is reported as a single runner-level condition, not as
+  an independent per-bot fault raised simultaneously by every affected bot
+- **AND** the system's behaviour under this event is bounded by the number of
+  bots: it MUST NOT issue one dead-endpoint request per bot per tick for the
+  duration of the interruption
+- **AND** the operator can distinguish this instance-wide event from a fault
+  confined to one bot
+
+> **Why this scenario exists.** Every other scenario in this requirement is
+> about one bot or one waiting agent, and an instance loss is the one failure
+> that hits all of them at once — up to 8 + 256 sandboxes across both games,
+> every scripted bot falling back simultaneously. "The condition MUST be
+> reported in the bot interface" then means 264 simultaneous reports, and a
+> per-bot retry loop means 264 requests per tick against an endpoint known to
+> be dead. Neither is the failure the single-bot scenarios describe.
+
 ### Requirement: The Existing Planner Remains Available As A Fallback
 When a bot has no script, or its script is paused, the bot MUST remain
 operable by the existing planner rather than becoming idle or unsafe.
 
+The runner MUST NOT own this state machine. It MUST report a per-tick outcome
+from a fixed class list — `ok`; `script_error`; `cpu_exceeded`; `memory_exceeded`;
+`stack_overflow`; `host_call_timeout`; `host_calls_exceeded`; `worker_died`;
+`bad_action_shape`; `source_too_large` — and the game MUST map that outcome to
+its own states. A bot MUST be disabled, and fall back to the planner, after three
+consecutive non-`ok` ticks.
+
 #### Scenario: Bot with no script falls back
 - **WHEN** a bot has no runnable script
 - **THEN** the existing planner can still drive the bot
+
+#### Scenario: A failing script is disabled by its outcome classes
+- **WHEN** a bot's ticks return non-`ok` outcomes three times consecutively
+- **THEN** the game disables scripting for that bot and the planner drives it
+- **AND** the runner was not asked to track the count between calls
+
+#### Scenario: A single bad tick does not disable the bot
+- **WHEN** a bot returns one non-`ok` outcome followed by `ok`
+- **THEN** scripting continues and the bot is not disabled
