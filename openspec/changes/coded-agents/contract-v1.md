@@ -30,6 +30,10 @@ earlier drafts of this design and none of which survive here.
 - **Protocol:** HTTP/1.1 + JSON. Content-Type `application/json`.
 - **Address:** the runner's ClusterIP Service over cluster DNS,
   `agent-script-runner.agent-script-runner.svc.cluster.local:8080`.
+- **Probe port:** `GET /healthz` and `GET /readyz` are served on a **separate
+  port, 8081**, not the contract port. This is a stated field, not a deployment
+  detail, so both games can probe the same way: the probes must answer when the
+  contract port is saturated, which is exactly when a probe is worth having.
 - **Auth:** `Authorization: Bearer <token>`. One token **per game**, issued from
   a Kubernetes secret. A request with a missing, malformed, or wrong-game token
   is refused `401` before any parsing. The runner MUST NOT accept an
@@ -97,9 +101,15 @@ the cache for that revision. `memory` is optional.
   "heap_peak_bytes": 1048576,
   "memory_out": "base64…",              // or null when unchanged
   "logs": [ { "level": "info", "line": "…" } ],
-  "logs_dropped": 0
+  "logs_dropped": 0,
+  "cold": false                         // true when this tick recreated the sandbox
 }
 ```
+
+`cold` is `true` when the sandbox was created or recompiled for this tick —
+after an idle eviction, or after this game's quota forced the eviction of its
+least-recently-ticked sandbox (§7.1). It is the game's signal that a tick paid
+compile time; it does not mean the tick failed.
 
 **Response — need source**
 
@@ -280,7 +290,7 @@ cap live in its own binding; the runner knows about neither.
 |---|---|---|---|
 | `deadline_ms` | **250** | 250 | the game's wall budget for one tick call |
 | `tick_cpu_ms` | 20 | 20 | CPU budget inside the sandbox |
-| `max_sandboxes` | **32** | 32 | concurrent sandboxes **per runner instance, shared by both games** — see below |
+| `max_sandboxes` | **8** | **256** | concurrent sandboxes **per game** (keyed by `game_id`) — see below |
 | `idle_evict_minutes` | **10** | 10 | idle sandbox eviction |
 
 **Why minecraft's `deadline_ms` is 250 ms:** the agent's decision cadence is
@@ -288,25 +298,39 @@ cap live in its own binding; the runner knows about neither.
 interval for the game server's own work and for network slack, while still
 bounding a dead runner to one eighth of a decision period.
 
-`max_sandboxes` and `idle_evict_minutes` are stated with proposed values so the
-first incident is not a silent cap. Over capacity the runner refuses a **new**
-bot with `429 sandbox_limit`; existing bots are never evicted to make room.
-An evicted idle sandbox is recompiled on the next tick (cold, counted in
-`cpu_ms`).
+**Why the per-game quotas differ:** minecraft has a handful of bots, so 8 is
+sized for the current fleet with headroom. Cardgame states "hundreds of
+characters, mostly idle"; idle eviction means the ceiling they need is the
+number *awake at once*, not the number that exist — 256 is a proposal on that
+basis and **cardgame confirms their own number**.
 
-> **`max_sandboxes` is a pool jointly held by both games, not 32 each.** One
-> runner instance serves both games (§1), so the 32 concurrent sandboxes are
-> shared. Combined with the refusal rule above — refuse new bots, never evict a
-> live one — **the game that fills the pool first locks the other out** until
-> its sandboxes go idle. There is **no reservation, per-game quota or fairness
-> rule in this contract.** Cardgame is asked to sign this knowing the capacity
-> is jointly held; if a per-game reservation is wanted, it is a contract change
-> (a `max_sandboxes_minecraft` / `max_sandboxes_cardgame` split), not a
-> deployment setting, and it must be agreed before freeze.
->
-> The value 32 is **proposed, not measured** (§10): against cardgame's stated
-> expectation of hundreds of characters, a shared 32 is very likely too low, and
-> the first symptom would be refusals under load rather than an error.
+### 7.1 Quota is per game, and full means evict — not refuse
+
+`max_sandboxes` is keyed by `game_id`. Each game has its own ceiling, so
+**one game cannot lock the other out**; a shared pool was the earlier design and
+is withdrawn.
+
+When a game is at its own quota and a new bot ticks, the runner **evicts that
+game's least-recently-ticked sandbox** and creates the new one. It does **not**
+refuse. This is safe because the game owns the script (§1) and the remember blob
+rides the tick: an evicted sandbox loses only compile time, not state.
+
+A tick that had to recreate its sandbox reports `cold: true` in the result, so a
+game can see churn rather than discovering it from latency.
+
+**Refusal is the last resort:** `429 sandbox_limit` is returned only when a
+single tick cannot fit at all — i.e. the requesting game's own quota is 0, or
+one sandbox exceeds the instance's memory limit.
+
+`idle_evict_minutes` remains: a sandbox untouched for 10 minutes is evicted
+regardless of quota, and recompiled on its next tick, also reported as
+`cold: true`.
+
+> **Scaling out is not in v1.** A second replica would give two independent
+> rule sets and two pools, with bots landing on whichever the Service picks,
+> unless the supervisor learns sharding. Both numbers above are **proposed and
+> unmeasured** (§10); they are chosen so the first incident is a visible refusal
+> or a visible `cold: true`, not a silent cap.
 
 ---
 
@@ -365,12 +389,10 @@ defence in depth, not as the primary control.
 - `api.log` retention for v1 (minecraft states "unstated"; cardgame has 7-day).
 - Their pod selector for the NetworkPolicy ingress rule.
 - Whether their `deadline_ms` stays 250 or their battle path wants its own.
-- **Whether to split `max_sandboxes` per game.** As written it is one pool of 32
-  shared by both games (§7), with no reservation or fairness rule: the game that
-  fills it first locks the other out until its sandboxes idle. A per-game quota
-  is a contract change, not a deployment value, and must be agreed before
-  freeze. Both the 32 and the split are unmeasured — cardgame expects hundreds
-  of characters.
+- **Cardgame's own `max_sandboxes` number.** The split is settled — quota is
+  per game and capacity is filled by eviction, not refusal (§7.1) — but their
+  value of 256 is minecraft's proposal on their "hundreds, mostly idle" figure
+  and must be confirmed by them. Both numbers are unmeasured.
 
 ---
 
