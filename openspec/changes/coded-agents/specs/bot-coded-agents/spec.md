@@ -562,3 +562,44 @@ consecutive non-`ok` ticks.
 #### Scenario: A single bad tick does not disable the bot
 - **WHEN** a bot returns one non-`ok` outcome followed by `ok`
 - **THEN** scripting continues and the bot is not disabled
+
+### Requirement: A Reported Condition Has A Defined Shape
+Several requirements here oblige the system to report a condition in the bot
+interface — an exhausted allowance, an unreachable runner, a lost instance —
+without this text saying what a reported condition *is*. An obligation with no
+stated shape is satisfied by whatever the implementer emits, and the cheapest
+wrong implementation is one identical entry per bot.
+
+A reported condition MUST carry, at minimum: an identifier for the scope it
+applies to (the bot, or the runner instance), a scope discriminator
+distinguishing a bot-level condition from a runner-level one, a condition kind
+drawn from a fixed vocabulary rather than free text, and the time it was first
+observed.
+
+Conditions MUST be deduplicated by scope and kind while they persist: a
+condition that remains true MUST NOT be re-reported as a new entry on each
+observation. Two bots and one instance in the same state MUST NOT produce a
+number of stored conditions that grows with the number of ticks, or with the
+number of bots for a condition that is not bot-scoped.
+
+#### Scenario: A persistent condition is one entry, not one per tick
+- **WHEN** a condition remains true for a bot across many ticks
+- **THEN** it appears once while it persists
+- **AND** it is cleared or marked resolved when it ceases to be true
+
+#### Scenario: A runner-level condition is not one entry per affected bot
+- **WHEN** the instance is lost while 264 bots across both games have scripts
+- **THEN** the interface carries one runner-level condition, not 264 bot-level
+  entries
+- **AND** each affected bot's fallback is visible through its own state rather
+  than through a duplicated condition
+
+#### Scenario: A bot-level condition names its bot
+- **WHEN** a single bot's script is disabled by its outcome classes
+- **THEN** the condition is scoped to that bot and identifies it
+- **AND** it is distinguishable from a runner-level condition of the same kind
+
+> **Relationship to the contract.** The contract fixes the per-tick outcome
+> class list and the runner/game split; this requirement fixes what the
+> interface *stores and shows*. The two must agree on the vocabulary but are not
+> the same list: `ok` is an outcome and never a reported condition.
