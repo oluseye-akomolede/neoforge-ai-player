@@ -48,6 +48,15 @@ dependencies, and are not started until this change is approved.
       whether the two teams share one instance. Do not design the deployment
       manifest before this answer: if it is shared, the wrong choice here is a
       rebuild rather than a move.
+- [ ] 4.3 Runner reachability detection with a bounded wait. Prove a bot falls
+      back to the planner when the runner is down, and that the bot interface
+      reports it — a player must not have to infer a stalled bot from a
+      motionless one. This task does not depend on the hosting answer in 4.2.
+- [ ] 4.4 Prove an accepted-but-silent runner is treated as unreachable within
+      the bound, and that the game server tick still keeps its bound while the
+      agent waits. Verify against a listener that accepts and never replies,
+      not only against a closed port: the closed port is the easy case and
+      fails fast.
 
 ## Step 5 — metering and the daily cap
 

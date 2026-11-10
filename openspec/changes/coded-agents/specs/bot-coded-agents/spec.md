@@ -205,6 +205,35 @@ answerable. The identifier MUST NOT change when the content does not.
 - **THEN** the answer names a specific revision
 - **AND** a stored script whose content did not change reports the same revision
 
+### Requirement: An Unreachable Runner Is Detected And Falls Back
+The runner is a new failure domain between the agent and every bot's behaviour.
+The system MUST detect that the runner is unreachable or not answering, and MUST
+NOT let a bot silently stop acting while its stored script still appears current.
+
+While the runner is unreachable the affected bots MUST fall back to the existing
+planner, and the condition MUST be reported in the bot interface rather than
+inferred by a player from a motionless bot.
+
+Recovery MUST NOT require the bot to be restarted, and MUST NOT replay actions
+the bot already took before the interruption.
+
+#### Scenario: A bot does not stall silently when the runner is gone
+- **WHEN** the runner becomes unreachable while bots have scripts stored
+- **THEN** each affected bot falls back to the existing planner
+- **AND** the condition is reported in the bot interface
+- **AND** no bot continues to report a script as executing while running none
+
+#### Scenario: Recovery does not duplicate work
+- **WHEN** the runner becomes reachable again
+- **THEN** each bot resumes under its stored script without being restarted
+- **AND** actions completed before the interruption are not replayed
+
+#### Scenario: An unresponsive runner is not mistaken for a slow tick
+- **WHEN** the runner accepts a connection but does not answer within the bound
+  the agent allows
+- **THEN** the runner is treated as unreachable for that bot
+- **AND** the per-tick bound still holds for the game server
+
 ### Requirement: The Existing Planner Remains Available As A Fallback
 When a bot has no script, or its script is paused, the bot MUST remain
 operable by the existing planner rather than becoming idle or unsafe.
