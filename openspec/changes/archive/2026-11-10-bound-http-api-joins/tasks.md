@@ -72,10 +72,13 @@ as a tick by the next reader.
 > visible. During the TEST run, re-read the inventory after a stall and reconcile
 > against the expected contents — do not treat a `503` as "nothing happened".
 
-- [ ] 5.1 Deploy to `minecraft-test` only, under a reviewed plan with a rollback command.
-- [ ] 5.2 Re-run the 2026-10-27 stall procedure: with the server thread held, a hopped
+- [x] 5.1 Deploy to `minecraft-test` only, under a reviewed plan with a rollback command.
+      (Done 2026-11-09 on TEST, jar b0c934e5; then PROD 2026-11-10T04:24Z under a reviewed plan.)
+- [~] 5.2 NOT RUN (lead decision 2026-11-09: not authorised; on a fast server it would not reach
+      the bound). The 503 is proven at unit level only; no live 503 has been observed.
+      Re-run the 2026-10-27 stall procedure: with the server thread held, a hopped
       request must answer `503` inside the bound instead of hanging.
-- [ ] 5.3 Confirm `/health` behaviour is unchanged (it is on its own listener and out of scope).
+- [x] 5.3 (Verified on TEST and PROD: 3101 /health 200, 3100 /health 404, as before.) Confirm `/health` behaviour is unchanged (it is on its own listener and out of scope).
       Re-read this before starting: the 2026-11-06 review reported no `minecraft-server`
       Service in `minecraft-test`. The Service exists under the name
       `minecraft-test-server` (NodePort, 217d) and carries minecraft 25565, rcon 25575,
