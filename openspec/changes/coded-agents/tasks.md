@@ -34,11 +34,13 @@ dependencies, and are not started until this change is approved.
       **Acceptance requires both:** reviewed and PASSed by the minecraft
       reviewer, **and** sent to `cardgame-lead` as a queue row. One without the
       other does not close this task.
-- [ ] 1b.2 Settle the two TBD limits before the contract freezes: measure stack
+- [ ] 1b.2 Settle the TBD limits before the contract freezes. Measure stack
       depth on the pinned QuickJS build by driving a known recursion until the
-      engine fails, and record the depth and the failure mode; and resolve
-      whether `api.send` exists in v1 at all, giving it a rate only if it does.
-      Do not freeze the contract with either still open.
+      engine fails, and record the depth and the failure mode. Set the
+      `api.do`, `api.say` and `api.send` rates by measuring the 4-thread API
+      pool rather than picking a plausible number: the limit exists to stop one
+      bot saturating a pool the other bots share.
+      Do not freeze the contract with any of them still open.
 - [ ] 1b.3 Freeze and publish v1 so both games pin the same version. A change
       after freeze is a new version and a re-review by both sides, not an edit.
 

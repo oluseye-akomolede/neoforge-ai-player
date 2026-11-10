@@ -94,10 +94,13 @@ The contract is not frozen until it has been reviewed by the minecraft reviewer
 
 #### Contract v1 — limits
 
-Initial values are the cardgame proposal's Limits table
+Numeric initial values come from the cardgame proposal's Limits table
 (`~/evidence/2026-11-10-js-agent-scripts/cardgame-PROPOSAL.md:110-124`), so both
-games start from the same numbers. Each is a field; none may be enforced as a
-default the contract does not name.
+games start from the same runner numbers. Which limits exist comes from this
+capability's own proposal
+(`~/evidence/2026-11-10-js-agent-scripts/PROPOSAL.md:26-44`), which names a heap
+limit, a stack limit, a CPU budget per tick and per-bot rate limits. Each is a
+field; none may be enforced as a default the contract does not name.
 
 | Limit | Value | Unit | Enforced by |
 |---|---|---|---|
@@ -105,20 +108,24 @@ default the contract does not name.
 | CPU per tick | 20 | ms | runner interrupt handler; per-tick CPU reported to the game, which applies its own cap |
 | Wall clock per host call | 2 | s | runner |
 | Host calls per tick | 8 | count | runner |
-| Tick rate per bot | ≤ 1 | per second | server schedules ticks; in battle, only on a state change |
-| `api.ask` | 1 per 10 min | per bot | server |
+| Tick rate per bot | ≤ 1 | per second | runner owns the loop; the mod schedules directive work |
 | `api.log` | 1 KB/line, 100 lines/min | size, rate | server |
 | Script source | 64 KB, 20 versions | size, count | server |
-| Script memory (`api.remember`) | 16 | KB | server |
+| Script memory (`api.remember`) | 16 | KB per bot | server |
 | Consecutive errors before fallback | 3 | count | server; the LLM is woken on the first |
 | Daily code hours per player | unlimited | hours/day | server metering (owner decision B) |
-| **Stack depth per script call** | **TBD** | frames | **TBD — not in the cardgame table.** Depth must be measured before a value is set: drive a known recursion until QuickJS fails, on the pinned build, and record the depth and how it failed. |
-| **`api.send` rate** | **TBD** | calls/min | **TBD — this capability has no `api.send`.** The cardgame proposal defines `api.battle.act`, `api.world.*`, `api.log`, `api.remember` and `api.ask`; `api.send` is not among them. If v1 needs one, it is defined in the contract, with its rate, not assumed here. |
+| **Stack depth per script call** | **TBD** | frames | **TBD — no number in the source.** Measure before setting one: drive a known recursion on the pinned QuickJS build until the engine fails, and record the depth and the failure mode. |
+| **`api.do` rate** | **TBD** | calls/min per bot | **TBD — rate-limited per bot, no number in the source.** Measure against the 4-thread API pool during shadow mode; a rate that saturates the pool is the failure this limits. |
+| **`api.say` rate** | **TBD** | calls/min per bot | **TBD — as above.** |
+| **`api.send` rate** | **TBD** | calls/min per bot | **TBD — as above.** |
 
-Two rows above are marked TBD on purpose. Inventing a number is worse than
-naming it open: a stack limit that is never measured fails as a crash rather
-than as a refusal, and a rate limit for a call that does not exist cannot be
-tested. Both are settled in contract v1, before step 2.
+The three rate rows are this binding's own: cardgame's `api.ask` and `api.log`
+limits belong to its namespace, not ours, and were not carried across.
+
+Rows marked TBD are deliberately open. Inventing a number is worse than naming
+it open: a stack limit nobody measured fails as a crash rather than as a
+refusal, and a rate chosen without measuring the pool it protects is not
+enforcing anything. All are settled in 1b.2 before the contract freezes.
 
 #### Scenario: Contract v1 is frozen before the runner code exists
 - **WHEN** implementation of the runner or the sandbox begins
@@ -131,6 +138,49 @@ tested. Both are settled in contract v1, before step 2.
 - **THEN** it names a value, a unit and where the limit is enforced
 - **AND** a limit that is not yet measured is marked TBD with how it will be
   measured, rather than given a plausible number
+
+### Requirement: The Script API Is The Minecraft Binding
+Contract v1 fixes the **shared** runner and sandbox surface: tick delivery,
+snapshot envelope, the limits table and the transport. It does not fix any
+game's action vocabulary. Each game binds its own `api` namespace; for this
+capability that namespace is Minecraft's, and it MUST NOT be cardgame's
+(`api.battle.act`, `api.world.*`, `api.log`, `api.ask`) — those name a board, a
+world order and a strategic question that this game does not have.
+
+The Minecraft binding is:
+
+| Call | Shape | Returns |
+|---|---|---|
+| `api.do(directive, args)` | directive name plus its arguments | accepted, or a rejection with a reason; the directive's **result arrives later as an event** |
+| `api.say(text)` | text | accepted, or a rejection with a reason |
+| `api.send(otherBot, msg)` | bot name plus message | accepted, or a rejection with a reason |
+| `api.remember(key, value)` | key plus value | accepted, or a rejection with a reason |
+| `api.log(text)` | text | accepted (log volume is capped by the limits table) |
+
+`api.do` MUST reuse the directives that already run the bots rather than
+re-implementing behaviour in JavaScript, so pathfinding, mining and crafting
+stay in the tested Java code. The directive name MUST be one the agent
+dispatches; a name outside that set is refused and executes nothing.
+
+Every call MUST be rate-limited per bot, and the rate MUST be a contract field
+(see the limits table).
+
+#### Scenario: A directive is accepted and its result arrives as an event
+- **WHEN** a script calls `api.do("mine", target)` and the call is accepted
+- **THEN** the call returns promptly and does not block for the directive's
+  completion, because a directive runs for many ticks
+- **AND** the directive's result arrives in a later tick's event list
+
+#### Scenario: A rejected call reports why
+- **WHEN** a script calls an action with a directive name outside the dispatch
+  set, or exceeds its rate
+- **THEN** the call is rejected with a reason the script can read
+- **AND** nothing is executed on the server
+
+#### Scenario: The minecraft binding is not the cardgame one
+- **WHEN** a script calls `api.battle.act` or `api.ask`
+- **THEN** the call fails as an unknown host function
+- **AND** the failure is reported in the same way as any other unknown call
 
 ### Requirement: Host Calls Are Asynchronous
 Host calls from a script to the game MUST be asynchronous: the script awaits
