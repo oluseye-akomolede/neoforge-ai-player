@@ -403,9 +403,10 @@ the idle footprint, and the limit is the ceiling it may burst to. See the
 runner's LAYOUT for the full table and the supervisor's eviction guard.
 
 **Owner: minecraft, as runner owner.** This is why the memory limit and the
-quota cannot be raised independently: `max_sandboxes` (8 + 64) is what the 4Gi
-is sized against, so a game raising its quota without the limit moving would
-size the instance past its own limit and turn a cap into an OOM kill. A quota
+quota cannot be raised independently: `max_sandboxes` (8 + 64) and their
+measured per-bot cost (113.9 MiB at the wasm cap, 8.01 GiB in total) are what
+the limit is sized against, so a game raising its quota without the limit moving
+would size the instance past its own limit and turn a cap into an OOM kill. A quota
 rise is therefore a request to the owner, granted only once the limit covering
 it is confirmed or raised (see the freeze statement above). The limit is a value
 change in minecraft's binding; it is never a calling game's decision.
