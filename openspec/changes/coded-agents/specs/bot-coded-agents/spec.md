@@ -413,9 +413,21 @@ accrues nothing for the time it is not running one.
 
 The converse direction is required too. **Given an active script, the game MUST
 send a tick at the stated cadence** (the per-bot tick rate in the limits table is
-a ceiling, not a floor). The cap counts ticks, so an active script that is
+a ceiling, not a floor; the real cadence is one tick per `TICK_DELAY` = 2.0 s,
+so 0.5/s, which is the interval the `api.do`/`api.say` rates are derived from —
+a floor equal to the 1/s ceiling would describe half the real interval). The
+cap counts ticks, so an active script that is
 simply not ticked accrues nothing and the hours-per-day allowance would silently
 not apply — the same failure as counting CPU, reached from the other side.
+
+The cap therefore measures, and can only measure, **active** time. Time a bot
+spends disabled or fallen back to the planner is free: the fallback after three
+consecutive non-`ok` ticks is itself a MUST, so a bot that fails often is
+correctly ticked while active and correctly idle while disabled, and accrues
+little. That is a property of the cap as specified, not a defect in it — an
+operator turning the cap on should expect frequent fallbacks to read as low
+usage rather than as an accounting error. Making the counter survive disabling
+would be worse: it would bill a bot for time it was not allowed to run.
 
 The runner MUST also report each tick's CPU time and where it was spent. That is
 a **reported field for visibility and abuse checks, not the cap's unit**: a

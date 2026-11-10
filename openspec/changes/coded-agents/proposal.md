@@ -114,6 +114,13 @@ design constraint, not a deferral, and it shapes the spec:
   cap lives in `aiplayermod-scripts.json` alongside the script settings, not in
   a new mechanism.
 
+- **The cap counts active time only.** The fallback after three consecutive
+  non-`ok` ticks is a MUST, and disabled time is free, so a bot that fails often
+  accrues little while still being correctly ticked when active. Expect that
+  shape in the usage numbers; it is the cap working as specified. Active time
+  deliberately has no floor — a fallback that keeps the bot safe is worth more
+  than billable hours.
+
 An earlier draft of the design asked whether code hours should be *earned*
 (for example from XP). The owner answered differently: a cap the operator sets,
 not a currency players accrue. The XP economy (`bot-xp-economy` spec) is
