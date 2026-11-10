@@ -42,21 +42,25 @@ dependencies, and are not started until this change is approved.
       **Acceptance requires both:** reviewed and PASSed by the minecraft
       reviewer, **and** sent to `cardgame-lead` as a queue row. One without the
       other does not close this task.
-      Reviewer leg: **PASS at `243e6bd`** (reviews/REVIEW-gate-243e6bd.md).
+      Reviewer leg: **PASS at `cc68e1f`, re-confirmed at `e95b435`**
+      (reviews/REVIEW-gate-cc68e1f.md).
       Cardgame leg: **NOT MET FOR THIS CONTENT.** The row sent at 11:04Z
       (`qitem-20261110110447-5efa024dea09831d`) cites the draft at `e0e4a4e`,
-      and this contract grew 86 lines after it — measured limits, worker
-      isolation, the hosting answer. Cardgame has not seen the contract as
-      PASSed. Re-send the `243e6bd` text before this task ticks; do not tick it
-      on a draft they were never given.
-- [x] 1b.2 Settle the limits before the contract freezes. PASSed at `243e6bd`,
-      then **corrected**: the first measurement was wrong and its PASS covered
-      the wrong finding (below). The reviewer's confirmation at `243e6bd` does
-      not stand as independent evidence for the corrected claim — they re-ran
-      my `probe-stack5.mjs` unmodified, so they reproduced **the bug**, not the
-      engine's behaviour. What corrected it was an independent probe with the
-      runtime wired correctly (`probe-stack-lead.mjs`, re-checked here with
-      `verify-rt.mjs` / `verify-curve.mjs`). This needs a fresh review.
+      and this contract has since changed twice: the corrected stack
+      measurement, worker isolation, the hosting answer, and then the 2.6
+      re-base at `e95b435`. Cardgame has not seen the contract as PASSed.
+      Re-send the `e95b435` text before this task ticks; do not tick it on a
+      draft they were never given.
+- [x] 1b.2 Settle the limits before the contract freezes. **Ticked at `e95b435`
+      on a PASS of `cc68e1f`** (the 2.6 re-base is text the PASS named as its
+      one correction). History: PASSed at `243e6bd`, then **corrected** — the
+      first measurement was wrong and its PASS covered the wrong finding. The
+      reviewer's confirmation at `243e6bd` does not stand as independent
+      evidence for the corrected claim: they re-ran my `probe-stack5.mjs`
+      unmodified, so they reproduced **the bug**, not the engine. Corrected by
+      an independent probe with the runtime wired correctly
+      (`probe-stack-lead.mjs`), and the reviewer then verified the mechanism
+      with tests of their own rather than re-running mine.
       Done 2026-11-10 with a throwaway probe (`agent-script-runner/probe/`, no
       remote), pinned `quickjs-emscripten@0.32.0` release-asyncify, Node
       22.23.3, each run forked so the failure was observed rather than fatal.
