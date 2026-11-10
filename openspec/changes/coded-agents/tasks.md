@@ -130,16 +130,36 @@ dependencies, and are not started until this change is approved.
 - [ ] 2.1 Choose and pin the QuickJS binding, shared with cardgame so both teams
       use one engine. Record the exact version.
       **Pinned and measured on our side: `quickjs-emscripten@0.32.0`,
-      release-asyncify variant, Node 22.23.3** (see 1b.2). Not ticked: "shared
-      with cardgame" needs their confirmation of the same version through
-      contract v1 — pinning it here does not pin it for them.
-- [ ] 2.2 Configure the engine with no filesystem and no network bindings.
-- [ ] 2.3 Escape-attempt test set; each attempt must fail inside the sandbox.
+      release-asyncify variant, Node 22.23.3** (see 1b.2). **Our leg is built
+      and tested against it** (`agent-script-runner` 66b9549: `package.json`
+      pins the exact version, the installed package resolves to it, and the
+      suite asserts the pin rather than trusting it). Not ticked: "shared with
+      cardgame" needs their acknowledgement of the pin through contract v1 —
+      pinning it here does not pin it for them. The lead sent them the frozen
+      pin at 0281152 (`qitem-20261110142959-d03f414a3c28e2ed`); this ticks when
+      they acknowledge.
+- [x] 2.2 Configure the engine with no filesystem and no network bindings.
+      Measured, not assumed: the default context exposes no `os`, `std`,
+      `require`, `process`, `fetch`, `XMLHttpRequest`, `WebSocket` or
+      `setTimeout` at all — the absence is a property of the binding version,
+      so it is asserted per version rather than configured away. A top-level
+      `import('fs')` is a **pending promise**, not a syntax error; it is now
+      refused by name and the context stays usable. Before that fix the dispose
+      of the pending handle threw out of `evaluate` and crashed the tick — a
+      script could take the runner down rather than be refused.
+- [x] 2.3 Escape-attempt test set; each attempt must fail inside the sandbox.
+      Six attempts: `require`, `import()`, filesystem write, network
+      primitive, `process`/env, and the `Function` constructor. The constructor
+      one is the notable result — it does **not** escape: `Function("return
+      typeof process")()` evaluates into the same stripped global (`this ===
+      globalThis`), so it reaches no host object. That is asserted as a
+      reaching-nowhere result rather than as a thrown error.
 - [ ] 2.4 Per-bot sandbox with memory limit and per-tick CPU limit; prove a
       hanging script is terminated for that tick without stalling a simulated
       server tick.
-- [ ] 2.5 Per-bot isolation: one sandbox exhausting memory does not affect
-      another.
+- [x] 2.5 Per-bot isolation: one sandbox exhausting memory does not affect
+      another. Proven with two sandboxes sharing one runtime: the first hits
+      the 32 MB heap limit and the second still evaluates correctly.
 - [ ] 2.6 **Process isolation as defence in depth for host-level crashes.**
       Kept, but on a corrected basis: the stack limit (2.7) is the first line,
       and this covers what the limit cannot — a Wasm abort, an OOM, or a crash
@@ -157,7 +177,7 @@ dependencies, and are not started until this change is approved.
       nothing exactly where it is needed. Lose and replace. Prove: a worker
       killed from outside takes only that bot down, the bot falls back, and other
       bots' scripts keep running.
-- [ ] 2.7 **Set the stack limit, and prove the context shares the runtime.**
+- [x] 2.7 **Set the stack limit, and prove the context shares the runtime.**
       `setMaxStackSize(256 KB)` on the runtime, contexts created with
       `rt.newContext()` from that same runtime. Measured: 64 KB → 338 frames,
       256 KB → 1362 frames, both a catchable `InternalError` with the runtime
@@ -167,6 +187,19 @@ dependencies, and are not started until this change is approved.
       (b) **every context is created from the limited runtime** — the setting is
       silently inert otherwise, which is the exact bug the first probe had and
       why it wrongly reported the limit as having no effect.
+      Both pass. The evidence that the limit is doing the work is a recorded
+      mutation, not a second run: with `setMaxStackSize` **not** called, the
+      same recursion does not return an error at all — the host dies with
+      `RangeError: Maximum call stack size exceeded`. So the assertion that has
+      teeth is "an error came back **and this process is still running to check
+      it**", which the test establishes by continuing to execute. (That control
+      is recorded in the test comment; it is not itself re-run on every suite
+      pass, and this task does not claim it is.)
+      Ownership note found by a test, not by reading: `Sandbox.dispose()` used
+      to dispose the **shared runtime**, so the first sandbox to be disposed
+      killed it for every other sandbox on that runtime. It now disposes only
+      its own context, and `createLimitedRuntime()`'s runtime is the caller's
+      to free.
 
 ## Step 3 — script contract
 
