@@ -127,17 +127,21 @@ dependencies, and are not started until this change is approved.
 
 ## Step 2 — shared engine and sandbox
 
-- [ ] 2.1 Choose and pin the QuickJS binding, shared with cardgame so both teams
+- [x] 2.1 Choose and pin the QuickJS binding, shared with cardgame so both teams
       use one engine. Record the exact version.
-      **Pinned and measured on our side: `quickjs-emscripten@0.32.0`,
-      release-asyncify variant, Node 22.23.3** (see 1b.2). **Our leg is built
-      and tested against it** (`agent-script-runner` 66b9549: `package.json`
-      pins the exact version, the installed package resolves to it, and the
-      suite asserts the pin rather than trusting it). Not ticked: "shared with
-      cardgame" needs their acknowledgement of the pin through contract v1 —
-      pinning it here does not pin it for them. The lead sent them the frozen
-      pin at 0281152 (`qitem-20261110142959-d03f414a3c28e2ed`); this ticks when
-      they acknowledge.
+      **Pinned and measured: `quickjs-emscripten@0.32.0`,
+      release-asyncify variant, Node 22.23.3** (see 1b.2). Our leg is built and
+      tested against it (`agent-script-runner` 66b9549: `package.json` pins the
+      exact version, the installed package resolves to it, and the suite
+      asserts the pin rather than trusting it).
+      **The variant claim was FALSE until `9782ce4`**: `getQuickJS()` loads the
+      **release-sync** build, not release-asyncify, so "we run the pinned
+      variant" was untrue while the suite passed. `9782ce4` loads the variant
+      explicitly via `newVariant(<@jitl/quickjs-wasmfile-release-asyncify>)`,
+      which is also what supplies the capped wasm memory.
+      **Shared leg met:** cardgame acknowledged the frozen pin `0281152` and
+      committed their client against it (`qitem-20261110171635-e0a58c991dcf9e51`,
+      2026-11-10). Both games are on one engine at one version.
 - [x] 2.2 Configure the engine with no filesystem and no network bindings.
       Measured, not assumed: the default context exposes no `os`, `std`,
       `require`, `process`, `fetch`, `XMLHttpRequest`, `WebSocket` or

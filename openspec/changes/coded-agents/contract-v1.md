@@ -45,10 +45,17 @@ earlier drafts of this design and none of which survive here.
   port, 8081**, not the contract port. This is a stated field, not a deployment
   detail, so both games can probe the same way: the probes must answer when the
   contract port is saturated, which is exactly when a probe is worth having.
+  The ClusterIP Service therefore exposes **both 8080 (contract) and 8081
+  (probes)**; a probe port the Service does not publish is not reachable to a
+  caller, so both ports are part of what the Service is.
 - **Auth:** `Authorization: Bearer <token>`. One token **per game**, issued from
   a Kubernetes secret. A request with a missing, malformed, or wrong-game token
   is refused `401` before any parsing. The runner MUST NOT accept an
   unauthenticated request on any path except `GET /healthz` and `GET /readyz`.
+- **cardgame's Secret:** name `agent-script-runner-token`, key `token`, in
+  namespace `cardgame`, created by **minecraft** (the runner owner). cardgame's
+  client reads it from its own namespace; the token value never crosses this
+  document.
 - **Identity:** every request body carries `game_id` (string) and
   `contract_version` (integer). The runner refuses `contract_version != 1` with
   `409 contract_version_unsupported`.
@@ -230,6 +237,29 @@ for why, and the spec delta.
 `agent/agent.py`). The runner does **not** validate directive names against the
 set — that is the game's job, because the set is the game's — but it does bound
 the *shape* (JSON, size, call count).
+
+#### The shape inside `actions[]`
+
+`actions[]` is **opaque to the runner** (§5: passed through verbatim, never
+normalised). This is a **clarification of what the minecraft binding puts in
+that opaque field**, not a change to the field: no field is added, removed or
+re-typed, the envelope already carries `actions` as an array, and the freeze
+stands.
+
+One entry per **accepted** call, in **call order**:
+
+| call | entry |
+|---|---|
+| `api.do(directive, args)` | `{"seq":int,"call":"do","directive":string,"args":<script JSON, verbatim>}` |
+| `api.say(text)` | `{"seq":int,"call":"say","text":string}` |
+| `api.send(otherBot, msg)` | `{"seq":int,"call":"send","to":string,"msg":<JSON, verbatim>}` |
+
+`seq` is the value returned to the script in `{ok:true, seq}`, so a script can
+correlate an entry with the acceptance it saw. `args` and `msg` are the script's
+own JSON, carried through unmodified — the runner does not re-serialise them.
+
+Rejected calls appear in no entry. `api.remember` and `api.log` are not actions
+and produce no entry (they ride the tick as result fields, §5).
 
 ### 4.2 What a rejected call returns
 
