@@ -483,6 +483,11 @@ section 10 as circulated at `c5c9f96`). None of these is a wire change:
 - **NetworkPolicy ingress selector:** namespace `cardgame`, podSelector
   `app=match-server` (their only caller), plus the minecraft agent pod. Nothing
   else.
+- **NetworkPolicy ports:** the ingress rule admits **TCP 8080 and 8081 on the
+  runner pods, and nothing else**. A selector without ports would admit every
+  port on the runner, which is wider than this policy is meant to be: the
+  contract port and the probe port are the whole of what a caller needs (§1),
+  so they are the whole of what the rule grants.
 - **`deadline_ms` 250 and `tick_cpu_ms` 20 for cardgame:** unchanged. Their
   tick runs inside `battle.act`, where 250 ms is well inside what the match
   server already tolerates for a turn.
