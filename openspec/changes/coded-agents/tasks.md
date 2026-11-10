@@ -15,7 +15,13 @@ dependencies, and are not started until this change is approved.
       (`agent/dashboard/server.py`), mod-settings convention
       (`serverDir/config/aiplayermod-*.json`, e.g. `aiplayermod-shop.json`).
 - [x] 1.3 Write the spec delta under the new capability `bot-coded-agents`.
-- [ ] 1.4 Reviewer PASS on this change. **Gate: no code until this is ticked.**
+- [x] 1.4 Reviewer PASS on this change. **Gate: no code until this is ticked.**
+      PASS at 7371af7 (`REVIEW-regate-7371af7.md`, in the lead's tree at
+      `~/minecraft/neoforge-ai-player/…`). The reviewer's one open item — 4.4
+      must assert the waiting agent is *released*, not only that fallback
+      happens — is closed in the same change at `e68222f` (tasks 4.4, and the
+      "Repeated flapping" scenario). Ticked on that basis: the PASS covers the
+      change, and the delta since is confined to the item the PASS named.
 
 ## Step 1b — runner contract v1 (blocks steps 2 and 4; numbered 1b rather than
 ## renumbering, because 1.4 is cited elsewhere as the gate)
