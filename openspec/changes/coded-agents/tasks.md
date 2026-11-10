@@ -35,27 +35,32 @@ dependencies, and are not started until this change is approved.
 ## Step 1b — runner contract v1 (blocks steps 2 and 4; numbered 1b rather than
 ## renumbering, because 1.4 is cited elsewhere as the gate)
 
-- [x] 1b.1 Write runner contract v1: tick delivery and cadence, transport,
-      runner↔server authentication, snapshot schema, `api.*` call shapes
-      including the rejection return, `script.get` / `script.put` /
-      `script.logs`, the active/degraded/disabled fallback states, and the
-      limits table from the spec.
-      **Acceptance requires both:** reviewed and PASSed by the minecraft
-      reviewer, **and** sent to `cardgame-lead` as a queue row. One without the
-      other does not close this task.
-      Reviewer leg: **PASS at `cc68e1f`** (reviews/REVIEW-gate-cc68e1f.md).
-      The only change after it is the 2.6 re-base, which is the correction that
-      PASS named. Head confirm **given**: PASS at `e0efaf9`
-      (reviews/REVIEW-head-confirm-e0efaf9.md), which found the spec delta
-      byte-identical to `cc68e1f`. This text does **not** claim a
-      re-confirmation of `e95b435` — the reviewer never gated that revision, and
-      ancestry does not turn a confirmation into one.
-      Cardgame leg: **MET 2026-11-10 11:15Z** —
-      `qitem-20261110111504-e2b64f42efd3f500` sent to `cardgame-lead` with the
-      `e95b435` text. The earlier row (`…110447`) cited the `e0e4a4e` draft and
-      was closed `superseded`.
-- [x] 1b.2 Settle the limits before the contract freezes. **Ticked at `e95b435`
-      on a PASS of `cc68e1f`**, head-confirmed by PASS at `e0efaf9`. History:
+- [ ] 1b.1 Write runner contract v1 **as a document, `contract-v1.md`**: tick
+      delivery and cadence, transport, runner↔server authentication, snapshot
+      schema, `api.*` call shapes including the rejection return, `script.get` /
+      `script.put` / `script.logs`, the per-tick outcome classes, and the limits
+      table. **Written 2026-11-10**; awaiting review against the item list at
+      spec:85 and cardgame's 8 points.
+      **UNTICKED 2026-11-10 11:18Z — the contract does not exist.** `cardgame-lead`
+      reviewed the `e95b435` text and found the decisive problem: the spec
+      states *what* contract v1 MUST specify but nothing defines it. The task
+      was ticked on a spec PASS and a row sent to cardgame; both were real, and
+      neither was the deliverable, which is a document. Two conditions sat in
+      the acceptance text and I treated the spec section as the contract.
+      **The fix is `contract-v1.md`**; this task re-ticks only when that file
+      exists, is PASSed by the reviewer against the item list at spec:85, and
+      has gone to `cardgame-lead` as a row.
+      Still true, for when it re-ticks: reviewer leg PASS at `cc68e1f`
+      (reviews/REVIEW-gate-cc68e1f.md), head confirm PASS at `e0efaf9`, and a
+      cardgame row was sent at 11:15Z (`…111504`). Those establish that the
+      *requirement text* was reviewed and shared; they do not establish that a
+      contract was written.
+- [ ] 1b.2 Settle the limits before the contract freezes. **UNTICKED
+      2026-11-10 11:18Z**: the values are settled and cardgame has agreed them,
+      but "settled in the contract" needs the contract to exist. Re-ticks when
+      the limits appear in `contract-v1.md` as rows with value, unit and
+      enforcement point. History of the measurement (the finding is
+      unaffected by this untick):
       PASSed at `243e6bd`, then **corrected** — the
       first measurement was wrong and its PASS covered the wrong finding. The
       reviewer's confirmation at `243e6bd` does not stand as independent

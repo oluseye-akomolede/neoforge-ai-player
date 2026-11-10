@@ -85,9 +85,13 @@ not a version bump.
 Contract v1 MUST specify, at minimum: tick delivery and cadence; transport;
 runner↔server authentication; the snapshot schema; the `api.*` call shapes
 including what a call returns when it is rejected; `script.get`, `script.put`
-and `script.logs`; the active/degraded/disabled fallback states; and the limits
-table below. Every limit MUST be a contract field with a value and a unit, not
-an adverb.
+and `script.logs`; the per-tick outcome classes (the runner reports these rather
+than owning bot states); and the limits table below. Every limit MUST be a
+contract field with a value and a unit, not an adverb.
+
+The contract itself is written in `contract-v1.md` beside this change. Stating
+the requirements without the document was a defect: this section says what the
+contract must contain, and a list of requirements is not a contract.
 
 The contract is not frozen until it has been reviewed by the minecraft reviewer
 **and** sent to `cardgame-lead` as a queue row. Both are acceptance conditions.
@@ -265,26 +269,42 @@ Every call MUST be rate-limited per bot, and the rate MUST be a contract field
 - **THEN** the call fails as an unknown host function
 - **AND** the failure is reported in the same way as any other unknown call
 
-### Requirement: Host Calls Are Asynchronous
-Host calls from a script to the game MUST be asynchronous: the script awaits
-them, and the runner does not block its event loop while a game server answers.
-This is why the asyncify build of the engine is pinned.
+### Requirement: Host Calls Are Synchronous And Return Actions
+A host call from a script MUST return inside the tick. It MUST NOT block waiting
+for the game server to answer, and it MUST NOT cause the runner to call back into
+the game. `api.do`, `api.say` and `api.send` MUST return an acceptance, and the
+action they accept MUST be carried in the tick result for the game to execute.
 
-An awaited host call MUST count against both the per-call wall-clock limit and
-the per-tick budget of the script that issued it. A script that awaits must not
-escape metering by doing so.
+A rejected call MUST return a rejection value the script can inspect and continue
+from. A rejection is not an exception and MUST NOT end the tick.
 
-#### Scenario: A script awaits a host call
-- **WHEN** a script calls a host function and awaits it
-- **THEN** the call is asynchronous and the runner serves other bots while it is
-  outstanding
-- **AND** the time the call takes counts toward its per-call wall clock and its
-  per-tick budget
+Action outcomes MUST reach the script as events in a later tick's snapshot, not
+as return values, because the action is executed by the game after the tick.
 
-#### Scenario: Awaiting does not escape the tick budget
-- **WHEN** a script issues host calls that together exceed its per-tick budget
-- **THEN** the budget is exhausted exactly as for CPU the script spends itself
-- **AND** the script is stopped for that tick
+> **This requirement replaces "Host Calls Are Asynchronous".** The asynchronous
+> design required the runner to call back into the game mid-tick, which needs a
+> second transport, a second authentication leg in the opposite direction, an
+> inbound endpoint on each game's server, and a callback timeout. Returning the
+> actions in the tick result needs none of those, is one network direction, and
+> works for cardgame, whose battle loop cannot tick on a runner clock. The
+> asyncify build stays pinned (it is the build the stack limit was measured on),
+> but it is no longer justified by host-call callbacks.
+
+#### Scenario: A host call returns inside the tick
+- **WHEN** a script calls `api.do` and reads the result on the next line
+- **THEN** the call has already returned an acceptance or a rejection
+- **AND** no round trip to the game server occurred during the tick
+
+#### Scenario: A rejected call is a value, not a throw
+- **WHEN** a script exceeds its host-call count and calls `api.do` again
+- **THEN** the call returns a rejection the script can inspect
+- **AND** the script continues executing that tick
+- **AND** the tick is not recorded as a script error
+
+#### Scenario: An accepted action is executed and its outcome arrives later
+- **WHEN** a script's `api.do` is accepted in one tick
+- **THEN** the game executes that action after the tick
+- **AND** its outcome appears among the events of a later tick's snapshot
 
 ### Requirement: Script Execution Is Sandboxed And Tick-Bounded
 Each bot's script MUST run in its own sandbox with a memory limit and a CPU
@@ -498,6 +518,22 @@ the bot already took before the interruption.
 When a bot has no script, or its script is paused, the bot MUST remain
 operable by the existing planner rather than becoming idle or unsafe.
 
+The runner MUST NOT own this state machine. It MUST report a per-tick outcome
+from a fixed class list — `ok`; `script_error`; `cpu_exceeded`; `memory_exceeded`;
+`stack_overflow`; `host_call_timeout`; `host_calls_exceeded`; `worker_died`;
+`bad_action_shape`; `source_too_large` — and the game MUST map that outcome to
+its own states. A bot MUST be disabled, and fall back to the planner, after three
+consecutive non-`ok` ticks.
+
 #### Scenario: Bot with no script falls back
 - **WHEN** a bot has no runnable script
 - **THEN** the existing planner can still drive the bot
+
+#### Scenario: A failing script is disabled by its outcome classes
+- **WHEN** a bot's ticks return non-`ok` outcomes three times consecutively
+- **THEN** the game disables scripting for that bot and the planner drives it
+- **AND** the runner was not asked to track the count between calls
+
+#### Scenario: A single bad tick does not disable the bot
+- **WHEN** a bot returns one non-`ok` outcome followed by `ok`
+- **THEN** scripting continues and the bot is not disabled
