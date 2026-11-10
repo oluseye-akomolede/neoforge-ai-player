@@ -125,7 +125,7 @@ a host ceiling**. Both regimes matter and the limit rows below record both.
 | Script source | 64 KB, 20 versions | size, count | server |
 | Script memory (`api.remember`) | 16 | KB per bot | server |
 | Consecutive errors before fallback | 3 | count | server; the LLM is woken on the first |
-| Daily code hours per player | unlimited | hours/day | server metering (owner decision B) |
+| Daily code hours per bot | unlimited | hours/day | server metering (owner decision B; unit per bot, 2026-11-10 14:12Z) |
 | **Stack size per runtime** | **256 KB** (measured: 1362 frames, overflow **catchable**, runtime survives) | bytes | runner: `setMaxStackSize` on the runtime that also creates the context |
 | **`api.do` rate** | 30 | calls/min per bot | runner (see the rate reasoning below) |
 | **`api.say` rate** | 30 | calls/min per bot | runner |
@@ -400,59 +400,60 @@ Mutations to the snapshot by the script MUST NOT affect the bot's real state.
 - **WHEN** a script writes to a field of its snapshot
 - **THEN** the bot's actual inventory and position are unchanged
 
-### Requirement: Code Time Is Metered Per Bot And Attributed To Its Owner
-The runner MUST measure the script execution time each bot consumes, where the
-time is spent, and MUST attribute it to the player who owns that bot.
+### Requirement: Code Time Is Metered Per Bot
+
+The runner MUST measure the script execution time each bot consumes, and where
+the time is spent, and MUST record it against that bot. No player identity is
+involved: the bot is the unit of both measurement and summation.
 
 Metering MUST run in the first release, even while the daily cap is unlimited,
 so that a cap enabled later has a measured basis.
 
-#### Scenario: Execution time is recorded against the owning player
+#### Scenario: Execution time is recorded per bot
 - **WHEN** a bot runs a script for a measurable duration
-- **THEN** that duration is recorded against the player who owns the bot
+- **THEN** that duration is recorded against that bot
+- **AND** no player identity is required to record it
 
 #### Scenario: Metering is present while the cap is unlimited
 - **WHEN** the daily cap is set to unlimited
 - **THEN** usage is still recorded
 
-### Requirement: Daily Code-Hour Cap Is Set In Mod Settings (unit pending owner decision)
-The daily cap is a single per-player allowance in the decision this text encodes:
-a player owning several bots MUST have their bots' usage summed against one
-daily allowance. **The unit of summation is decision-dependent and not yet
-settled** — see the note below. The cap's existence, its configuration surface
-and its default do not depend on that decision.
+### Requirement: Daily Code-Hour Cap Is Set In Mod Settings
+The daily cap is a **per-bot** allowance, configured in the mod settings
+following the existing `serverDir/config/aiplayermod-*.json` convention, and
+MUST default to unlimited.
 
-The cap MUST be configured in the mod settings, following the existing
-`serverDir/config/aiplayermod-*.json` convention, and MUST default to unlimited.
+The cap MUST be counted per bot. No player identity is required to enforce it,
+and a bot's usage MUST NOT be summed with any other bot's: exhausting one bot's
+allowance MUST leave every other bot's allowance intact, including another bot
+owned by the same player.
 
-When a player's daily allowance is exhausted, their bots' scripts MUST pause and
-the bots MUST fall back to keeping themselves safe.
+When a bot's daily allowance is exhausted, that bot's script MUST pause and the
+bot MUST fall back to keeping itself safe.
 
-> **The unit of the cap is deferred with the ownership question above.** The
-> owner's decision was a *per-player daily* cap, and that is what this text
-> encodes — but summing "a player's bots" requires the bot-to-player relation
-> that does not exist. Metering and pause-on-exhaustion are specified now and are
-> unaffected; only the summation unit waits on the decision. If the owner chooses
-> (c), the unit becomes per-bot and the scenario below is rewritten as a spec
-> delta, not silently dropped.
+Per-player accounting is deliberately out of scope: it needs a bot-to-player
+relation that does not exist. Adding it later is a separate change that requires
+that identity first; it MUST NOT be introduced by reinterpreting this cap.
 
 #### Scenario: Cap defaults to unlimited
 - **WHEN** no cap is configured
 - **THEN** scripts run without being stopped by the cap
 - **AND** usage is still metered
 
-#### Scenario: Usage from multiple bots counts against one player cap
-- **WHEN** a player owning two bots has both run scripts
-- **THEN** both durations count against that player's single daily allowance
-- **AND** one bot's usage reduces the allowance available to the other
-> (Deferred with the ownership question. Becomes a per-bot scenario if the owner
-> chooses (c).)
+#### Scenario: Each bot has its own allowance
+- **WHEN** two bots, owned by the same player, have both run scripts
+- **THEN** each bot's duration counts against that bot's own allowance
+- **AND** one bot's usage does not reduce the allowance available to the other
 
 #### Scenario: Exhausted allowance pauses the script safely
-- **WHEN** a player's daily allowance is exhausted
-- **THEN** that player's bots stop executing scripts
-- **AND** each bot continues to keep itself safe
+- **WHEN** a bot's daily allowance is exhausted
+- **THEN** that bot stops executing scripts
+- **AND** that bot continues to keep itself safe
 - **AND** the condition is reported in the bot interface
+
+#### Scenario: One exhausted bot does not stop another
+- **WHEN** one bot's allowance is exhausted and another bot still has allowance
+- **THEN** the other bot's script keeps running
 
 ### Requirement: A Script Swap Takes Effect At A Tick Boundary
 When the LLM replaces a bot's script, the new revision MUST take effect at a
@@ -588,7 +589,7 @@ delta, not an addition to this table in passing.
 
 | Condition kind | Scope | Raised when |
 |---|---|---|
-| `allowance_exhausted` | bot | the allowance covering this bot is exhausted, so its script stops (see "Daily Code-Hour Cap Is Set In Mod Settings", whose **unit of summation is owner-pending** and may be per-player or per-bot; the kind name and its bot scope hold under either, but this reason text is rewritten by spec delta if the unit changes) |
+| `allowance_exhausted` | bot | the allowance covering this bot is exhausted, so its script stops (the cap is per bot — see "Daily Code-Hour Cap Is Set In Mod Settings") |
 | `script_disabled` | bot | a bot's ticks return non-`ok` outcomes three times consecutively, and the game disables scripting for it (see "The Existing Planner Remains Available As A Fallback") |
 | `runner_unreachable` | runner | the runner instance is unreachable or not answering, deliberately not reported as one per-bot fault (see "An Unreachable Runner Is Detected And Falls Back") |
 

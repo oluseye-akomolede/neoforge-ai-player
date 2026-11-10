@@ -7,8 +7,9 @@ dependencies, and are not started until this change is approved.
 ## Step 1 — design (this change)
 
 - [x] 1.1 Owner decisions captured from `qitem-human-answer-181fe641fe26089fc36b`:
-      LLM-only authoring, read-only script view, daily per-player cap in mod
-      settings, default unlimited, metering kept.
+      LLM-only authoring, read-only script view, daily cap in mod settings,
+      default unlimited, metering kept. (The cap's unit was stated per player
+      here and corrected to per bot on 2026-11-10 14:12Z — see 5.2.)
 - [x] 1.2 Locate the real surfaces the design touches, rather than assume them:
       bot action dispatch (`agent/agent.py`: 52 `case` arms, 51 excluding the
       `_` default, 51 distinct action names), dashboard routes
@@ -179,28 +180,28 @@ dependencies, and are not started until this change is approved.
 
 - [ ] 5.1 Measure script execution time per bot in the runner, where the time
       is actually spent (not inferred in the game server).
-- [ ] 5.2 **BLOCKED — needs an owner decision on bot ownership.** Attribute
-      usage to the owning player; a player with several bots sums against one
-      daily allowance. There is no bot-to-player relation in the codebase (no
-      ownership field in agent state or `bot-identity`; the dashboard has no
-      authentication at all), so there is nothing to attribute to or refuse on.
-      The owner must choose: bind bots to a Minecraft UUID / bind bots to a
-      dashboard user (needs auth built) / no player ownership, cap per bot.
-      Not available for the implementer to invent.
+- [x] 5.2 Per-bot allowance. **Settled by the owner: option 3, no bot-to-player
+      link for now; the cap is counted per bot and is set in mod settings.**
+      Record usage against the bot itself, never summed across bots. No player
+      identity is needed, and none exists to attribute to. Per-player caps remain
+      a later change that needs identity first — not a reinterpretation of this
+      one. (Owner answer, 2026-11-10 14:12Z, Slack `qitem-slack-inbound-817d6ee459337a909673`,
+      answering `qitem-20261110101258-0471aebcdce37913`.)
 - [ ] 5.3 `aiplayermod-scripts.json` in mod settings holding the cap, default
       unlimited, following the existing JSON convention.
-- [ ] 5.4 At exhaustion: pause that player's scripts, bot keeps itself safe,
-      condition shown in the bot interface.
+- [ ] 5.4 At exhaustion: pause that bot's script, bot keeps itself safe,
+      condition shown in the bot interface. Other bots' allowances are unaffected.
 - [ ] 5.5 Prove metering records usage while the cap is unlimited.
 
 ## Step 6 — read-only script view
 
 - [ ] 6.1 Dashboard route returning the script revision a bot is currently
       executing, read-only.
-- [ ] 6.2 **BLOCKED — same owner decision as 5.2.** Ownership check: a player
-      cannot read another player's bot's script. Nothing to check against until
-      ownership exists; if the owner chooses per-bot, this task is removed by a
-      spec delta.
+- [x] 6.2 Access check: **closed by the owner's option-3 answer, not
+      implemented.** With no player-to-bot ownership there is nothing to refuse
+      on; the view shows each bot's script and needs no owner. Removed as a task
+      rather than deferred, so no implementer tries to invent an ownership check.
+      Same owner answer as 5.2 (2026-11-10 14:12Z).
 - [ ] 6.3 Prove no endpoint accepts script text from a player.
 
 ## Step 7 — LLM rewrite loop

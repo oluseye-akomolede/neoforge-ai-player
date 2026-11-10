@@ -37,8 +37,9 @@ change** — proposal, tasks and spec deltas — for review before any code.
 1. **Only the LLM writes scripts.** Players do not author scripts.
 2. **Players can see the scripts** the system created, in the bot interface.
    Read-only.
-3. **Code hours are unlimited for now.** They are a **per-player DAILY cap**
-   configured in **mod settings**.
+3. **Code hours are unlimited for now.** They are a **DAILY cap** configured in
+   **mod settings**. (The unit was originally stated as per player; resolved to
+   **per bot** on 2026-11-10 14:12Z — see decision 5.)
 4. **Metering is kept** even though the cap is unlimited by default, so the
    data exists when a cap is turned on.
 
@@ -56,16 +57,20 @@ the runner's hosting location (see Open question).
 `cardgame-lead`'s answer, because cardgame uses the same JavaScript engine and
 the two teams may share a runner deployment. Everything else is specifiable now.
 
-**Open question, blocking an owner decision (tasks 5.2 and 6.2):** the owner's
-decisions say the cap is *per player* and that a player sees *their* bot's
-script, but **no bot-to-player relation exists in the codebase** — no ownership
-field in agent state or `bot-identity`, and the dashboard has no authentication
-(no user identity, no token, every route unguarded). So "the owning player" and
-"refused because they do not own it" currently name nothing. The owner must
-choose: bind bots to a player's Minecraft UUID, bind them to a dashboard user
-(which requires building authentication), or treat bots as not player-owned and
-specify the cap and script view **per bot**. Metering, sandboxing, the script
-contract and the LLM-only authoring rule are unaffected and specified now.
+**Resolved (tasks 5.2 and 6.2), 2026-11-10 14:12Z:** the owner answered **"3"**
+to `qitem-20261110101258-0471aebcdce37913`
+(Slack `qitem-slack-inbound-817d6ee459337a909673`): **no bot-to-player link for
+now.** The daily code-hour cap is counted **per bot**, set in mod settings,
+default unlimited; the read-only script view needs no owner and shows each bot's
+script. This settles the question that stood here — there is no bot-to-player
+relation in the codebase (no ownership field in agent state or `bot-identity`,
+and the dashboard has no authentication), so per-bot is the only option that
+works today. **Per-player caps remain a later change that needs that identity
+first**; they are not a reinterpretation of this cap, and the spec's cap
+requirement says so.
+
+5. **No bot-to-player link for now** (2026-11-10 14:12Z). The cap and the
+   script view are per bot.
 
 ## Design summary
 
@@ -94,12 +99,13 @@ contract and the LLM-only authoring rule are unaffected and specified now.
 
 ## Code hours — what the owner chose and what that implies
 
-The owner's answer ("unlimited for now, a per-player daily cap in mod settings")
-is a real design constraint, not a deferral, and it shapes the spec:
+The owner's answer ("unlimited for now, a daily cap in mod settings") is a real
+design constraint, not a deferral, and it shapes the spec:
 
-- **The unit is the player, not the bot.** A player may own several bots; the
-  cap is on the player's total script time per day. Metering must therefore be
-  attributable to an owning player, per bot, and summed per day.
+- **The unit is the bot, since 2026-11-10 14:12Z.** The cap was first stated
+  per player, but there is no bot-to-player relation to sum along, so the owner
+  chose **no link for now**: metering is recorded per bot and never summed
+  across bots. Per-player caps need that identity first and are a later change.
 - **"Unlimited by default" means the cap mechanism must exist and be off**, not
   be absent. A cap added later without metering having run would have no basis,
   so metering is required from the first release.
