@@ -253,10 +253,15 @@ Named by cardgame, required by both games:
 | `logs` | array | `{level, line}` entries |
 | `logs_dropped` | integer | lines dropped by the rate limit this tick |
 
-Each game applies its own daily cap from these — minecraft's is **per bot**
-(owner decision, 2026-11-10 14:12Z; see the spec's "Daily Code-Hour Cap"),
-counted by the game from the per-bot `cpu_ms` it already receives. The runner
-enforces no daily cap.
+minecraft's daily cap is **per bot** and counts **wall-clock time its script is
+active** — not `cpu_ms`. The game counts it on its own side: each tick it sends
+the runner, it adds that tick's period; a paused or fallen-back bot accrues
+nothing. `cpu_ms` stays a reported field for visibility and abuse checks, never
+the cap's unit. No wire change and no new field: the game already knows when it
+sends a tick, so it needs nothing from the runner to do this counting.
+
+cardgame's cap is its own binding's affair. The runner enforces no daily cap for
+either.
 
 ---
 

@@ -125,7 +125,7 @@ a host ceiling**. Both regimes matter and the limit rows below record both.
 | Script source | 64 KB, 20 versions | size, count | server |
 | Script memory (`api.remember`) | 16 | KB per bot | server |
 | Consecutive errors before fallback | 3 | count | server; the LLM is woken on the first |
-| Daily code hours per bot | unlimited | hours/day | server metering (owner decision B; unit per bot, 2026-11-10 14:12Z) |
+| Daily code hours per bot | unlimited | hours/day of **wall-clock active script time**, not CPU | game-side metering (owner decision B; unit per bot, 2026-11-10 14:12Z) |
 | **Stack size per runtime** | **256 KB** (measured: 1362 frames, overflow **catchable**, runtime survives) | bytes | runner: `setMaxStackSize` on the runtime that also creates the context |
 | **`api.do` rate** | 30 | calls/min per bot | runner (see the rate reasoning below) |
 | **`api.say` rate** | 30 | calls/min per bot | runner |
@@ -402,12 +402,33 @@ Mutations to the snapshot by the script MUST NOT affect the bot's real state.
 
 ### Requirement: Code Time Is Metered Per Bot
 
-The runner MUST measure the script execution time each bot consumes, and where
-the time is spent, and MUST record it against that bot. No player identity is
-involved: the bot is the unit of both measurement and summation.
+**A code hour is wall-clock time during which a bot's script is active** — not
+CPU time. The game MUST count it: for each tick the bot's script runs, the game
+adds that tick's period to the bot's usage. A bot whose script is paused,
+disabled, deleted or fallen back to the planner accrues nothing for the time it
+is not running one.
+
+The runner MUST also report each tick's CPU time and where it was spent. That is
+a **reported field for visibility and abuse checks, not the cap's unit**: a
+few milliseconds of CPU per tick would take many days of wall-clock time to
+reach an hours-per-day cap, so a cap counted in CPU would silently never fire.
+
+No player identity is involved: the bot is the unit of both measurement and
+summation.
 
 Metering MUST run in the first release, even while the daily cap is unlimited,
 so that a cap enabled later has a measured basis.
+
+#### Scenario: Wall-clock time, not CPU time, accumulates
+- **WHEN** a bot's script is active for one hour of game time, using only a few
+  milliseconds of CPU per tick
+- **THEN** that bot accrues one code hour
+- **AND** the CPU time is recorded separately as a reported field
+
+#### Scenario: An inactive script accrues nothing
+- **WHEN** a bot's script is paused, disabled, or fallen back to the planner
+- **THEN** its code hours stop increasing for that period
+- **AND** its previously recorded usage is unchanged
 
 #### Scenario: Execution time is recorded per bot
 - **WHEN** a bot runs a script for a measurable duration
