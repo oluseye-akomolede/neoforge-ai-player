@@ -38,7 +38,17 @@ dependencies, and are not started until this change is approved.
       **Acceptance requires both:** reviewed and PASSed by the minecraft
       reviewer, **and** sent to `cardgame-lead` as a queue row. One without the
       other does not close this task.
-- [x] 1b.2 Settle the limits before the contract freezes. Done 2026-11-10 with a
+      Reviewer leg: **PASS at `243e6bd`** (reviews/REVIEW-gate-243e6bd.md).
+      Cardgame leg: **NOT MET FOR THIS CONTENT.** The row sent at 11:04Z
+      (`qitem-20261110110447-5efa024dea09831d`) cites the draft at `e0e4a4e`,
+      and this contract grew 86 lines after it — measured limits, worker
+      isolation, the hosting answer. Cardgame has not seen the contract as
+      PASSed. Re-send the `243e6bd` text before this task ticks; do not tick it
+      on a draft they were never given.
+- [x] 1b.2 Settle the limits before the contract freezes. **PASSed at `243e6bd`**
+      (reviews/REVIEW-gate-243e6bd.md); the reviewer re-ran the probe
+      independently on Node 22.23.3 and reproduced 2362 across every stack size.
+      Done 2026-11-10 with a
       throwaway probe (`agent-script-runner/probe/`, no remote), pinned
       `quickjs-emscripten@0.32.0` release-asyncify, Node 22.23.3, each run in a
       forked child so the failure was observed rather than fatal to the probe.
@@ -76,8 +86,10 @@ dependencies, and are not started until this change is approved.
       `RangeError` that an in-script `try/catch` cannot catch, at a fixed 2362
       frames regardless of `setMaxStackSize()`. So the runner MUST execute each
       bot's script in a process/worker it can lose and restart, and MUST treat a
-      dead worker as a error counted toward the 3-consecutive-error fallback —
-      not as a healthy bot. Prove: a recursive script kills only its own worker,
+      dead worker as an error counted toward the 3-consecutive-error fallback —
+      not as a healthy bot. Do **not** implement this as a host-side `try/catch`
+      around the call: that does catch the error and the process survives, but
+      the surviving runtime's state is already unwound. Lose and replace. Prove: a recursive script kills only its own worker,
       the bot falls back, and other bots' scripts keep running.
 
 ## Step 3 — script contract

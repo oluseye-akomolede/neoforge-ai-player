@@ -139,6 +139,13 @@ run so the failure was observed rather than fatal to the probe).
   catch (e) {}` around the recursion does not contain it; the error surfaces as
   a host-level `uncaughtException` and **the Node process exits**. A script can
   therefore kill the runner process, not just its own tick.
+- **Nor may the runner rely on catching it at the host.** Wrapping `evalCode`
+  in a host-side `try/catch` *does* catch it as an ordinary `RangeError` and the
+  process survives — but what survives is a runtime whose state is already
+  unwound, which is not a supervisor that can safely continue serving that bot.
+  An implementer who tests the host-side wrapper first is the one most likely to
+  over-generalise from it. The runner MUST lose and replace the worker rather
+  than catch and continue; that is what 2.6 requires, and this names why.
 - **`runtime.setMaxStackSize()` does not change the depth.** Values from
   256 KB to 4 MB all failed at exactly 2362 frames — the call exists and
   accepts the argument but the asyncify build's stack is fixed. Picking a
