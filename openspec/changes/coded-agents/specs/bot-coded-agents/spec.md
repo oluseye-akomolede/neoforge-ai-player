@@ -573,7 +573,7 @@ the bot already took before the interruption.
   an independent per-bot fault raised simultaneously by every affected bot
 - **AND** the number of dead-endpoint requests issued during the interruption
   does not grow with the number of affected bots: the runner is probed at a
-  bounded rate, the same bound regardless of whether 2 bots or 264 are affected
+  bounded rate, the same bound regardless of whether 2 bots or 72 are affected
 - **AND** the operator can distinguish this instance-wide event from a fault
   confined to one bot, because the two arrive as different reported conditions:
   a **runner-level** condition naming the instance, and a **bot-level** fault
@@ -581,9 +581,9 @@ the bot already took before the interruption.
 
 > **Why this scenario exists.** Every other scenario in this requirement is
 > about one bot or one waiting agent, and an instance loss is the one failure
-> that hits all of them at once — up to 8 + 256 sandboxes across both games,
+> that hits all of them at once — up to 8 + 64 sandboxes across both games,
 > every scripted bot falling back simultaneously. "The condition MUST be
-> reported in the bot interface" then means 264 simultaneous reports, and a
+> reported in the bot interface" then means 72 simultaneous reports, and a
 > per-bot retry loop means the request count scales with the fleet against an
 > endpoint known to be dead. Neither is the failure the single-bot scenarios
 > describe. The bound above is stated as *does not grow with fleet size* rather
@@ -655,8 +655,8 @@ operator to read correctly.
 - **AND** it is cleared or marked resolved when it ceases to be true
 
 #### Scenario: A runner-level condition is not one entry per affected bot
-- **WHEN** the instance is lost while 264 bots across both games have scripts
-- **THEN** the interface carries one runner-level condition, not 264 bot-level
+- **WHEN** the instance is lost while 72 bots across both games have scripts
+- **THEN** the interface carries one runner-level condition, not 72 bot-level
   entries
 - **AND** each affected bot's fallback is visible through its own state rather
   than through a duplicated condition

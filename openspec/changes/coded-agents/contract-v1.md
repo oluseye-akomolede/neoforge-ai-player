@@ -1,7 +1,14 @@
 # Contract v1 — agent script runner
 
-**Status:** reviewed draft for `cardgame-lead`. Frozen for neither team until both
-have agreed. Version: `1`.
+**Status: FROZEN — v1, 2026-11-10.** Both teams have agreed: minecraft by
+reviewed PASS, cardgame by `cardgame-lead`'s answers to §10
+(`qitem-20261110142143-2fb67b47187ded20`). Version: `1`.
+
+Frozen means the SHARED shape and every per-game value in §7 are agreed and may
+not change without a new version of this document. It does **not** freeze the
+implementation: the per-game numbers (`max_sandboxes`, `deadline_ms`,
+`tick_cpu_ms`) may be raised later by the game that owns them, which is a value
+change in that game's binding, not a wire change.
 
 **SHARED** marks the part both games consume and neither may change alone.
 **MINECRAFT BINDING** marks this game's choices inside the shared shape; cardgame
@@ -305,7 +312,7 @@ cap live in its own binding; the runner knows about neither.
 |---|---|---|---|
 | `deadline_ms` | **250** | 250 | the game's wall budget for one tick call |
 | `tick_cpu_ms` | 20 | 20 | CPU budget inside the sandbox |
-| `max_sandboxes` | **8** | **256** | concurrent sandboxes **per game** (keyed by `game_id`) — see below |
+| `max_sandboxes` | **8** | **64** | concurrent sandboxes **per game** (keyed by `game_id`) — see below |
 | `idle_evict_minutes` | **10** | 10 | idle sandbox eviction |
 
 **Why minecraft's `deadline_ms` is 250 ms:** the agent's decision cadence is
@@ -316,8 +323,10 @@ bounding a dead runner to one eighth of a decision period.
 **Why the per-game quotas differ:** minecraft has a handful of bots, so 8 is
 sized for the current fleet with headroom. Cardgame states "hundreds of
 characters, mostly idle"; idle eviction means the ceiling they need is the
-number *awake at once*, not the number that exist — 256 is a proposal on that
-basis and **cardgame confirms their own number**.
+number *awake at once*, not the number that exist. cardgame confirmed **64**
+(2026-11-10): live traffic today is one agent, and 64 covers 2026 load with room
+under the 10-minute idle eviction. Both per-game numbers are now theirs and ours
+to set; **raising either later is a per-game number, not a wire change**.
 
 ### 7.1 Quota is per game, and full means evict — not refuse
 
@@ -340,10 +349,9 @@ one sandbox exceeds the instance's memory limit.
 The instance memory limit is a **contract term**, not a deployment detail:
 this rule is enforced against it, and a term the contract enforces but does not
 state is one an implementer will set from whatever the node happens to have.
-It is **not yet value-stated** (§10) and must be before the freeze. At full
-occupancy the two pools request ~8.2 GB of QuickJS heap on one instance
-(8 minecraft + 256 cardgame sandboxes x 32 MB), so the value is load-bearing
-rather than headroom.
+It is **4Gi**. At full occupancy the two pools request ~2.3 GB of QuickJS heap
+(8 minecraft + 64 cardgame sandboxes x 32 MB), leaving the rest for Node and
+the QuickJS runtimes themselves — headroom, not a coincidence.
 
 `idle_evict_minutes` remains: a sandbox untouched for 10 minutes is evicted
 regardless of quota, and recompiled on its next tick, also reported as
@@ -351,9 +359,8 @@ regardless of quota, and recompiled on its next tick, also reported as
 
 > **Scaling out is not in v1.** A second replica would give two independent
 > rule sets and two pools, with bots landing on whichever the Service picks,
-> unless the supervisor learns sharding. Both numbers above are **proposed and
-> unmeasured** (§10); they are chosen so the first incident is a visible refusal
-> or a visible `cold: true`, not a silent cap.
+> unless the supervisor learns sharding. The values above are chosen so the
+> first incident is a visible refusal or a visible `cold: true`, not a silent cap.
 
 ---
 
@@ -372,7 +379,7 @@ regardless of quota, and recompiled on its next tick, also reported as
 | consecutive errors before fallback | 3 | count | game binding | `disabled` |
 | `api.log` line | 1 | KB | runner | truncated |
 | `api.log` rate | 100 | lines/min | runner | dropped, `logs_dropped` |
-| `api.log` retention | **unstated for v1** | — | game | — |
+| `api.log` retention | **unstated for v1** | 7 days | the game, in its own store; the runner stores none and only forwards lines in the tick result |
 
 **MINECRAFT BINDING** rates: `api.do` 30/min, `api.say` 30/min, `api.send`
 20/min per bot, anchored to the 30 decisions/minute the 2.0 s cadence permits.
@@ -407,27 +414,28 @@ defence in depth, not as the primary control.
 
 ---
 
-## 10. Open for cardgame
+## 10. Settled with cardgame (2026-11-10)
 
-- `api.log` retention for v1 (minecraft states "unstated"; cardgame has 7-day).
-- Their pod selector for the NetworkPolicy ingress rule.
-- Whether their `deadline_ms` stays 250 or their battle path wants its own.
-- **Cardgame's own `max_sandboxes` number.** The split is settled — quota is
-  per game and capacity is filled by eviction, not refusal (§7.1) — but their
-  value of 256 is minecraft's proposal on their "hundreds, mostly idle" figure
-  and must be confirmed by them. Both numbers are unmeasured.
-- **The runner instance's memory limit, and therefore whether cardgame's
-  256 x 32 MB heap fits on one node.** Both quotas are unmeasured; at full
-  occupancy the pool is ~8.2 GB of heap (8.0 GB of it cardgame's) on a single
-  instance, and §7.1's refusal condition is written against this limit. It is
-  a contract term, not a deployment detail — an unstated term is one an
-  implementer sets from whatever the node happens to have. Must be stated
-  before the freeze; cardgame should see the arithmetic before confirming 256.
-  **This value also decides whether an instance loss is a node event or a
-  routine one.** It is the one failure that hits every scripted bot in both
-  games simultaneously — the spec requires that to be handled as a single
-  runner-level condition rather than as a per-bot fault raised 264 times at
-  once. A limit with no headroom turns an ordinary load spike into that event.
+Answers from `cardgame-lead` (`qitem-20261110142143-2fb67b47187ded20`, answering
+section 10 as circulated at `c5c9f96`). None of these is a wire change:
+
+- **`api.log` retention:** cardgame keeps 7 days in its own store; minecraft is
+  **unstated for v1**. The runner MUST forward log lines in the tick result and
+  MUST store none — retention belongs to the game that receives them.
+- **NetworkPolicy ingress selector:** namespace `cardgame`, podSelector
+  `app=match-server` (their only caller), plus the minecraft agent pod. Nothing
+  else.
+- **`deadline_ms` 250 and `tick_cpu_ms` 20 for cardgame:** unchanged. Their
+  tick runs inside `battle.act`, where 250 ms is well inside what the match
+  server already tolerates for a turn.
+- **`max_sandboxes`:** cardgame **64**, not the 256 proposed here. Their live
+  traffic is one agent; 64 covers 2026 load at full occupancy with room.
+- **Instance memory limit: 4Gi.** 72 sandboxes x 32 MB = 2.3 GB of heap, plus
+  Node and QuickJS overhead.
+- **Their cap** counts wall-clock time from the ticks their match server sends,
+  metered on their side. Their driver never ticks an inactive script, so it
+  needs no runner field. This is the same shape as minecraft's, reached
+  independently, and it is why no field was added for either.
 
 ---
 
