@@ -275,6 +275,13 @@ The runner reports a **per-tick outcome**, never a bot state. Fixed class list
 | `bad_action_shape` | an action was not serialisable |
 | `source_too_large` | source over 64 KB at load |
 
+**One failure has no per-tick class, by construction:** if the instance is
+OOM-killed, no runner is left to report. The tick fails as a **transport**
+error, not an outcome — the game sees a dead endpoint and treats it as a
+runner loss, which is a different signal from any class above. A reader must
+not read `worker_died` as covering it: that class means one sandbox was lost
+and replaced, and says nothing about the instance.
+
 **MINECRAFT BINDING — the state machine the game runs on these:** `active`
 (default), `degraded` (a class other than `ok` on fewer than 3 consecutive
 ticks), `disabled` (3 consecutive non-`ok` ticks, matching the 3-consecutive-error
@@ -321,6 +328,14 @@ game can see churn rather than discovering it from latency.
 **Refusal is the last resort:** `429 sandbox_limit` is returned only when a
 single tick cannot fit at all — i.e. the requesting game's own quota is 0, or
 one sandbox exceeds the instance's memory limit.
+
+The instance memory limit is a **contract term**, not a deployment detail:
+this rule is enforced against it, and a term the contract enforces but does not
+state is one an implementer will set from whatever the node happens to have.
+It is **not yet value-stated** (§10) and must be before the freeze. At full
+occupancy the two pools request ~8.2 GB of QuickJS heap on one instance
+(8 minecraft + 256 cardgame sandboxes x 32 MB), so the value is load-bearing
+rather than headroom.
 
 `idle_evict_minutes` remains: a sandbox untouched for 10 minutes is evicted
 regardless of quota, and recompiled on its next tick, also reported as
@@ -393,6 +408,13 @@ defence in depth, not as the primary control.
   per game and capacity is filled by eviction, not refusal (§7.1) — but their
   value of 256 is minecraft's proposal on their "hundreds, mostly idle" figure
   and must be confirmed by them. Both numbers are unmeasured.
+- **The runner instance's memory limit, and therefore whether cardgame's
+  256 x 32 MB heap fits on one node.** Both quotas are unmeasured; at full
+  occupancy the pool is ~8.2 GB of heap (8.0 GB of it cardgame's) on a single
+  instance, and §7.1's refusal condition is written against this limit. It is
+  a contract term, not a deployment detail — an unstated term is one an
+  implementer sets from whatever the node happens to have. Must be stated
+  before the freeze; cardgame should see the arithmetic before confirming 256.
 
 ---
 
