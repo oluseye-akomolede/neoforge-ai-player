@@ -582,6 +582,22 @@ observation. Two bots and one instance in the same state MUST NOT produce a
 number of stored conditions that grows with the number of ticks, or with the
 number of bots for a condition that is not bot-scoped.
 
+The vocabulary is fixed and closed for v1. These three kinds are the conditions
+the requirements above oblige the system to report; a new kind requires a spec
+delta, not an addition to this table in passing.
+
+| Condition kind | Scope | Raised when |
+|---|---|---|
+| `allowance_exhausted` | bot | the owning player's daily code-time allowance is exhausted, so that player's bots stop executing scripts (see "Daily Code-Hour Cap Is Set In Mod Settings") |
+| `script_disabled` | bot | a bot's ticks return non-`ok` outcomes three times consecutively, and the game disables scripting for it (see "The Existing Planner Remains Available As A Fallback") |
+| `runner_unreachable` | runner | the runner instance is unreachable or not answering, deliberately not reported as one per-bot fault (see "An Unreachable Runner Is Detected And Falls Back") |
+
+`script_disabled` is bot-scoped because the disabling is per bot on that bot's
+own outcome history; `runner_unreachable` is runner-scoped for the reason the
+instance-loss scenario gives. The two are distinguishable by scope even when a
+bot is affected by both, which is the case the instance-loss scenario asks an
+operator to read correctly.
+
 #### Scenario: A persistent condition is one entry, not one per tick
 - **WHEN** a condition remains true for a bot across many ticks
 - **THEN** it appears once while it persists
@@ -601,5 +617,9 @@ number of bots for a condition that is not bot-scoped.
 
 > **Relationship to the contract.** The contract fixes the per-tick outcome
 > class list and the runner/game split; this requirement fixes what the
-> interface *stores and shows*. The two must agree on the vocabulary but are not
-> the same list: `ok` is an outcome and never a reported condition.
+> interface *stores and shows*. The two are different, closed lists with
+> different members and different lifetimes: an outcome is computed per tick and
+> is transient, a condition is derived from outcomes and persists until cleared.
+> `ok` is an outcome and never a reported condition. A condition kind named here
+> MUST NOT be added to the contract's outcome classes, and an outcome class MUST
+> NOT be reported as a condition without appearing in the table above.
