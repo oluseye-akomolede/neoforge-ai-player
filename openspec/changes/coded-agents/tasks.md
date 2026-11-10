@@ -175,7 +175,7 @@ dependencies, and are not started until this change is approved.
 - [x] 2.5 Per-bot isolation: one sandbox exhausting memory does not affect
       another. Proven with two sandboxes sharing one runtime: the first hits
       the 32 MB heap limit and the second still evaluates correctly.
-- [ ] 2.6 **Process isolation as defence in depth for host-level crashes.**
+- [x] 2.6 **Process isolation as defence in depth for host-level crashes.**
       Kept, but on a corrected basis: the stack limit (2.7) is the first line,
       and this covers what the limit cannot — a Wasm abort, an OOM, or a crash
       past the ~2362-frame host ceiling where Node dies before QuickJS can act.
@@ -192,6 +192,21 @@ dependencies, and are not started until this change is approved.
       nothing exactly where it is needed. Lose and replace. Prove: a worker
       killed from outside takes only that bot down, the bot falls back, and other
       bots' scripts keep running.
+      **Done** (`agent-script-runner` e1b3640). One child **process** per bot,
+      not a worker thread — a thread shares the host process, so the wasm
+      abort / host OOM this task exists for takes the supervisor with it and
+      cannot be "lost" at all. That was checked by spawning a thread, not
+      argued. Every isolation test kills the worker **from outside**; a worker
+      that cooperates in its own death proves nothing. Proven: A killed
+      externally rejects `worker_died` while B keeps evaluating; the bot
+      restarts and its next tick succeeds; a dead worker is an **error count**,
+      never a healthy bot (the 3-consecutive-error fallback depends on this);
+      and a merely hanging script times out as `cpu_exceeded` **without** a
+      process restart, because isolation is the fallback and not the first
+      resort. Two defects found by these tests, not by reading: a dead worker
+      reported its old pid (a later signal could hit a reused pid), and
+      `npm test` was `node --test test/`, which node refuses — the directory
+      form needs a glob, and the script had never been run.
 - [x] 2.7 **Set the stack limit, and prove the context shares the runtime.**
       `setMaxStackSize(256 KB)` on the runtime, contexts created with
       `rt.newContext()` from that same runtime. Measured: 64 KB → 338 frames,
