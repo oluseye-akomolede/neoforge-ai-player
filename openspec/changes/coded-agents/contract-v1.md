@@ -253,7 +253,10 @@ Named by cardgame, required by both games:
 | `logs` | array | `{level, line}` entries |
 | `logs_dropped` | integer | lines dropped by the rate limit this tick |
 
-Each game applies its own cap from these. The runner enforces no daily cap.
+Each game applies its own daily cap from these — minecraft's is **per bot**
+(owner decision, 2026-11-10 14:12Z; see the spec's "Daily Code-Hour Cap"),
+counted by the game from the per-bot `cpu_ms` it already receives. The runner
+enforces no daily cap.
 
 ---
 
