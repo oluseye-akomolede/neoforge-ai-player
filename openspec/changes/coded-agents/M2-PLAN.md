@@ -708,8 +708,11 @@ data:
 `deploy/agent-scripts.yaml` at this rev — its only data key is `scout.js`). An
 earlier draft of this section showed one. The script's revision is not a file
 the ConfigMap carries: `_revision_of` (`script_tick.py:58`) hashes the JS the
-agent holds and sends `script_revision = sha256(source)[:16]` on the wire, which
-for `scout.js` at `85f6809` is `823920fd7277b98b`. Whoever executes §8.3.5 row 2
+agent holds and sends `script_revision = sha256(source)[:16]` on the wire. That
+is the hash of the **mounted bytes**, not of `agent/scripts/scout.js` as a file:
+for the source file it is `823920fd7277b98b`, but the ConfigMap generator strips
+trailing newlines, so the value on the wire differs — measure it on the pod
+(§8.3.5 row 1, which works the arithmetic). Whoever executes §8.3.5 row 2
 must compare against **that computed value**, not read a revision from the
 ConfigMap — there is nothing there to read.
 
@@ -1163,7 +1166,7 @@ revision is hashed from the script body, not carried in the ConfigMap.
 
 | # | Evidence | Failure looks like |
 |---|---|---|
-| 1 | **Runner** log: the tick carries `bot_id: "Scout"`, `script_revision: 823920fd7277b98b`, non-empty `actions` | no runner line at all → the tick never left the agent |
+| 1 | **Runner** log: the tick carries `bot_id: "Scout"`, `script_revision: 34965be5460dd62f`, non-empty `actions` | no runner line at all → the tick never left the agent. **A revision of `823920fd7277b98b` here is also a failure**: that is the hash of `agent/scripts/scout.js` as a file, whereas the agent hashes the *bytes it reads from the mounted ConfigMap*, which the generator strips to 3523 bytes (+1 for YAML's block-scalar newline). See the note below the table |
 | 2 | **Agent** log: `[Scout/script] dispatch: STORE_ALL {...}` present, and **no** `[Scout/script] not executed:` line (see note: the success return is **not** in the agent log) | the `dispatch:` line never appears → the action was refused before dispatch; a `not executed:` line → the orchestrator returned FAILED and that action did not run |
 | 3 | Mod POST response: `status: accepted`, `STORE_ALL`, **coordless** | coordinates present → §3's pin is wrong, record it |
 | 4 | Run 1 produces no script-path POST | a POST with no script → something else is emitting it |
@@ -1238,9 +1241,32 @@ to the planner. This does not endanger the step-4 run, whose script sends
 `STORE_ALL` only — a genuine mod directive — but it had to be settled before a
 second script exists.
 
-**Row 1's revision is computed, not read.** `823920fd7277b98b` is
-`sha256(agent/scripts/scout.js)[:16]` at `85f6809`. Recompute it against the image that actually ships; if the script
-changed, this value changes and a stale one in this table is the whole finding.
+**Row 1's revision is computed, not read — and it is NOT the file's hash.**
+`_revision_of` (`script_tick.py:58`) hashes the bytes `_get_script_tick`
+(`agent.py:2676`) reads back with `open(path).read()`. On this run that path is
+the **mounted ConfigMap**, not the image file, and the two are not byte-equal:
+
+| Source | bytes | sha256[:16] |
+|---|---|---|
+| `agent/scripts/scout.js` as a raw file (== its git blob) | 3526 | `823920fd7277b98b` |
+| ConfigMap `data["scout.js"]` (generator `rstrip("\n")`) | 3523 | `34965be5460dd62f` |
+| likely as mounted (YAML `\|` re-adds one `\n`) | 3524 | **measure it** |
+
+`scripts/gen-scripts-cm.py` does `text.rstrip("\n")` and the YAML block scalar
+adds one newline back, so the mounted bytes differ from the source by trailing
+whitespace — enough to change the hash. **The operator must read the actual
+value from the pod before the run:**
+
+```
+kubectl -n minecraft-test exec <pod> -c agent -- sha256sum /srv/aibot-scripts/scout.js
+```
+
+and use that as row 1's expected value, replacing `34965be5…` if it differs.
+An earlier draft of this row stated `823920fd` flatly; that value is real but it
+is the *image* file's hash, and asserting it would have made a correct run look
+like a failure (or, worse, taught the operator to accept either).
+
+Item 4 is the one that makes 1–3 mean anything.
 
 Item 4 is the one that makes 1–3 mean anything.
 
