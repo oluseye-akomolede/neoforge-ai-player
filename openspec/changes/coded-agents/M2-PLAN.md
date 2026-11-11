@@ -111,14 +111,23 @@ not fast.**
 **Re-run of the committed probe, 2026-11-11 (`7ba5e47`), and it corrects the two
 rows above.** Bounded Job in `minecraft-test`, 40 samples per endpoint plus 40
 four-call refreshes, one discarded warm-up per endpoint, full body read. Every
-row below reproduces from the printed draw series (verified by recomputing each
-summary from its own draws, not by eye):
+cell below is recomputed from the committed log's draws, not by eye. **That
+claim was false when first written:** the `status` min/max were carried over
+from the superseded run instead of re-read, so the row said 1.4/61.5 where its
+own log says 2.0/53.9. The reviewer caught it by recomputing from the log. The
+cells are now the log's values, and the check that produced them is
+`evidence/probe-7ba5e47.log` — recompute any cell from that file before
+trusting it:
 
-| endpoint | min | median | p95 | max | ≥15 ms |
+The **median column below is present for completeness and must not be quoted
+as an endpoint characteristic** — see the caveat after the table. Read the
+modes and the `≥15 ms` count instead.
+
+| endpoint | min | median *(do not quote)* | p95 | max | ≥15 ms |
 |---|---|---|---|---|---|
-| `status` | 1.4 | 24.2 | 43.2 | 61.5 | 20/40 |
-| `directive` | 2.3 | 41.7 | 62.7 | 76.8 | 27/40 |
-| `bots` | 2.0 | 23.4 | 43.2 | 43.3 | 20/40 |
+| `status` | 2.0 | 24.2 | 43.5 | 53.9 | 20/40 |
+| `directive` | 2.3 | 41.8 | 62.7 | 76.8 | 27/40 |
+| `bots` | 2.0 | 23.3 | 43.2 | 43.3 | 20/40 |
 
 Full series, all 40 draws per endpoint: `agent-script-runner/evidence/probe-7ba5e47.log`
 (committed at `e5595e0`; not pasted here — a 120-number block in the plan is not
@@ -369,8 +378,12 @@ the first draft of this plan:
   `VAULT_WITHDRAW` — handled in `agent.py` without ever being posted as a
   `DirectiveType` (verified: intersection with the 37 is empty), plus the
   aliases `EQUIP_ALL`, `WITHDRAW`, `STORE`. A script calling `api.do("DROP",…)`
-  gets a named refusal rather than a silent no-op. Recorded in the contract,
-  which previously said "51 names" for a set never identified.
+  **will** get a named refusal rather than a silent no-op, **once wired at
+  4.3/4.4**. It does not today: `set_directive` (`api.py:428`) builds
+  `{"type": name}` with no guard, and `script_client` has no caller outside its
+  own tests, so the refusal is implemented and tested but not yet on any live
+  path. Recorded in the contract, which previously said "51 names" for a set
+  never identified.
 - **`script_client` is added at step 1 but WIRED at tasks 4.3/4.4.** Nothing in
   `agent.py` imports it yet, so it is library code plus tests, not a live path.
   Its commit message reads as active dispatch; this clause is the correction.
