@@ -955,8 +955,10 @@ not a shorthand. Add the flag or do not run it.
 |---|---|---|
 | Image (currently deployed) | `agent@sha256:9de2a68c370f5eafffae77aa8a89e9fdca43dcb840cde35e1bb659b19a142baf` | `kubectl -n minecraft-test get deploy -o jsonpath` |
 |       — built from | **`d45751d`** (2026-11-04 04:39Z) | the pod's `/opt/aibot-agent/agent.py` sha256 `2fc54346…7164a` matched against that blob in exactly one commit |
-| Image (for this run) | `harbor.arcadia-ecs.local/aiplayermod/agent@sha256:a97ae5a71e7838dd253dcf37a136de16b4724e390a9592603c7936befab6b2e6` (tag `2026-11-11-3887e79`) | three independent reads agree, all `sha256:a97ae5a71e78…`: the push output, Harbor's `Docker-Content-Digest` for the **OCI image index** (HTTP 200 from `/v2/…/manifests/`+tag with `/etc/docker/certs.d/…/ca.crt`), and `sha256sum` of that manifest body. Inside the pushed image: `script_tick.py` sha256 `51eecb68…` and `agent.py` sha256 `540ad378…`, both equal to their hashes at `3887e79`; `scripts/` absent | see §8.3.2 step 0: take Harbor's `Docker-Content-Digest` for the OCI image index; never a local image ID, and never a value typed rather than pasted |
-|   — built from | `3887e79` (head after §8.3.1b fixes and the C1 fallback removal); build context `agent/` | the pre-fix image `sha256:1b74ae7b…9506a4` (tag `2026-11-11-bf94724`, `bf94724`) is **dead** — it predates the `contract_version`, runner-token, bindings and `SCRIPTS_DIR` fixes, and deploying it reproduces the run-2 failure recorded in §8.3.1a |
+| Image (for this run) | `harbor.arcadia-ecs.local/aiplayermod/agent@sha256:1c7d1f1c598b8c84887d28743976d1c8861b9fa87876fec6025b53e230e09980` (tag `2026-11-11-3230926`) | three independent reads agree, all `sha256:1c7d1f1c598b…`: the push output, Harbor's `Docker-Content-Digest` for the **OCI image index** (HTTP 200 from `/v2/…/manifests/`+tag with `/etc/docker/certs.d/…/ca.crt`), and `sha256sum` of that manifest body. Inside the pushed image: `script_tick.py` sha256 `51eecb6874f9edad8af9d1e5a8b5216cde7e7debf7eceb87e3df13643ed5942c` and `agent.py` sha256 `67ede9d77bb6d05bfe1b1c70979d92ebb445a0878dd0cbfe8f523066cb632c03`, both equal to their hashes at `3230926`; `scripts/` absent; `bound_script_path` present (absent from the previous pin at `3887e79` — see §8.3.1d). | see §8.3.2 step 0: take Harbor's `Docker-Content-Digest` for the OCI image index; never a local image ID, and never a value typed rather than pasted |
+|   — built from | `3230926` — the **reviewed head** (REVIEW-M2-STEP4G.md, PASS, no holds), which adds the module-level
+  `bound_script_path` door the run plan's §8.3.3 step 2 calls, on top of `3887e79` (the §8.3.1b fixes and the C1
+  fallback removal); build context `agent/` | the pre-fix image `sha256:1b74ae7b…9506a4` (tag `2026-11-11-bf94724`, `bf94724`) is **dead** — it predates the `contract_version`, runner-token, bindings and `SCRIPTS_DIR` fixes, and deploying it reproduces the run-2 failure recorded in §8.3.1a |
 | Pods | 1/1 `aibot-agent-test` | `kubectl -n minecraft-test get pods` |
 | ConfigMap `agent-scripts` | **absent** | `get cm` → NotFound |
 | Deployment volumes | `agent-data` PVC only — no script mount | manifest + live |
@@ -1039,6 +1041,30 @@ so "Scout only" has to be established per bot, not asserted:
   this image, not part of the change under test.
 - `SCRIPT_RUNNER_URL` is process-wide and newly set by this plan, but an unset
   tick is never built for a bot with no `script`, so it is read by nobody there.
+
+### 8.3.1d The pin that named a rev without the function the plan calls
+
+The previous pin in this table was `a97ae5a7`, built from `3887e79`. The plan's
+own §8.3.3 step 2 tells the operator to run
+`python3 -c 'import agent; print(agent.bound_script_path("Scout"))'` against the
+pod. `3887e79` does not define `bound_script_path` — counted directly,
+`git show 3887e79:agent/agent.py | grep -c 'def bound_script_path'` is **0**;
+at `3230926` it is **1**. The plan instructed the operator to call a function
+that was not in the image it instructed them to deploy.
+
+**How it happened, because the mechanism will recur.** The pin was written when
+`3887e79` was the head *of the code being fixed*. Then the door was added, and
+the plan's step 2 was edited to use it, in commits that came after the build.
+Each artefact was internally correct and reviewed in its own round: the image
+matched its rev, and the run step matched the code at head. Nothing compared
+*the rev the image was built from* against *the rev the run steps were written
+against*. A pin is a pairing between two artefacts, and it has to be re-checked
+as a pairing whenever either side moves — the same shape as the stale rev/hash
+pair caught at §8.3.4, and the same reason a value sweep cannot find it.
+
+**The gate this adds:** before re-pinning, run every `python3 -c` and every
+command in §8.3.3 on the *image being pinned*, not on the worktree. A command
+that works at head and not in the image is exactly this defect.
 
 ### 8.3.2 The change, in three parts
 
