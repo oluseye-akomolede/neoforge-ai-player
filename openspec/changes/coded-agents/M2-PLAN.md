@@ -85,30 +85,36 @@ endpoint. The result is **bimodal**, which is the whole finding:
 |---|---|---|---|
 | `/bot/Mystic/status` | 2.4 ms | 3.0 ms | consistently fast |
 | `/bot/Mystic/directive` | 2.4 ms | 42.2 ms | **alternates 2.5 ms / 42 ms** |
-| `/bots` | 2.5 ms | 41.9 ms | **alternates** |
+| `/bots` | 2.5 ms | 41.9 ms | ~42 ms (see correction, §1 reproduce note) |
 
-Raw sample, consecutive draws: `29.2 44.3 2.4 42.6 3.8 42.2 2.5 42.4 3.0 42.2`.
-There is no middle: a call costs ~3 ms or ~42 ms, never ~20.
+Raw sample for `/directive`, consecutive draws:
+`29.2 44.3 2.4 42.6 3.8 42.2 2.5 42.4 3.0 42.2`. There is no middle: a call
+costs ~3 ms or ~42 ms, never ~20.
 
-**Cause: the mod's tick-loop handoff.** A request either catches the tick thread
-ready (~3 ms) or waits for the next server tick (~42 ms ≈ one 20 Hz tick plus
-overhead). 65% of `directive` calls paid it (26 of 40 samples ≥ 15 ms). It is not
-network cost, not container CPU, and not a runner problem — `status` is served off
-the tick path and never pays it.
+**Cause: two different things, not one.** For `/directive`, a real server-thread
+hop: it either catches the server thread ready (~3 ms) or waits out the current
+tick. 65% of `directive` samples paid it (26 of 40 ≥ 15 ms). For `/bots`, a
+deterministic ~42 ms that is **not** a hop and whose cause is not established —
+see the correction at the end of this section, which supersedes the earlier
+single-cause reading. `status` is a bare field read and never pays either.
 
-**Consequence for the 100 ms bound.** These waits do not amortise. Four calls
-fired back-to-back land in different tick windows and can each pay the wait —
-measured 4-call refresh: **median 100.9 ms, max 129.5 ms, against a 100 ms
-bound.** So the bound as written is unachievable on this path roughly half the
-time, and a naive four-call refresh would intermittently trip the timeout and
-silently fall back to the planner. That is the false-pass failure this milestone
-must not ship.
+**Consequence for the 100 ms bound.** The per-call costs accumulate because they
+are paid per call, not once per refresh — measured 4-call refresh:
+**median 100.9 ms, max 129.5 ms, against a 100 ms bound.** So the bound as
+written is unachievable on this path roughly half the time, and a naive four-call
+refresh would intermittently trip the timeout and silently fall back to the
+planner. That is the false-pass failure this milestone must not ship.
+
+(The measured 4-call figure stands. The *explanation* first written here — that
+the four calls land in different tick windows — was disproved by the interleaving
+test described at the end of this section, and is withdrawn.)
 
 **Revised design, and it is the cheap one.** The plan originally floated a new
 aggregated `GET /bot/{name}/snapshot` endpoint in the mod. The measurement says
-do **not** add one, because the cost is the *tick wait*, not the number of round
-trips on the wire: a single endpoint that still hops to the tick thread once
-would pay the same ~42 ms and buy almost nothing, while adding surface to the mod.
+do **not** add one: a single endpoint that still hops to the server thread once
+pays the same ~42 ms and buys almost nothing, while adding surface to the mod.
+For the non-hopping reads the round-trip count is also not the dominant cost,
+so folding them into one endpoint would not reliably get under 100 ms.
 
 Two changes to §4.4 instead, both agent-side:
 
@@ -127,10 +133,49 @@ reasoning about the wrong quantity (it compared against a per-call cost and agai
 2 s cadence). Raising the bound and caching is smaller than a mod endpoint and
 addresses the measured cause.
 
-*Reproduce:* bounded Job in `minecraft-test` running the probe against
-`minecraft-test-server...:3100` with `X-Api-Key` from `secret/mod-api-key`,
-40 samples per endpoint. Measurements are from the committed probe script; the
-numbers above are the raw output, not a summary of it.
+*Reproduce:* bounded Job in `minecraft-test`, 40 samples per endpoint, timing
+`fetch` around a full body read against `minecraft-test-server:3100` with
+`X-Api-Key` from `secret/mod-api-key`. The probe was **not committed** — it
+existed only as an ad-hoc Job and has since been deleted, so the numbers cannot
+be re-derived from this repo. Treat the table as an observation to re-measure,
+not as a fixture. (Reviewer caught the earlier claim that it was committed;
+an uncommitted probe is the same defect as quoting a number from a script that
+no longer exists.)
+
+**Correction on the mechanism (reviewer, 10:39Z — accepted, with one amendment).**
+The cause is **not** a server-thread hop for all endpoints. Verified in source:
+
+| endpoint | path | measured |
+|---|---|---|
+| `/status` | `getCachedStatus()`, a bare field read | 4–6 ms, consistently |
+| `/directive` GET | `server.execute(...)` + `boundedJoin` | ~42 ms — a real hop |
+| `/bots` | loop of `getCachedStatus()` over a `ConcurrentHashMap` | ~42 ms, consistently |
+
+`/bots` does not hop, so hop cannot be its cause. I first read its 42 ms as
+tick-phase alternation; a controlled test disproved that. Interleaving
+`/status` then `/bots` 14 times gave `/status` 3.7–6.1 ms on **every** sample
+and `/bots` 41.9–44.3 ms on **every** sample — no alternation, no correlation
+with arrival time. The `/bots` cost is deterministic and endpoint-specific.
+Its cause is **not established**; the 38 ms gap over `/status` is unexplained
+by any difference visible in `handleBots` (`HttpApiServer.java:292-300`), which
+is the same auth check plus a loop of field reads.
+
+The shared 4-thread pool (`:77`) is real and the contention risk the reviewer
+names is real — `BoundedWait.await` blocks a pool thread — but it does not
+explain the isolated result above, where no concurrent directive traffic existed.
+
+*Amendment on the arithmetic:* the reviewer is right that 42 ms is **less than**
+one 20 Hz tick (50 ms), so "one tick plus overhead" was wrong. A uniform wait
+for the next tick averages 25 ms with a 50 ms maximum; ~42 ms is a high draw
+within one tick, not a tick plus anything.
+
+**What this does and does not change.** The decision stands: bound at 300 ms,
+cache per tick, no aggregated endpoint — a single endpoint that still hops buys
+nothing, and an endpoint that no longer hops is not on offer for M2. What
+changes is the confidence: the fix addresses `/directive`'s known hop and
+amortises `/bots`' unexplained cost, but the tick cache does **not** remove
+`/bots`' 42 ms on a cache miss. If M2's script path calls `/bots` once per
+refresh, the per-tick cache is what keeps that off the critical path.
 
 ---
 
