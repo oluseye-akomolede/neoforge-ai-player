@@ -11,6 +11,7 @@ a thread hanging.
 """
 
 import importlib.util
+import inspect
 import json
 import os
 import socket
@@ -223,6 +224,29 @@ class BoundTest(unittest.TestCase):
         call_runner(None, {"bot": "Scout"}, post=fake_post)
         self.assertEqual(seen["timeout"], SCRIPT_TIMEOUT)
         self.assertNotEqual(seen["timeout"], 5, "fell back to _post's 5 s default")
+
+    def test_bound_cannot_be_overridden_by_a_caller(self):
+        # The tests above pinned the bound's VALUE. None of them could see a
+        # caller passing `timeout=5`: such a caller reaches exactly the 5 that
+        # test_bound_is_passed_explicitly_not_inherited asserts against, and
+        # the suite stays green while the bound is gone. (reviewer, 12:24Z)
+        #
+        # The fix was to stop making it a parameter, so the guard is now the
+        # signature itself. Asserted by behaviour first, so this fails loudly
+        # rather than quietly if the parameter ever comes back.
+        with self.assertRaises(TypeError):
+            call_runner(None, {"bot": "Scout"}, timeout=5, post=lambda *a, **k: {})
+
+        # And the structural form of the same claim, which also covers the
+        # case where someone reintroduces a differently-named override.
+        params = inspect.signature(call_runner).parameters
+        self.assertNotIn("timeout", params,
+                         "call_runner regained a timeout override; the bound "
+                         "is only safe if it cannot be passed in")
+        self.assertNotIn("kw", params)
+        self.assertFalse(
+            [p for p in params.values() if p.kind is p.VAR_KEYWORD],
+            "a **kwargs on call_runner would let a timeout through unnoticed")
 
 
 if __name__ == "__main__":

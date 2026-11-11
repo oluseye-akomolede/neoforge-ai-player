@@ -136,13 +136,20 @@ class ScriptResult:
         return f"ScriptResult(state={self.state!r}, n_actions={len(self.actions)}, detail={self.detail!r})"
 
 
-def call_runner(api, bot_state, *, timeout=SCRIPT_TIMEOUT, post=None):
+def call_runner(api, bot_state, *, post=None):
     """POST one tick to the runner and return a ScriptResult.
 
-    The timeout is passed EXPLICITLY. ``api._post`` defaults to 5 s, sized for
-    planner calls that do real work; inheriting it here would let one slow
-    runner stall a 2 s tick five times over, silently, because 5 s is a legal
-    value. A test pins the 0.3 so dropping the argument cannot regress it.
+    The bound is sent EXPLICITLY as ``SCRIPT_TIMEOUT``. ``api._post`` defaults
+    to 5 s, sized for planner calls that do real work; inheriting it here would
+    let one slow runner stall a 2 s tick five times over, silently, because 5 s
+    is a legal value.
+
+    It is not a parameter, and that is deliberate (reviewer, 12:24Z). As a
+    keyword default it was overridable, so a well-meant ``timeout=5`` at a call
+    site -- the "pass a bigger number to be safe" edit this constant exists to
+    prevent -- would have been accepted in silence, and the tests could not see
+    it: they pinned the default's value, not the absence of an override. Read
+    straight from the module constant it cannot be overridden by construction.
 
     Returns a fallback result rather than raising on every runner failure: the
     caller's job is to run the planner instead, not to handle exceptions.
@@ -151,7 +158,7 @@ def call_runner(api, bot_state, *, timeout=SCRIPT_TIMEOUT, post=None):
 
     poster = post if post is not None else api._post
     try:
-        payload = poster("/v1/tick", bot_state, timeout=timeout)
+        payload = poster("/v1/tick", bot_state, timeout=SCRIPT_TIMEOUT)
     except requests.exceptions.ConnectTimeout as e:
         # Accepted-then-silent, or refused after the connect phase. Both are
         # treated as a stall: the bot cannot tell them apart and must not wait.
