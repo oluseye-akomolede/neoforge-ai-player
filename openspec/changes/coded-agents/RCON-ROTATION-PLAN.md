@@ -154,13 +154,26 @@ anyone is connected, unless the lead says otherwise.
 
    ```
    _xt=$(case $- in *x*) echo on;; *) echo off;; esac)   # remember, do not assume
-   _hf=${HISTFILE-}
+   _hf=${HISTFILE+x}                                     # set-or-unset, not empty
+   _hv=${HISTFILE-}
    set +x +o history; HISTFILE=/dev/null
    OLD=$(...)
    ... every use of $OLD ...
    [ "$_xt" = on ] && set -x
-   [ -n "$_hf" ] && HISTFILE=$_hf
+   if [ -n "$_hf" ]; then HISTFILE=$_hv; else unset HISTFILE; fi
+   unset _xt _hf _hv
    ```
+
+   **`${HISTFILE+x}` and not `${HISTFILE-}`.** An empty `HISTFILE` and an unset
+   one need different restores, and `-` cannot tell them apart: with `-`, an
+   operator whose `HISTFILE` was *originally unset* gets `[ -n "" ]` false, the
+   restore is skipped, and `HISTFILE` is left at `/dev/null` for the rest of the
+   session — the shell silently stops recording history. No credential leaks that
+   way, but it is the guard committing the exact error it exists to prevent,
+   assuming a prior state instead of restoring it. Measured, not reasoned: the
+   old form left `HISTFILE` SET to `/dev/null` where it had been unset. The last
+   line clears the three guard variables themselves, so the session is left as
+   the operator had it rather than as this step needed it.
 
    This clause belongs beside "never echoed" on purpose: it is the sentence that
    is true and still not enough.
