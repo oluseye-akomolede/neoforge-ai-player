@@ -407,7 +407,28 @@ the set.
 
 ## 3. Task 3.3 — parity proof for one action
 
-Pick **one** directive with an unambiguous, observable effect: `say`. It is the
+Pick **one** directive with an unambiguous, observable effect.
+
+> **CORRECTED during step 3, 2026-11-11.** This section originally named `say`.
+> **`SAY` is not a `DirectiveType`** — the enum has `CHANNEL` and no `SAY`, and
+> chat is a separate endpoint (`api.py:217 chat(bot, message)`), not a
+> directive. `CHANNEL` is not a substitute: it channels an *item or action*
+> (`target`/`count`), it does not speak. A script cannot `api.do("SAY")`; the
+> agent-side name resolution refuses it, correctly.
+>
+> Consequence for the parity proof: `say` cannot be the subject of a
+> **directive**-parity check, because there is no directive to compare against.
+> Options for the reviewer, not decided here:
+> (a) pair the `chat` endpoint on both paths — planner and `api.chat` — which
+>     tests endpoint parity rather than directive parity;
+> (b) pick a real `DirectiveType` with an observable, non-movement effect
+>     (`CHANNEL` with a harmless target, or `STORE_ALL`), accepting that
+>     movement/tick confounds are smaller than they seemed for that case;
+> (c) drop bare parity and rely on §8.2's script-vs-planner proof, which already
+>     shows the same visible effect from both paths.
+>
+> The silence case (step 4) is unaffected: it needs a situation where the
+> planner emits nothing, not a named directive. It is the
 best parity subject because the evidence is a line in the game log — no physics,
 no pathing, no timing.
 

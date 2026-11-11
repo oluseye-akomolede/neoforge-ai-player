@@ -95,3 +95,81 @@ def normalise_directive_name(name) -> str:
             f"unknown directive {name!r} (normalised {canonical!r}); "
             f"the mod defines {len(DIRECTIVE_KINDS)} directive kinds")
     return canonical
+
+
+# ── Calling the runner (plan §4.3 / §4.4) ───────────────────────────────────
+#
+# The bound is a *stall* detector, not a *busy* detector. §1 measured the
+# four-call snapshot cache refresh at median 99.4 ms and max 139.0 ms, so the
+# original 100 ms sat below the observed worst case: a normally-slow tick would
+# time out and fall back, which is indistinguishable from the runner being down.
+# 300 ms clears the measured maximum with headroom and stays far below the 2 s
+# tick cadence, so a fully timed-out script call still leaves the planner room
+# to run inside the same tick.
+SCRIPT_TIMEOUT = 0.3
+
+# Runner states, as they are reported to the dashboard. "script" means the tick
+# came from the runner; every other value is a fallback that a player must be
+# able to see rather than infer from a motionless bot (§4.3).
+STATE_SCRIPT = "script"
+STATE_FALLBACK_REFUSED = "fallback_connect_refused"
+STATE_FALLBACK_TIMEOUT = "fallback_timeout"
+STATE_FALLBACK_ERROR = "fallback_error"
+
+
+class ScriptResult:
+    """Outcome of one runner call for one tick.
+
+    ``state`` is always populated so the caller can report *why* the planner
+    took over. ``actions`` is empty on any fallback, never partially filled:
+    a half-applied action list is worse than none.
+    """
+
+    __slots__ = ("state", "actions", "detail")
+
+    def __init__(self, state, actions=None, detail=""):
+        self.state = state
+        self.actions = actions or []
+        self.detail = detail
+
+    def __repr__(self):
+        return f"ScriptResult(state={self.state!r}, n_actions={len(self.actions)}, detail={self.detail!r})"
+
+
+def call_runner(api, bot_state, *, timeout=SCRIPT_TIMEOUT, post=None):
+    """POST one tick to the runner and return a ScriptResult.
+
+    The timeout is passed EXPLICITLY. ``api._post`` defaults to 5 s, sized for
+    planner calls that do real work; inheriting it here would let one slow
+    runner stall a 2 s tick five times over, silently, because 5 s is a legal
+    value. A test pins the 0.3 so dropping the argument cannot regress it.
+
+    Returns a fallback result rather than raising on every runner failure: the
+    caller's job is to run the planner instead, not to handle exceptions.
+    """
+    import requests
+
+    poster = post if post is not None else api._post
+    try:
+        payload = poster("/v1/tick", bot_state, timeout=timeout)
+    except requests.exceptions.ConnectTimeout as e:
+        # Accepted-then-silent, or refused after the connect phase. Both are
+        # treated as a stall: the bot cannot tell them apart and must not wait.
+        return ScriptResult(STATE_FALLBACK_TIMEOUT, detail=f"connect timeout: {e}")
+    except requests.exceptions.ReadTimeout as e:
+        return ScriptResult(STATE_FALLBACK_TIMEOUT, detail=f"read timeout: {e}")
+    except requests.exceptions.ConnectionError as e:
+        return ScriptResult(STATE_FALLBACK_REFUSED, detail=f"connect refused: {e}")
+    except Exception as e:  # noqa: BLE001 - a 5xx body, a parse error, anything
+        return ScriptResult(STATE_FALLBACK_ERROR, detail=f"{type(e).__name__}: {e}")
+
+    if not isinstance(payload, dict):
+        return ScriptResult(STATE_FALLBACK_ERROR, detail=f"non-object body: {type(payload).__name__}")
+
+    actions = payload.get("actions")
+    if actions is None:
+        actions = []
+    if not isinstance(actions, list):
+        return ScriptResult(STATE_FALLBACK_ERROR, detail=f"actions is {type(actions).__name__}, not a list")
+
+    return ScriptResult(STATE_SCRIPT, actions=actions, detail=f"{len(actions)} action(s)")
