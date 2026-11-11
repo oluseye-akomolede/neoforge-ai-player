@@ -496,7 +496,9 @@ behaviour, not to no behaviour.
 
 ## 10. Order of work
 
-1. Tick 4.1/4.2/8.1 in `tasks.md` — **done**, commit `5f52a79`.
+1. Tick 4.1/4.2/8.1 in `tasks.md` — **done**, commit `5f52a79`, corrected at
+   `73fd81f`. Read the ticks at `73fd81f`: `5f52a79` records the superseded
+   `416ef999` digest, which is now only the rollback target (reviewer 11:34Z).
 2. Measure §1's snapshot latency on TEST (decides four-call vs new endpoint).
 3. `script_client.py` + 4.3/4.4 tests (the bound and the fallback first, so the
    bot is never dependent on an unproven call).
