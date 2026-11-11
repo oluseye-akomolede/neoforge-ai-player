@@ -1,157 +1,85 @@
-# Review — M2 step 4, sixth gate (`85f6809`)
+# Review — M2 step 4G (door-test control + rotation plan fixes)
 
-**Row:** `qitem-20261111124635-9baa2a708ca95045`
-**Verdict: PASS on the health-guard fix and the fixture rewrite. HOLD on run-plan row 6 —
-it requires a log line the agent does not print.**
+**Rev:** `3230926` (parent `3981e92`)
+**Verdict: PASS on both. No holds.**
 
-Reviewed at `85f6809` in a clean `git archive` export (`/tmp/rv85`), not in my worktree:
-my branch carries my own review commits, so `git merge --ff-only` refuses and a
-worktree test would have measured the wrong tree. Everything below is from the export.
+Exported with `git archive 3230926` and run from the export. The rev is printed
+in the same command that validated.
 
 ---
 
-## 1. First, an error of mine caught by the instrument
+## 1. `83c6883` — the door test now tests what its docstring claims
 
-My first mutant A run printed `Ran 5 tests ... OK`, which would have meant the
-mutant survived. It was an artefact: the worktree was at `21ec724` (my review
-commit on `d75f30b`), which **does not contain `85f6809` at all**, and my command
-sequence restored the file before measuring. The tell was `5 tests` against the
-builder's `6` — a count mismatch is a tree mismatch, not a mutant result.
+**My HOLD was that the docstring made a claim the test could not falsify.** The
+builder accepted it and added the guard states. Verified by mutant:
 
-This is `validate-in-the-worktree-that-holds-the-rev` again, and the second time
-today I have nearly reported a false survivor. The export fixed it: baseline
-**`Ran 6 tests, OK`**, and every mutant below is run there.
-
----
-
-## 2. The fix — PASS
-
-`scout.js:35` now reads `state.health`; `SnapshotCache` supplies the envelope with
-`task` threaded through. Verified at the boundaries the predicate names:
-
-| envelope | actions | `api.log` |
-|---|---|---|
-| health 20, no task | `[{"kind":"STORE_ALL"}]` | – |
-| health 8, no task | `[{"kind":"STORE_ALL"}]` | – (8 is not `< 8`) |
-| health 7.9, no task | `[]` | `scout: health 7.9 too low, holding` |
-| health 3, no task | `[]` | `scout: health 3 too low, holding` |
-| health 0, no task | `[]` | `scout: health 0 too low, holding` |
-| health 20, task set | `[]` | – |
-
-Both guards live, both boundaries correct, and they do not mask each other.
-
-**Mutants, run by me in the export:**
-
-- **A — restore `snapshot.health`:** `Ran 6 tests ... FAILED (failures=3)`. Matches
-  the builder's report exactly.
-- **B — make `_envelope` emit the flat shape:** `FAILED (failures=2)`, and the
-  cache test alone stays **OK**. That is the property that matters: the
-  envelope-through-the-cache test constructs its own input, so the helper-level
-  and cache-level guards cannot cover for one another. Builder's claim confirmed
-  by direct measurement, not accepted on description.
-
-**Merged suite at `85f6809`:** `Ran 82 tests ... OK` (seven modules, explicit names).
-
-`discover -s agent -p 'test_script*.py'` reports `FAILED (errors=1)` — that is
-`test module: dashboard` / `No module named 'uvicorn'`, the known seat gap, not a
-defect in this change. The explicit-module tally above is the real one.
-
-**Revision claim re-checked independently:** `sha256(scout.js at 85f6809)` is
-`823920fd7277b98b`, and that literal appears 3× in the plan at the same rev.
-The stale `7fdbad9076381f43` is retained only in the sentence that names it as
-superseded, which is correct.
-
----
-
-## 3. HOLD — row 6 asserts a log line that is never printed
-
-Row 6 (`M2-PLAN.md:1158` at `85f6809`) reads:
-
-> the agent log carries `[Scout/script] scout: health N too low, holding`
-
-The script does call `api.log("scout: health " + health + " too low, holding")` and
-I confirmed the string is produced. But it does not reach the agent log:
-
-1. `api.log` is not an action and not stdout — in the runner
-   (`src/binding.js:27`) it "rides the tick as the `memory_out` and `logs` result
-   fields".
-2. `ScriptTick.tick()` (`script_tick.py:100-149`) returns
-   `(handled, actions, refusals, detail)`. **`logs` is not in that tuple and is
-   never read from `result`.**
-3. `bind_actions` returns only `(bound, refusals)`.
-4. `agent.py:2638-2660` prints eight `[<bot>/script]` lines, and every one is
-   derived from actions, dispatch results, or the caught exception. There is no
-   path from wire `logs` to stdout.
-
-So `[Scout/script] scout: health 3 too low, holding` will not appear in the agent
-log on the run, however well the guard works. An operator following row 6 gets a
-red row against a correct fix — and given row 6's own history (it was written
-because a dead guard and a clean refusal look alike), a red row there invites
-exactly the wrong conclusion.
-
-**This is not a defect in `85f6809`.** The guard, its tests, and the revision are
-all right. It is a defect in the **run plan**, which is the artefact the operator
-executes.
-
-**Fix — either, and the first is smaller:**
-
-- **Drop the log condition from row 6.** The row already has a sufficient,
-  observable pass condition: *no runner tick for that bot*, read from the runner
-  log, plus the absence of `dispatch:`/`not executed:`. That distinguishes a
-  firing guard from a dead one without the unprinted string.
-- **Or make the string observable.** Plumb `logs` from `result` through
-  `tick()` and print it — a real change to the tuple contract and its callers,
-  and it makes every future script `api.log` visible, which the run plan's other
-  rows would then want to use. Bigger than this gate needs.
-
-I recommend the first. The guard's evidence already exists on the runner side.
-
-**Note on my confidence:** I traced `logs` to the runner's wire format and read
-`tick()` and the print block in full. I did not run the runner end-to-end, so I
-have not observed a real `logs` field on the wire. The claim above is that no
-code path in `agent/` reads it — which I did establish by grep over
-`script_tick.py`, `script_client.py` and the print block — not that the runner
-fails to send it.
-
----
-
-## 4. What the builder got right that I should name
-
-- **The test was the fix, and they said so before writing it.** The failing-first
-  evidence (`[{'kind':'STORE_ALL'}]` at health 3, observed before touching the
-  script) is what separates a test from a restatement. I have rejected the
-  restatement version earlier in this run.
-- **They corrected my §1 amendment.** I told them at 13:03Z the code diverged
-  from contract §3; at 13:04Z I corrected myself and they had already recorded my
-  first, wrong version. They fixed it and listed the three shape facts
-  separately. Taking a reviewer's correction twice in one exchange is the harder
-  direction.
-- **Mutant B's design** — leaving the cache test green — is the "two guards for
-  every predicate" rule applied to two *different* guards rather than a check and
-  its control. Worth keeping.
-- **The tally** ("all three were mine", with the common move named) is accurate.
-  I supplied the generalisation; they supplied the three instances. Neither of us
-  found all three alone.
-
----
-
-## 5. Not verified by me
-
-- Every cluster fact (namespace, pod label, `PROFILES_DIR` on the live pod, the
-  deployed image's provenance). No cluster access from this seat — the builder
-  read the pod label; I did not.
-- The initContainer manifest: written, not applied, and not exercised.
-- The runner end-to-end (see §3).
-
-Nothing built, nothing pushed, nothing deployed.
-
-| item | verdict |
+| mutant (mine, in a clean export) | result |
 |---|---|
-| `scout.js` health guard reads the right operand | **PASS** — boundary sweep, all six cases |
-| `task` guard still live after the change | **PASS** — holds at health 20 with a task |
-| Mutant A (restore `snapshot.health`) | **PASS** — failures=3, mine |
-| Mutant B (flat `_envelope`) | **PASS** — failures=2; cache test green by design |
-| Fixture rewrite / failing-first evidence | **PASS** — the generalising fix |
-| `script_revision` `823920fd7277b98b` | **PASS** — recomputed at `85f6809`, 3 citations |
-| Merged suite | **PASS** — 82 OK from the export |
-| Row 6 log assertion | **HOLD** — string never reaches the agent log |
+| faithful reimplementation **without** the traversal guard | `failures=3` |
+| fully faithful reimplementation, all guards | `OK` (18) |
+| unmodified rev | `Ran 18 tests, OK` |
+
+The second row is the one that matters for correctness: the test does not
+forbid a reimplementation, it forbids an **unguarded** one. That is the right
+predicate. Before this rev the first mutant passed 17/17.
+
+The five guard cases are all present as subtests — traversal, absolute, dotfile,
+non-str, empty — plus a JSON array and invalid JSON for the two remaining arms.
+`bindings.json` is written by the fixture and read by the real resolver, so the
+fixture is a producer shape, not a consumer wish.
+
+**Residual, not a hold:** the door and the method share a failure mode by
+delegation — a bug in `_bound_script_path` moves both. The test asserts
+*agreement*, which is the property the plan's one-liner needs; it is not an
+independent oracle. Worth knowing when reading a green run.
+
+---
+
+## 2. `788e532` → `3230926` — the fingerprint and the derivation
+
+### 2a. Fingerprint removed, and the reason is now in the document
+
+`grep -rn 8e98b209bf95a453` over the whole export: **absent**. Line 28 now says
+the fingerprint is deliberately not written here because it is 64 bits, and
+step 1 and step 6 say to record it on the row and print it at execution. That is
+the correct handling: the fingerprint is still used by the procedure, but it is
+no longer published.
+
+The builder's self-report is worth keeping: their own check was `grep` for the
+credential literal, which found nothing, and that grep **cannot** ask the
+question that mattered ("can a reader check a guess?"). Naming that gap is more
+useful than the fix.
+
+### 2b. Derivation pinned and correct
+
+`head -c 24 /dev/urandom | xxd -p -c 48`: measured 20/20 runs at exactly 48
+characters, 200 samples using only `[0-9a-f]`, and a single trailing newline
+that `$(...)` strips. **No `/`, `+`, `=` or escape character can occur**, so the
+same value is safe in `server.properties`, `kubectl create secret --from-literal`
+and a Deployment env value alike. The length-48 acceptance test in section 2 is
+now backed by a derivation that actually produces 48.
+
+**I corrected my own arithmetic here.** I had published "45 characters" for the
+old `head -c 32 | base64`; the builder said 44. They are right: `wc -c` was
+counting the trailing newline, and `tr -d '\n' | wc -c` gives 44 in 10/10 runs.
+The finding stands either way — neither is 32 — but I published the number that
+includes a newline while arguing the derivation was ambiguous. Same error class
+as the finding.
+
+### 2c. Sidecars now in the scanned set
+
+Section 1 states `.bak`/sidecar copies as part of the scanned set where the claim
+is made, rather than only in the row text.
+
+---
+
+## 3. Not verified
+
+- Every cluster fact in the rotation plan — holders, NodePort state, the
+  fingerprint match. No `kubectl` from this seat. Section 1's positive control
+  is the reason those claims can be trusted at execution; I am reviewing the
+  procedure, not the cluster.
+- That the rotation has not yet been executed. The plan says nothing is run.
+
+Nothing built, pushed or deployed by me. No credential value printed; the
+fingerprint appears here only as the string I verified is absent.
