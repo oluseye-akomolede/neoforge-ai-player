@@ -17,29 +17,29 @@ value. This rule exists because breaking it is what created this change.
       constructor, so a restart is required per consumer.
 - [x] 1.4 Note the empty-key-disables-auth hazard and require a non-empty
       40-char value before patching.
-- [ ] 1.5 Review row raised and lead OK received. **Nothing below runs until
+- [x] 1.5 Review row raised and lead OK received. **Nothing below runs until
       both exist.**
 
 ## 2. Backup
 
-- [ ] 2.1 Write both Secret objects to a single file **outside git**, mode 600,
+- [x] 2.1 Write both Secret objects to a single file **outside git**, mode 600,
       named with the timestamp. Verify the file is non-empty and parses as
       JSON before proceeding — a failed redirect leaves an empty file that
       looks like a backup.
-- [ ] 2.2 Print only the file's path, size and mode. Not its contents.
+- [x] 2.2 Print only the file's path, size and mode. Not its contents.
 
 ## 3. Rotate
 
-- [ ] 3.1 Generate 40 characters without printing them.
-- [ ] 3.2 Assert the generated value is non-empty and 40 chars. Refuse to
+- [x] 3.1 Generate 40 characters without printing them.
+- [x] 3.2 Assert the generated value is non-empty and 40 chars. Refuse to
       continue otherwise.
-- [ ] 3.3 Patch `secret/mod-api-key` key `api-key`.
-- [ ] 3.4 Patch `secret/agent-config` key `MOD_API_KEY` only — via a merge patch
+- [x] 3.3 Patch `secret/mod-api-key` key `api-key`.
+- [x] 3.4 Patch `secret/agent-config` key `MOD_API_KEY` only — via a merge patch
       naming that one key, so the other 17 stay byte-identical. Confirm all 18
       keys are still present afterwards.
-- [ ] 3.5 Confirm the new fingerprint matches across **both** secrets and
+- [x] 3.5 Confirm the new fingerprint matches across **both** secrets and
       differs from `902a001fdc05`.
-- [ ] 3.6 Restart order, deliberately chosen (lead ruling): patch all three,
+- [x] 3.6 Restart order, deliberately chosen (lead ruling): patch all three,
       then restart **`minecraft-test-server` (the mod)**, then the two clients
       `l2-mcp` and `aibot-agent-test` immediately after.
 
@@ -71,23 +71,64 @@ value. This rule exists because breaking it is what created this change.
 
 ## 4. Verify
 
-- [ ] 4.1 **The mod rejects the old key**: old key → **401** (via
+- [x] 4.1 **The mod rejects the old key**: old key → **401** (via
       `aibot-api:3100`). This measures exactly one thing — that the *mod* is no
       longer authenticating the old value after its restart. It does **not**
       prove no holder was missed (see 4.3/4.4). A green 4.1 beside red 4.3/4.4
       is a failed rotation.
-- [ ] 4.2 New key → mod returns **200**.
-- [ ] 4.3 **LOAD-BEARING.** `l2-mcp` pod is Running and not restart-looping;
+- [x] 4.2 New key → mod returns **200**.
+- [x] 4.3 **LOAD-BEARING.** `l2-mcp` pod is Running and not restart-looping;
       its logs show no auth errors against the mod *after* the 401 window
       closes. This is what proves the client carries the new value. The mod
       cannot prove this: a client on the stale key gets a 401 from the mod that
       is indistinguishable, from the mod's side, from the old key being
       correctly retired.
-- [ ] 4.4 **LOAD-BEARING.** `aibot-agent-test` ticks successfully (bots active
+- [x] 4.4 **LOAD-BEARING.** `aibot-agent-test` ticks successfully (bots active
       on TEST), proving the `agent-config` path carries the new value. Same
       reason as 4.3 — it is a client, not a verifier.
-- [ ] 4.5 Record on the queue row: consumers restarted, the five results, the
+- [x] 4.5 Record on the queue row: consumers restarted, the five results, the
       **measured** downtime, and the new fingerprint (first 12 chars only).
+
+## Results (run 2026-11-11, TEST only)
+
+Plan revision executed: `ff32d68`; arithmetic and positive-control edits landed
+at `6915b2a` before the run began. Downtime arithmetic was corrected to
+schedule→Ready **4 m 16 s** (3 m 56 s is container start→Ready alone).
+
+- Players online before the stop: **0 of 20**, so no in-game warning was needed
+  and the lead's 2-minute hold did not apply.
+- Backup: `~/.rotation-backup-20261111T115702Z.json`, mode `600`, 3937 bytes,
+  parses, both secrets, `agent-config` intact at 18 keys, old fp `902a001fdc05`.
+- Guard: generated value exactly 40 non-empty chars before patching.
+- New fingerprint across **both** secrets: `3b0a18f8580c` (old was
+  `902a001fdc05`). `agent-config` still 18 keys after the single-key patch.
+- **Downtime measured:** `11:57:19Z` (rollout restart issued) → `12:01:53Z`
+  (`rollout status` Ready) = **4 m 34 s**. That is restart→Ready, which includes
+  the stop; it is not the same quantity as the 4 m 16 s schedule→Ready figure
+  above and is not comparable to it term for term. Clients Ready `12:02:34Z`.
+
+| Check | Result |
+|---|---|
+| 4.1 old key rejected | **401** on `/bots` with `X-Api-Key` |
+| 4.2 new key accepted | **200** on `/bots` with `X-Api-Key` |
+| 4.3 `l2-mcp` (LOAD-BEARING) | Running, restarts 0; in-container `MOD_API_KEY` fp `3b0a18f8580c`; no auth errors |
+| 4.4 `aibot-agent-test` (LOAD-BEARING) | Running, restarts 0; in-container fp `3b0a18f8580c`; mod returned `status: ok`, 5 profiles, bots spawning |
+
+**Probe defect found during the run, recorded because it nearly produced a false
+rollback.** The first probes sent `Authorization: Bearer <key>` and 401'd for
+*both* the old and the new key. The check is `X-Api-Key`
+(`HttpApiServer.java:149-153`), so both were rejected on the header, not the
+value. A second probe also 404'd against `/status`, a route that does not
+exist. Either would have read as "the new key is broken" to anyone not checking
+the auth code, i.e. as grounds to roll back a successful rotation. Both were
+re-run against `/bots` with `X-Api-Key` and only those runs are quoted above.
+
+Also note: `aibot-agent-test`'s pods carry `app=aibot-agent`, not
+`app=aibot-agent-test`. A pod query on the obvious label returns empty and is
+indistinguishable from a dead deployment.
+
+Probe Jobs and the temporary old-key Secret were deleted; `get job,secret`
+confirms none remain.
 
 ## 5. Rollback (only if verify fails)
 
