@@ -259,11 +259,14 @@ dependencies, and are not started until this change is approved.
       deadline over 60 cold bots).
 - [x] 4.2 Runner hosting — **DONE 2026-11-11.** Minecraft **owns and
       hosts** the runner: one Node service in local repo
-      `~/minecraft/agent-script-runner` (no remote), its own k8s namespace,
-      consumed by cardgame through contract v1 (`cardgame-lead` 05:22Z/05:28Z;
-      control-operator agreed 05:32Z). Remaining work is the deployment manifest
-      and namespace, which can now be designed — the answer that would have made
-      a wrong choice a rebuild has been given.
+      `~/minecraft/agent-script-runner` (no remote), deployed as the separate
+      Deployment `agent-script-runner` **into the `minecraft-test` namespace**,
+      shared with the game server rather than a namespace of its own (reviewer
+      correction 11:25Z: an earlier wording said "its own k8s namespace" and
+      pointed at one that does not exist), consumed by cardgame through contract
+      v1 (`cardgame-lead` 05:22Z/05:28Z; control-operator agreed 05:32Z). The
+      manifest is written and deployed (see 4.1); what remains is reachability
+      fallback (4.3) and the M2 wiring.
 - [ ] 4.3 Runner reachability detection with a bounded wait. Prove a bot falls
       back to the planner when the runner is down, and that the bot interface
       reports it — a player must not have to infer a stalled bot from a
