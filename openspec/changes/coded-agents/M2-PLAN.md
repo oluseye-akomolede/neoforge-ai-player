@@ -475,10 +475,15 @@ puts the coordinates on `AREA_LOOT` as `extra`, and `STORE_ALL` beside it is bar
 What *is* true is one level down: `StoreAllBehavior.java:63` does
 `if (directive.hasLocation()) targetedContainer = BlockPos.containing(getX(),
 getY(), getZ())`, and `:161` branches on `isStorageBlock(...)`. The behaviour
-accepts coordinates. Nothing we can point at emits them: the only single-directive
-producers of `STORE_ALL` are the seed matcher (`agent.py:1888-1889`, returning
-`{"type": "STORE_ALL"}` with no coordinates at all) and the author prompt
-(`skill_author.py:281`, also bare).
+accepts coordinates. Nothing we can point at emits them, and for the main
+producer that is structural rather than incidental: `_STORE_ALL_PATTERNS`
+(`agent.py:1622-1623`) is
+`r"(?:store|dump|deposit|stash)\s+(?:all|everything|inventory)|STORE_ALL"` — an
+alternation with **no capture groups** — so the handler at `:1888-1889` returns
+`{"type": "STORE_ALL"}` and *cannot* carry coordinates whatever the input text
+says. It could not become coords-bearing without editing the pattern. The author
+prompt (`skill_author.py:281`) and the mod's seed specs
+(`SkillRegistry.java:154`) are bare for the same practical effect.
 
 That the planner *cannot* emit a coords-bearing `STORE_ALL` is **not
 established** — a raw model output outside a seed match is untraced. But nothing
@@ -510,9 +515,15 @@ is the better long-run choice.
 `HttpApiServer.java:1356` returns `status: accepted` plus `directive.toMap()` on
 *both* paths, from the same handler. Anchoring the comparison there means the
 check does not depend on whether a given behaviour happens to log — which is
-precisely what made `IDLE` unusable. It also makes the silence case in step 4 a
-clean assertion: no POST at all, rather than no log line, which would pass
-silently if the call went out and failed.
+precisely what made `IDLE` unusable.
+
+**Silence case (reviewer condition, 12:22Z): the assertion is the absence of the
+API call, not the absence of output.** Step 4 must show no directive POST left
+the agent for the silence scenario. A quiet log is not the same claim and passes
+for the wrong reason when a call went out and failed at the far end — the
+failure mode the comparator was chosen to expose. Where the scenario also
+expects no chat line, that is a second, weaker assertion; it does not stand in
+for this one.
 
 **Rejected options, and why:**
 
@@ -724,13 +735,18 @@ Three pieces of evidence, all required:
    planner path sends for the same action, byte-identical between paths.
    Deliberately *not* a behaviour log line: `HttpApiServer.java:1356` emits this
    from the same handler on both paths, so the evidence does not depend on
-   whether the behaviour happens to log. The absence of that POST is the
-   silence case's evidence.
+   whether the behaviour happens to log.
+
+   **The silence case asserts the absence of that POST specifically — that no
+   directive request left the agent — not the absence of a log line or chat
+   message.** A quiet log also passes when a call was sent and failed at the far
+   end, which is the failure this comparator exists to make visible.
 
    The coordinates are part of the evidence, not incidental: `:1356` fires
    before the behaviour runs, so a coordless and a coords-bearing `STORE_ALL`
-   give the same POST body but different effects. Holding the argument form
-   constant is what keeps this comparator honest.
+   give the same POST body but different effects. Pinning the argument form —
+   acknowledging that the test is what supplies coordinates the known producers
+   never emit (§3) — is what keeps this comparator honest.
 
    **The test must take the script's coordinates from the script.** They enter
    on the script side at `api.do(directive, args)` (M2-PLAN:246, contract §4.1) and reach
