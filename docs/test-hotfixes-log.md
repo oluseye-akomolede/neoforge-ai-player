@@ -93,7 +93,10 @@ H3 becomes less impactful but still produces suboptimal plans.
 recipe chains in the system prompt or provide a recipe lookup tool so the planner
 can decompose "craft pickaxe" into "craft sticks, then craft pickaxe."
 
-**Status**: PENDING
+**Status**: PENDING — still open on main as of 2026-09-30: `agent/l3_planner.py`
+carries no recipe-chain decomposition guidance and no recipe-lookup tool, so the
+L3 prompt still plans "craft pickaxe" without the intermediate "craft sticks"
+step.
 
 ---
 

@@ -1,8 +1,78 @@
 import json
+import math
 import os
+import sys
+from urllib.parse import urlsplit, urlunsplit
 
 MOD_API_URL = os.getenv("MOD_API_URL", "http://localhost:3100")
 MOD_API_KEY = os.getenv("MOD_API_KEY", "")
+
+# The M2 script runner is a SEPARATE service from the mod, and must not share
+# MOD_API_URL. `api._post` prefixes MOD_API_URL, so using it as the runner
+# transport (which `call_runner` does when `post` is None) sends script ticks to
+# the game mod -- silently, because the mod answers JSON too. Empty by default
+# so a pod that has not been given a runner falls through to the planner rather
+# than posting ticks somewhere unintended.
+SCRIPT_RUNNER_URL = os.getenv("SCRIPT_RUNNER_URL", "")
+
+# GET /health lives on the mod's own dedicated listener, not on MOD_API_URL: the
+# probe port answers /health and nothing else, so the two cannot share a base.
+# Default ties to the mod's default (3101); a deployment that moves it must set
+# AIPLAYER_HEALTH_PROBE_PORT, the same variable the mod reads.
+HEALTH_PROBE_PORT = os.getenv("AIPLAYER_HEALTH_PROBE_PORT", "3101")
+
+
+def _float_env(name: str, default: float) -> float:
+    """Read a numeric setting without crashing the process that reads it.
+
+    This module is imported before the health gate runs, so an unparseable value
+    here would kill the agent at startup -- before the very gate the setting is
+    meant to configure could report why. A bad value is a misconfiguration, not a
+    reason to be unable to say so: warn loudly and fall back to the default.
+    """
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        print(f"config: {name}={raw!r} is not a number; using default {default}",
+              file=sys.stderr)
+        return default
+    # Reparsing is not enough. nan and inf parse cleanly and then raise inside
+    # requests.get (ValueError / OverflowError); zero and negatives parse and
+    # raise "connect timeout cannot be set to". Those are caught by the health
+    # gate, so the process survives -- but every retry fails before any request
+    # is made, and the agent spends the whole budget reporting "Mod API not
+    # ready", which is a lie about the cause. A bad number must fail here, where
+    # the message can name it.
+    if not math.isfinite(value) or value <= 0:
+        print(f"config: {name}={raw!r} is not a usable timeout; using default {default}",
+              file=sys.stderr)
+        return default
+    return value
+
+
+def _health_url(api_url: str, probe_port: str) -> str:
+    """Swap the port on the API base, keeping scheme and host.
+
+    Parsed with urlsplit rather than split(":"): "http://host" has no port, and
+    rsplit on that yields ["http", "//host"], which would silently build a wrong
+    URL for any base without an explicit port.
+    """
+    parts = urlsplit(api_url)
+    return urlunsplit((parts.scheme, parts.netloc.rsplit(":", 1)[0] + ":" + probe_port,
+                       parts.path.rstrip("/"), "", ""))
+
+
+MOD_HEALTH_URL = os.getenv("MOD_HEALTH_URL") or _health_url(MOD_API_URL, HEALTH_PROBE_PORT)
+
+# Per-attempt timeout for the startup health gate. Must be at least the kubelet's
+# probe timeoutSeconds (10 s in the pod spec) so a slow-but-healthy answer is not
+# cut off sooner than the probe allows. A named setting, not a literal at the call
+# site: the retry budget is derived from it (max_retries in agent.py), so anyone
+# tuning it must be able to find and change what the code actually reads.
+HEALTH_TIMEOUT = _float_env("AIPLAYER_HEALTH_TIMEOUT", 10.0)
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 NN_COMPRESSOR_URL = os.getenv("NN_COMPRESSOR_URL", "")  # empty disables state compression
@@ -12,7 +82,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 L4_ENABLED = os.getenv("L4_ENABLED", "true").lower() in ("true", "1", "yes")
 
-# Off-loop skill author (DeepSeek). Separation of concerns: L3 (local qwen2.5)
+# Off-loop skill author (DeepSeek). Separation of concerns: L3 (local qwen3-coder)
 # stays in the live loop for planning/dispatch; DeepSeek authors reusable skills
 # OFF-LOOP from logged trajectories. The key lives in ANTHROPIC_AUTH_TOKEN (a
 # DeepSeek token) by deliberate user choice — never in settings.json.
@@ -34,7 +104,7 @@ MAX_CHAT_HISTORY = 20
 MAX_CONVERSATION = 12
 MAX_MEMORY = 50
 
-PG_DSN = os.getenv("PG_DSN", "host=pgvector.minecraft-test.svc.cluster.local port=5432 dbname=botmemory user=aibot password=aibot-memory-2026")
+PG_DSN = os.getenv("PG_DSN", "")
 
 DASHBOARD_ENABLED = os.getenv("DASHBOARD_ENABLED", "true").lower() in ("true", "1", "yes")
 DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "5000"))

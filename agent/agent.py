@@ -56,6 +56,7 @@ _logging.getLogger("httpx").setLevel(_logging.WARNING)
 
 from dashboard import start_dashboard
 from dashboard.state import shared_state
+import chat_filter
 
 # Chat command patterns (regex, processed before planner)
 _CMD_REMEMBER = re.compile(
@@ -154,7 +155,7 @@ class BotRunner:
     def __init__(self, profile):
         self.profile = profile
         self.name = profile["name"]
-        self.model = profile.get("model", "llama3.1:8b")
+        self.model = profile.get("model", "qwen3-coder:30b")
         self.specializations = profile.get("specializations", ["general"])
         # Squad binding: a drone carries the name of its officer; an officer
         # carries the names of its drones. Synced from the hive mod's `squads`
@@ -172,6 +173,12 @@ class BotRunner:
         self._chat_thread = None
         self._stop_event = threading.Event()
         self._chat_event = threading.Event()
+        # M2 script mode. `_script_tick` stays None unless the profile names a
+        # script AND it loads; every consumer treats None as "no script" and
+        # runs the planner exactly as before (task 7.2). Built lazily rather
+        # than in __init__ so a broken script file cannot stop a bot booting.
+        self._script_tick = None
+        self._script_loaded = False
         self._plan_steps = []
         self._plan_step_idx = 0
         self._plan_instruction = ""
@@ -183,6 +190,11 @@ class BotRunner:
         self._awaiting_taskboard = False
         self._current_task_id = None
         self._following_player = None
+        self._orch_cancel = None  # threading.Event for the live orch:<name> run
+        # Set when a stop/reset lands before the orch thread has published its
+        # cancel Event (the window between thread spawn and _orch_cancel=...).
+        # Without it, _cancel_orchestrator finds None and the stop is lost.
+        self._orch_stop_pending = False
         self._cached_inventory = []  # updated on each observe tick
         self._terrain_tick = 0
         self._lock = threading.Lock()
@@ -257,6 +269,8 @@ class BotRunner:
     def reset(self):
         """Clear all planning state, cancel directives, and stop actions."""
         print(f"[{self.name}/reset] Clearing all state")
+        # Abort any in-flight orchestrator before clearing local state.
+        self._cancel_orchestrator(reason="reset")
         # If there was an active plan, mark it failed on disk before clearing
         if self._plan_steps:
             self._shadow_plan_finalize(success=False)
@@ -427,6 +441,11 @@ class BotRunner:
             is_stop = (any(p in text_lower for p in _stop_phrases)
                        or any(text_lower.strip() == p for p in _stop_exact))
             if is_follow or is_goto or is_stop:
+                # Abort any in-flight orchestrator first: clearing _plan_steps
+                # here only touches THIS thread, while the plan runs on the
+                # orch:<name> daemon thread and would otherwise replay for
+                # minutes after a "stop".
+                self._cancel_orchestrator(reason=f"nav shortcut: {text_lower[:30]}")
                 self._plan_steps = []
                 self._plan_step_idx = 0
                 self._plan_instruction = ""
@@ -463,7 +482,7 @@ class BotRunner:
                         api.cancel_directive(self.name)
                     except Exception:
                         pass
-                    api.chat(self.name, f"Standing by.")
+                    api.chat(self.name, "Stopping. Standing by.")
                     print(f"[{self.name}/nav] Direct stop (shortcut)")
                 return
 
@@ -476,10 +495,15 @@ class BotRunner:
             if sender == self.name:
                 continue
             text_lower = text.lower().strip()
-            if len(text_lower) < 5:
-                continue
-            skip_words = ["hello", "hi ", "hey", "thanks", "thank you", "yes", "no", "ok"]
-            if any(text_lower.startswith(w) for w in skip_words):
+            # No raw length gate: short real instructions ("go", "dig", "mine")
+            # are legitimate. is_pure_pleasantry already drops empty/blank/ack
+            # noise ("k", "ok") — a length test here only lost real short chat.
+            # Skip only messages that are *entirely* a pleasantry/ack — not any
+            # message that merely STARTS with one. The old prefix test dropped
+            # "Hi Mystic! Who are you?" (startswith "hi "), silently and with no
+            # log line, so a real question to the bot got no reply (P4, 2026-09-30).
+            if chat_filter.is_pure_pleasantry(text, self.name):
+                print(f"[{self.name}/chat] ignored (pleasantry): {text!r}")
                 continue
 
             from_bot = sender in _all_runners
@@ -560,6 +584,16 @@ class BotRunner:
                     for n in _all_runners
                 )
                 if applies_to_all or addressed_by_name or (not other_bot_named):
+                    # Talk/Order split (fix: bots must be able to just talk).
+                    # "Mystic, tell me about yourself" is addressed to the bot,
+                    # but it is conversation, not an instruction — planning it
+                    # produced a 1-step IDLE plan and no reply. One cheap L3
+                    # classification decides; only "task" starts a plan.
+                    if self._is_chat_message(text):
+                        print(f"[{self.name}/chat] L3 plan layer: conversation, replying in character")
+                        self._reply_in_character(text)
+                        self._consume_message(msg)
+                        return
                     print(f"[{self.name}/orchestrator] L3 plan layer accepting: {text[:80]}")
                     self._plan_instruction = text
                     shared_state.push_event({"bot": self.name, "type": "l3_plan_dispatched", "instruction": text[:100]})
@@ -753,6 +787,11 @@ class BotRunner:
                 # Spawns a worker thread that drives plan_orchestrator.execute_task
                 # to completion using this bot's mod API for dispatch.
                 if USE_L3_PLAN_LAYER:
+                    if self._is_chat_message(text):
+                        print(f"[{self.name}/chat] L3 plan layer: conversation, replying in character")
+                        self._reply_in_character(text)
+                        self._consume_message(msg)
+                        return
                     print(f"[{self.name}/orchestrator] dispatching to L3 plan layer: {text[:80]}")
                     self._plan_instruction = text
                     shared_state.push_event({"bot": self.name, "type": "l3_plan_dispatched", "instruction": text[:100]})
@@ -1120,6 +1159,78 @@ class BotRunner:
         return [f"{f['what']} at ({f['x']},{f['y']},{f['z']}) in {f['dimension']}"
                 for f in items]
 
+    def _cancel_orchestrator(self, reason: str = "") -> bool:
+        """Signal the running orchestrator thread to abort. Returns True if one
+        was running. The plan itself is finalized as 'cancelled' by
+        execute_task once it observes the flag."""
+        ev = getattr(self, "_orch_cancel", None)
+        if ev is None:
+            # No orchestrator has published its cancel Event yet. It may be in
+            # the window between thread spawn and _orch_cancel=... — record a
+            # pending stop so that thread aborts the moment it publishes.
+            self._orch_stop_pending = True
+            print(f"[{self.name}/cancel] stop pending (no live orchestrator yet): {reason}")
+            return False
+        if ev.is_set():
+            return True
+        print(f"[{self.name}/cancel] aborting orchestrator ({reason})")
+        ev.set()
+        return True
+
+    def _is_chat_message(self, text: str) -> bool:
+        """True when an addressed message is conversation, not an instruction.
+
+        Fails to False (i.e. "treat as task") on any error — a misread order
+        is visible and correctable, a misread chat silently drops an order."""
+        try:
+            import l3_planner
+            return l3_planner.classify_message(self.model, self.name, text) == "chat"
+        except Exception as e:
+            print(f"[{self.name}/chat] classify error: {e} — treating as task")
+            return False
+
+    def _reply_in_character(self, text: str) -> None:
+        """Answer a conversational message in the bot's persona via api.chat.
+
+        Uses the same l3_planner.converse path the dashboard Talk overlay
+        already drives; no plan, no orchestrator run."""
+        try:
+            import l3_planner
+            persona = l3_planner.BOT_PERSONAS.get(self.name.lower(), "a helpful bot")
+            world_state = ""
+            try:
+                world_state = self._l3_orchestrator_world_state()
+            except Exception:
+                pass
+            directive_line = ""
+            try:
+                st = api.status(self.name)
+                if isinstance(st, dict):
+                    directive_line = str(st.get("directive") or "")
+            except Exception:
+                pass
+            history = [{"who": self.name, "text": m} for m in self.conversation_history[-10:]]
+            reply = l3_planner.converse(
+                self.model, self.name, persona, text,
+                world_state=world_state,
+                directive_line=directive_line,
+                history=history,
+            )
+            if reply:
+                api.chat(self.name, reply[:400])
+                self.conversation_history.append(reply)
+                shared_state.push_event({
+                    "bot": self.name, "type": "chat_reply", "text": reply[:200],
+                })
+            else:
+                print(f"[{self.name}/chat] converse returned empty — no reply sent")
+        except Exception as e:
+            print(f"[{self.name}/chat] reply failed: {e}")
+            try:
+                api.chat(self.name, "I didn't catch that — say again?")
+            except Exception:
+                pass
+
     def _run_orchestrator(self, task_text: str, sender: str = "", order_id: str = "", order_kind: str = ""):
         """Worker target: drives plan_orchestrator.execute_task for a single task.
         Runs in its own daemon thread so the existing tick loop is unaffected.
@@ -1197,12 +1308,35 @@ class BotRunner:
 
         def on_finalized(plan):
             done = sum(1 for s2 in plan.subtasks if s2.status == "complete")
+            declined = plan.meta.get("declined")
+            if declined:
+                # L3 refused or asked a clarifying question — say its reason,
+                # which IS the whole answer. No step counts to report.
+                _order_status("FAILED", f"declined ({declined}): {plan.meta.get('reason','')[:120]}")
+                try:
+                    api.chat(self.name, str(plan.meta.get("reason") or "")[:300])
+                    shared_state.push_event({
+                        "bot": self.name, "type": "l3_plan_declined",
+                        "kind": declined, "reason": plan.meta.get("reason", "")[:200],
+                    })
+                except Exception as e:
+                    print(f"[{self.name}/orchestrator] decline chat error: {e}")
+                return
             _order_status("COMPLETED" if plan.status == "complete" else "FAILED",
                           f"{done}/{len(plan.subtasks)} steps")
             try:
                 ok = (plan.status == "complete")
                 done_count = sum(1 for s in plan.subtasks if s.status == "complete")
-                summary = f"Plan {plan.status}: {done_count}/{len(plan.subtasks)} steps"
+                cancelled = (plan.status == "cancelled")
+                if cancelled:
+                    summary = f"Stopped — {done_count}/{len(plan.subtasks)} steps done."
+                else:
+                    summary = f"Plan {plan.status}: {done_count}/{len(plan.subtasks)} steps"
+                    if not ok:
+                        # Say what didn't work, not just that something didn't.
+                        failed_ids = [str(s.id) for s in plan.subtasks if s.status != "complete"]
+                        if failed_ids:
+                            summary += f" (steps {', '.join(failed_ids)} unfinished)"
                 if ok:
                     # L2 Phase B render: same facts, this bot's voice. Identity
                     # fallback if the CPU model is slow/down — never blocks facts.
@@ -1216,6 +1350,18 @@ class BotRunner:
                 print(f"[{self.name}/orchestrator] finalize chat error: {e}")
 
         _order_status("RUNNING", task_text[:120])
+        # A fresh cancel flag per run, published on the bot so the stop
+        # shortcut and reset() (which run on OTHER threads) can abort this
+        # orchestrator between subtasks and between attempts.
+        cancel_event = threading.Event()
+        self._orch_cancel = cancel_event
+        # A stop/reset that landed before we published the Event set this flag;
+        # honor it now so the plan is born already-cancelled rather than running
+        # one more subtask (the pre-publication race in P7).
+        if getattr(self, "_orch_stop_pending", False):
+            self._orch_stop_pending = False
+            cancel_event.set()
+            print(f"[{self.name}/cancel] honoring pending stop at orchestrator start")
         try:
             plan_orchestrator.execute_task(
                 bot_name=self.name,
@@ -1227,6 +1373,7 @@ class BotRunner:
                 on_subtask_start=on_subtask_start,
                 on_subtask_done=on_subtask_done,
                 on_finalized=on_finalized,
+                cancel_event=cancel_event,
             )
         except Exception as e:
             print(f"[{self.name}/orchestrator] crashed: {e}")
@@ -1236,6 +1383,9 @@ class BotRunner:
             except Exception:
                 pass
             shared_state.push_event({"bot": self.name, "type": "l3_plan_error", "error": str(e)[:200]})
+        finally:
+            if self._orch_cancel is cancel_event:
+                self._orch_cancel = None
 
     # ── shadow-plan persistence (L3 spec-driven planning visibility) ───────
 
@@ -2437,6 +2587,108 @@ Respond with ONLY a JSON array. Example:
             print(f"[{self.name}/L4] OpenAI call failed: {e}")
             return None
 
+    def _run_script_tick(self):
+        """Run one script-mode tick. Return True if the script handled it.
+
+        True means this tick is DONE and the caller should skip the planner.
+        False covers every other outcome: no script configured, the script file
+        unreadable, the runner refusing/silent/erroring, the script proposing
+        nothing, or every proposed action being refused. All of those must let
+        the L1/L3 path run exactly as it did before, so this never raises and
+        never returns True without having actually executed something.
+
+        The one asymmetry worth stating: a script that deliberately returns []
+        (it chose not to act) falls through to the planner too. Suppressing the
+        planner on an intentional no-op would turn a quiet script into a dead
+        bot, which is the failure mode task 7.2 exists to prevent.
+        """
+        try:
+            st = self._get_script_tick()
+            if st is None:
+                return False
+            handled, actions, refusals, detail = st.tick()
+            for r in refusals:
+                print(f"[{self.name}/script] refused action: {r}")
+            if not handled:
+                # detail is the reason; it is logged only when a script was
+                # expected, so a bot with no script stays quiet.
+                if detail and detail != "no script":
+                    print(f"[{self.name}/script] falling back to planner: {detail}")
+                return False
+            if not actions:
+                return False
+            # `actions` are BOUND actions: `{"kind": KIND, ...allowed args}`
+            # (action_binding.py:82) -- not `{"directive": {...}}`. An earlier
+            # version read `act["directive"]`, got None for every action, and
+            # `continue`d: the log above counted actions that then ran nothing.
+            # A run would have looked like it applied work while executing none
+            # of it.
+            #
+            # Dispatch goes through _l3_orchestrator_dispatch, NOT _run_directive
+            # directly. BINDABLE_KINDS is the mod's 35 plus the agent's 10, and
+            # the agent-side ones are not mod directives: EQUIP maps to
+            # api.equip_all, DROP resolves an item to inventory slots, VAULT_*,
+            # PROVISION_TERMINAL and ASK_PLAYER are all special-cased in the
+            # orchestrator (agent.py:901). Posting those as mod directives fails
+            # - and since a refusal here used to still return True, the failure
+            # consumed the tick and the planner never ran. The orchestrator
+            # handles both vocabularies and reports COMPLETED/FAILED without
+            # raising, so it is also the honest place to learn whether anything
+            # actually ran.
+            print(f"[{self.name}/script] {len(actions)} action(s) this tick")
+            ran = 0
+            for act in actions:
+                if not isinstance(act, dict) or not act.get("kind"):
+                    continue
+                kind = act["kind"]
+                directive = dict(act)
+                print(f"[{self.name}/script] dispatch: {kind} {directive}")
+                result = self._l3_orchestrator_dispatch(directive)
+                if isinstance(result, str) and result.startswith("FAILED"):
+                    # Refused or unroutable: this action did not happen. Leave
+                    # `ran` alone so the tick falls through to the planner
+                    # rather than consuming it on work that never occurred.
+                    print(f"[{self.name}/script] not executed: {result}")
+                    continue
+                ran += 1
+                if "interrupted_by_chat" in str(result):
+                    return True
+            if ran == 0:
+                # Every action was refused. Nothing happened, so the planner
+                # gets the tick: a script that asks for impossible work must
+                # not silently become a dead bot.
+                print(f"[{self.name}/script] no action executed, falling back")
+                return False
+            return True
+        except Exception as e:  # noqa: BLE001 — a script must never kill the loop
+            print(f"[{self.name}/script] tick error, using planner: {e}")
+            return False
+
+    def _get_script_tick(self):
+        """Build the ScriptTick once, or None if this bot has no usable script."""
+        if self._script_loaded:
+            return self._script_tick
+        self._script_loaded = True
+        source = None
+        path = (self.profile.get("script") or "").strip()
+        if path:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    source = f.read()
+            except OSError as e:
+                print(f"[{self.name}/script] cannot read {path}: {e}")
+        elif self.profile.get("script_source"):
+            source = self.profile["script_source"]
+        if not source:
+            return None
+        try:
+            import script_tick
+            self._script_tick = script_tick.ScriptTick(api, self.name, source)
+        except Exception as e:  # noqa: BLE001
+            print(f"[{self.name}/script] script mode unavailable: {e}")
+            self._script_tick = None
+        return self._script_tick
+
     def _loop(self):
         while not self._stop_event.is_set():
             try:
@@ -2452,6 +2704,16 @@ Respond with ONLY a JSON array. Example:
                     continue
 
                 self._maybe_plan(new_msgs)
+
+                # ── M2 script path: runs ONLY if a script answered ──
+                # Placed before plan execution and after _maybe_plan, so a new
+                # instruction still reaches the planner first. `handled=False`
+                # on every failure path, so the L1 directive path below runs
+                # untouched -- that is the task 7.2 guarantee, and it is why
+                # this returns rather than `continue`s on an empty action list.
+                if self._run_script_tick():
+                    self._stop_event.wait(TICK_DELAY)
+                    continue
 
                 if not self._plan_steps:
                     self._check_task_board()
@@ -3040,8 +3302,17 @@ def _strip_category_prefix(text):
 
 
 def load_profiles():
-    """Load all profile JSON files from the profiles directory."""
-    profiles_dir = os.path.join(os.path.dirname(__file__), "profiles")
+    """Load all profile JSON files from the profiles directory.
+
+    `PROFILES_DIR` overrides the directory; unset means the image's own
+    `profiles/`, i.e. today's behaviour exactly. This exists because the
+    Deployment mounts the `agent-data` PVC at `/opt/aibot-agent/data`, which is
+    NOT where this function reads: a profile edited on the PVC was invisible to
+    the loader, so a run that "enabled" script mode from there would have proved
+    nothing. Prod sets nothing and is unaffected.
+    """
+    profiles_dir = os.getenv("PROFILES_DIR") or os.path.join(
+        os.path.dirname(__file__), "profiles")
     profiles = []
     for fname in sorted(os.listdir(profiles_dir)):
         if fname.endswith(".json"):
@@ -3373,7 +3644,7 @@ def _drone_adoption_worker():
     whose unit is gone. Officers persist server-side (re-raised on login), so
     they keep semantic memory like the five originals; drones stay ephemeral
     (no semantic memory, no profile file)."""
-    base_model = next(iter(_all_runners.values())).model if _all_runners else "qwen2.5:32b-instruct"
+    base_model = next(iter(_all_runners.values())).model if _all_runners else "qwen3-coder:30b"
     while True:
         time.sleep(20)
         try:
@@ -3992,10 +4263,20 @@ def run():
         print(f"[error] Cannot reach ollama: {models}")
 
     print(f"[agent] Connecting to mod API...")
-    max_retries = 60
+    # Each attempt costs up to config.HEALTH_TIMEOUT (default 10 s) plus the 5 s
+    # sleep below, so 90 attempts is ~1350 s worst case — comfortably beyond the
+    # mod's 900 s "starting" window. At 60 the loop could give up (~600 s) while a
+    # cold server was still legitimately starting, and exit 1 on a healthy boot.
+    # Raising that timeout lengthens this budget proportionally: tune it in
+    # config.py, where the call site actually reads it.
+    max_retries = 90
     for attempt in range(1, max_retries + 1):
         try:
             h = api.health()
+            # A 503 "stalled" body and a 200 "starting" body both mean the API
+            # answers but the server is not ready. Require "ok" (api.health_is_ready).
+            if not api.health_is_ready(h):
+                raise RuntimeError(f"mod API not ready: {h!r}")
             print(f"[agent] Mod API: {h}")
             break
         except Exception as e:

@@ -20,6 +20,33 @@ Deployment MUST target exactly two namespaces: `minecraft` (prod) and
 `minecraft-test` (test). The legacy `mindcraft` namespace is retired and MUST
 NOT receive new work.
 
+#### Scenario: Mindcraft VM is decommissioned
+- GIVEN the KubeVirt VM `mindcraft-vm` in the `mindcraft` namespace, currently
+  Stopped
+- THEN it is DECOMMISSIONED as of 2026-09-26, per the owner: "no longer in use;
+  we went in a different direction"
+- AND it MUST NOT be booted
+- AND its credentials (the VM user password, cloud-init RCON, and
+  `MINDCRAFT_API_KEY`) are no longer maintained or rotated (a one-time rotation
+  of `MINDCRAFT_API_KEY` happened on 2026-09-26)
+- AND its manifests (`~/clustering/manifests` base/mindcraft-vm) are being
+  removed from git by the ecs_hcm rig, not by this repo
+
+#### Scenario: Mindcraft VM cannot currently start, and revival is credential-first
+- GIVEN the deprecated `mindcraft-vm` spec
+- THEN it cannot currently start: it requests a passthrough
+  `nvidia.com/GA107_GEFORCE_RTX_3050_6GB` (one entry in the `gpus:` list of
+  `~/clustering/manifests` base/mindcraft-vm `vm.yaml`, `gpu0`), which no node
+  advertises any more (GPUs are now exposed as `nvidia.com/gpu`)
+- AND so the 2026-09-26 credential rotation could NOT change the VM user
+  password on its disk, which therefore still holds an old, leaked password
+- IF the VM is ever revived
+- THEN rotate the VM user password FIRST, using the new value in Secret
+  `mindcraft/mindcraft-vm-user`
+- AND note that the cloud-init RCON copy on the disk is STALE
+- AND reissue `MINDCRAFT_API_KEY` from Secret `mindcraft/mindcraft-config` into
+  the VM's config
+
 #### Scenario: Workloads per namespace
 - GIVEN the cluster is queried for AI-bot workloads
 - WHEN listing `minecraft-test`
@@ -65,6 +92,22 @@ from the bucket on every restart.
 - THEN `mc ls minio/minecraft-mods/test/current/` shows both jars with fresh
   timestamps
 
+#### Scenario: Verify an uploaded mod by content, not ETag
+- GIVEN a jar uploaded with `mc cp`
+- WHEN the operator confirms that MinIO holds the intended bytes, the check is
+  on content: `mc cat minio/minecraft-mods/test/current/<jar> | md5sum`, or a
+  pull to a file followed by `md5sum`
+- THEN the result matches the local file's `md5sum`
+- AND the object's ETag is NOT used for this comparison: a single-part PUT
+  returns an ETag equal to the content md5, but a multipart upload returns
+  `<md5 of part 1>-<part count>`, so after any re-upload the ETag is no longer
+  the file's md5 and comparing the two reports a false mismatch
+- AND an upload to the wrong alias or bucket is not caught by this: `mc cp`
+  to a path that does not exist can silently no-op and still exit 0, so the
+  target is `minio/minecraft-mods/...` (the `minio` alias, `minecraft-mods`
+  bucket) and the absence is confirmed with `mc stat` or `mc ls` rather than
+  from the exit code
+
 #### Scenario: Promote test to prod
 - GIVEN the test server has been validated with the new jars
 - WHEN the operator runs the mod manager
@@ -108,7 +151,7 @@ not via MinIO. The agent image is `harbor.arcadia-ecs.local/aiplayermod/agent:la
 The prod `aibot-agent` (namespace `minecraft`) is intentionally NOT redeployed
 during the v10–v12 skill/RL development push. Two prod changes are already
 committed to `base/minecraft/agent.yaml` but NOT applied to the prod cluster;
-apply them together at promotion time:
+they MUST be applied together at promotion time:
 
 - `OLLAMA_URL` (prod `agent-config` secret) repointed from the retired
   `ollama.mindcraft` to `ollama-l3.minecraft-test.svc.cluster.local:11434`
@@ -122,6 +165,17 @@ image with `imagePullPolicy: Always`, so a prod pod restart already pulls the
 v12 agent (behavioral replay-memory retired, `plan_memory` replay skill-only).
 Safe for prod — it runs the legacy path, which never reaches `plan_memory` —
 but treat any prod restart as a mini-promotion and verify it.
+
+#### Scenario: Promote the prod agent
+- GIVEN the two committed-but-unapplied prod changes
+  (`OLLAMA_URL` repoint and `USE_L3_PLAN_LAYER="true"`) have been validated in
+  test
+- WHEN the operator applies them together at promotion time
+- THEN the prod `agent-config` secret points `OLLAMA_URL` at
+  `ollama-l3.minecraft-test.svc.cluster.local:11434`
+- AND `USE_L3_PLAN_LAYER` is set to `"true"` on prod
+- AND a prod pod restart is treated as a mini-promotion and verified before
+  being considered complete
 
 ### Requirement: Manifests Are The Source of Truth
 Cluster manifests MUST live in `~/clustering/manifests` (GitHub:

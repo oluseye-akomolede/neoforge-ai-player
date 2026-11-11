@@ -1,6 +1,8 @@
 """Test world lifecycle — create, wait, and tear down ephemeral NeoForge pods."""
 
+import base64
 import json
+import os
 import subprocess
 import time
 import yaml
@@ -16,7 +18,8 @@ DEFAULT_TTL = 1800
 PG_HOST = "pgvector.minecraft-test.svc.cluster.local"
 PG_PORT = "5432"
 PG_USER = "aibot"
-PG_PASSWORD = "aibot-memory-2026"
+PG_SECRET_NAME = "pgvector-secret"
+PG_SECRET_KEY = "POSTGRES_PASSWORD"
 
 WORLD_TYPE_ENV: dict[str, dict[str, str]] = {
     "flat": {},
@@ -33,6 +36,7 @@ class TestWorld:
     namespace: str = NAMESPACE
     pod_name: str = ""
     mod_api_url: str = ""
+    health_probe_url: str = ""
     agent_api_url: str = ""
     ready: bool = False
     test_db: str = ""
@@ -105,8 +109,56 @@ def drop_test_db(world: "TestWorld"):
         print(f"[test-world] Warning: failed to drop {db}: {result.stderr}")
 
 
+def _resolve_pg_password() -> str:
+    """Resolve the aibot DB password lazily, without ever logging its value.
+
+    Prefers $PG_PASSWORD when set, else reads the POSTGRES_PASSWORD key from the
+    pgvector Secret in the cluster. Raises a clear error naming the variable and
+    secret when neither is available — the error must never contain the value.
+    """
+    env_pw = os.environ.get("PG_PASSWORD")
+    if env_pw:
+        return env_pw
+
+    try:
+        proc = subprocess.run(
+            [
+                "kubectl", "get", "secret", PG_SECRET_NAME,
+                "-n", NAMESPACE,
+                "-o", f"jsonpath={{.data.{PG_SECRET_KEY}}}",
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+    except FileNotFoundError:
+        raise RuntimeError(
+            f"PG_PASSWORD is unset and kubectl is not available on PATH, so "
+            f"{PG_SECRET_NAME}/{PG_SECRET_KEY} cannot be read from namespace "
+            f"{NAMESPACE}. Set PG_PASSWORD or install kubectl."
+        ) from None
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"PG_PASSWORD is unset and reading {PG_SECRET_NAME}/{PG_SECRET_KEY} "
+            f"from namespace {NAMESPACE} failed (kubectl rc={proc.returncode}). "
+            "Set PG_PASSWORD or ensure cluster access."
+        )
+    encoded = proc.stdout.strip()
+    if not encoded:
+        raise RuntimeError(
+            f"PG_PASSWORD is unset and {PG_SECRET_NAME}/{PG_SECRET_KEY} in "
+            f"namespace {NAMESPACE} is empty."
+        )
+    try:
+        return base64.b64decode(encoded).decode()
+    except Exception as exc:
+        raise RuntimeError(
+            f"PG_PASSWORD is unset and {PG_SECRET_NAME}/{PG_SECRET_KEY} in "
+            f"namespace {NAMESPACE} could not be base64-decoded: {type(exc).__name__}."
+        ) from None
+
+
 def _test_dsn(world: "TestWorld") -> str:
-    return f"postgresql://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{world.test_db}"
+    password = _resolve_pg_password()
+    return f"postgresql://{PG_USER}:{password}@{PG_HOST}:{PG_PORT}/{world.test_db}"
 
 
 def _create_service(world: "TestWorld"):
@@ -213,6 +265,7 @@ def wait_ready(world: TestWorld, timeout: int = 300) -> bool:
         if len(statuses) >= 2 and all(s == "true" for s in statuses):
             world.ready = True
             world.mod_api_url = f"http://{world.pod_name}.{world.namespace}.svc.cluster.local:3100"
+            world.health_probe_url = f"http://{world.pod_name}.{world.namespace}.svc.cluster.local:3101"
             world.agent_api_url = f"http://{world.pod_name}.{world.namespace}.svc.cluster.local:5000"
             print(f"[test-world] {world.pod_name} is ready")
             return True

@@ -113,6 +113,8 @@ spec:
           name: rcon
         - containerPort: 3100
           name: mod-api
+        - containerPort: 3101
+          name: mod-health
       volumeMounts:
         - name: mods
           mountPath: /mods
@@ -126,8 +128,12 @@ spec:
           cpu: "2"
           memory: 3Gi
       readinessProbe:
-        tcpSocket:
-          port: 3100
+        # Must read a body, not just dial: a tcpSocket probe goes Ready as soon
+        # as the port binds, so a hung server would look Ready — the exact
+        # failure this change exists to remove.
+        httpGet:
+          path: /health
+          port: 3101
         initialDelaySeconds: 60
         periodSeconds: 10
         failureThreshold: 18
@@ -142,6 +148,8 @@ spec:
       env:
         - name: MOD_API_URL
           value: "http://localhost:3100"
+        - name: AIPLAYER_HEALTH_PROBE_PORT
+          value: "3101"
         - name: MOD_API_KEY
           value: ""
         - name: OLLAMA_URL
@@ -149,7 +157,7 @@ spec:
         - name: USE_L3_PLAN_LAYER
           value: "true"
         - name: PG_DSN
-          value: "postgresql://aibot:aibot-memory-2026@pgvector.minecraft-test.svc.cluster.local:5432/botmemory"
+          value: "set-by-world.py"
         - name: DASHBOARD_ENABLED
           value: "true"
         - name: DASHBOARD_PORT

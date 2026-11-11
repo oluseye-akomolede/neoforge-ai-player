@@ -36,9 +36,12 @@ public class AIPlayerMod {
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
     private static final int DEFAULT_API_PORT = 3100;
+    private static final int DEFAULT_PROBE_PORT = 3101;
     private static final int SPAWN_PACKET_DELAY_TICKS = 40;
 
     private HttpApiServer apiServer;
+    private com.sigmastrain.aiplayermod.api.HealthProbeListener healthProbe;
+    private com.sigmastrain.aiplayermod.api.TickHeartbeat tickHeartbeat;
     private final Queue<PendingSpawn> pendingSpawns = new ConcurrentLinkedQueue<>();
 
     private record PendingSpawn(net.minecraft.server.level.ServerPlayer joiner, long sendAtTick) {}
@@ -83,14 +86,61 @@ public class AIPlayerMod {
             LOGGER.warn("Standing orders load failed", e);
         }
 
-        apiServer = new HttpApiServer(port, apiKey);
+        // Tick heartbeat for /health. Created here, so "listening since" is the
+        // moment the API server starts: the bounded "starting" state measures
+        // from exactly that point.
+        int stallSeconds = com.sigmastrain.aiplayermod.api.TickHeartbeat.resolveThresholdSeconds(
+                System.getProperty("aiplayermod.health.tickStallSeconds"),
+                System.getenv("AIPLAYER_HEALTH_TICK_STALL_SECONDS"),
+                com.sigmastrain.aiplayermod.api.TickHeartbeat.DEFAULT_STALL_SECONDS,
+                msg -> LOGGER.warn("{}", msg));
+        tickHeartbeat = new com.sigmastrain.aiplayermod.api.TickHeartbeat(stallSeconds, System::nanoTime);
+        LOGGER.info("Health tick stall threshold: {} s", stallSeconds);
+
+        // Bound on how long any API handler may wait for the server thread. One
+        // value, resolved once: the api-http spec requires a single configured
+        // value, and the alternative (a literal per handler) is what let a stall
+        // hold all four pool threads with no way to describe or test the bound.
+        int joinTimeoutMs = com.sigmastrain.aiplayermod.api.TickHeartbeat.resolveJoinTimeoutMs(
+                System.getProperty("aiplayermod.api.joinTimeoutMs"),
+                System.getenv("AIPLAYER_API_JOIN_TIMEOUT_MS"),
+                com.sigmastrain.aiplayermod.api.HttpApiServer.DEFAULT_JOIN_TIMEOUT_MS,
+                msg -> LOGGER.warn("{}", msg));
+        LOGGER.info("API join timeout: {} ms", joinTimeoutMs);
+
+        apiServer = new HttpApiServer(port, apiKey, tickHeartbeat, joinTimeoutMs);
         apiServer.start();
         LOGGER.info("AI Player API server started on port {}", port);
+
+        // /health gets its own listener and executor. It takes the resolved API
+        // port as an input: the collision check is against `port`, not against
+        // the 3100 constant, because `port` is configurable.
+        int probePort = com.sigmastrain.aiplayermod.api.TickHeartbeat.resolveProbePort(
+                System.getProperty("aiplayermod.health.probePort"),
+                System.getenv("AIPLAYER_HEALTH_PROBE_PORT"),
+                port,
+                DEFAULT_PROBE_PORT,
+                msg -> LOGGER.warn("{}", msg));
+        healthProbe = new com.sigmastrain.aiplayermod.api.HealthProbeListener(
+                probePort, apiServer.healthHandler());
+        if (healthProbe.start(msg -> LOGGER.error("{}", msg))) {
+            LOGGER.info("Dedicated /health listener started on port {}", probePort);
+        } else {
+            // Deliberate: no fallback onto the shared listener. A silent fallback
+            // would restore the shared executor in the one case that matters, so
+            // the probe stays silent and the deployment's probes fail visibly.
+            healthProbe = null;
+        }
     }
 
     @SubscribeEvent
     public void onServerStopping(ServerStoppingEvent event) {
         com.sigmastrain.aiplayermod.bot.BotChunkTickets.releaseAll();
+        // Whichever listeners were actually created: a probe listener that
+        // failed to start is null here, not a half-built object.
+        if (healthProbe != null) {
+            healthProbe.stop();
+        }
         if (apiServer != null) {
             apiServer.stop();
         }
@@ -144,6 +194,12 @@ public class AIPlayerMod {
                     }
                 }
             }
+        }
+
+        // Last statement on purpose: the heartbeat records a COMPLETED tick, so
+        // a tick that throws before this point must not refresh it.
+        if (tickHeartbeat != null) {
+            tickHeartbeat.recordTick();
         }
     }
 

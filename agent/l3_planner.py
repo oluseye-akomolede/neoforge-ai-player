@@ -28,6 +28,19 @@ from plan_schema import Plan, PlanValidationError, Subtask, validate_plan_dict, 
 log = logging.getLogger("aibot.l3-planner")
 
 
+class PlanClarification(Exception):
+    """L3 declined to plan: the task needs clarifying, or is impossible.
+
+    Carries `kind` ("clarify" | "refuse") and a short `reason` the bot says
+    to the player in chat. Distinct from PlanValidationError, which means the
+    model produced a malformed plan rather than a deliberate refusal."""
+
+    def __init__(self, kind: str, reason: str):
+        super().__init__(f"L3 {kind}: {reason}")
+        self.kind = kind
+        self.reason = reason
+
+
 BOT_PERSONAS = {
     "axiom":  "generalist; plans flexibly across any task domain",
     "forge":  "builder; plans in terms of materials, coordinates, construction sequences",
@@ -344,6 +357,28 @@ SINGLE subtask for the whole routine — do NOT split it into one-directive
 subtasks. The exec layer can then synthesize a NEW skill for it inline. Split
 into separate subtasks only when the steps are independent goals, not one routine.
 
+Before planning, check the task against reality. Do NOT silently substitute a
+different, doable-sounding task for one that was asked. If any part of the task
+names something this server does not have, or asks for two mutually exclusive
+things at once, you MUST decline — a plausible substitution is still a lie.
+
+Return instead of a plan:
+  - {{"kind": "clarify", "reason": "<one short question>"}} when the task is too
+    vague to act on ("go get some stuff", "make it better") — ask what exactly
+    is wanted, naming the ambiguity.
+  - {{"kind": "refuse", "reason": "<one short why>"}} when the task is
+    impossible here (something the server lacks), self-contradictory, or asks
+    for two things at once that cannot both be done. Examples:
+      * "fly to the moon" → refuse: there is no moon; the dimensions are
+        overworld, nether, end.
+      * "dig to bedrock at the same time as X" → refuse: two simultaneous
+        actions.
+      * "go get some stuff" → clarify: which stuff, and how much.
+    Do NOT convert these into a nearby achievable goal (e.g. "go to the End"
+    for "fly to the moon"). Naming the real goal is the whole point.
+A fabricated plan is worse than a refusal: the player acts on it and it cannot
+succeed. Keep the reason to one sentence, in the bot's voice.
+
 Output schema:
 {{
   "task": "<echo the task text>",
@@ -356,6 +391,7 @@ Output schema:
     ...
   ]
 }}
+(or, instead of the above, {{"kind": "clarify"|"refuse", "reason": "..."}})
 """
 
 
@@ -390,7 +426,6 @@ def call_plan(model: str, bot_name: str, task: str,
     created_at = datetime.datetime.utcnow().isoformat()
     try:
         data = json.loads(raw)
-        validate_plan_dict(data)
     except json.JSONDecodeError as e:
         trajectory_log.log_call(
             phase="plan", bot=bot_name, model=model,
@@ -400,6 +435,25 @@ def call_plan(model: str, bot_name: str, task: str,
             plan_ref=created_at, parse_error=f"non-JSON: {e}",
         )
         raise PlanValidationError(f"L3 PLAN returned non-JSON: {e}") from e
+    # Clarify/refuse: when the task cannot honestly be decomposed — it is too
+    # vague to act on ("go get some stuff"), impossible on this server, or
+    # self-contradictory — L3 returns a short reason for the player instead of
+    # inventing a plan. Tiller's "go get some stuff" became a fabricated
+    # loot-village + quartz-shelter plan; this is the honest exit.
+    if isinstance(data, dict) and data.get("kind") in ("clarify", "refuse"):
+        reason = str(data.get("reason") or "").strip()[:300]
+        if not reason:
+            reason = "I can't work out what you want — say it another way?"
+        trajectory_log.log_call(
+            phase="plan", bot=bot_name, model=model,
+            prompt_system=sys_prompt, prompt_user=user,
+            response_raw=raw, parsed=data,
+            world_state_summary=world_state_summary,
+            plan_ref=created_at,
+        )
+        raise PlanClarification(str(data["kind"]), reason)
+    try:
+        validate_plan_dict(data)
     except PlanValidationError as e:
         trajectory_log.log_call(
             phase="plan", bot=bot_name, model=model,
@@ -730,6 +784,61 @@ def partition_fleet(model: str, task: str, bots_info: str, bot_names: list) -> d
     resp.raise_for_status()
     out = json.loads(resp.json().get("message", {}).get("content", "{}"))
     return {k: str(v) for k, v in out.items() if k in bot_names}
+
+
+_CLASSIFY_SYSTEM_PROMPT = """You are the front desk for {bot_name}, an AI bot in Minecraft.
+
+An operator just said something to this bot. Decide what they WANT before
+anything is executed:
+
+- "task": an instruction to DO something in the world. Ask the bot to move,
+  gather, mine, build, craft, fight, follow, stop, explore, or otherwise
+  change its position, inventory, or the world. Orders can be phrased as
+  questions ("can you get me some wood?" is still a task).
+- "chat": a question or remark addressed to the bot itself — asking who or
+  what it is, what it thinks, how it is doing, its opinion, a greeting, a
+  joke, small talk, or anything answerable without touching the world.
+
+Ambiguous cases resolve to "task" when any world-changing action is implied.
+
+Output ONLY this JSON, no prose, no markdown fences:
+{{"kind": "chat" | "task"}}
+
+The operator said: {text}"""
+
+
+def classify_message(model: str, bot_name: str, text: str) -> str:
+    """Decide whether a player message is conversation or an instruction.
+
+    Returns "chat" or "task". Fails to "task" on any error — the safe
+    direction: a mistaken order is visible and correctable (the player sees
+    the plan), whereas a mistaken chat silently drops a real instruction."""
+    sys_prompt = _CLASSIFY_SYSTEM_PROMPT.format(bot_name=bot_name, text=text)
+    try:
+        with ollama_lock:
+            resp = requests.post(
+                f"{OLLAMA_URL}/api/chat",
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": text},
+                    ],
+                    "stream": False,
+                    "format": "json",
+                    "options": {"temperature": 0.0, "num_predict": 24},
+                },
+                timeout=60,
+            )
+        resp.raise_for_status()
+        data = json.loads(_strip_codefence(resp.json()["message"]["content"]))
+        kind = str(data.get("kind", "")).strip().lower()
+        if kind in ("chat", "task"):
+            return kind
+        log.warning("[%s] classify returned %r — defaulting to task", bot_name, kind)
+    except Exception as e:
+        log.warning("[%s] classify failed (%s) — defaulting to task", bot_name, e)
+    return "task"
 
 
 def converse(model: str, bot_name: str, persona: str, text: str,

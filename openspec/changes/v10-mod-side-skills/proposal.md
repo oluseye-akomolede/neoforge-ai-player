@@ -70,3 +70,33 @@ squad" exists only as persona text (`agent.py:3271-3279`). Squad skills
 (`parallel` across a bound squad) and army composition both need that
 binding first. Tracked separately; noted here because `parallel` will
 land on top of it.
+
+## Not verified at archive
+
+Added 2026-09-29 as part of the spec backfill (row `qitem-20260929143218-f02afaec`).
+This change carried no spec delta; it now does. The `skill-layer` domain already
+existed and covers most of v10, so the new delta adds only what the spec did not
+describe: the **deterministic, plan-time skill matcher** and the exec-time
+collapse backstop, plus the registry seam and the bounded self-expansion.
+
+What was checked against `main` (`dd88be0`):
+
+- **Skill engine (mod side).** `SkillSpec`, `SkillNode`, `SkillValidator`,
+  `SkillRegistry`, `SkillBehavior` are all present under
+  `src/main/java/com/sigmastrain/aiplayermod/brain/` on main. This repo builds
+  them into `aiplayermod-1.0.0.jar`. Whether the deployed server jar carries
+  this exact build is a deployment fact, not proven here.
+- **Deterministic plan-time matcher (agent side).** `agent/skill_matcher.py` is
+  on main (first commit `5f766b6`), with `l3_planner._collapse_to_skill` and
+  `l3_planner._SEED_SKILLS`. This is the agent image, live in prod
+  (`agent:qwen3coder-dd88be0`). It closed the v10 task's open blocker #2.
+- **Seed set has grown past v10's five.** `_SEED_SKILLS` on main now names
+  `mine_and_smelt`, `goto_and_scan`, `search_and_loot`, `harvest_and_store`,
+  `resupply_network`, `summon_vehicle`, `channel_gun`, and `fuse_*`. The original
+  five are a subset; the delta does not pin the seed list.
+- The headless `SkillEngineProof` runs (27/27, 35/35) and the 2026-08-13 live
+  checks are recorded evidence, not reproducible from the tree.
+
+Still open, and deliberately so: the `SkillEngineProof` run is not re-run here;
+hive-mod registration (Phase 3) lives in the hive repo and is held; squad
+binding is a separate change. Per the backfill rule those boxes stay as they are.

@@ -2,6 +2,7 @@
 
 import json
 import time
+import os
 import requests
 import yaml
 from dataclasses import dataclass, field
@@ -106,16 +107,24 @@ class TestRunner:
         r.raise_for_status()
         return r.json()
 
-    def _wait_mod_api(self, world: TestWorld, timeout: int = 120) -> bool:
+    def _wait_mod_api(self, world: TestWorld, timeout: int = 900) -> bool:
+        # 900 s matches the mod's "starting" window and the deployment's startup
+        # allowance. At 120 s a cold boot was reported as a harness failure while
+        # the server was still legitimately starting.
         ip = get_pod_ip(world)
         if not ip:
             return False
         base = f"http://{ip}:3100"
+        # /health moved to the mod's dedicated probe port; this poll waits on it
+        # specifically, so it must follow or it waits out its whole timeout.
+        probe = f"http://{ip}:{os.getenv('AIPLAYER_HEALTH_PROBE_PORT', '3101')}"
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
-                r = requests.get(f"{base}/health", timeout=5)
-                if r.status_code == 200:
+                r = requests.get(f"{probe}/health", timeout=10)
+                # A 200 is not readiness: "starting" is also a 200. Only an
+                # "ok" body means the mod is loaded and the tick is running.
+                if r.status_code == 200 and r.json().get("status") == "ok":
                     world.mod_api_url = base
                     world.agent_api_url = f"http://{ip}:5000"
                     return True
