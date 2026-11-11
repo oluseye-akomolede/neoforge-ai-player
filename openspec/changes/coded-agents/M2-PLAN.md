@@ -128,12 +128,52 @@ stay that way, because the two answers have different consequences:
   what a script can ask a bot to do, and it belongs in the contract, stated,
   not implied by reusing the planner's private constant.
 
-**Decision: `api.do` accepts the full `DirectiveType` enum (37).** Rationale: the
-whole point of the scripting surface is that a script is not a skill leaf — the
-skill-leaf restriction exists because a declarative leaf can be synthesised into a
-validated skill, and nothing validates a script that way. So `script_client.py`
-builds its own `SCRIPT_DIRECTIVE_KINDS` from `DirectiveType` and does **not**
-import the planner's narrower set. The plan's refusal therefore reads the 37.
+**Decision: `api.do` accepts the full `DirectiveType` enum (37),** built as its
+own set, `SCRIPT_DIRECTIVE_KINDS`. Rationale is efficiency, not taxonomy: the
+narrow frozenset is what `SkillValidator` and `SkillNode` consult for skill
+**synthesis**, and it must keep doing exactly that. The new rejection needs its
+own set, so building it against the 37 costs nothing and disturbs nothing.
+
+### How `SCRIPT_DIRECTIVE_KINDS` is obtained — generate it, do not type it
+
+An earlier draft said "`script_client.py` builds `SCRIPT_DIRECTIVE_KINDS` from
+`DirectiveType`", which is not implementable as written: **`DirectiveType` is a
+Java enum and Python cannot read it.** There is no Python import, no generated
+mirror and no JSON export — `grep DirectiveType` across `*.py` returns exactly one
+hit, and it is a comment. The sentence forbade a literal and then required one.
+
+Three ways to resolve it, and why one is chosen:
+
+| option | verdict |
+|---|---|
+| (a) hand-maintained 37-name literal in Python | **rejected** — reintroduces the exact drift the two-sets table exists to stop, now with two copies to desynchronise |
+| (b) generate at build time from `DirectiveType.java`, failing loudly on drift | **chosen** |
+| (c) mod exposes its enum over HTTP | **rejected** — §1 argues against new mod endpoints in M2 |
+
+**Implementation:** a small generator reads `DirectiveType.java` and emits
+`SCRIPT_DIRECTIVE_KINDS` into a generated Python module that is committed. A test
+regenerates from the Java source and asserts the committed module matches, so
+adding an enum member without regenerating fails the suite rather than silently
+narrowing what scripts may call. The generator parses the enum's member list, not
+the file's prose.
+
+### SKILL is accepted by the set but not satisfiable as a bare directive
+
+Admitting all 37 includes `SKILL`, whose validity depends on its **payload**, not
+its name — `agent/agent.py:3849` dispatches it as `set_directive(b, "SKILL",
+target=sid, extra=...)` with a skill id. And `SkillValidator.java:59` rejects
+`SKILL` as a directive leaf outright ("a directive leaf must not be SKILL — use a
+skill-ref node"), which is precisely why it is absent from the frozenset.
+
+A flat name set cannot express "valid only with a resolvable id". Therefore:
+
+- `SCRIPT_DIRECTIVE_KINDS` admits `SKILL` (the mod accepts it), but
+- **§2's refusal test does not use `SKILL` as a plain accept case.** It is tested
+  both ways: with a resolvable id (accepted) and with a bare target (rejected,
+  with a message naming the requirement), or `api.do` is scoped to non-`SKILL`
+  kinds and the restriction is stated in the contract. The plan adopts the
+  both-ways test, because a bare-target `SKILL` is a script author's plausible
+  mistake and deserves a named error rather than a silent no-op.
 
 Two properties of that set matter for the refusal, and both are corrections to
 the first draft of this plan:
