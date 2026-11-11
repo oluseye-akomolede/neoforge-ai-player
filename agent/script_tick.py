@@ -28,6 +28,33 @@ from script_client import (
 )
 
 
+def no_runner_detail():
+    """One wording, used by both the constructor check and the tick."""
+    return "no SCRIPT_RUNNER_URL configured"
+
+
+def _default_transport():
+    """A `_post(path, data, timeout=...)` bound to SCRIPT_RUNNER_URL, or None.
+
+    Returns None when the URL is unset so the caller falls through to the
+    planner. That is the safe default: a pod with no runner must not POST
+    anywhere, and in particular must not POST to the mod.
+    """
+    from config import SCRIPT_RUNNER_URL
+    base = (SCRIPT_RUNNER_URL or "").strip().rstrip("/")
+    if not base:
+        return None
+
+    import requests
+
+    def _post(path, data=None, timeout=5):
+        r = requests.post(f"{base}{path}", json=data or {}, timeout=timeout)
+        r.raise_for_status()
+        return r.json()
+
+    return _post
+
+
 def _revision_of(source):
     """Stable revision id for a script body.
 
@@ -94,10 +121,14 @@ class ScriptTick:
             "memory": self._memory,
         }
 
-        # call_runner falls back to `api._post` when post is None, so passing
-        # None with a None api would be an AttributeError on the failure path.
-        # The bot's own api object is the right default transport.
-        result = call_runner(self._api, body, post=self._post)
+        # When no transport was injected, post to SCRIPT_RUNNER_URL. It is
+        # deliberately NOT `api._post`: that helper prefixes MOD_API_URL, so it
+        # would send script ticks to the game mod, which answers JSON and would
+        # look like a script result. No runner configured means no script mode.
+        poster = self._post if self._post is not None else _default_transport()
+        if poster is None:
+            return False, [], [], no_runner_detail()
+        result = call_runner(self._api, body, post=poster)
 
         if result.state != STATE_SCRIPT:
             # Timeout, refused, error -- every non-script state falls through.

@@ -121,6 +121,51 @@ class RequestShapeTest(unittest.TestCase):
         ScriptTick(_FakeApi(), "Scout", "x", post=_capture).tick()
         self.assertEqual(captured["kw"].get("timeout"), _rc.SCRIPT_TIMEOUT)
 
+    def test_no_runner_url_falls_through_instead_of_posting_to_the_mod(self):
+        # The defect this exists to catch: the transport defaulted to
+        # `api._post`, which prefixes MOD_API_URL. A ScriptTick built the way
+        # agent.py builds it (post=None) therefore POSTed script ticks to the
+        # GAME MOD. The mod answers JSON, so call_runner would read it as a
+        # script result or a fallback -- silently, with the tick never reaching
+        # the runner. Nothing in the agent read a runner URL at all.
+        posted = []
+
+        class _Api:
+            def _post(self, path, data=None, timeout=5):
+                posted.append(path)
+                return {"contract_version": 1, "status": "ok", "actions": []}
+
+        import config
+        original = config.SCRIPT_RUNNER_URL
+        config.SCRIPT_RUNNER_URL = ""
+        try:
+            handled, actions, refusals, detail = ScriptTick(
+                _Api(), "Scout", "x").tick()
+        finally:
+            config.SCRIPT_RUNNER_URL = original
+
+        self.assertFalse(handled, "no runner configured must fall through to the planner")
+        self.assertEqual(posted, [], "posted a tick with no runner URL - to the mod?")
+        self.assertIn("SCRIPT_RUNNER_URL", detail)
+
+    def test_transport_posts_to_the_runner_not_the_mod(self):
+        seen = {}
+
+        import script_tick
+        import config
+        original = config.SCRIPT_RUNNER_URL
+        config.SCRIPT_RUNNER_URL = "http://runner.example:8080/"
+        try:
+            transport = script_tick._default_transport()
+        finally:
+            config.SCRIPT_RUNNER_URL = original
+        self.assertIsNotNone(transport)
+        # Bound the URL it will hit rather than trusting the string.
+        seen["src"] = __import__("inspect").getsource(script_tick._default_transport)
+        self.assertIn("SCRIPT_RUNNER_URL", seen["src"])
+        self.assertNotIn("MOD_API_URL", seen["src"],
+                         "_default_transport must not reach for the mod's URL")
+
     def test_revision_changes_with_the_script(self):
         a = ScriptTick(_FakeApi(), "Scout", "one")._revision
         b = ScriptTick(_FakeApi(), "Scout", "two")._revision

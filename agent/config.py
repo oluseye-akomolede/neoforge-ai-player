@@ -7,6 +7,14 @@ from urllib.parse import urlsplit, urlunsplit
 MOD_API_URL = os.getenv("MOD_API_URL", "http://localhost:3100")
 MOD_API_KEY = os.getenv("MOD_API_KEY", "")
 
+# The M2 script runner is a SEPARATE service from the mod, and must not share
+# MOD_API_URL. `api._post` prefixes MOD_API_URL, so using it as the runner
+# transport (which `call_runner` does when `post` is None) sends script ticks to
+# the game mod -- silently, because the mod answers JSON too. Empty by default
+# so a pod that has not been given a runner falls through to the planner rather
+# than posting ticks somewhere unintended.
+SCRIPT_RUNNER_URL = os.getenv("SCRIPT_RUNNER_URL", "")
+
 # GET /health lives on the mod's own dedicated listener, not on MOD_API_URL: the
 # probe port answers /health and nothing else, so the two cannot share a base.
 # Default ties to the mod's default (3101); a deployment that moves it must set
