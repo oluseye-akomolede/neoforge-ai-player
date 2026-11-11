@@ -113,7 +113,7 @@ Dropping `:31167` would leave the service reachable in-cluster only.
   "we can roll back" is the wrong instinct — roll **forward** with a new value
   if something breaks.
 - After the write, verify with `pytest`-free checks: new value works, old value
-  is refused, both holders carry the new fingerprint.
+  is refused, all four holders carry the new fingerprint.
 
 ---
 
@@ -122,10 +122,31 @@ Dropping `:31167` would leave the service reachable in-cluster only.
 Downtime is one server restart. Check for online players first and stop if
 anyone is connected, unless the lead says otherwise.
 
-1. **Pre-checks.** Record the current fingerprint of both holders; confirm they
-   match each other (they should — if not, stop and report, because a mismatch
-   means a third path is writing one of them). Count online players; a non-zero
-   count stops the plan pending the lead's word.
+1. **Pre-checks — and capture the search key 5(c) will need.**
+   (i) Record the current **fingerprint of all four holders**; confirm they all
+   match each other. If they do not, stop and report: a mismatch means some
+   holder is being written from a source outside this list, and that source is
+   the thing to find before rotating. (This said "both holders" when the table
+   had two rows. With four rows, "a third path" is the wrong inference — two of
+   the four *are* named, so an operator reading it literally would record two
+   fingerprints and never see a mismatch among the others.)
+   (ii) **Read the current value into a shell variable in the operator's session.**
+   Something like `OLD=$(kubectl -n minecraft-test get secret minecraft-rcon
+   -o jsonpath='{.data.password}' | base64 -d)` — never echoed, never written to
+   a file, never on a command line `ps` can see. This is the **only** copy, and
+   it must not outlive the rotation; 5(c) consumes it and the session ends.
+   Why this step exists at all: **a fingerprint cannot be grepped for.** The
+   files hold the value, not its hash. Before this clause, 5(c) asked for a scan
+   for the old value at a moment when step 2 had already overwritten the Secret
+   and §2 forbids keeping a backup — so the search key was guaranteed absent and
+   the step that exists to catch a missed holder could not have run.
+   **Do not confuse the two variables.** `OLD` is the compromised value and must
+   die with the session. The *new* value (5(c)'s success condition, step 4's
+   `printenv`) is a different variable and a different lifetime. Naming them
+   apart matters more than it looks: a session that keeps `OLD` around "just in
+   case" has recreated the backup §2 forbids, in the shell.
+   (iii) Count online players; a non-zero count stops the plan pending the
+   lead's word.
 2. **Rotate the Secret.** Generate, validate length 48 (section 2), `kubectl create secret
    ... --dry-run=client -o yaml | kubectl apply -f -`. Value never printed.
 3. **Restart the server** so the env re-reads and `server.properties` is
@@ -161,6 +182,14 @@ anyone is connected, unless the lead says otherwise.
    four paths were changed. The mtime check in step 4 and this scan are not
    redundant: the mtime says the generator ran, the scan says no copy anywhere
    still carries the old value.
+   **(c) runs in the same session as step 1 and searches for `$OLD`.** The scan
+   key is the variable step 1(ii) captured, fed to the in-pod grep on stdin —
+   the exact shape proven in §1, including its positive control, which is
+   repeated here: run the same command with the string `rcon.password=` first
+   and confirm it reports a hit. A scanner that cannot find a string it is
+   known to contain will report a clean zero, and two of my attempts did.
+   After (c) returns zero, clear the variable and close the session: that is
+   what makes "no backup was kept" true rather than intended.
 6. **Report** fingerprints and lengths only.
 
 ---
