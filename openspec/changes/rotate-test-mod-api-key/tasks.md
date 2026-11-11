@@ -39,20 +39,52 @@ value. This rule exists because breaking it is what created this change.
       keys are still present afterwards.
 - [ ] 3.5 Confirm the new fingerprint matches across **both** secrets and
       differs from `902a001fdc05`.
-- [ ] 3.6 Restart the three consumers: `l2-mcp`, `minecraft-test-server`,
-      `aibot-agent-test`. Wait for rollout completion on each.
+- [ ] 3.6 Restart order, deliberately chosen (lead ruling): patch all three,
+      then restart **`minecraft-test-server` (the mod)**, then the two clients
+      `l2-mcp` and `aibot-agent-test` immediately after.
+
+      **The 401 window is accepted and must be stated, not hidden.** Between the
+      mod restarting and each client restarting, that client still holds the old
+      key while the mod holds the new one, so everything it sends fails 401. The
+      window is short (the clients restart back-to-back) but it is real. A red
+      flag in `l2-mcp` logs during that window is expected and is not a failed
+      rotation.
+
+      **What this step costs.** `minecraft-test-server` is the game server, not
+      a sidecar. Restarting it drops and recreates the world session and takes
+      TEST offline for the duration. Verified from the cluster, not assumed:
+      - preStop runs `timeout 30 rcon-cli stop` (vanilla save-and-stop), then
+        waits up to 180 s for the Server thread to exit, then TERM, 30 s, KILL.
+        A normal stop therefore **saves the world**; no data loss.
+      - `terminationGracePeriodSeconds: 300`, strategy `Recreate`.
+      - **Measured startup on the current pod:** PodScheduled `04:33:55Z` →
+        container started `04:34:15Z` → Ready `04:38:11Z`, i.e. **3 m 56 s from
+        schedule to Ready**. That is the floor for downtime, before the stop
+        half is added.
+      - Expected total downtime: startup (measured ≈3 m 56 s) plus the stop
+        (bounded by the hook: ≤30 s stop + ≤180 s thread wait + ≤30 s TERM).
+        State the observed figure on the row when it actually runs; do not
+        carry this estimate forward as a measurement.
 
 ## 4. Verify
 
-- [ ] 4.1 Old key → mod returns **401** (via `aibot-api:3100`). This is the
-      load-bearing check: it proves no holder was missed.
+- [ ] 4.1 **The mod rejects the old key**: old key → **401** (via
+      `aibot-api:3100`). This measures exactly one thing — that the *mod* is no
+      longer authenticating the old value after its restart. It does **not**
+      prove no holder was missed (see 4.3/4.4). A green 4.1 beside red 4.3/4.4
+      is a failed rotation.
 - [ ] 4.2 New key → mod returns **200**.
-- [ ] 4.3 `l2-mcp` pod is Running and not restart-looping; its logs show no auth
-      errors against the mod after the restart.
-- [ ] 4.4 `aibot-agent-test` ticks successfully (bots active on TEST), proving
-      the `agent-config` path carries the new value.
-- [ ] 4.5 Record on the queue row: consumers restarted, the five results, and
-      the new fingerprint (first 12 chars only).
+- [ ] 4.3 **LOAD-BEARING.** `l2-mcp` pod is Running and not restart-looping;
+      its logs show no auth errors against the mod *after* the 401 window
+      closes. This is what proves the client carries the new value. The mod
+      cannot prove this: a client on the stale key gets a 401 from the mod that
+      is indistinguishable, from the mod's side, from the old key being
+      correctly retired.
+- [ ] 4.4 **LOAD-BEARING.** `aibot-agent-test` ticks successfully (bots active
+      on TEST), proving the `agent-config` path carries the new value. Same
+      reason as 4.3 — it is a client, not a verifier.
+- [ ] 4.5 Record on the queue row: consumers restarted, the five results, the
+      **measured** downtime, and the new fingerprint (first 12 chars only).
 
 ## 5. Rollback (only if verify fails)
 

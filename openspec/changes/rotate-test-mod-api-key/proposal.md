@@ -46,13 +46,23 @@ no-op over an empty list.
 `secret/agent-config` carries 18 keys and only `MOD_API_KEY` holds this value.
 The patch changes that one key and leaves the other 17 byte-identical.
 
-## Why old-key-gets-401 is the right post-condition
+## Why old-key-gets-401 is necessary but not sufficient
 
 `minecraft-test-server` is the **mod itself**; it holds `AIPLAYER_API_KEY` to
-validate callers (`HttpApiServer.java:60`). So it is simultaneously a
-credential holder and the verifier. That makes it the only authority on whether
-the rotation took: if the old key still returns 200, some holder was missed and
-the old value survives somewhere that matters.
+validate callers (`HttpApiServer.java:60`). A 401 to the old key after its
+restart therefore proves exactly one thing: the *mod* stopped authenticating
+the old value.
+
+It does **not** prove that no holder was missed. `l2-mcp` and
+`aibot-agent-test` are **clients**, not verifiers. If either kept a stale
+value, the mod would answer *them* with 401 — which, from the mod's side, is
+indistinguishable from the old key being correctly retired.
+
+The load-bearing checks are therefore **4.3 and 4.4**: `l2-mcp` logging no auth
+errors after the restart window, and `aibot-agent-test` ticking. Those are the
+only two that show the *clients* carry the new value. A green 4.1 beside a red
+4.3 or 4.4 is a failed rotation, and reading it the other way round is the
+mistake this section exists to prevent.
 
 ## Startup-read consequence
 
@@ -61,6 +71,25 @@ so the value is read **once at process start**. Patching the Secret alone
 changes nothing that is running; each consumer must be restarted for the new
 value to take effect. This is why the plan patches and restarts as one step
 rather than treating the patch as the finish line.
+
+## Restarting the game server: what it costs
+
+`minecraft-test-server` is the Minecraft game server itself, so step 3.6 takes
+TEST offline. Verified in the cluster rather than assumed:
+
+- `preStop` runs `timeout 30 rcon-cli stop` — a vanilla save-and-stop — then
+  waits up to 180 s for the Server thread, then TERM, 30 s, KILL. **A normal
+  stop saves the world; there is no data loss.**
+- `terminationGracePeriodSeconds: 300`, strategy `Recreate`.
+- **Measured startup on the current pod:** scheduled `04:33:55Z`, container
+  started `04:34:15Z`, Ready `04:38:11Z` — **3 m 56 s from schedule to Ready.**
+
+Restart order (lead ruling): patch all three, restart the mod, then both
+clients immediately. That leaves a **short window** in which a client still
+holds the old key while the mod holds the new one, and every request it makes
+fails 401. The window is stated here and in tasks 3.6 so that a red flag in
+`l2-mcp` logs during it is recognised as expected rather than as a failed
+rotation.
 
 `HttpApiServer.java:148` treats an **empty** key as "auth disabled". A patch
 that landed an empty value would not lock the mod down — it would open it. The
