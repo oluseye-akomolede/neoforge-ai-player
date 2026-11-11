@@ -84,20 +84,56 @@ endpoint. Two different shapes came back — `/directive` **bimodal**, `/bots`
 
 | endpoint | min | median | shape |
 |---|---|---|---|
-| `/bot/Mystic/status` | 2.4 ms | 3.0 ms | consistently fast |
+| `/bot/Mystic/status` | 2.4 ms | 3.0 ms | ~~consistently fast~~ **superseded — bimodal** |
 | `/bot/Mystic/directive` | 2.4 ms | 42.2 ms | **alternates 2.5 ms / 42 ms** |
-| `/bots` | 41.9 ms | 42.2 ms | **deterministic ~42 ms** (cause unexplained — see correction below) |
+| `/bots` | 41.9 ms | 42.2 ms | ~~deterministic ~42 ms~~ **superseded — bimodal** |
 
 Raw sample for `/directive`, consecutive draws:
 `29.2 44.3 2.4 42.6 3.8 42.2 2.5 42.4 3.0 42.2`. There is no middle: a call
 costs ~3 ms or ~42 ms, never ~20.
 
+> **SUPERSEDED 11:44Z by a re-run of the committed probe — see below.** The
+> table above is the original ad-hoc measurement. The committed probe
+> (`agent-script-runner/scripts/probe-snapshot-latency.mjs`, `fb92891`)
+> reproduces the *refresh* verdict but **not** this per-endpoint shape: on that
+> run `/status` was bimodal too, and `/bots` was not deterministic. Read the
+> re-run, not this table, for any claim about a single endpoint. The *decision*
+> (bound 300 ms, cache per tick) is unaffected — the refresh figure holds.
+
 **Cause: two different things, not one.** For `/directive`, a real server-thread
 hop: it either catches the server thread ready (~3 ms) or waits out the current
 tick. 65% of `directive` samples paid it (26 of 40 ≥ 15 ms). For `/bots`, a
-deterministic ~42 ms that is **not** a hop and whose cause is not established —
-see the correction at the end of this section, which supersedes the earlier
-single-cause reading. `status` is a bare field read and never pays either.
+deterministic ~42 ms that is **not** a hop and whose cause is not established.
+~~`status` is a bare field read and never pays either.~~ **Both clauses are
+superseded by the re-run below: `/bots` is bimodal on that run, and `status` is
+not fast.**
+
+**Re-run of the committed probe, 2026-11-11T11:44Z (`fb92891`), and it corrects
+the two rows above.** Bounded Job in `minecraft-test`, 40 samples per endpoint
+plus 40 four-call refreshes, one discarded warm-up per endpoint, full body read:
+
+| endpoint | min | median | p95 | max | ≥15 ms | shape |
+|---|---|---|---|---|---|---|
+| `status` | 2.1 | 40.4 | 43.8 | 53.7 | 20/40 | **bimodal (was: consistently fast)** |
+| `directive` | 2.4 | 41.8 | 46.2 | 61.0 | 23/40 | bimodal — holds |
+| `bots` | 1.5 | 41.8 | 43.9 | 44.0 | 20/40 | **bimodal (was: deterministic)** |
+
+Raw `status` draws: `5.7 3.6 42.7 40.4 3.1 42.5 53.7 10.2 3.4 42.6 40.6 2.1
+42.2 2.1 42.7 2.7 42.7 3.7 41.9 2.3`. Raw `bots` draws included `2.2` and `2.6`
+adjacent to `42.2`/`42.4`.
+
+So **all three endpoints are bimodal**, and the claim that `status` is a bare
+field read that "never pays" does not reproduce. The two-cause explanation above
+— a hop for `/directive`, a separate deterministic cost for `/bots` — does not
+survive either: a common ~42 ms stall appearing on all three, about half the
+time, points at one shared cause (the server-thread wait), not three endpoint
+properties. This is not an instrument bug: the probe uses a monotonic clock,
+reads the full body, and discards a warm-up.
+
+**What does not change:** the four-call refresh on this run is **median 94.9 ms,
+p95 129 ms, max 133.6 ms** — still over a 100 ms bound about half the time, so
+the 300 ms bound and the per-tick cache remain the right decision for the right
+reason. What changes is the *explanation*, which is now less settled, not more.
 
 **Consequence for the 100 ms bound.** The per-call costs accumulate because they
 are paid per call, not once per refresh — measured 4-call refresh:
@@ -137,12 +173,15 @@ smaller than a mod endpoint and addresses the measured cause.
 
 *Reproduce:* bounded Job in `minecraft-test`, 40 samples per endpoint, timing
 `fetch` around a full body read against `minecraft-test-server:3100` with
-`X-Api-Key` from `secret/mod-api-key`. The probe was **not committed** — it
-existed only as an ad-hoc Job and has since been deleted, so the numbers cannot
-be re-derived from this repo. Treat the table as an observation to re-measure,
-not as a fixture. (Reviewer caught the earlier claim that it was committed;
-an uncommitted probe is the same defect as quoting a number from a script that
-no longer exists.)
+the key from `secret/mod-api-key`. **The probe is now committed**
+(`agent-script-runner/scripts/probe-snapshot-latency.mjs`, `fb92891`), so the
+table above is re-derivable: run it as a Job in `minecraft-test` with `API_KEY`
+from that Secret; it reads the key from the environment and never prints it. The
+original ad-hoc Job was deleted and its numbers could not be re-derived; the
+re-run described below is from the committed script. (Reviewer caught the
+earlier claim that it was committed; an uncommitted probe is the same defect as
+quoting a number from a script that no longer exists. Lead condition 3 was to
+fix exactly this.)
 
 **Correction on the mechanism (reviewer, 10:39Z — accepted, with one amendment).**
 The cause is **not** a server-thread hop for all endpoints. Verified in source:
@@ -294,18 +333,37 @@ A flat name set cannot express "valid only with a resolvable id". Therefore:
 Two properties of that set matter for the refusal, and both are corrections to
 the first draft of this plan:
 
-- **The kinds are UPPERCASE** (`MINE`, `GOTO`, `SEND_ITEM`). The dispatch
-  upper-cases at `agent/agent.py:904` before comparing, so a script naming
-  `"mine"` must be normalised or refused — silently passing lowercase through
-  would reach the mod and fail there, where the error is far away from the cause.
+- **The kinds are UPPERCASE** (`MINE`, `GOTO`, `SEND_ITEM`). Two places already
+  upper-case before comparing — `agent/agent.py:904` for L3 directives, and the
+  mod itself at `HttpApiServer.java:1341` (`body.get("type").getAsString()
+  .toUpperCase()` before `DirectiveType.valueOf`). **Correction (lead condition
+  4): an earlier draft said a script naming `"mine"` "would reach the mod and
+  fail there". It does not — the mod accepts it.** Literal lowercase therefore
+  works end to end today. The agent normalises anyway, so the two sides agree
+  explicitly instead of relying on the mod's hidden forgiveness, and so the log
+  line shows the spelling the mod used.
+- **What IS broken is an unknown name.** `DirectiveType.valueOf` throws
+  `IllegalArgumentException` inside the request handler, so the agent sees an
+  HTTP 500 carrying no directive name — the error is far from the cause. The
+  agent refuses that locally, naming the directive and its set. Implemented and
+  tested in `agent/script_client.py` + `agent/tests/test_directive_names.py`
+  (11 tests, `104a756`).
+- **`DIRECTIVE_KINDS` is the mod's 37-constant `DirectiveType`, not the 35-name
+  skill-leaf set**, and not the agent's own L3 vocabulary: `EQUIP`/`EQUIP_ALL`
+  (`agent.py:936`), `DROP` (`:943`), `ASK_PLAYER` (`:923`) and
+  `PROVISION_TERMINAL` are real directives the agent dispatches without ever
+  posting them as a `DirectiveType`. A script client that accepted only
+  `DIRECTIVE_KINDS` would refuse them, so `api.do`'s accepted set is wider than
+  `DIRECTIVE_KINDS` and that gap must be made explicit when the client is built.
 - **`api.set_directive` does NO validation** (`agent/api.py:428`). It builds
-  `{"type": name}` and POSTs. So the rejection described below **does not exist
-  yet** — this plan introduces it, in `script_client.py`, on the agent side.
+  `{"type": name}` and POSTs. So the rejection described below did not exist
+  before this change — this plan introduces it, in `script_client.py`, on the
+  agent side, at `104a756`.
 
 The runner deliberately does not validate names (contract §4.1 — the set is the
 game's). The agent therefore resolves the name at the moment it applies the
-action, and an unknown or wrong-case directive is **rejected and logged**, never
-passed through.
+action: case is **normalised** (matching the mod), and an unknown name is
+**rejected and logged**, never passed through.
 
 **Proof required:** a test that submits a script calling `api.do("NOT_A_REAL_-
 DIRECTIVE")`, and asserts (a) the runner returns it as an action (it does not
