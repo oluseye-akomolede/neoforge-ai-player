@@ -252,8 +252,18 @@ dependencies, and are not started until this change is approved.
       the refresh once per tick (M2-PLAN §1: 99.4 ms median against a 2 s
       cadence). Three mutants killed: shared cache entry, task re-wrap, tick
       rewind on invalidate.
-- [ ] 3.2 Action binding limited to the agent's action dispatch set; prove an
+- [x] 3.2 Action binding limited to the agent's action dispatch set; prove an
       unknown action name is refused and executes nothing.
+      **DONE 2026-11-11** — `agent/action_binding.py`, 15 tests. Bindable set is
+      the union of the nine kinds `Agent._dispatch` handles agent-side
+      (agent.py:896-989) and the 35 mod directive kinds — both pinned to the
+      live source by AST, so the copy cannot drift. Refusal happens in
+      `bind_actions` before anything is dispatched; the test proves the refused
+      action yields no directive at all rather than relying on a later layer.
+      Two mutants killed: a dropped mod kind (planner cross-check fires) and an
+      invented agent-side kind (dispatch cross-check plus two refusal tests
+      fire). `type` is not an allowable argument, so a script cannot smuggle a
+      handler name past the binding.
 - [ ] 3.3 Prove a script action produces the same behaviour as the LLM
       requesting that action directly.
 
