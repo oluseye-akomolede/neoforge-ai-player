@@ -1,0 +1,272 @@
+# M2 — first bot runs its ticks from a script on TEST
+
+Status: **PLAN, for review.** No code past step 0. Covers tasks 3.1, 3.2, 3.3,
+4.3, 4.4, 7.2 and the path to 8.2.
+
+Scope: ONE bot (`Scout`), on the TEST server, whose per-tick behaviour comes from
+a hand-written JS script executed by the live runner
+(`agent-script-runner.minecraft-test`, game `minecraft`). The existing planner
+stays in place as the fallback. LLM authoring of scripts (7.1) is **out** — see
+§8.
+
+---
+
+## 0. The decision that shapes everything: who calls the runner
+
+**The Python agent calls the runner, not the mod (Java).**
+
+Evidence, from `docs/aiplayermod-system-architecture.md`:
+
+- The observe/think/act loop lives in the Python agent. §4.1: *"The agent spawns
+  each bot in its own thread via `BotRunner`. Each runner follows an
+  observe/think/act cycle"* — `agent/agent.py:152` (`class BotRunner`), loop at
+  `_loop()` `:2584`.
+- The agent already speaks HTTP to the mod over the bot REST API (`agent/api.py`,
+  `_post` `:33`). A runner call is one more HTTP call from a process that
+  already makes them.
+- The mod is the game server process, and contract §7 deliberately keeps work
+  *out* of it: the runner exists so script execution does not happen in the game
+  server process (task 4.1). Calling the runner from the mod would put the
+  tick's design back inside the process we removed it from.
+
+**Why not the mod:** it would need an HTTP client, a retry/timeout policy and a
+block-on-tick decision inside the server thread — the exact coupling §7's design
+avoids. The mod's job stays "hold bot state, dispatch actions"; the agent's job
+stays "decide what the bot does".
+
+Consequence: the agent builds the snapshot (3.1), calls `/v1/tick`, receives
+`actions[]`, and turns each into the **same** call it would have made from the
+planner — `api.set_directive(...)` / the chat path. The mod is unchanged except
+where §3.3 below says otherwise.
+
+---
+
+## 1. Task 3.1 — read-only per-tick snapshot
+
+Built in the agent, from data it already fetches, into contract §3's shape:
+
+```json
+{ "bot": {"name","health","food","position":{"x","y","z","dim"}},
+  "inventory": [...],
+  "nearby": {"blocks":[...], "mobs":[...]},
+  "task": {"directive","progress",...} }
+```
+
+Sources that already exist in `agent/api.py`: `status(bot)` `:98`,
+`inventory(bot)` `:101`, `blocks(bot,radius)` `:107`, `entities(bot,radius)` `:104`,
+`get_directive(bot)` `:43`.
+
+Copy, never a reference: `json.dumps` at the call boundary is the read-only
+guarantee — the script gets bytes, and mutating them cannot reach the bot. The
+contract says the runner deep-freezes it as well; that is defence in depth, not
+the only guard.
+
+**Discovery risk — measure before assuming.** These four calls are four HTTP
+round trips to the mod at ~250 ms tick cadence. The plan's first implementation
+step is to *measure* their combined latency on TEST. If one snapshot costs more
+than ~150 ms, the tick budget (250 ms) is consumed before the runner is called,
+and the fix is a single aggregated `GET /bot/{name}/snapshot` in the mod rather
+than four calls. **I am not adding that endpoint unless the measurement says it
+is needed** — it is the larger change and may be unnecessary.
+
+---
+
+## 2. Task 3.2 — action binding limited to the existing dispatch set
+
+The script can request exactly three calls (contract §4.1): `api.do(directive,
+args)`, `api.say(text)`, `api.send(otherBot,msg)`. The runner returns
+`actions[]`; the agent maps each to the path the planner already uses:
+
+| action | agent path |
+|---|---|
+| `do` | `api.set_directive(bot, directive, ...)` (`agent/api.py:428`) — the existing dispatch |
+| `say` | the existing chat-send path |
+| `send` | the existing inter-bot message path |
+
+**The dispatch set is not extended.** `api.do` names one of the existing 51
+directives (`agent/agent.py` dispatch); the runner deliberately does not validate
+names (contract §4.1 — the set is the game's). The agent therefore resolves the
+name at the moment it applies the action, and an unknown directive is
+**rejected and logged**, never passed through.
+
+**Proof required:** a test that submits a script calling `api.do("NOT_A_REAL_-
+DIRECTIVE")`, and asserts (a) the runner returns it as an action (it does not
+validate), and (b) the agent refuses to dispatch it and logs the refusal. That
+pair is the whole point of 3.2: the boundary is enforced on the side that owns
+the set.
+
+---
+
+## 3. Task 3.3 — parity proof for one action
+
+Pick **one** directive with an unambiguous, observable effect: `say`. It is the
+best parity subject because the evidence is a line in the game log — no physics,
+no pathing, no timing.
+
+Method: two runs of the same bot in the same place.
+
+1. Planner path: the bot reaches the `say` directive through the existing agent
+   code. Record the chat line and the sequence of API calls.
+2. Script path: the same `say` arrives via `api.say` from the runner. Record the
+   same two things.
+3. Assert the **API call sequence is identical** and the chat line is identical.
+
+Why `say` and not `MINE`: a movement action's parity is confounded by tick timing
+and world state; `say` isolates *does the script→action binding produce the same
+effect as the planner→action binding*, which is the actual claim. `MINE` parity
+is worth doing, but as a separate, later check — not as the first proof.
+
+---
+
+## 4. Tasks 4.3 / 4.4 — reachability, bounded wait, fallback
+
+The agent calls `/v1/tick` with a **hard bound** below the tick cadence: connect
++ read timeout of **100 ms** (the runner's own `deadline_ms` is 250 ms; the agent
+must give up before the bot stalls a tick).
+
+States and behaviour:
+
+| runner state | detection | bot action |
+|---|---|---|
+| connect refused | immediate (§4.3) | fall back to planner this tick |
+| accepted but silent | read timeout at 100 ms (§4.4) | fall back to planner, log |
+| 5xx / malformed | response check | fall back to planner, log |
+| 200 ok | normal | apply `actions[]` |
+
+**4.4 is the case that matters** and the one an easy test misses: a closed port
+fails fast and proves nothing. The test uses a **listener that accepts and never
+replies** (a socket that `accept()`s and sleeps), asserting the agent gives up at
+the bound, the bot's tick still completes inside its budget, and the waiting
+thread is **released/joined** on timeout rather than left hanging.
+
+Player-visible requirement (from 4.3): the fallback must be *reported*, not
+inferred from a motionless bot. The agent surfaces it through the same status
+channel the dashboard already reads — a per-bot field such as
+`script_state: "fallback" | "script"` with the reason. **Not building dashboard
+UI for it in M2**; it is a data field, which is the minimum that satisfies "a
+player must not have to infer it".
+
+---
+
+## 5. Task 7.2 — planner stays the fallback
+
+No new mechanism: §4's fallback path *is* the existing planner. 7.2 is satisfied
+by proving the planner still runs the bot when no script is runnable (no script
+stored, runner down, or script rejected). The condition is explicit and logged;
+the bot never has no path.
+
+Ordering inside a tick: try script → on any failure, planner → if both fail,
+idle-with-reason. The planner is never removed, only pre-empted.
+
+---
+
+## 6. The first script: where it lives, and the 6.x read path
+
+**Hand-written**, for `Scout`, stored as a file in the agent's config:
+
+```
+agent/scripts/scout.js          # the script source
+agent/scripts/scout.json        # {"revision": "sha256:…", "game": "minecraft", "bot": "Scout"}
+```
+
+`revision` is the content hash, computed at load, so the runner's cache key and
+the stored file cannot drift. Changing the script changes the hash, which the
+runner treats as a new revision (contract §2 `script_revision` is required).
+
+**How 6.x will read them later, without building 6.x now:** the scripts are
+already plain files with a stable name→path convention and a content hash. The
+player-visible read-only view becomes "list `agent/scripts/*.js`, show the source
+and the revision" — a read over the same files, needing no new storage. That is
+the design property worth having: **the storage choice for M2 is also the read
+path for 6.x**, so building 6.x later needs no migration. Not to be built here.
+
+Script content for M2 (deliberately boring — its job is to prove the path, not
+to be a good bot): read the snapshot, `say` once when a condition holds,
+otherwise return without acting, so the fallback and the script path are both
+observable.
+
+---
+
+## 7. Files touched
+
+| file | change |
+|---|---|
+| `agent/script_client.py` | **new** — `/v1/tick` client, bounded wait, snapshot builder |
+| `agent/agent.py` | `BotRunner._loop`: try script, apply `actions[]`, fall back |
+| `agent/config.py` | runner URL, token env, script path |
+| `agent/scripts/scout.js`, `.json` | **new** — the first script |
+| `tests/test_script_client.py` | **new** — 4.3/4.4 including accept-and-never-reply |
+| `tests/test_action_binding.py` | **new** — 3.2 refusal, 3.3 parity |
+
+**Not touched:** the mod (Java). No new directive, no new mod endpoint unless §1's
+latency measurement demands one. No spec delta needed: this implements existing
+task text, it does not change contract v1.
+
+---
+
+## 8. Proof of 8.2 on TEST — what shows the bot acting from the script
+
+Not "the bot moved". A motionless bot and a scripted bot look the same from
+outside, which is the defect this milestone is most likely to ship.
+
+Three pieces of evidence, all required:
+
+1. **Runner-side:** the runner's log line for the tick carrying
+   `bot_id: "Scout"` and the script's `revision` hash, with `actions` non-empty.
+   This proves the script ran and asked for something.
+2. **Agent-side:** the log line where the agent applied action `seq` from the
+   script — the same `seq` the runner returned, which ties the request to the
+   effect.
+3. **Game-side:** the observable effect of that action (the `say` line in the
+   server log), matching §3's parity result.
+
+The three together rule out every false pass: runner-only fails to show the bot
+acted; game-only fails to show the *script* caused it; agent-only fails to show
+either end. **A negative control is part of the proof:** stop the runner, confirm
+the bot falls back to the planner and logs it with a reason, then restart and
+confirm it returns to the script. Without that control, "it works" is untested
+against the failure it is meant to survive.
+
+---
+
+## 9. Rollback
+
+No data migration and no schema change, so rollback is code-only:
+
+```
+git revert <this change's commits>       # agent-side only
+kubectl -n minecraft-test rollout undo deploy/aibot-agent
+```
+
+The runner is **not** removed — it is deployed, verified and independent; the bot
+simply stops calling it and uses the planner. That is a property worth stating:
+the M2 change is additive and its failure mode degrades to the previous
+behaviour, not to no behaviour.
+
+---
+
+## 10. Order of work
+
+1. Tick 4.1/4.2/8.1 in `tasks.md` — **done**, commit `5f52a79`.
+2. Measure §1's snapshot latency on TEST (decides four-call vs new endpoint).
+3. `script_client.py` + 4.3/4.4 tests (the bound and the fallback first, so the
+   bot is never dependent on an unproven call).
+4. Snapshot builder (3.1), then action binding (3.2) + its refusal test.
+5. Parity (3.3) with `say`.
+6. The first script + 8.2 proof, including the negative control.
+
+Each step's tests run before the next. Gradle/agent tests: `-Xmx2g`
+`--max-workers=2` `nice -n 19`.
+
+---
+
+## 11. Open questions for the reviewer
+
+1. **§1's four-call snapshot**: agree that measuring before adding a mod
+   endpoint is right, or is the aggregated endpoint obviously correct?
+2. **§3.3 parity on `say`**: accept `say` as the parity action, with `MINE`
+   deferred?
+3. **§6 script storage in the agent image**: scripts ship in the agent image, so
+   changing a script needs a rebuild. Acceptable for M2 (one hand-written
+   script), but it is the thing that will hurt when 7.1 lands. Worth a ConfigMap
+   now, or defer?
