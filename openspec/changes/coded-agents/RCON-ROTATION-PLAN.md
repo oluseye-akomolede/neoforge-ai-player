@@ -55,10 +55,16 @@ scan whose file set is chosen by a name pattern cannot find a holder the pattern
 does not describe, and a zero from it is not an absence.
 
 The corrected scan takes **every** regular file under `/data` outside
-`world/`, `libraries/` and `cache/` (1168 files), reads the value once into a
-shell variable, and greps each file for it. That is the scan the numbers above
-come from. Its positive control: the same command finds `/data/server.properties`
+`world/`, `libraries/` and `cache/` — 1168 files on the day it ran; the volume
+held 2221 in total after the restart — reads the value once into a shell
+variable, and greps each file for it. That is the scan the numbers above come
+from. Its positive control: the same command finds `/data/server.properties`
 when given the string `rcon.password=`, so a hit reporting zero would be visible.
+
+A file count in this document is a *measurement on a date*, not a property of
+the volume: `/data` grew by more than a thousand files across the rotation's own
+restart. Quote the scan's scope as what it enumerated, never as a fixed number
+to re-check against.
 
 **This is the failure §4 names.** Rotating with the old table would have left
 two files carrying the old public password on the PVC; §5(a)-(b) would have
@@ -153,6 +159,12 @@ anyone is connected, unless the lead says otherwise.
    who normally runs traced would carry on believing they still were):
 
    ```
+   # RUN THIS UNDER BASH. `set +o history` is a dash error ("Illegal option"),
+   # so under `sh` this block does not quietly skip the history guard -- it dies
+   # on that line with `set -e`, before the value is ever assigned. That is the
+   # safe direction, but it fails for a reason an operator will not read as
+   # "wrong shell". Caught by dry-running the script before it touched a cluster;
+   # the plan as written named no shell at all.
    _xt=$(case $- in *x*) echo on;; *) echo off;; esac)   # remember, do not assume
    _hf=${HISTFILE+x}                                     # set-or-unset, not empty
    _hv=${HISTFILE-}
@@ -175,6 +187,14 @@ anyone is connected, unless the lead says otherwise.
    line clears the three guard variables themselves, so the session is left as
    the operator had it rather than as this step needed it.
 
+   **What the guard does not cover.** It brackets assignments and uses of the
+   value *inside* the guarded region. A value that is already in an **argument**
+   is traced before the region opens: measured, an outer `set -x` on
+   `script.sh "$VAL"` prints `+ script.sh SECRETVALUE` with the guard working
+   perfectly underneath it. So the value must never be passed as an argument to
+   the guarded script — read it from the Secret inside the region, or hand it to
+   the container on stdin. Passing it in argv defeats the guard by going around
+   it, not through it.
    This clause belongs beside "never echoed" on purpose: it is the sentence that
    is true and still not enough.
    Why this step exists at all: **a fingerprint cannot be grepped for.** The
@@ -217,8 +237,8 @@ anyone is connected, unless the lead says otherwise.
 
 5. **Verify.** (a) rcon with the new password → a real command returns a reply;
    (b) the old password is refused; (c) **all four** holders fingerprint to the
-   new value, and a repeat of §1's 1168-file scan returns **zero** hits for the
-   old value; (d) the deployment is Ready and the server accepts players.
+   new value, and a full rescan returns **zero** hits for anything that is not
+   the new value; (d) the deployment is Ready and the server accepts players.
    (c) is the step that would have caught the missed holders, and it is a
    *scan*, not a list of known paths — checking the four paths only proves the
    four paths were changed. The mtime check in step 4 and this scan are not
@@ -236,6 +256,24 @@ anyone is connected, unless the lead says otherwise.
    grep is fed the value on stdin, but a traced *re-expansion* of `$OLD` into
    that pipeline is a traced line too. Turning tracing off at the assignment and
    back on before the use would leak at the use. The guard brackets both.
+   **A stronger (c), found by executing this (2026-11-11, rotation run).** The
+   form above searches for the old value, so it needs `$OLD` to survive from
+   step 1 to step 5. In the real run it did not: step 1 ran before a context
+   compaction and step 2 after, so the variable was gone and (c) could not run
+   as written. The scan that *did* run needs no old value at all — it
+   **enumerates every rcon password assignment on the volume and inspects what
+   each carries**, requiring each to hold the new value. Measured result: 3
+   assignments, all 3 the new value, 0 anything else; positive control
+   re-found all three known holders. This is strictly better than the
+   prescribed check, because the prescribed one assumes the set of holders and
+   searches inside it, while this one enumerates the set. §1's original scan
+   failed in exactly that way: it chose its files by extension and missed two
+   dotfiles. Prefer the enumerate form.
+   `$OLD`-based (b) was left **unmeasured** in that run for the same reason and
+   is recorded as such rather than passed. The lead's ruling (15:31Z): do not
+   re-run it — recovering the old value would mean pulling it back out of a
+   transcript, which is the copy §2 forbids. It is implied by the enumerate
+   scan's zero.
 6. **Report** fingerprints and lengths only.
 
 ---
