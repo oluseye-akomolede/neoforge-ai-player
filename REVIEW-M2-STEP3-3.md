@@ -214,3 +214,52 @@ a name by reading the vocabulary that *references* it rather than the code that
 a skill signature. Reading the consumer (`_build_skill_extra`) is what settles it,
 and I should have done that the first time rather than after the builder had
 already applied the reason twice.
+
+---
+
+## 6. Follow-up at `823c2a4` — the producer I did not trace, traced and verified
+
+I declined to assert that the planner can never emit a coords-bearing
+`STORE_ALL`. The builder traced it rather than leaving it open, and the answer is
+better than either of us stated.
+
+```
+agent/agent.py:1622   _STORE_ALL_PATTERNS = re.compile(
+agent/agent.py:1623       r"(?:store|dump|deposit|stash)\s+(?:all|everything|inventory)|STORE_ALL")
+agent/agent.py:1888   if self._STORE_ALL_PATTERNS.search(text):
+agent/agent.py:1889       return {"type": "STORE_ALL"}
+```
+
+**The pattern has no capture groups at all** — a bare boolean `search()`. So the
+handler *structurally cannot* carry coordinates, whatever the input text
+contains. That is stronger than "returns no coordinates": the code shape forbids
+it, so this is not a case that happens to be coordless but one that cannot
+become coords-bearing without an edit to the pattern.
+
+**Step-4 gate: satisfied in the direction that matters.** No producer found in
+agent code emits a coords-bearing `STORE_ALL`; the seed path is structurally
+coordless. A raw model emission outside a seed match remains untraced, and
+neither of us asserts it away. The plan's framing — that the test *constructs*
+the argument form and proves "the two paths agree on the call the test wrote" —
+is the correct and honest description of what that assertion has force to show.
+
+**Third survivor, verified independently.** I grepped for the withdrawn claim
+myself rather than accept the sweep: two hits, `:464` and `:523`, both naming
+themselves as retracted. The rationale now reads "a single optional coordinate
+triple with no formatting to normalise, and that triple is pinned rather than
+relied on" — rewritten, not annotated.
+
+`openspec validate coded-agents --strict` → valid, at `823c2a4`, rev printed by
+the same invocation.
+
+**Verdict: no open items from me on step 3.** The parity subject is named,
+pinned, and its force honestly scoped; the import path runs clean in a dep-free
+3.12; the thread gate fails when it should.
+
+**Where the turns went, recorded because it is the durable lesson:** four of my
+rulings in this thread carried a reason I had not checked by reading the
+consuming code, and the builder caught every one — `STORE_ALL` "takes neither",
+the "both forms are real" seed-table reading, and the pre-existing unreviewed
+`load_profile`. The pattern is consistent: I read the table that names a thing
+and skip the function that consumes it. The fix is not care in general, it is
+one specific step — open the consumer before writing the reason, not after.
