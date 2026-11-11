@@ -98,13 +98,42 @@ args)`, `api.say(text)`, `api.send(otherBot,msg)`. The runner returns
 | `say` | the existing chat-send path |
 | `send` | the existing inter-bot message path |
 
-**The dispatch set is not extended.** `api.do` names one of the kinds in
-`_VALID_DIRECTIVE_KINDS` (`agent/l3_planner.py:204`), which is the mod's
-`DirectiveType` enum. The plan does not restate that list and does not hard-code
-its size: it is read from the symbol at runtime, because the number has already
-drifted twice in review (I wrote 51; a reviewer wrote 36; the set holds 35 as of
-this commit — verified by counting the frozenset, not by eye). A literal here
-would be one more number to get wrong.
+**The dispatch set is not extended.** The plan does not restate the list and does
+not hard-code its size: it is read from the symbol at runtime, because the number
+has drifted three times in review (I wrote 51; the reviewer wrote 36; the set
+holds 35). A literal here would be one more number to get wrong.
+
+**Two different sets, and an earlier draft of this plan conflated them.** This is
+the structural reason the count kept moving:
+
+| set | size | what it is |
+|---|---|---|
+| `DirectiveType` (`src/main/java/.../brain/DirectiveType.java`) | **37** | every directive kind the **mod accepts** |
+| `_VALID_DIRECTIVE_KINDS` (`agent/l3_planner.py:204`) | **35** | the kinds a **declarative skill leaf may use** |
+
+They are not the same set. `AREA_LOOT` and `SKILL` are in the enum and **absent
+from the frozenset**; the frozenset's comment says the kinds it omits "would fail
+SkillValidator", which is a narrower rule than "the mod would reject it". An
+earlier draft of this plan said the frozenset *is* the enum. It is the skill-leaf
+**subset** of it, and that equals-sign was wrong.
+
+**Which set does `api.do` intend?** This was previously implicit and must not
+stay that way, because the two answers have different consequences:
+
+- **If scripts may use the full enum (37),** the rejection must be built against
+  its own set — `_VALID_DIRECTIVE_KINDS` would falsely refuse `api.do("AREA_LOOT")`
+  and `api.do("SKILL")`, and the only symptom would be a bot quietly not doing
+  what its script says.
+- **If scripts may use only skill-leaf kinds (35),** that is a real restriction on
+  what a script can ask a bot to do, and it belongs in the contract, stated,
+  not implied by reusing the planner's private constant.
+
+**Decision: `api.do` accepts the full `DirectiveType` enum (37).** Rationale: the
+whole point of the scripting surface is that a script is not a skill leaf — the
+skill-leaf restriction exists because a declarative leaf can be synthesised into a
+validated skill, and nothing validates a script that way. So `script_client.py`
+builds its own `SCRIPT_DIRECTIVE_KINDS` from `DirectiveType` and does **not**
+import the planner's narrower set. The plan's refusal therefore reads the 37.
 
 Two properties of that set matter for the refusal, and both are corrections to
 the first draft of this plan:
