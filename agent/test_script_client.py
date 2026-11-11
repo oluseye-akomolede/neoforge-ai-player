@@ -243,10 +243,33 @@ class BoundTest(unittest.TestCase):
         self.assertNotIn("timeout", params,
                          "call_runner regained a timeout override; the bound "
                          "is only safe if it cannot be passed in")
-        self.assertNotIn("kw", params)
+        # Any **kwargs, whatever it is called. `assertNotIn("kw", params)`
+        # looked like this guard and was not one: it caught a parameter
+        # literally named kw and nothing else. Naming the kind catches every
+        # name. (reviewer, 12:26Z)
         self.assertFalse(
             [p for p in params.values() if p.kind is p.VAR_KEYWORD],
-            "a **kwargs on call_runner would let a timeout through unnoticed")
+            "call_runner regained **kwargs; the timeout could be smuggled "
+            "through it without the TypeError above firing")
+
+        # The assertions above are themselves assertions about the inspect
+        # API, so they need a positive control: on a signature that DOES have
+        # **kwargs they must fail. Without this, a wrong predicate would pass
+        # here forever and look like a guard.
+        def _smuggler(**kwargs):
+            return kwargs
+
+        self.assertTrue(
+            [p for p in inspect.signature(_smuggler).parameters.values()
+             if p.kind is p.VAR_KEYWORD],
+            "the VAR_KEYWORD predicate does not detect **kwargs - the guard "
+            "in this test is inert")
+        # And the control proves the old check was not merely narrower but
+        # useless: the real parameter is named `kwargs`, so `assertNotIn("kw")`
+        # misses it too - as does any other guess at a name.
+        self.assertNotIn("kw", inspect.signature(_smuggler).parameters,
+                         "the name-based check unexpectedly caught **kwargs; "
+                         "the reviewed finding says it could not")
 
 
 if __name__ == "__main__":
