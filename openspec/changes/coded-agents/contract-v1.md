@@ -267,8 +267,25 @@ One entry per **accepted** call, in **call order**:
 correlate an entry with the acceptance it saw. `args` and `msg` are the script's
 own JSON, carried through unmodified — the runner does not re-serialise them.
 
+A value that is not JSON is refused with `bad_shape` and produces no entry,
+rather than being coerced into one. The refused set is not "whatever
+`JSON.stringify` throws on": it is every value whose JSON form would **lose**
+something the script passed. That includes a function, a `symbol`, a `BigInt`,
+a cyclic object, and a `Map` or `Set`. The last two matter because they do not
+throw — they serialise to `{}` with no diagnostic, so a script that sent one
+would be told the action was accepted while the wire body carried an empty
+object. A `Date` is **not** refused: it serialises to an ISO string, which is a
+faithful encoding rather than a loss.
+
+An omitted second argument and an explicit `undefined` are both treated as "no
+args", and `args` is written as `null`. The two are not distinguished; the
+runner has no arity signal at the host-call boundary, and an explicit
+`undefined` carries no information that omitting the argument does not.
+
 Rejected calls appear in no entry. `api.remember` and `api.log` are not actions
-and produce no entry (they ride the tick as result fields, §5).
+and produce no entry (they ride the tick as result fields, §5). `api.log` still
+counts toward the per-tick host-call limit of 8, so logging spends the same
+budget a `do` would.
 
 ### 4.2 What a rejected call returns
 
