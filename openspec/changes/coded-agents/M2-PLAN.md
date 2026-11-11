@@ -553,9 +553,16 @@ Deployment runs `replicas: 1`, so all bots share one process and one
 environment.
 
 Per-bot state comes from the **profile dict** instead, and that is the only
-per-bot unit that exists. `config.load_profile()` (`:111`) reads the single
-`PROFILE_PATH`; `BotRunner.__init__` (`agent.py:155`) takes that dict and reads
-`name`/`model`/`specializations` from it. So the mechanism is:
+per-bot unit that exists. The live loader is `load_profiles()`
+(`agent.py:3186`), called at `:4244` inside `run()`, which reads **every** JSON
+file in `agent/profiles/` and then does `for profile in profiles: runner =
+BotRunner(profile)`. `BotRunner.__init__` (`agent.py:155`) takes that dict and
+reads `name`/`model`/`specializations` from it.
+
+Because the loader globs the directory, **adding keys to `scout.json` needs no
+loader change at all** — the new fields arrive at `BotRunner` automatically.
+The only code that must learn them is the consumer at `:155`. So the mechanism
+is:
 
 - `agent/profiles/scout.json` gains `"runner_url"` and `"script_path"`
   (`/opt/aibot-agent/scripts/scout.js`), consumed alongside the existing
