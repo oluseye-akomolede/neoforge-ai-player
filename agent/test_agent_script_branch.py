@@ -90,6 +90,11 @@ class ScriptTickBranchTest(unittest.TestCase):
         self.a.profile = {}
         self.a._script_tick = None
         self.a._script_loaded = True   # do not go looking for a profile script
+        # Script actions go through the orchestrator, not _run_directive: it
+        # is the dispatcher that knows the agent-side vocabulary (EQUIP,
+        # DROP, VAULT_*, ...) as well as mod directives.
+        self.a._l3_orchestrator_dispatch = mock.Mock(
+            return_value="COMPLETED STORE_ALL {'stored': 1}")
         self.a._run_directive = mock.Mock(return_value={"success": True})
 
     def _with_tick(self, tick_result):
@@ -113,17 +118,42 @@ class ScriptTickBranchTest(unittest.TestCase):
         self._with_tick((True, [{"kind": "STORE_ALL"}], [], "ok"))
         self.assertTrue(self.a._run_script_tick(),
                         "a handled tick must tell the loop to skip the planner")
-        self.a._run_directive.assert_called_once_with({"type": "STORE_ALL"})
+        self.a._l3_orchestrator_dispatch.assert_called_once_with({"kind": "STORE_ALL"})
 
-    def test_bound_arguments_survive_the_kind_to_type_rename(self):
+    def test_bound_arguments_survive_the_hop_to_the_dispatcher(self):
         # A bound action carries its allowed args beside `kind`. All of them must
-        # reach `_run_directive` as the `type`-keyed dict it pops, or a script's
-        # coordinates/counts are silently dropped between binding and dispatch.
+        # reach the dispatcher, or a script's coordinates/counts are silently
+        # dropped between binding and execution.
         self._with_tick((True, [{"kind": "STORE_ALL", "x": "10", "y": "64", "z": "10"}],
                          [], "ok"))
         self.assertTrue(self.a._run_script_tick())
-        self.a._run_directive.assert_called_once_with(
-            {"type": "STORE_ALL", "x": "10", "y": "64", "z": "10"})
+        self.a._l3_orchestrator_dispatch.assert_called_once_with(
+            {"kind": "STORE_ALL", "x": "10", "y": "64", "z": "10"})
+
+    def test_agent_side_kinds_reach_the_orchestrator(self):
+        # EQUIP_ALL is NOT a mod directive -- the mod has no such directive
+        # type. Posted as one it fails, and the failure used to consume the
+        # tick. The orchestrator maps it to api.equip_all (agent.py:901).
+        self._with_tick((True, [{"kind": "EQUIP_ALL"}], [], "ok"))
+        self.assertTrue(self.a._run_script_tick())
+        self.a._l3_orchestrator_dispatch.assert_called_once_with({"kind": "EQUIP_ALL"})
+
+    def test_a_refused_action_does_not_consume_the_tick(self):
+        # The bot must not go quiet because a script asked for impossible work.
+        self.a._l3_orchestrator_dispatch = mock.Mock(
+            return_value="FAILED EQUIP_ALL no armor")
+        self._with_tick((True, [{"kind": "EQUIP_ALL"}], [], "ok"))
+        self.assertFalse(self.a._run_script_tick(),
+                         "a refused action consumed the tick - the planner never runs")
+        self.a._l3_orchestrator_dispatch.assert_called_once()
+
+    def test_one_refusal_among_successes_still_counts_as_handled(self):
+        self.a._l3_orchestrator_dispatch = mock.Mock(
+            side_effect=["COMPLETED STORE_ALL ok", "FAILED DROP no dirt"])
+        self._with_tick((True, [{"kind": "STORE_ALL"}, {"kind": "DROP", "target": "dirt"}],
+                         [], "ok"))
+        self.assertTrue(self.a._run_script_tick(),
+                        "a real action ran; the planner must be suppressed")
 
     def test_every_failure_falls_through_to_the_planner(self):
         # Each of these must return False. A True here silences the planner.
@@ -136,11 +166,11 @@ class ScriptTickBranchTest(unittest.TestCase):
         }
         for label, result in cases.items():
             with self.subTest(label):
-                self.a._run_directive.reset_mock()
+                self.a._l3_orchestrator_dispatch.reset_mock()
                 self._with_tick(result)
                 self.assertFalse(self.a._run_script_tick(),
                                  f"{label} suppressed the planner")
-                self.a._run_directive.assert_not_called()
+                self.a._l3_orchestrator_dispatch.assert_not_called()
 
     def test_no_script_means_no_runner_call(self):
         ticks = self._with_tick((True, [], [], "ok"))

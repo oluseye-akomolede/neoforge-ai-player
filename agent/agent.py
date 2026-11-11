@@ -2622,25 +2622,43 @@ Respond with ONLY a JSON array. Example:
             # version read `act["directive"]`, got None for every action, and
             # `continue`d: the log above counted actions that then ran nothing.
             # A run would have looked like it applied work while executing none
-            # of it. This maps the script's `kind` onto the `type` that
-            # `_run_directive` pops (agent.py:2031).
+            # of it.
+            #
+            # Dispatch goes through _l3_orchestrator_dispatch, NOT _run_directive
+            # directly. BINDABLE_KINDS is the mod's 35 plus the agent's 10, and
+            # the agent-side ones are not mod directives: EQUIP maps to
+            # api.equip_all, DROP resolves an item to inventory slots, VAULT_*,
+            # PROVISION_TERMINAL and ASK_PLAYER are all special-cased in the
+            # orchestrator (agent.py:901). Posting those as mod directives fails
+            # - and since a refusal here used to still return True, the failure
+            # consumed the tick and the planner never ran. The orchestrator
+            # handles both vocabularies and reports COMPLETED/FAILED without
+            # raising, so it is also the honest place to learn whether anything
+            # actually ran.
             print(f"[{self.name}/script] {len(actions)} action(s) this tick")
             ran = 0
             for act in actions:
                 if not isinstance(act, dict) or not act.get("kind"):
                     continue
                 kind = act["kind"]
-                directive = {"type": kind}
-                directive.update({k: v for k, v in act.items() if k != "kind"})
-                if ran == 0:
-                    # One line per tick naming what actually got dispatched, so
-                    # "the script did something" is checkable from the log
-                    # rather than inferred from a count.
-                    print(f"[{self.name}/script] dispatch: {kind} {directive}")
+                directive = dict(act)
+                print(f"[{self.name}/script] dispatch: {kind} {directive}")
+                result = self._l3_orchestrator_dispatch(directive)
+                if isinstance(result, str) and result.startswith("FAILED"):
+                    # Refused or unroutable: this action did not happen. Leave
+                    # `ran` alone so the tick falls through to the planner
+                    # rather than consuming it on work that never occurred.
+                    print(f"[{self.name}/script] not executed: {result}")
+                    continue
                 ran += 1
-                result = self._run_directive(directive)
-                if result.get("reason") == "interrupted_by_chat":
+                if "interrupted_by_chat" in str(result):
                     return True
+            if ran == 0:
+                # Every action was refused. Nothing happened, so the planner
+                # gets the tick: a script that asks for impossible work must
+                # not silently become a dead bot.
+                print(f"[{self.name}/script] no action executed, falling back")
+                return False
             return True
         except Exception as e:  # noqa: BLE001 — a script must never kill the loop
             print(f"[{self.name}/script] tick error, using planner: {e}")

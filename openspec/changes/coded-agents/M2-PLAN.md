@@ -249,7 +249,7 @@ args)`, `api.say(text)`, `api.send(otherBot,msg)`. The runner returns
 
 | action | agent path |
 |---|---|
-| `do` | `api.set_directive(bot, directive, ...)` (`agent/api.py:428`) — the existing dispatch |
+| `do` | `_l3_orchestrator_dispatch` (`agent.py:901`) — the existing dispatch, which routes mod directives through `api.set_directive` (`agent/api.py:428`) and the agent-side vocabulary through `api.equip_all` / `api.drop` / `api.vault_*` |
 | `say` | the existing chat-send path (`agent/api.py:217 chat`) |
 | `send` | the existing inter-bot message path |
 
@@ -1024,12 +1024,40 @@ so "Scout only" has to be established per bot, not asserted:
 
    - `load_profiles()` now honours **`PROFILES_DIR`** (unset = the image path,
      i.e. unchanged behaviour; prod sets nothing).
-   - The Deployment gains a second `emptyDir`-backed path or a PVC subPath at
-     `/srv/aibot-profiles`, and an initContainer copies the image's
-     `profiles/*.json` into it before the agent starts.
+   - The Deployment mounts an `emptyDir` at `/srv/aibot-profiles`, and an
+     initContainer seeds it from the image's `profiles/` before the agent
+     starts.
    - `PROFILES_DIR=/srv/aibot-profiles` is set in the same env block as
      `SCRIPT_RUNNER_URL` — i.e. in step 2, while no profile names a script, so
      the restart still changes no behaviour.
+
+   **The seed MUST skip files that already exist.** An `emptyDir` survives a
+   container restart but not pod recreation, so a recreate re-seeds from the
+   image — which would silently revert step 4's edit to Scout's profile and
+   turn the run into a test of the stock profile. The `cp -n` below is the
+   whole guard; without it, "restart the pod" and "keep the edited profile" are
+   contradictory instructions, and the run would prove nothing while looking
+   successful. The manifest (add to `deploy/agent-deployment.yaml` in step 2):
+
+   ```yaml
+   spec:
+     template:
+       spec:
+         initContainers:
+           - name: seed-profiles
+             image: <same image as the agent container>
+             command: ["sh", "-c", "cp -an /opt/aibot-agent/profiles/. /srv/aibot-profiles/"]
+             volumeMounts:
+               - {name: aibot-profiles, mountPath: /srv/aibot-profiles}
+         volumes:
+           - name: aibot-profiles
+             emptyDir: {}
+   ```
+
+   `cp -an` = no-clobber + preserve attributes. Verified after rollout:
+   `kubectl -n minecraft-test exec <pod> -- ls -l /srv/aibot-profiles/` shows the
+   same five profiles, and re-applying the Deployment does **not** change
+   Scout's file's sha256.
 
    Only after that does editing Scout's profile mean anything. Held to the
    lead's three conditions (12:46Z):
@@ -1065,9 +1093,13 @@ so "Scout only" has to be established per bot, not asserted:
 3. Confirm 1/1 and that the pod has the file (`cat /srv/aibot-scripts/scout.js`).
 4. **Copy Scout's profile off the pod and commit it** (§8.3.2 part 3 (i)) — this
    happens *before* the edit, and the edit does not proceed if the copy is empty
-   or does not parse. Then edit the profile in the pod and let the agent pick it
-   up on its next construction of that bot, or restart the pod once more (state
-   which was done). Commit the edited text (§8.3.2 part 3 (ii)).
+   or does not parse. Then write the edited profile to
+   `/srv/aibot-profiles/scout.json` **in the pod** and restart the pod so the
+   agent re-reads it at startup (state which was done). A restart is safe here
+   only because the initContainer seed is `cp -an` — no-clobber — so it cannot
+   overwrite the edit with the image's stock profile. Verify that after the
+   restart: the file's sha256 must still be the edited one, not the image's.
+   Commit the edited text (§8.3.2 part 3 (ii)).
 5. **Control first, then the real run** (§8.3.4).
 
 ### 8.3.4 The negative control
@@ -1095,17 +1127,33 @@ revision is hashed from the script body, not carried in the ConfigMap.
 | # | Evidence | Failure looks like |
 |---|---|---|
 | 1 | **Runner** log: the tick carries `bot_id: "Scout"`, `script_revision: 7fdbad9076381f43`, non-empty `actions` | no runner line at all → the tick never left the agent |
-| 2 | **Agent** log: `[Scout/script] dispatch: STORE_ALL {'type': 'STORE_ALL'}` | the `dispatch:` line never appears → `_run_directive` was never reached, or the action was skipped |
+| 2 | **Agent** log: `[Scout/script] dispatch: STORE_ALL {...}` followed by a `COMPLETED STORE_ALL` return, and **no** `[Scout/script] not executed:` line | the `dispatch:` line never appears → the action was refused before dispatch; a `not executed:` line → the orchestrator returned FAILED and that action did not run |
 | 3 | Mod POST response: `status: accepted`, `STORE_ALL`, **coordless** | coordinates present → §3's pin is wrong, record it |
 | 4 | Run 1 produces no script-path POST | a POST with no script → something else is emitting it |
 
 **Why row 2 exists as its own line.** `agent.py` used to read `act["directive"]`
 from the *bound* action, get `None`, and `continue` — printing
 `N action(s) this tick` for actions that executed nothing (reviewer, 12:53Z;
-fixed). The `dispatch:` line is printed only for an action that reaches
-`_run_directive`, so its presence is the check that binding→dispatch actually
+fixed). The `dispatch:` line is printed only for an action that reaches the
+dispatcher, so its presence is the check that binding→dispatch actually
 happened. `N action(s) this tick` alone is **not** evidence and must not be
 cited as such.
+
+**Dispatch goes through `_l3_orchestrator_dispatch`, not `_run_directive`**
+(reviewer, 12:57Z). `BINDABLE_KINDS` is the mod's 35 plus the agent's 10, and
+the agent-side ones are not mod directives: `EQUIP`/`EQUIP_ALL` map to
+`api.equip_all`, `DROP`/`DISCARD` resolve an item to inventory slots, and
+`VAULT_STORE`/`STORE`, `VAULT_WITHDRAW`/`WITHDRAW`, `PROVISION_TERMINAL` and
+`ASK_PLAYER` are all special-cased in the orchestrator (`agent.py:901`).
+Posting those straight to the mod fails. Worse, the earlier version returned
+`True` even when an action failed, so a refusal **consumed the tick** and the
+planner never ran — a bot that asked for impossible work would have gone
+silent. The orchestrator handles both vocabularies and returns
+`COMPLETED`/`FAILED` without raising, which is also how the tick learns whether
+anything actually ran: a tick whose actions all returned `FAILED` falls through
+to the planner. This does not endanger the step-4 run, whose script sends
+`STORE_ALL` only — a genuine mod directive — but it had to be settled before a
+second script exists.
 
 **Row 1's revision is computed, not read.** `7fdbad9076381f43` is
 `sha256(agent/scripts/scout.js)[:16]` at `80aadcb` (verified independently:
