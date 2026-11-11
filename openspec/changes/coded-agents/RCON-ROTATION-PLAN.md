@@ -135,6 +135,35 @@ anyone is connected, unless the lead says otherwise.
    -o jsonpath='{.data.password}' | base64 -d)` — never echoed, never written to
    a file, never on a command line `ps` can see. This is the **only** copy, and
    it must not outlive the rotation; 5(c) consumes it and the session ends.
+
+   **Those three are not sufficient, and this is the trap in this step.**
+   **`set -x` defeats all three at once.** The shell traces the *assignment*, not
+   an echo, so nothing an operator sees looks like a print:
+   `++ base64` / `+ OLD=U0VDUkVUVkFMVUU=`. That traced line is the value, and
+   `base64 -d` decodes it trivially — **the encoding does not make the traced
+   form safe.** An operator with xtrace on, a `script(1)` capture, or a CI runner
+   that sets it has written a recoverable copy for the compromised credential to
+   a log, which is the backup §2 forbids in the one place this plan had not
+   looked. An operator who believes they are complying will not think `set -x`
+   contradicts "never echoed", so it has to be said here.
+
+   So every assignment and use of `OLD` runs with tracing and history off, and
+   the shell's **prior** state is restored afterwards rather than assuming it was
+   off (`set +x` would silently change an operator's environment, and an operator
+   who normally runs traced would carry on believing they still were):
+
+   ```
+   _xt=$(case $- in *x*) echo on;; *) echo off;; esac)   # remember, do not assume
+   _hf=${HISTFILE-}
+   set +x +o history; HISTFILE=/dev/null
+   OLD=$(...)
+   ... every use of $OLD ...
+   [ "$_xt" = on ] && set -x
+   [ -n "$_hf" ] && HISTFILE=$_hf
+   ```
+
+   This clause belongs beside "never echoed" on purpose: it is the sentence that
+   is true and still not enough.
    Why this step exists at all: **a fingerprint cannot be grepped for.** The
    files hold the value, not its hash. Before this clause, 5(c) asked for a scan
    for the old value at a moment when step 2 had already overwritten the Secret
@@ -190,6 +219,10 @@ anyone is connected, unless the lead says otherwise.
    known to contain will report a clean zero, and two of my attempts did.
    After (c) returns zero, clear the variable and close the session: that is
    what makes "no backup was kept" true rather than intended.
+   **(c) also runs under step 1(ii)'s tracing guard**, for the same reason: the
+   grep is fed the value on stdin, but a traced *re-expansion* of `$OLD` into
+   that pipeline is a traced line too. Turning tracing off at the assignment and
+   back on before the use would leak at the use. The guard brackets both.
 6. **Report** fingerprints and lengths only.
 
 ---
