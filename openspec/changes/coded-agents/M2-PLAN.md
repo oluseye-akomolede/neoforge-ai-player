@@ -701,6 +701,25 @@ Three pieces of evidence, all required:
    give the same POST body but different effects. Holding the argument form
    constant is what keeps this comparator honest.
 
+   **The test must take the script's coordinates from the script.** They enter
+   on the script side at `api.do(directive, args)` (M2-PLAN:246, contract §4.1) and reach
+   the wire through `set_directive` (`agent/api.py:428`, which copies `x`/`y`/`z`
+   only when all three are present). The test reads the `STORE_ALL` directive
+   and its `x`/`y`/`z` out of the runner's returned `actions[]` and uses *those*
+   coordinates on both paths. If the harness writes both bodies itself, the
+   assertion compares two things the harness wrote and proves nothing — the
+   in-memory thread assertion's defect in a new coat. The assertion is allowed
+   to fail only because the script chose the coordinates; that is the whole of
+   its force.
+
+   The exemption is **positional, not intrinsic** (reviewer, 12:20Z):
+   `StoreAllBehavior.java:171` calls `player.moveTo(targetedContainer...)`, so
+   the coordinates form *does* move the bot — the ground on which `MINE` and
+   `PATROL` were excluded as subjects. It is a valid subject here only because
+   §8.2 compares the response emitted at `:1356` before any behaviour runs. If
+   this evidence is ever re-pointed at game-side motion, that objection applies
+   and the subject must be revisited.
+
 The three together rule out every false pass: runner-only fails to show the bot
 acted; game-only fails to show the *script* caused it; agent-only fails to show
 either end. **A negative control is part of the proof:** make the runner
