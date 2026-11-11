@@ -119,11 +119,11 @@ so folding them into one endpoint would not reliably get under 100 ms.
 
 Two changes to §4.4 instead, both agent-side:
 
-1. **Raise the read bound above one tick wait.** A 100 ms bound sits just under
-   the worst observed 4-call cost. Set `SCRIPT_TIMEOUT` to **300 ms** (well above
-   the 129.5 ms observed max, still far below the 2 s cadence) so a normal slow
-   tick does not masquerade as a failure. The bound exists to stop a *stalled*
-   runner, not to refuse a busy one.
+1. **Raise the read bound above the observed worst case.** A 100 ms bound sits
+   just under the worst observed 4-call cost. Set `SCRIPT_TIMEOUT` to **300 ms**
+   (well above the 129.5 ms observed max, still far below the 2 s cadence) so a
+   normal expensive refresh does not masquerade as a failure. The bound exists to
+   stop a *stalled* runner, not to refuse a busy one.
 2. **Cache per tick.** Fetch the four values once per bot per planner iteration,
    TTL = the 2 s cadence, in `api.py` (agent-only, per the reviewer's ruling), so
    the refresh cost is paid once rather than per script evaluation.
