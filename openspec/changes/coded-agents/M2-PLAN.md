@@ -47,10 +47,12 @@ Built in the agent, from data it already fetches. **The shape below is
 contract §3's, and the code does not match it** (reviewer, 13:03Z): §3 nests the
 bot facts under `bot` and the directive under `task`; `build_envelope`
 (`snapshot.py:80`) emits `{tick, server_ms, state, events, task}` with those bot
-facts inside `state`. Step 4 does **not** depend on the difference — the built
-script reads `snapshot.state` for facts and `snapshot.task` for the guard — but
-the divergence is real and belongs to the contract, not to this run. Recording it
-here so the run is not mistaken for a check of §3's shape:
+facts inside `state`. Step 4 does **not** depend on the difference and, with
+scout.js as written, it cannot detect it either: the script reads NO field of
+`bot`/`state` -- `snapshot.health` is the only fact it touches, and it is not at
+either level (see the note under the JSON below). The divergence is real and
+belongs to the contract, not to this run. Recording it here so the run is not
+mistaken for a check of §3's shape:
 
 ```json
 { "bot": {"name","health","food","position":{"x","y","z","dim"}},
@@ -62,6 +64,35 @@ here so the run is not mistaken for a check of §3's shape:
 Sources that already exist in `agent/api.py`: `status(bot)` `:98`,
 `inventory(bot)` `:101`, `blocks(bot,radius)` `:107`, `entities(bot,radius)` `:104`,
 `get_directive(bot)` `:43`.
+
+**The diagram above is not what any code produces, and the gap is wider than
+nesting** (reviewer, 13:07Z). Three readings disagree:
+
+| | facts live at | shape |
+|---|---|---|
+| `contract-v1.md` §3 (FROZEN, SHARED) | `state` | `{tick, server_ms, state, events, task}` |
+| this diagram | `bot` | `{"bot": {...}, "inventory": [...], "nearby": {...}, "task": {...}}` |
+| `build_envelope` (`snapshot.py:80`) | `state` | matches the contract |
+
+So it is the plan's diagram, not the code, that departs from the frozen
+contract — and the frozen contract already *is* `{tick, server_ms, state,
+events, task}`, which is what the code emits. The chart is a leftover from an
+earlier draft and should be corrected to the contract's shape rather than left
+to be read as the target.
+
+**And `scout.js` reads `snapshot.health`, which exists in none of the three.**
+The fact is at `state.health`; `snapshot.health` is `undefined`, and the health
+guard below it is typed `typeof health === "number" && health < 8`, so it
+short-circuits and never holds. Verified by running `scout.js` in a node VM
+against the real envelope: health 20 and health 3 both return
+`[{"kind":"STORE_ALL"}]`. The `task` guard works after `d75f30b` (same run:
+`[]` with a directive in flight) only because `task` is top-level.
+
+`test_scout_script.py` cannot see this: its fixtures pass literals like
+`{"health": 20, "task": null}` — the flat shape scout.js *wants* — never the
+envelope it *gets*, the same fixture-versus-producer gap that hid the
+`act["directive"]` defect and the dead `task` guard. Every assertion in that
+file is true of a payload no caller produces.
 
 Copy, never a reference: `json.dumps` at the call boundary is the read-only
 guarantee — the script gets bytes, and mutating them cannot reach the bot. The
