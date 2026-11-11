@@ -173,6 +173,12 @@ class BotRunner:
         self._chat_thread = None
         self._stop_event = threading.Event()
         self._chat_event = threading.Event()
+        # M2 script mode. `_script_tick` stays None unless the profile names a
+        # script AND it loads; every consumer treats None as "no script" and
+        # runs the planner exactly as before (task 7.2). Built lazily rather
+        # than in __init__ so a broken script file cannot stop a bot booting.
+        self._script_tick = None
+        self._script_loaded = False
         self._plan_steps = []
         self._plan_step_idx = 0
         self._plan_instruction = ""
@@ -2581,6 +2587,74 @@ Respond with ONLY a JSON array. Example:
             print(f"[{self.name}/L4] OpenAI call failed: {e}")
             return None
 
+    def _run_script_tick(self):
+        """Run one script-mode tick. Return True if the script handled it.
+
+        True means this tick is DONE and the caller should skip the planner.
+        False covers every other outcome: no script configured, the script file
+        unreadable, the runner refusing/silent/erroring, the script proposing
+        nothing, or every proposed action being refused. All of those must let
+        the L1/L3 path run exactly as it did before, so this never raises and
+        never returns True without having actually executed something.
+
+        The one asymmetry worth stating: a script that deliberately returns []
+        (it chose not to act) falls through to the planner too. Suppressing the
+        planner on an intentional no-op would turn a quiet script into a dead
+        bot, which is the failure mode task 7.2 exists to prevent.
+        """
+        try:
+            st = self._get_script_tick()
+            if st is None:
+                return False
+            handled, actions, refusals, detail = st.tick()
+            for r in refusals:
+                print(f"[{self.name}/script] refused action: {r}")
+            if not handled:
+                # detail is the reason; it is logged only when a script was
+                # expected, so a bot with no script stays quiet.
+                if detail and detail != "no script":
+                    print(f"[{self.name}/script] falling back to planner: {detail}")
+                return False
+            if not actions:
+                return False
+            print(f"[{self.name}/script] {len(actions)} action(s) this tick")
+            for act in actions:
+                directive = act.get("directive") if isinstance(act, dict) else None
+                if not directive:
+                    continue
+                result = self._run_directive(directive)
+                if result.get("reason") == "interrupted_by_chat":
+                    return True
+            return True
+        except Exception as e:  # noqa: BLE001 — a script must never kill the loop
+            print(f"[{self.name}/script] tick error, using planner: {e}")
+            return False
+
+    def _get_script_tick(self):
+        """Build the ScriptTick once, or None if this bot has no usable script."""
+        if self._script_loaded:
+            return self._script_tick
+        self._script_loaded = True
+        source = None
+        path = (self.profile.get("script") or "").strip()
+        if path:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    source = f.read()
+            except OSError as e:
+                print(f"[{self.name}/script] cannot read {path}: {e}")
+        elif self.profile.get("script_source"):
+            source = self.profile["script_source"]
+        if not source:
+            return None
+        try:
+            import script_tick
+            self._script_tick = script_tick.ScriptTick(api, self.name, source)
+        except Exception as e:  # noqa: BLE001
+            print(f"[{self.name}/script] script mode unavailable: {e}")
+            self._script_tick = None
+        return self._script_tick
+
     def _loop(self):
         while not self._stop_event.is_set():
             try:
@@ -2596,6 +2670,16 @@ Respond with ONLY a JSON array. Example:
                     continue
 
                 self._maybe_plan(new_msgs)
+
+                # ── M2 script path: runs ONLY if a script answered ──
+                # Placed before plan execution and after _maybe_plan, so a new
+                # instruction still reaches the planner first. `handled=False`
+                # on every failure path, so the L1 directive path below runs
+                # untouched -- that is the task 7.2 guarantee, and it is why
+                # this returns rather than `continue`s on an empty action list.
+                if self._run_script_tick():
+                    self._stop_event.wait(TICK_DELAY)
+                    continue
 
                 if not self._plan_steps:
                     self._check_task_board()
