@@ -955,8 +955,8 @@ not a shorthand. Add the flag or do not run it.
 |---|---|---|
 | Image (currently deployed) | `agent@sha256:9de2a68c370f5eafffae77aa8a89e9fdca43dcb840cde35e1bb659b19a142baf` | `kubectl -n minecraft-test get deploy -o jsonpath` |
 |       — built from | **`d45751d`** (2026-11-04 04:39Z) | the pod's `/opt/aibot-agent/agent.py` sha256 `2fc54346…7164a` matched against that blob in exactly one commit |
-| Image (for this run) | `harbor.arcadia-ecs.local/aiplayermod/agent@sha256:1b74ae7bfb694b4c697049e4fbda7ca0cebda59ab16de26d6406c4e0bf9506a4` (tag `2026-11-11-bf94724`) | pushed 2026-11-11 13:17:05Z (Harbor `push_time`); the digest is Harbor's `Docker-Content-Digest` for the **OCI image index**, and equals `sha256sum` of the manifest body fetched from `/v2/aiplayermod/agent/manifests/2026-11-11-bf94724` — re-read from the registry, not from a local image ID |
-|   — built from | `bf94724`+`01e9eaf` — **must be rebuilt after the fixes in §8.3.1b**; see the note on that row | build context `agent/`; verified inside the pushed image: `scout.js` sha256 `823920fd…a512`, `agent.py` sha256 `805a7521…d304e0`, both matching the rev, plus the built SPA and all five profiles |
+| Image (for this run) | **NOT YET BUILT — do not deploy a digest from an earlier revision of this plan.** The value goes in this cell only after the rebuild, copied from the push output | see §8.3.2 step 0: take Harbor's `Docker-Content-Digest` for the OCI image index; never a local image ID, and never a value typed rather than pasted |
+|   — built from | `b1658af` (head after §8.3.1b fixes); build context `agent/` | the pre-fix image `sha256:1b74ae7b…9506a4` (tag `2026-11-11-bf94724`, `bf94724`) is **dead** — it predates the `contract_version`, runner-token, bindings and `SCRIPTS_DIR` fixes, and deploying it reproduces the run-2 failure recorded in §8.3.1a |
 | Pods | 1/1 `aibot-agent-test` | `kubectl -n minecraft-test get pods` |
 | ConfigMap `agent-scripts` | **absent** | `get cm` → NotFound |
 | Deployment volumes | `agent-data` PVC only — no script mount | manifest + live |
