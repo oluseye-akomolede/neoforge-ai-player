@@ -18,8 +18,11 @@ skipped when those are missing rather than failing the suite in a clean seat.
 from __future__ import annotations
 
 import importlib
+import json
 import os
+import shutil
 import sys
+import tempfile
 import types
 import unittest
 from unittest import mock
@@ -194,6 +197,84 @@ class ScriptTickBranchTest(unittest.TestCase):
         printed = " ".join(str(c.args[0]) for c in p.call_args_list if c.args)
         self.assertIn("refused DROP", printed,
                       "a refused action vanished with no trace")
+
+
+class BindingsTest(unittest.TestCase):
+    """The bot-to-script map, tested against a real file on disk.
+
+    Every test here writes an actual bindings.json into a temp SCRIPTS_DIR and
+    lets the real `_bound_script_path` read it. That is deliberate: the first
+    version of the script path set `_script_tick` directly in setUp, so a mutant
+    that bound EVERY bot to scout.js survived the whole suite -- nothing ever
+    exercised the lookup. A test that constructs the object under test cannot
+    fail on the question of whether the object is found.
+    """
+
+    def setUp(self):
+        agent_mod = _agent_module()
+        self.agent_mod = agent_mod
+        self.tmp = tempfile.mkdtemp()
+        self.env = mock.patch.dict(os.environ, {"SCRIPTS_DIR": self.tmp})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        (open(os.path.join(self.tmp, "scout.js"), "w", encoding="utf-8")
+         .write("// scout\n"))
+
+    def _runner(self, name):
+        a = self.agent_mod.BotRunner.__new__(self.agent_mod.BotRunner)
+        a.name = name
+        a.profile = {}
+        a._script_tick = None
+        a._script_loaded = False
+        return a
+
+    def _bind(self, mapping):
+        with open(os.path.join(self.tmp, "bindings.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump(mapping, f)
+
+    def test_a_bound_bot_gets_its_script(self):
+        self._bind({"Scout": "scout.js"})
+        path = self._runner("Scout")._bound_script_path()
+        self.assertEqual(path, os.path.join(self.tmp, "scout.js"))
+
+    def test_an_unbound_bot_gets_no_script(self):
+        # This is the assertion the surviving mutant walked through: with
+        # {"Scout": ...} in the map, Miner must still resolve to nothing.
+        self._bind({"Scout": "scout.js"})
+        self.assertIsNone(self._runner("Miner")._bound_script_path())
+
+    def test_no_bindings_file_means_no_script(self):
+        self.assertIsNone(self._runner("Scout")._bound_script_path())
+
+    def test_a_malformed_bindings_file_is_logged_and_ignored(self):
+        with open(os.path.join(self.tmp, "bindings.json"), "w",
+                  encoding="utf-8") as f:
+            f.write("{not json")
+        with mock.patch("builtins.print") as p:
+            self.assertIsNone(self._runner("Scout")._bound_script_path())
+        printed = " ".join(str(c.args[0]) for c in p.call_args_list if c.args)
+        self.assertIn("cannot read", printed,
+                      "a broken bindings file must not be silent")
+
+    def test_a_binding_may_not_escape_the_scripts_dir(self):
+        self._bind({"Scout": "../../etc/passwd"})
+        with mock.patch("builtins.print") as p:
+            self.assertIsNone(self._runner("Scout")._bound_script_path())
+        printed = " ".join(str(c.args[0]) for c in p.call_args_list if c.args)
+        self.assertIn("bad binding", printed)
+
+    def test_the_full_path_reads_the_bound_file(self):
+        # End to end through the real loader: binds Scout, then confirms the
+        # tick was built with scout.js's text. A break anywhere in lookup ->
+        # open -> ScriptTick shows up here.
+        self._bind({"Scout": "scout.js"})
+        a = self._runner("Scout")
+        a.api = mock.Mock()
+        tick = a._get_script_tick()
+        self.assertIsNotNone(tick)
+        self.assertEqual(tick._source, "// scout\n")
 
 
 if __name__ == "__main__":

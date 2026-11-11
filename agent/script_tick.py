@@ -33,22 +33,49 @@ def no_runner_detail():
     return "no SCRIPT_RUNNER_URL configured"
 
 
+def no_token_detail():
+    """One wording, used by the constructor check and by the tick."""
+    return ("no runner token configured (RUNNER_TOKEN unset); "
+            "the runner answers 401 to every request without one")
+
+
+def runner_token():
+    """The bearer token the runner requires, or "" when unset.
+
+    The runner enforces this on every contract call
+    (agent-script-runner src/server.js): no `Authorization` header is a 401
+    before the body is read, so a tick without it cannot succeed. Kept as its
+    own function so a test can drive both branches without touching the
+    environment of a live pod.
+    """
+    from config import RUNNER_TOKEN
+    return (RUNNER_TOKEN or "").strip()
+
+
 def _default_transport():
     """A `_post(path, data, timeout=...)` bound to SCRIPT_RUNNER_URL, or None.
 
     Returns None when the URL is unset so the caller falls through to the
     planner. That is the safe default: a pod with no runner must not POST
     anywhere, and in particular must not POST to the mod.
+
+    The token is read here, not passed in: one place decides how a script tick
+    authenticates, and `call_runner` stays transport-agnostic. A missing token
+    also returns None for the same reason a missing URL does -- a runner that
+    would refuse every call is not a runner, and pretending otherwise turns
+    "misconfigured" into "script silently never fires".
     """
     from config import SCRIPT_RUNNER_URL
     base = (SCRIPT_RUNNER_URL or "").strip().rstrip("/")
-    if not base:
+    token = runner_token()
+    if not base or not token:
         return None
 
     import requests
 
     def _post(path, data=None, timeout=5):
-        r = requests.post(f"{base}{path}", json=data or {}, timeout=timeout)
+        r = requests.post(f"{base}{path}", json=data or {}, timeout=timeout,
+                          headers={"Authorization": f"Bearer {token}"})
         r.raise_for_status()
         return r.json()
 
@@ -127,6 +154,11 @@ class ScriptTick:
         # look like a script result. No runner configured means no script mode.
         poster = self._post if self._post is not None else _default_transport()
         if poster is None:
+            # Two different misconfigurations, named apart so an operator does
+            # not chase a dead runner when the token is what is missing.
+            from config import SCRIPT_RUNNER_URL
+            if (SCRIPT_RUNNER_URL or "").strip() and not runner_token():
+                return False, [], [], no_token_detail()
             return False, [], [], no_runner_detail()
         result = call_runner(self._api, body, post=poster)
 

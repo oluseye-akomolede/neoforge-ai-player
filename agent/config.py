@@ -15,6 +15,12 @@ MOD_API_KEY = os.getenv("MOD_API_KEY", "")
 # than posting ticks somewhere unintended.
 SCRIPT_RUNNER_URL = os.getenv("SCRIPT_RUNNER_URL", "")
 
+# The runner refuses every contract call that arrives without a bearer token,
+# with a 401 before it reads the body (agent-script-runner src/server.js). The
+# value comes from secret agent-script-runner-token, key `minecraft`; it is
+# never logged and never printed -- only whether it is set.
+RUNNER_TOKEN = os.getenv("RUNNER_TOKEN", "")
+
 # GET /health lives on the mod's own dedicated listener, not on MOD_API_URL: the
 # probe port answers /health and nothing else, so the two cannot share a base.
 # Default ties to the mod's default (3101); a deployment that moves it must set

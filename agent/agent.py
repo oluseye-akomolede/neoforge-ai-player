@@ -2664,21 +2664,73 @@ Respond with ONLY a JSON array. Example:
             print(f"[{self.name}/script] tick error, using planner: {e}")
             return False
 
+    def _bound_script_path(self):
+        """The script file bound to this bot, or None.
+
+        Reads `<scripts dir>/bindings.json`, a map of bot name -> script
+        filename. Everything about this is deliberately dull: one small JSON
+        file, read once, no state. The interesting part is only where it lives
+        (a ConfigMap, so it survives pod restarts) and what its absence means
+        (this bot runs the planner, unchanged).
+
+        Every failure returns None with a log line rather than raising: a bad
+        bindings file must not stop the other four bots from running, and a bot
+        that silently loses its script is the failure this whole step exists to
+        make visible.
+        """
+        import os as _os
+        scripts_dir = _os.getenv("SCRIPTS_DIR") or _os.path.join(
+            _os.path.dirname(__file__), "scripts")
+        bindings_path = _os.path.join(scripts_dir, "bindings.json")
+        try:
+            with open(bindings_path, encoding="utf-8") as f:
+                bindings = json.load(f)
+        except FileNotFoundError:
+            # The normal case for a bot with no script, and for every pod that
+            # has not been given the ConfigMap. Quiet by design.
+            return None
+        except (OSError, ValueError) as e:
+            print(f"[{self.name}/script] cannot read {bindings_path}: {e}")
+            return None
+        if not isinstance(bindings, dict):
+            print(f"[{self.name}/script] {bindings_path} is not an object; ignoring")
+            return None
+        name = bindings.get(self.name)
+        if not name:
+            return None
+        if not isinstance(name, str) or "/" in name or name.startswith("."):
+            # A binding names a file inside the scripts dir, not a path. This
+            # keeps a malformed bindings file from reading something arbitrary.
+            print(f"[{self.name}/script] bad binding {name!r}; ignoring")
+            return None
+        return _os.path.join(scripts_dir, name)
+
     def _get_script_tick(self):
-        """Build the ScriptTick once, or None if this bot has no usable script."""
+        """Build the ScriptTick once, or None if this bot has no usable script.
+
+        The bot-to-script map lives in the scripts ConfigMap (`bindings.json`),
+        NOT in the bot's profile. A profile key was tried first and abandoned:
+        the profiles directory is an emptyDir reseeded from the image on every
+        pod start, so a profile edit survived only until the next restart and
+        the plan's rollback story ("restore the saved file") was false. A
+        ConfigMap binding survives restarts, and the rollback is deleting the
+        entry rather than editing a file on a running pod.
+
+        A bot absent from `bindings` has no script and runs the planner exactly
+        as before -- the safe default, and the reason four of the five test
+        bots are unaffected when one is bound.
+        """
         if self._script_loaded:
             return self._script_tick
         self._script_loaded = True
         source = None
-        path = (self.profile.get("script") or "").strip()
+        path = (self._bound_script_path() or "").strip()
         if path:
             try:
                 with open(path, encoding="utf-8") as f:
                     source = f.read()
             except OSError as e:
                 print(f"[{self.name}/script] cannot read {path}: {e}")
-        elif self.profile.get("script_source"):
-            source = self.profile["script_source"]
         if not source:
             return None
         try:
