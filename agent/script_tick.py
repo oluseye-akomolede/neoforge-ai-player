@@ -1,0 +1,127 @@
+"""Script-mode tick for one bot (M2 task 3.2 wiring).
+
+Sits in front of the planner: if a bot has a script and the runner answers,
+the script's actions are what the bot does this tick. Otherwise this returns
+`handled=False` and the existing L1/L3 path runs exactly as it did before.
+
+The fallback is the whole design constraint (task 7.2: the existing planner
+stays the fallback). Three things must therefore be true, and each has a test:
+
+1. **Any failure falls through.** No script, runner down, runner silent,
+   runner returns junk -- all of them return `handled=False`, never an
+   exception, never an empty action list that suppresses the planner.
+2. **The bound is enforced here.** `script_client.call_runner` owns the 300 ms
+   bound; this module never calls the runner without it.
+3. **Refused actions are visible.** A script whose actions are all refused
+   must not look like a silent success -- the caller can log the refusals.
+
+The script itself is executed by the runner service, not here. This module
+feeds it a tick and binds what comes back.
+"""
+from __future__ import annotations
+
+import action_binding
+import snapshot as snapshot_mod
+from script_client import (
+    STATE_SCRIPT,
+    call_runner,
+)
+
+
+def _revision_of(source):
+    """Stable revision id for a script body.
+
+    The runner keys its source cache on this (§2.1), so two different scripts
+    must never collide and the same script must always agree.
+    """
+    import hashlib
+    return hashlib.sha256((source or "").encode("utf-8")).hexdigest()[:16]
+
+
+class ScriptTick:
+    """One bot's script-mode tick.
+
+    `script_source` is the script text. It is sent with every tick because the
+    runner is stateless between calls -- the contract has no session handle, and
+    inventing one here would be a second protocol to keep in step.
+
+    `api` is the bot's api object; `post` is the runner transport, injected so
+    tests do not need a live runner.
+    """
+
+    def __init__(self, api, bot, script_source, *, post=None, cache=None,
+                 game_id="minecraft", revision=None, memory=None):
+        self._api = api
+        self._bot = bot
+        self._source = script_source
+        self._game_id = game_id
+        # The runner caches source by revision, so the revision must change
+        # whenever the script does or a stale script keeps running. Derived
+        # from the source by default rather than left to the caller.
+        self._revision = revision if revision is not None else _revision_of(script_source)
+        self._memory = memory
+        # The per-bot snapshot cache is shared across ticks so the four-call
+        # refresh is paid once per tick rather than once per evaluation.
+        self._cache = cache
+        self._post = post
+        self.renderer = None
+
+    @property
+    def enabled(self):
+        return bool(self._source)
+
+    def tick(self):
+        """Return `(handled, actions, refusals, detail)`.
+
+        `handled=False` means "the planner should run this tick" -- the caller
+        must never treat it as "do nothing".
+        """
+        if not self._source:
+            return False, [], [], "no script"
+
+        envelope, snap_errors = self._build_snapshot()
+        # The body is the runner's §2.1 tick request, read from its handler
+        # (agent-script-runner src/main.js:167-216), not invented here:
+        # `game_id`, `bot_id` and `script_revision` are required strings;
+        # `source` is the script (cached by revision); the script's input goes
+        # under `snapshot`, NOT flattened into the tick object.
+        body = {
+            "game_id": self._game_id,
+            "bot_id": self._bot,
+            "script_revision": self._revision,
+            "source": self._source,
+            "snapshot": envelope,
+            "memory": self._memory,
+        }
+
+        # call_runner falls back to `api._post` when post is None, so passing
+        # None with a None api would be an AttributeError on the failure path.
+        # The bot's own api object is the right default transport.
+        result = call_runner(self._api, body, post=self._post)
+
+        if result.state != STATE_SCRIPT:
+            # Timeout, refused, error -- every non-script state falls through.
+            return False, [], [], f"runner {result.state}: {result.detail}"
+
+        bound, refusals = action_binding.bind_actions(result.actions)
+        if not bound:
+            # The script ran and proposed nothing bindable. That is still a
+            # handled tick *if* the script genuinely said "do nothing"; but if
+            # every action was refused, falling through would let the planner
+            # quietly do something else, which is the opposite of what the
+            # script asked. Distinguish the two.
+            if refusals:
+                return False, [], refusals, "all actions refused"
+            return True, [], [], "script chose silence"
+
+        return True, bound, refusals, f"{len(bound)} action(s)"
+
+    def _build_snapshot(self):
+        if self._cache is not None:
+            return self._cache.get(self._bot)
+        return snapshot_mod.build_state(self._api, self._bot)
+
+    def refresh(self):
+        """Force the next tick to rebuild the snapshot (after an action lands)."""
+        if self._cache is not None:
+            self._cache.invalidate(self._bot)

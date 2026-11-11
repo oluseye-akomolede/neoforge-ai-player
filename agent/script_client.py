@@ -173,6 +173,19 @@ def call_runner(api, bot_state, *, post=None):
     if not isinstance(payload, dict):
         return ScriptResult(STATE_FALLBACK_ERROR, detail=f"non-object body: {type(payload).__name__}")
 
+    # The runner answers `status: "error"` (or `need_source`) with no actions,
+    # which reads as an empty script if only `actions` is inspected. That
+    # collapsed two different worlds into one: a runner that FAILED and a
+    # script that deliberately chose silence. Only `ok` may count as a script
+    # result; everything else falls back so the planner runs. Found while
+    # wiring script_tick, by the fallback test that asserts it.
+    status = payload.get("status")
+    if status is not None and status != "ok":
+        return ScriptResult(
+            STATE_FALLBACK_ERROR,
+            detail=f"runner status {status!r}"
+                   + (f": {payload.get('error_class')}" if payload.get("error_class") else ""))
+
     actions = payload.get("actions")
     if actions is None:
         actions = []
