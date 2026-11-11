@@ -129,10 +129,11 @@ Two changes to §4.4 instead, both agent-side:
    the refresh cost is paid once rather than per script evaluation.
 
 **This supersedes the "if one snapshot costs more than ~150 ms" branch**, which was
-reasoning about the wrong quantity (it compared against a per-call cost and against
-`deadline_ms`, when the real constraint is the tick wait and the real budget is the
-2 s cadence). Raising the bound and caching is smaller than a mod endpoint and
-addresses the measured cause.
+reasoning about the wrong quantity: it compared against a per-call cost and against
+`deadline_ms`, when the measured constraint is the cost of a *complete* refresh
+(the 4-call figure in §1), and those per-call costs are paid per call rather than once per
+refresh, which is why caching is part of the answer. Raising the bound and caching is
+smaller than a mod endpoint and addresses the measured cause.
 
 *Reproduce:* bounded Job in `minecraft-test`, 40 samples per endpoint, timing
 `fetch` around a full body read against `minecraft-test-server:3100` with
