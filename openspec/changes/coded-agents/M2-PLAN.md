@@ -863,6 +863,105 @@ control that shows only "it fell back" does not show it recovered.
 
 ---
 
+## 8.3 The TEST run plan (step 4, Part B)
+
+**Status: proposed, not executed.** Nothing below has run. Every cluster fact in
+it was read at 12:4xZ from `minecraft-test` and is true of that moment only.
+
+### 8.3.1 What is true of the cluster before this plan
+
+| Fact | Value | How read |
+|---|---|---|
+| Image | `harbor.arcadia-ecs.local/aiplayermod/agent@sha256:…` (**pin by digest before rollout**) | `kubectl get deploy -o jsonpath` |
+| Pods | 1/1 `aibot-agent-test` | `kubectl get pods` |
+| ConfigMap `agent-scripts` | **absent** | `get cm` → NotFound |
+| Deployment volumes | `agent-data` PVC only — no script mount | manifest + live |
+| Deployment env | `NN_COMPRESSOR_URL` only; **no `SCRIPT_RUNNER_URL`** | live env |
+| Runner service | `agent-script-runner:8080` reachable in-namespace | `get svc` |
+| Scout profile | image file `profiles/scout.json`, **no `script` key** | `exec cat` |
+
+Scout must therefore be given the script **and** the runner URL, or the script
+path is dead on arrival: `_get_script_tick` returns None without `script`, and
+the transport falls through without `SCRIPT_RUNNER_URL`.
+
+### 8.3.2 The change, in three parts
+
+1. **ConfigMap** — apply `deploy/agent-scripts.yaml` (already generated from
+   `agent/scripts/scout.js`; the drift test keeps the two equal).
+2. **Mount + env** — add to the container:
+   - `volumeMounts: [{name: scripts, mountPath: /opt/aibot-agent/scripts, readOnly: true}]`
+   - `volumes: [{name: scripts, configMap: {name: agent-scripts}}]`
+   - `env: [{name: SCRIPT_RUNNER_URL, value: "http://agent-script-runner.minecraft-test.svc.cluster.local:8080"}]`
+3. **Scout's profile only** — add `"script": "/opt/aibot-agent/scripts/scout.js"`.
+   Profiles live in the image at `profiles/<Bot>.json`; this bot's copy is on
+   the `agent-data` PVC, so this is a **pod-local file edit**, not a ConfigMap or
+   a code change. It is the one step that is *not* reproducible from git, which
+   is why it is spelled out here rather than assumed.
+
+### 8.3.3 Order, and why
+
+1. Apply the ConfigMap. Nothing consumes it yet — safe on its own.
+2. Patch the Deployment (mount + env). The new pod has the script available but
+   no profile names it, so script mode is still off: **the restart changes no
+   behaviour**. This is the deliberate point of the order — the restart's risk is
+   paid at a moment when the feature is provably inert.
+3. Confirm 1/1 and that the pod has the file (`cat /opt/aibot-agent/scripts/scout.js`).
+4. Edit Scout's profile in the pod and let the agent pick it up on its next
+   construction of that bot, or restart the pod once more (state which was done).
+5. **Control first, then the real run** (§8.3.4).
+
+### 8.3.4 The negative control
+
+The proof is worthless without one: a bot that happens to store something while
+the script is loaded proves nothing. Both halves are required, in this order.
+
+- **Run 1 (control):** Scout's profile *without* `"script"`. Drive the same goal
+  and record whether any `STORE_ALL` POST reaches the mod. Expected: none from
+  the script path (the planner may still emit one — that is the baseline to
+  compare against, not a failure).
+- **Run 2 (script):** same goal, `"script"` added. Record the runner's action,
+  the agent's applied `seq`, and the mod's POST response.
+
+The control must **never stop the runner** (lead, 11:37Z) and must cut Scout off
+agent-side only — the shared runner serves other work.
+
+### 8.3.5 Verification, per piece
+
+| # | Evidence | Failure looks like |
+|---|---|---|
+| 1 | Runner log: tick with `bot_id: "Scout"`, script `revision`, non-empty `actions` | no runner line at all → the tick never left the agent |
+| 2 | Agent log: applied `seq` matching the runner's | same `seq` never applied → binding dropped it |
+| 3 | Mod POST response: `status: accepted`, `STORE_ALL`, **coordless** | coordinates present → §3's pin is wrong, record it |
+| 4 | Run 1 produces no script-path POST | a POST with no script → something else is emitting it |
+
+Item 4 is the one that makes 1–3 mean anything.
+
+### 8.3.6 Known hazards for the run
+
+- **The runner URL is new code** (`4035605`): before this, the transport
+  defaulted to `api._post` → `MOD_API_URL`, i.e. the tick would have gone to the
+  game mod and silently looked handled. The run must show the request arriving
+  at the *runner*, not merely an absence of errors.
+- **Test invocation:** the M2 suites are run from `agent/`
+  (`cd agent && python3 -m unittest …`). From the repo root they error —
+  `agent/` has no `__init__.py`, so `unittest agent.test_x` resolves `agent` to
+  `agent.py`. A CI runner invoking from the root would fail; the run plan says
+  `agent/` explicitly for that reason.
+- **Profiles are pod-local**, not in git: the step-3 edit is not recoverable from
+  a checkout. Record the exact file edited and its before/after `script` key.
+
+### 8.3.7 What this plan does NOT claim
+
+- It does not claim the planner emits coordless `STORE_ALL` in the wild. Two
+  producers are known to (`agent.py:1888` bare, `SkillRegistry.java:154` bare);
+  a raw model emission is untraced. Run 1 records the planner's real form.
+- It does not claim the bot will store anything. The script may return early
+  (low health, task in flight) — that is a fall-through to the planner, which is
+  correct behaviour and would make run 2 look like run 1. If both runs match,
+  check the runner log for the tick before concluding the feature failed.
+
+---
+
 ## 9. Rollback
 
 No data migration and no schema change, so rollback is code-only:
