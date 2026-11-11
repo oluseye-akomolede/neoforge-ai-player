@@ -505,9 +505,15 @@ uninformative about parity.
 
 **The form is taken from code, not from observation — and the plan says so.**
 The TEST planner logs do not carry it: the agent's directive record is the
-trajectory JSONL, the store holds exactly one `STORE_ALL` record (coordless,
-archive dated 2026-07-16, four months stale), and one stale record is not
-current behaviour. The pinning rests on the structural argument above
+trajectory JSONL, and the store holds exactly **one** `STORE_ALL` record —
+`agent_trajectories/trajectory-2026-08-14.jsonl:2`,
+`{"bot":"bot1","model":"qwen2.5:14b","parsed":[{"kind":"STORE_ALL"}]}`,
+coordless, `plan_ref` `offloop-livefire-1`, dated 2026-08-14. Three reasons it
+is not treated as evidence of current behaviour: it is one record, it is three
+months stale, and its `model` is `qwen2.5:14b`, not the `qwen3-coder:30b` the
+profiles now name — so it is not even the current planner. It is recorded as
+**consistent with** the structural argument, never as the observation that
+carries it. The pinning rests on the structural argument above
 (`agent.py:1622` no capture groups; `SkillRegistry.java:154` bare beside
 `AREA_LOOT`). That is read from source, and it is a scoped claim: producers
 enumerated, a raw model emission outside a seed match untraced.
