@@ -1194,13 +1194,13 @@ No data migration and no schema change, so rollback is code-only:
 
 ```
 # every line names -n minecraft-test: minecraft/aibot-agent is PROD (§8.3.0)
-POD=$(kubectl -n minecraft-test get pod -l app=aibot-agent,tier=test -o jsonpath='{.items[0].metadata.name}')
+POD=$(kubectl -n minecraft-test get pod -l app=aibot-agent -o jsonpath   # tier=test is not a label anywhere in this plan (§8.3.1)='{.items[0].metadata.name}')
 echo "$POD"                                                      # must be non-empty before continuing
 
 git revert <this change's commits>                               # agent-side only
-kubectl -n minecraft-test cp "$POD:/srv/aibot-profiles/scout.json" ./scout.json.current   # keep what is there now
+kubectl -n minecraft-test cp -c agent "$POD:/srv/aibot-profiles/scout.json" ./scout.json.current   # keep what is there now
 # restore the original profile captured BEFORE the edit (§8.3.2 part 3 (i)):
-kubectl -n minecraft-test cp ./evidence/step4-scout-profile.before.json "$POD:/srv/aibot-profiles/scout.json"
+kubectl -n minecraft-test cp -c agent ./evidence/step4-scout-profile.before.json "$POD:/srv/aibot-profiles/scout.json"
 kubectl -n minecraft-test rollout undo deploy/aibot-agent-test
 kubectl -n minecraft-test delete configmap agent-scripts
 
@@ -1219,8 +1219,8 @@ references the ConfigMap, but **does not delete the ConfigMap itself**. Left
 behind it is inert, but it is a stale script a later reader might mistake for
 live. Delete it so the rollback leaves no artefact claiming to be active.
 
-The profile restore is the piece git cannot do. `scout.json` on the
-`agent-data` PVC is edited in place and is not in the repo, so a `git revert`
+The profile restore is the piece git cannot do. `scout.json` in the
+`/srv/aibot-profiles` emptyDir is edited in place and is not in the repo, so a `git revert`
 does nothing to it; without the explicit `cp` above, the rollback would leave
 Scout loading a script file that the deleted ConfigMap no longer provides — a
 profile pointing at a missing path, which `_get_script_tick` reports and falls
