@@ -43,14 +43,30 @@ where §3.3 below says otherwise.
 
 ## 1. Task 3.1 — read-only per-tick snapshot
 
-Built in the agent, from data it already fetches. **The shape below is
-contract §3's, and the code does not match it** (reviewer, 13:03Z): §3 nests the
-bot facts under `bot` and the directive under `task`; `build_envelope`
-(`snapshot.py:80`) emits `{tick, server_ms, state, events, task}` with those bot
-facts inside `state`. Step 4 does **not** depend on the difference — the built
-script reads `snapshot.state` for facts and `snapshot.task` for the guard — but
-the divergence is real and belongs to the contract, not to this run. Recording it
-here so the run is not mistaken for a check of §3's shape:
+Built in the agent, from data it already fetches.
+
+**This diagram is a leftover and the code is right** (reviewer, 13:06Z,
+correcting 13:03Z — including my own repetition of it). `contract-v1.md:193`
+specifies `{tick, server_ms, state, events, task}`, and `build_envelope`
+(`snapshot.py:80`) emits exactly that. The nested `{"bot": …}` sketch below was
+written before the contract settled and was never updated; it is the *diagram*
+that diverges, not the implementation.
+
+Three shape facts, which together are why the built script is written the way it
+is — the original of each is a script bug this plan has already had:
+
+1. Bot facts (`health`, `food`, `position`, `inventory`, `nearby`) are under
+   **`state`**, not at the top level. `scout.js` read `snapshot.health`, which is
+   `undefined` at every level, so its low-health guard silently never fired.
+2. The running directive is at **`task`** (top level), not `state.task`. The
+   cache originally built the envelope without passing it, making it `None`
+   every tick.
+3. `inventory` and `nearby` are under `state`, not top level, despite the
+   diagram below placing them there.
+
+Step 4 does **not** depend on resolving the diagram/contract difference — the
+script reads the real envelope. Recorded so the run is not mistaken for a check
+of §3's shape, and so the diagram is not cited as the contract.
 
 ```json
 { "bot": {"name","health","food","position":{"x","y","z","dim"}},
@@ -58,6 +74,7 @@ here so the run is not mistaken for a check of §3's shape:
   "nearby": {"blocks":[...], "mobs":[...]},
   "task": {"directive","progress",...} }
 ```
+*(stale sketch — superseded by `contract-v1.md:193` and by the three facts above)*
 
 Sources that already exist in `agent/api.py`: `status(bot)` `:98`,
 `inventory(bot)` `:101`, `blocks(bot,radius)` `:107`, `entities(bot,radius)` `:104`,
@@ -692,7 +709,7 @@ data:
 earlier draft of this section showed one. The script's revision is not a file
 the ConfigMap carries: `_revision_of` (`script_tick.py:58`) hashes the JS the
 agent holds and sends `script_revision = sha256(source)[:16]` on the wire, which
-for `scout.js` at `80aadcb` is `7fdbad9076381f43`. Whoever executes §8.3.5 row 2
+for `scout.js` at `d75f30b` is `823920fd7277b98b`. Whoever executes §8.3.5 row 2
 must compare against **that computed value**, not read a revision from the
 ConfigMap — there is nothing there to read.
 
@@ -1133,11 +1150,12 @@ revision is hashed from the script body, not carried in the ConfigMap.
 
 | # | Evidence | Failure looks like |
 |---|---|---|
-| 1 | **Runner** log: the tick carries `bot_id: "Scout"`, `script_revision: 7fdbad9076381f43`, non-empty `actions` | no runner line at all → the tick never left the agent |
+| 1 | **Runner** log: the tick carries `bot_id: "Scout"`, `script_revision: 823920fd7277b98b`, non-empty `actions` | no runner line at all → the tick never left the agent |
 | 2 | **Agent** log: `[Scout/script] dispatch: STORE_ALL {...}` followed by a `COMPLETED STORE_ALL` return, and **no** `[Scout/script] not executed:` line | the `dispatch:` line never appears → the action was refused before dispatch; a `not executed:` line → the orchestrator returned FAILED and that action did not run |
 | 3 | Mod POST response: `status: accepted`, `STORE_ALL`, **coordless** | coordinates present → §3's pin is wrong, record it |
 | 4 | Run 1 produces no script-path POST | a POST with no script → something else is emitting it |
 | 5 | **The in-flight guard fired**: a tick with a directive already running emits **no** runner tick at all for that bot, and the agent log shows neither `dispatch:` nor `not executed:` | a runner tick appears → the guard did not fire; a `not executed:` line → the guard did not fire and the action was refused downstream instead |
+| 6 | **The low-health guard fired**: with Scout damaged below 8 hp, the agent log carries `[Scout/script] scout: health N too low, holding` and no runner tick | a runner tick with `STORE_ALL` → the guard did not fire (this was the live defect until `d75f30b`) |
 
 **Row 5 is not satisfied by row 2's absence-of-refusal.** Those look identical
 in the log and mean opposite things. Row 2's clean case (dispatch happened,
@@ -1180,9 +1198,8 @@ to the planner. This does not endanger the step-4 run, whose script sends
 `STORE_ALL` only — a genuine mod directive — but it had to be settled before a
 second script exists.
 
-**Row 1's revision is computed, not read.** `7fdbad9076381f43` is
-`sha256(agent/scripts/scout.js)[:16]` at `80aadcb` (verified independently:
-2975 bytes). Recompute it against the image that actually ships; if the script
+**Row 1's revision is computed, not read.** `823920fd7277b98b` is
+`sha256(agent/scripts/scout.js)[:16]` at `d75f30b` Recompute it against the image that actually ships; if the script
 changed, this value changes and a stale one in this table is the whole finding.
 
 Item 4 is the one that makes 1–3 mean anything.

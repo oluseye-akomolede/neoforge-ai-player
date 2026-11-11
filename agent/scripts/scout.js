@@ -20,10 +20,19 @@ function tick() {
     return [];
   }
 
+  // The envelope's shape is {tick, server_ms, state, events, task}; the bot
+  // facts live under `state`, not at the top. Reading `snapshot.health` here
+  // gave undefined, so `typeof health === "number"` short-circuited and this
+  // guard NEVER FIRED - a bot at health 3 still proposed an action. Every test
+  // missed it because the fixtures fed the flat object the script wanted
+  // rather than the envelope the cache produces; the guard is now tested
+  // against an envelope built through SnapshotCache.
+  var state = (snapshot.state || {});
+
   // Only act once we are actually healthy enough to move. A starved or hurt
   // bot acting on a stale plan is how a bot walks into lava while it is
   // already fleeing something.
-  var health = snapshot.health;
+  var health = state.health;
   if (typeof health === "number" && health < 8) {
     api.log("scout: health " + health + " too low, holding");
     return [];
