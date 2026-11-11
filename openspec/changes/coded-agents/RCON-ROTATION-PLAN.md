@@ -262,13 +262,29 @@ anyone is connected, unless the lead says otherwise.
    compaction and step 2 after, so the variable was gone and (c) could not run
    as written. The scan that *did* run needs no old value at all — it
    **enumerates every rcon password assignment on the volume and inspects what
-   each carries**, requiring each to hold the new value. Measured result: 3
-   assignments, all 3 the new value, 0 anything else; positive control
-   re-found all three known holders. This is strictly better than the
-   prescribed check, because the prescribed one assumes the set of holders and
-   searches inside it, while this one enumerates the set. §1's original scan
-   failed in exactly that way: it chose its files by extension and missed two
-   dotfiles. Prefer the enumerate form.
+   each carries**, requiring each to hold the new value. This is strictly better
+   than the prescribed check, because the prescribed one assumes the set of
+   holders and searches inside it, while this one enumerates the set. §1's
+   original scan failed in exactly that way: it chose its files by extension and
+   missed two dotfiles. Prefer the enumerate form.
+
+   **The scan is published: `evidence/rcon-enumerate-scan.sh` (`344f7f2`).**
+   What it printed at execution: `new_fp=1d0eab43090b08bb`, `new_len=48`; three
+   RCON assignments (`.rcon-cli.env`, `.rcon-cli.yaml`, `server.properties`), all
+   three holding the new value, set-compared; two non-rcon `password` fields
+   named rather than dropped (`ae2webintegration.toml`, the bundled Showdown
+   server's JS — the toml's value fingerprints `f9fbeb6b0b51c6e9`, not the
+   rcon value). RC=0.
+   It took **four broken versions** to become a check that can fail, and each
+   broke the same way — a control that passes on garbage: wrong pod selector
+   (the agent, which has no `/data`); the value piped on stdin to `sh -s`,
+   which executes stdin as commands, leaving the needle empty so an empty grep
+   matched 20+ files **and the control passed** (20 > 3); the script written to
+   the wrong host's `/tmp`; and classifying assignments by whether the file
+   says "rcon", which put both real dotfiles in `OTHER` so the final "every
+   rcon assignment carries the new value" went green with two of the three
+   holders outside the checked set. The `len(NEW)==48` gate is the only check
+   that caught the empty-needle case; a hit-count control cannot.
    `$OLD`-based (b) was left **unmeasured** in that run for the same reason and
    is recorded as such rather than passed. The lead's ruling (15:31Z): do not
    re-run it — recovering the old value would mean pulling it back out of a
