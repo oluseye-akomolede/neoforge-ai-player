@@ -260,9 +260,17 @@ class BindingsTest(unittest.TestCase):
 
         The risk of adding a module-level door is that it becomes a second
         implementation that drifts from the first. So this asserts agreement
-        across the states rather than testing the wrapper in isolation: bound,
-        unbound, no file, and the C1 refusal. If someone reimplements the
-        wrapper, one of these four diverges.
+        across the states rather than testing the wrapper in isolation.
+
+        Review 2026-11-11 F: the first version of this claimed four states were
+        enough to catch a reimplementation, and that claim was false. A
+        faithful copy of the happy path agrees on bound / unbound / no-file /
+        C1. The resolver also has four GUARDS -- traversal, a non-dict bindings
+        file, a non-str binding, an empty string -- and a reimplementation that
+        dropped any of them agreed on all four of those states. Green tests
+        asserting a property they cannot test are worse than absent ones: they
+        are what stops the next person checking. The guard states below are
+        constructed so that dropping a guard diverges here.
         """
         # 1. bound
         self._bind({"Scout": "scout.js"})
@@ -290,6 +298,48 @@ class BindingsTest(unittest.TestCase):
                 self.assertIsNone(self.agent_mod.bound_script_path("Scout"))
             self.assertEqual(self.agent_mod.bound_script_path("Scout"),
                              self._runner("Scout")._bound_script_path())
+
+    def test_the_door_agrees_on_the_states_the_guards_exist_for(self):
+        """The four guard states, which is where a reimplementation diverges.
+
+        Each row here is a value the resolver explicitly refuses. A wrapper
+        that reimplemented the happy path without one of these guards would
+        return a path where the method returns None -- and would pass every
+        state in the test above. This test is the control that makes that
+        claim (in the docstring above) true rather than decorative.
+        """
+        cases = [
+            # (label, bindings object, bot name)
+            ("traversal", {"Scout": "../../etc/passwd"}, "Scout"),
+            ("absolute-ish", {"Scout": "/etc/passwd"}, "Scout"),
+            ("dotfile", {"Scout": ".hidden.js"}, "Scout"),
+            ("non-str binding", {"Scout": 42}, "Scout"),
+            ("empty binding", {"Scout": ""}, "Scout"),
+        ]
+        for label, bindings, bot in cases:
+            with self.subTest(label=label):
+                self._bind(bindings)
+                door = self.agent_mod.bound_script_path(bot)
+                method = self._runner(bot)._bound_script_path()
+                self.assertEqual(
+                    door, method,
+                    f"{label}: door and method disagree ({door!r} vs {method!r})")
+                self.assertIsNone(
+                    door, f"{label}: both must refuse, got {door!r}")
+
+        # A bindings file that is not an object at all: a JSON array.
+        with open(os.path.join(self.tmp, "bindings.json"), "w") as f:
+            json.dump(["Scout", "scout.js"], f)
+        self.assertEqual(self.agent_mod.bound_script_path("Scout"),
+                         self._runner("Scout")._bound_script_path())
+        self.assertIsNone(self.agent_mod.bound_script_path("Scout"))
+
+        # And a syntactically invalid file, which takes the ValueError arm.
+        with open(os.path.join(self.tmp, "bindings.json"), "w") as f:
+            f.write("{not json")
+        self.assertEqual(self.agent_mod.bound_script_path("Scout"),
+                         self._runner("Scout")._bound_script_path())
+        self.assertIsNone(self.agent_mod.bound_script_path("Scout"))
 
     def test_unset_scripts_dir_does_not_fall_back_to_the_image_copy(self):
         """SCRIPTS_DIR unset must disable script mode, and say so.

@@ -22,8 +22,14 @@ echoed.
 ## 1. Every holder of the current value
 
 Found by scanning values, not names: a fingerprint match against
-`sha256(current)[:16] = 8e98b209bf95a453`, across Secrets, ConfigMaps,
-Deployment env and every file on the data volume.
+`sha256(current)[:16]`, across Secrets, ConfigMaps, Deployment env and every
+file on the data volume.
+
+**The fingerprint is deliberately not written in this document.** It is 64 bits
+of the credential this rotation exists to close, and publishing it here would
+give anyone a cheap way to check a guess. The value is printed at execution
+time into the run log instead, where a run log belongs. The forward scan — how
+the next holder is found — is in section 5.
 
 **Positive control.** The scan was validated by requiring it to re-find the
 Secret it started from. It did (`positive control: True`). Without that, a zero
@@ -35,9 +41,11 @@ false pass.
 | 1 | Secret `minecraft-rcon` | key `password`, 32 bytes | consumed by Deployment env `RCON_PASSWORD` via `secretKeyRef` |
 | 2 | `/data/server.properties` | line `rcon.password` | the server's own runtime copy on the PVC |
 
-Both fingerprint `8e98b209bf95a453`. Nothing else on the volume assigns
-`rcon.password` — the 400+ mod configs and `.bak` files were scanned by value,
-not by name, and none match.
+Both holders match one another by fingerprint (recorded on the row and printed
+at execution time, never here). Nothing else assigns `rcon.password`: the 400+
+`.bak` and mod-config files on the volume were scanned **by value**, not by
+name, and none match. That scan includes the `.bak` files — they are part of
+the scanned set in this section, not a separate claim in the table.
 
 **Deployment env.** `RCON_PASSWORD` is a `secretKeyRef` to
 `minecraft-rcon/password`, not a literal. So rotating the Secret covers the
@@ -60,10 +68,16 @@ Dropping `:31167` would leave the service reachable in-cluster only.
 
 ## 2. Value handling
 
-- New value generated **in place**: `head -c 32 /dev/urandom | base64` sliced to
-  32 chars, held in a shell variable, never echoed, never written to a file on
-  this VM.
-- Refuse an empty value or a length other than 32 before writing anything.
+- New value generated **in place**: `head -c 24 /dev/urandom | xxd -p -c 48`
+  gives exactly **48 hex characters**, held in a shell variable, never echoed,
+  never written to a file on this VM. Hex is chosen deliberately: it cannot
+  produce `/`, `+`, `=` or a newline, so there is no escaping question in the
+  Java properties file and none in `kubectl --from-literal`. A base64 pipeline
+  was the first draft and was wrong — `head -c 32 | base64` emits 44 characters
+  and "sliced to 32" never said which 32.
+- Refuse an empty value, or a length other than 48, before writing anything.
+  The length is the acceptance test, so the derivation above is what makes that
+  test meaningful rather than decorative.
 - **No backup of the old value.** It is compromised; a backup that restores it
   is a way to put the public password back. This is the one rotation where
   "we can roll back" is the wrong instinct — roll **forward** with a new value
@@ -82,7 +96,7 @@ anyone is connected, unless the lead says otherwise.
    match each other (they should — if not, stop and report, because a mismatch
    means a third path is writing one of them). Count online players; a non-zero
    count stops the plan pending the lead's word.
-2. **Rotate the Secret.** Generate, validate length 32, `kubectl create secret
+2. **Rotate the Secret.** Generate, validate length 48 (section 2), `kubectl create secret
    ... --dry-run=client -o yaml | kubectl apply -f -`. Value never printed.
 3. **Restart the server** so the env re-reads and `server.properties` is
    rewritten: `kubectl rollout restart deploy/minecraft-test-server`.
