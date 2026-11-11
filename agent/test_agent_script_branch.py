@@ -104,10 +104,26 @@ class ScriptTickBranchTest(unittest.TestCase):
         return ticks
 
     def test_handled_actions_skip_the_planner(self):
-        self._with_tick((True, [{"directive": {"type": "STORE_ALL"}}], [], "ok"))
+        # The fixture is the shape `bind_actions` ACTUALLY returns --
+        # `{"kind": KIND, **allowed_args}` (action_binding.py:82) -- not a
+        # `{"directive": {...}}` wrapper. The previous fixture used the wrapper,
+        # which no producer emits, so this test passed while the consumer read
+        # `act["directive"]` -> None -> `continue`, executing nothing. A fixture
+        # that does not match the producer is a test of the fixture.
+        self._with_tick((True, [{"kind": "STORE_ALL"}], [], "ok"))
         self.assertTrue(self.a._run_script_tick(),
                         "a handled tick must tell the loop to skip the planner")
         self.a._run_directive.assert_called_once_with({"type": "STORE_ALL"})
+
+    def test_bound_arguments_survive_the_kind_to_type_rename(self):
+        # A bound action carries its allowed args beside `kind`. All of them must
+        # reach `_run_directive` as the `type`-keyed dict it pops, or a script's
+        # coordinates/counts are silently dropped between binding and dispatch.
+        self._with_tick((True, [{"kind": "STORE_ALL", "x": "10", "y": "64", "z": "10"}],
+                         [], "ok"))
+        self.assertTrue(self.a._run_script_tick())
+        self.a._run_directive.assert_called_once_with(
+            {"type": "STORE_ALL", "x": "10", "y": "64", "z": "10"})
 
     def test_every_failure_falls_through_to_the_planner(self):
         # Each of these must return False. A True here silences the planner.

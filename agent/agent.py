@@ -2617,11 +2617,27 @@ Respond with ONLY a JSON array. Example:
                 return False
             if not actions:
                 return False
+            # `actions` are BOUND actions: `{"kind": KIND, ...allowed args}`
+            # (action_binding.py:82) -- not `{"directive": {...}}`. An earlier
+            # version read `act["directive"]`, got None for every action, and
+            # `continue`d: the log above counted actions that then ran nothing.
+            # A run would have looked like it applied work while executing none
+            # of it. This maps the script's `kind` onto the `type` that
+            # `_run_directive` pops (agent.py:2031).
             print(f"[{self.name}/script] {len(actions)} action(s) this tick")
+            ran = 0
             for act in actions:
-                directive = act.get("directive") if isinstance(act, dict) else None
-                if not directive:
+                if not isinstance(act, dict) or not act.get("kind"):
                     continue
+                kind = act["kind"]
+                directive = {"type": kind}
+                directive.update({k: v for k, v in act.items() if k != "kind"})
+                if ran == 0:
+                    # One line per tick naming what actually got dispatched, so
+                    # "the script did something" is checkable from the log
+                    # rather than inferred from a count.
+                    print(f"[{self.name}/script] dispatch: {kind} {directive}")
+                ran += 1
                 result = self._run_directive(directive)
                 if result.get("reason") == "interrupted_by_chat":
                     return True
@@ -3268,8 +3284,17 @@ def _strip_category_prefix(text):
 
 
 def load_profiles():
-    """Load all profile JSON files from the profiles directory."""
-    profiles_dir = os.path.join(os.path.dirname(__file__), "profiles")
+    """Load all profile JSON files from the profiles directory.
+
+    `PROFILES_DIR` overrides the directory; unset means the image's own
+    `profiles/`, i.e. today's behaviour exactly. This exists because the
+    Deployment mounts the `agent-data` PVC at `/opt/aibot-agent/data`, which is
+    NOT where this function reads: a profile edited on the PVC was invisible to
+    the loader, so a run that "enabled" script mode from there would have proved
+    nothing. Prod sets nothing and is unaffected.
+    """
+    profiles_dir = os.getenv("PROFILES_DIR") or os.path.join(
+        os.path.dirname(__file__), "profiles")
     profiles = []
     for fname in sorted(os.listdir(profiles_dir)):
         if fname.endswith(".json"):
