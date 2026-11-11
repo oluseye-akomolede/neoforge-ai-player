@@ -142,6 +142,7 @@ class BoundTest(unittest.TestCase):
     def test_silent_runner_times_out_and_does_not_hang(self):
         # 4.4: accepted, never replies. Must return at ~the bound, as a
         # fallback, with the thread released.
+        before_threads = set(threading.enumerate())
         with _NeverReplies() as srv:
             started = time.monotonic()
             result = call_runner(None, {"bot": "Scout"},
@@ -155,10 +156,18 @@ class BoundTest(unittest.TestCase):
         self.assertGreaterEqual(elapsed, SCRIPT_TIMEOUT * 0.5,
                                 "returned suspiciously fast - did it even connect?")
         # The waiting thread must be released, not left hanging.
+        #
+        # The first version of this assertion looked for a live thread whose
+        # name contained "requests". That could never fail: requests.post is
+        # synchronous and creates no thread at all, and a leaked thread would
+        # be named Thread-N. The check was decoration. This compares the thread
+        # set before and after, so a thread that is started and not joined -
+        # whatever it is named - is visible. (reviewer, 12:14Z)
+        after = set(threading.enumerate())
+        leaked = after - before_threads - {threading.current_thread()}
         self.assertFalse(
-            [t for t in threading.enumerate() if t is not threading.current_thread()
-             and t.is_alive() and "requests" in (t.name or "").lower()],
-            "a requests thread is still alive after the bound")
+            leaked,
+            f"thread(s) still alive after the bound: {[t.name for t in leaked]}")
 
     def test_connection_refused_is_reported_not_raised(self):
         # 4.3: a closed port. Grab a port then close it.

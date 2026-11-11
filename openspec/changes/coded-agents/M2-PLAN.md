@@ -250,8 +250,12 @@ args)`, `api.say(text)`, `api.send(otherBot,msg)`. The runner returns
 | action | agent path |
 |---|---|
 | `do` | `api.set_directive(bot, directive, ...)` (`agent/api.py:428`) — the existing dispatch |
-| `say` | the existing chat-send path |
+| `say` | the existing chat-send path (`agent/api.py:217 chat`) |
 | `send` | the existing inter-bot message path |
+
+Note `api.say` is a **runner** action (`binding.js:253`), not a mod directive —
+it produces a `chat` call, never a `DirectiveType`. That is why it cannot be the
+subject of a *directive*-parity check (§3.3).
 
 **The dispatch set is not extended.** The plan does not restate the list and does
 not hard-code its size: it is read from the symbol at runtime, because the number
@@ -409,41 +413,55 @@ the set.
 
 Pick **one** directive with an unambiguous, observable effect.
 
-> **CORRECTED during step 3, 2026-11-11.** This section originally named `say`.
-> **`SAY` is not a `DirectiveType`** — the enum has `CHANNEL` and no `SAY`, and
-> chat is a separate endpoint (`api.py:217 chat(bot, message)`), not a
-> directive. `CHANNEL` is not a substitute: it channels an *item or action*
-> (`target`/`count`), it does not speak. A script cannot `api.do("SAY")`; the
-> agent-side name resolution refuses it, correctly.
+> **RULED at review, 2026-11-11 12:14Z — option (a) as a TWO-LAYER comparison.**
+> `SAY` is not a `DirectiveType`: the enum has `CHANNEL` and no `SAY`, and chat is
+> a separate endpoint (`api.py:217`). So there is no directive to compare
+> against, and the original subject was a phantom.
 >
-> Consequence for the parity proof: `say` cannot be the subject of a
-> **directive**-parity check, because there is no directive to compare against.
-> Options for the reviewer, not decided here:
-> (a) pair the `chat` endpoint on both paths — planner and `api.chat` — which
->     tests endpoint parity rather than directive parity;
-> (b) pick a real `DirectiveType` with an observable, non-movement effect
->     (`CHANNEL` with a harmless target, or `STORE_ALL`), accepting that
->     movement/tick confounds are smaller than they seemed for that case;
-> (c) drop bare parity and rely on §8.2's script-vs-planner proof, which already
->     shows the same visible effect from both paths.
->
-> The silence case (step 4) is unaffected: it needs a situation where the
-> planner emits nothing, not a named directive. It is the
-best parity subject because the evidence is a line in the game log — no physics,
-no pathing, no timing.
+> The reviewer also killed the naive form of (a): **every planner-path
+> `api.chat` is an aside around an action** — `agent.py:359` (memory ack),
+> `:374` (work area), `:470` (on my way), `:479` (stopping), `:1214` (chat
+> reply); `sessions.py:230,391` (session chatter). The planner never emits
+> speech *as* its action output; its action output is a `DirectiveType`. So
+> `api.chat` vs `api.chat` would be the same function called from two places —
+> a tautology that proves the endpoint works, which was never in doubt.
 
-Method: two runs of the same bot in the same place.
+**The subject is the binding, not the endpoint.** The proof must exercise the
+layer each path actually goes through:
 
-1. Planner path: the bot reaches the `say` directive through the existing agent
-   code. Record the chat line and the sequence of API calls.
-2. Script path: the same `say` arrives via `api.say` from the runner. Record the
-   same two things.
-3. Assert the **API call sequence is identical** and the chat line is identical.
+| path | reaches the effect via |
+|---|---|
+| planner | directive dispatch (`DirectiveType` handler) |
+| script | runner → `agent/script_client.py` binding → dispatch |
 
-Why `say` and not `MINE`: a movement action's parity is confounded by tick timing
-and world state; `say` isolates *does the script→action binding produce the same
-effect as the planner→action binding*, which is the actual claim. `MINE` parity
-is worth doing, but as a separate, later check — not as the first proof.
+Method — two runs of the same bot in the same place:
+
+1. **Planner path:** the bot reaches the effect through the existing dispatch.
+   Record the observable log line and the sequence of API calls.
+2. **Script path:** the same effect arrives via the runner and the binding
+   layer. Record the same two things.
+3. Assert the **API call sequence is identical** and the log line is identical.
+
+If both paths call the same helper directly, there is **no binding under test**
+and the comparison is vacuous — that is the failure mode this section exists to
+avoid.
+
+**Choice of effect action:** the parity action must be a real `DirectiveType`
+with an observable, non-movement effect. `CHANNEL` and `STORE_ALL` qualify, with
+the caveats that `CHANNEL`'s `target`/`count` formatting
+(`l3_planner.py:142-146`) adds a confound and both are narrower than they look.
+**Not `MINE` as the first proof:** a movement action's parity is confounded by
+tick timing and world state. `MINE`, `CHANNEL` and `STORE_ALL` all belong in the
+later-check slot; the first proof needs the smallest one that still crosses the
+binding.
+
+**Rejected options, and why:**
+
+- **(b) CHANNEL/STORE_ALL as the primary** — real directives but narrower; kept
+  in the later-check slot alongside `MINE`.
+- **(c) drop bare parity, rely on §8.2** — does not remove the phantom subject,
+  it *moves* it: §8.2's game-side evidence was originally "the `say` line in
+  the server log", which has now been corrected in §8.2 as well.
 
 **The counter-case parity alone cannot catch.** Parity only proves the two paths
 agree *when both act*. It cannot see a bug where the script path acts in a
@@ -598,7 +616,7 @@ the design property worth having: **the storage choice for M2 is also the read
 path for 6.x**, so building 6.x later needs no migration. Not to be built here.
 
 Script content for M2 (deliberately boring — its job is to prove the path, not
-to be a good bot): read the snapshot, `say` once when a condition holds,
+to be a good bot): read the snapshot, emit one observable action when a condition holds,
 otherwise return without acting, so the fallback and the script path are both
 observable.
 
@@ -636,8 +654,8 @@ Three pieces of evidence, all required:
 2. **Agent-side:** the log line where the agent applied action `seq` from the
    script — the same `seq` the runner returned, which ties the request to the
    effect.
-3. **Game-side:** the observable effect of that action (the `say` line in the
-   server log), matching §3's parity result.
+3. **Game-side:** the observable effect of that action in the server log,
+   matching §3's parity result.
 
 The three together rule out every false pass: runner-only fails to show the bot
 acted; game-only fails to show the *script* caused it; agent-only fails to show
@@ -749,7 +767,9 @@ behaviour, not to no behaviour.
 3. `script_client.py` + 4.3/4.4 tests (the bound and the fallback first, so the
    bot is never dependent on an unproven call).
 4. Snapshot builder (3.1), then action binding (3.2) + its refusal test.
-5. Parity (3.3) with `say`.
+5. Parity (3.3): the two-layer comparison, first proof on the smallest real
+   `DirectiveType` that crosses the binding. `MINE`/`CHANNEL`/`STORE_ALL` are
+   later checks, not the first.
 6. The first script + 8.2 proof, including the negative control.
 
 Each step's tests run before the next. Gradle/agent tests: `-Xmx2g`
@@ -761,8 +781,9 @@ Each step's tests run before the next. Gradle/agent tests: `-Xmx2g`
 
 1. **§1's four-call snapshot**: agree that measuring before adding a mod
    endpoint is right, or is the aggregated endpoint obviously correct?
-2. **§3.3 parity on `say`**: accept `say` as the parity action, with `MINE`
-   deferred?
+2. **§3.3 parity subject**: originally `say` — **subsequently found not to be a
+   `DirectiveType`**; ruled at 12:14Z as a two-layer comparison on a real
+   directive (see §3.3).
 3. **§6 script storage in the agent image**: scripts ship in the agent image, so
    changing a script needs a rebuild. Acceptable for M2 (one hand-written
    script), but it is the thing that will hurt when 7.1 lands. Worth a ConfigMap
@@ -780,7 +801,9 @@ not carry open items into implementation:
    are already made by the planner, so a short-TTL cache in `api.py` is
    agent-only work. Escalate to a mod endpoint only if the cache proves
    insufficient — and then as its own change, not folded into M2.
-2. **§3.3 parity: `say` accepted**, with the silence counter-case above.
+2. **§3.3 parity: two-layer comparison ruled at 12:14Z** — `say` is not a
+   `DirectiveType`, so the subject is a real directive with the binding under
+   test; the silence counter-case stands.
 3. **§6 script storage: ConfigMap now, not deferred.** Deferring is the
    expensive choice, because re-proving 8.2 means changing the script and
    running the proof again; a baked-in script would need an **image rebuild**
