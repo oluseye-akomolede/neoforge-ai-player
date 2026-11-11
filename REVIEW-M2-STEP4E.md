@@ -1,157 +1,114 @@
-# Review — M2 step 4, fourth gate (`a43145d`)
+# Review — `9a3c28e` (run steps and rollback rewritten to the bindings design)
 
-**Row:** `qitem-20261111124635-9baa2a708ca95045`
-**Verdict: PASS on the routing fix and the PROFILES_DIR guard — both mutants run
-by me. HOLD on one defect the plan's own code proves: `snapshot.task` is
-always `null` where scout.js reads it, so the script can act on a tick when a
-mod directive is already in flight.**
+**Row:** `qitem-20261111133655-a8f208d2a3b3d069` (handed back in prose; no row names this rev)
+**Verdict: PASS on the design. One HOLD — step 2's verification command cannot run.**
 
-Range: `a43145d` merged into `minecraft-wt-qwen` (`578f182`), 5 files, 114 tests
-reported. I ran them.
+Measured at the rev from a clean `git archive` export. Rev printed in the command
+that produced each number.
 
 ---
 
-## 1. PASS — routing through `_l3_orchestrator_dispatch`
+## 1. The profile-edit procedure is correctly abandoned
 
-`_run_script_tick` now calls `_l3_orchestrator_dispatch(directive)` (`:2651`),
-which handles both vocabularies: EQUIP/EQUIP_ALL → `api.equip_all`, DROP/DISCARD
-→ slot resolution + `api.drop`, VAULT_* → `api.vault_*`, PROVISION_TERMINAL and
-ASK_PLAYER special-cased, and everything else mapped `kind`→`type` into
-`_run_directive` (`:1012`). Every return path is a `COMPLETED`/`FAILED` string,
-so the `startswith("FAILED")` test in the tick is sound and no exception escapes
-into the loop.
+The old part 3 edited Scout's profile to add a `script` key. It failed twice on
+TEST — once as a no-op on the PVC copy, once reverted by the emptyDir seed on pod
+recreate. Bindings replace it, and §8.3.2 now says so with the failure history
+beside it. That is the right correction and it is recorded rather than quietly
+swapped.
 
-The refusal handling is the part that matters: `ran == 0` after the loop returns
-`False`, so the planner gets the tick. That is the 7.2 guarantee restored at the
-level where it had broken.
+## 2. The resolver states match the plan's ordering claim — verified
 
-**Mutant (mine):** reverting the dispatch line to
-`self._run_directive({"type": directive["kind"]})` → `test_agent_script_branch`
-`Ran 9 tests, FAILED (failures=4)`. Matches their report. Tree restored.
-
-One change of shape worth noting, not a defect: the old code printed `dispatch:`
-for the first action only; it now prints for **every** action. That is what makes
-§8.3.5 row 2 ("`dispatch:` followed by `COMPLETED`, and **no** `not executed:`")
-checkable per action rather than per tick, and it means a mixed tick is now
-visible line by line. Better than what I asked for.
-
-## 2. PASS — `PROFILES_DIR`, guard and all three cells
-
-`load_profiles()` (`:3314`): `os.getenv("PROFILES_DIR") or <image path>`. Unset
-and `""` both fall through to `dirname(__file__)/profiles`, which is today's
-behaviour, so prod is untouched. Verified each cell by hand as well as through
-the test: set → my tempdir's single profile; unset → the five image profiles;
-empty → the five image profiles.
-
-**Mutant (mine):** hardcoding the image path (dropping the `getenv`) →
-`test_profiles_dir Ran 3 tests, FAILED (failures=1)`. This was the cell that had
-no guard for a whole review cycle and it now has one with a control that can
-fail. Tree restored.
-
-**Suite, run by me at `578f182`:** the eight real modules (`test_action_binding`,
-`test_agent_script_branch`, `test_profiles_dir`, `test_scout_script`,
-`test_script_client`, `test_script_tick`, `test_scripts_configmap`,
-`test_snapshot`) → `Ran 81 tests, OK`. `discover` also picks up
-`agent/dashboard/` and errors on `uvicorn` in this seat; that is an artefact of
-discovery, not of the change, and naming the modules explicitly gives the real
-count.
-
-## 3. HOLD — `snapshot.task` is always `null` where the script reads it
-
-scout.js guards against acting underneath a running job:
-
-```js
-if (snapshot.task) { return []; }
-```
-
-`snapshot` is the **envelope** (`script_tick.py:150` → `SnapshotCache.get`).
-`build_envelope` puts `"task": task` at the top level and `SnapshotCache`
-constructs it with **no `task=` argument** (`snapshot.py:137`), so
-`envelope["task"]` is the default `None` on every tick.
-
-The directive the bot is actually running is `state["task"]` —
-`build_state` sets `"task": directive` from `api.get_directive` (`snapshot.py:76`).
-So the field scout.js reads is `null` while the field that holds the running
-directive sits one level down in `state.task`.
-
-**Demonstrated, not inferred** — scout.js executed in a VM under both shapes:
+§8.3.3 claims step 1 is "provably inert". I ran the resolver in all three states
+the ordering produces, using the suite's own stub set:
 
 ```
-plan-doc shape (task nested): [{"kind":"STORE_ALL"}]   <- acts
-with a running task:          []                        <- holds
+STEP1  SCRIPTS_DIR set, no bindings.json  -> None   (+ "no bindings at …; this bot runs the planner")
+STEP4  bindings.json present              -> '/tmp/…/scout.js'
+UNSET  C1 refusal                         -> None   (+ "SCRIPTS_DIR is not set; script mode disabled …")
 ```
 
-Under the real envelope the first line is what happens *even when a directive is
-in flight*. The guard is dead. Two consequences:
+So step 1 truthfully claims nothing binds, step 4 truthfully claims Scout binds,
+and the C1 refusal behaves as reviewed. **The ordering argument in §8.3.3 is
+sound against the real code**, not merely plausible.
 
-1. **The M2 run can act on a tick when a directive is already running.** The
-   STORE_ALL then fails ("already has a directive") — a `FAILED`, logged as
-   `not executed:`, and the planner falls through. Not silent, which is why this
-   is a HOLD and not a blocker on the build. But the third §1 scenario ("no
-   action is taken on a tick with a task already in flight") is not met, and the
-   run would not reveal that: a `not executed:` line reads as a refusal, not as
-   a guard that never fired.
-2. **§1's snapshot contract and the code disagree, and the test enforces the
-   code.** The plan's frozen shape (`M2-PLAN:48-52`) is
-   `{"bot": {...}, "inventory": [...], "nearby": {...}, "task": {...}}` — task
-   nested inside a `bot`-headed object. The implementation is
-   `{tick, server_ms, state, events, task}` with task at the top level.
-   `test_snapshot.py:149-166` asserts the implementation's shape and passes a
-   `task=` the production cache never passes. **So the test that pins this
-   contract exercises a payload no caller can produce** — the same fixture-vs-
-   producer gap that let the `act["directive"]` defect through, in the file that
-   was reviewed on the same day.
+## 3. The image row is fixed properly (closes my `e14c284` HOLD)
 
-**Fix, either way, and the choice is the builder's:** set
-`snapshot.task` on the envelope from `state["task"]` (one line in
-`SnapshotCache.get`), or change scout.js to read `snapshot.state.task`. Then add
-a test that builds the envelope **through `SnapshotCache`** — the production
-path — with a live directive and asserts the script holds. I am not prescribing
-which, but the contract in §1 has to match whichever is chosen.
+The stale `1b74ae7b…9506a4` is now marked **dead** with the reason, and the new
+`a97ae5a7…b6b2e6` carries three independent registry reads. I checked the one
+thing that matters for "reviewed code in the image":
 
-## 4. Plan defects I fixed in my own commit, not held against them
+```
+3887e79 contains 01e9eaf          : YES (git merge-base --is-ancestor)
+commits after 3887e79 to 9a3c28e  : 2 — e956eff, 9a3c28e, both M2-PLAN.md only
+```
 
-The rollback block (§9) had four commands that cannot work as printed:
+The image is built from a rev that contains the reviewed fix, and everything
+since is documentation. That is a proper pin.
 
-| printed | why it fails |
-|---|---|
-| `cp "$POD:..."` / `cp ./evidence/... "$POD:..."` | `kubectl cp` requires `-c` when the pod has more than one container; the plan adds an **initContainer**, so after step 2 the pod has two and every later `kubectl cp` errors. Removed initContainers do not count, but a re-applied manifest does. |
-| `-l app=aibot-agent,tier=test` | the only selector anywhere in the plan is `app=aibot-agent` (§8.3.1, and the §8.3.2 seed manifest). `tier=test` is invented here and matches nothing — the command would resolve `POD=` empty and the next three lines would fail *after* `git revert` had already run. |
-| "`scout.json` on the `agent-data` PVC" | after this change it is on the `/srv/aibot-profiles` emptyDir. The PVC sentence is the pre-change world. |
+## 4. Env names match the code
 
-All four are in my commit (`578f182` + the fix commit), with the `-c agent` and
-the selector corrected, and `openspec validate coded-agents --strict` still
-valid.
+`RUNNER_TOKEN` is exactly the name `config.py:22` reads and `script_tick.py:51`
+uses; `SCRIPTS_DIR` matches `agent.py`; `SCRIPT_RUNNER_URL` matches
+`config.py`. The token is `valueFrom.secretKeyRef` with key `minecraft` — which
+is also the `game_id` the runner checks the token against (`server.js:157`), so
+a wrong key would 401 on every tick. Named by reference, never a literal.
 
-**What passed in the plan:** the initContainer manifest with `cp -an` and the
-stated reason (emptyDir survives a container restart but not pod recreation, so
-`-n` is what makes "restart the pod" and "keep the edit" compatible) — that
-resolves the contradiction I raised, and step 4 now requires the sha256 recheck
-after the restart. `PROFILES_DIR` set in step 2 while no profile names a script
-keeps the restart inert, which is the ordering argument holding. Mount moved to
-`/srv/aibot-scripts` for the `COPY . .` shadowing reason. `_float_env` recorded
-as a passenger, not an M2 deliverable.
+## 5. HOLD — step 2's verification command raises `AttributeError`
 
-## 5. Still not verified by me
+§8.3.3 step 2 calls itself "the check that matters":
 
-- Every cluster fact in §8.3.1: the deployed digest, the `d45751d` derivation,
-  1/1, the ConfigMap's absence, the pod's env. No cluster access from this seat.
-  Their own caveat — the blob match identifies the source commit, not that the
-  image came from a clean tree — is correctly scoped and I am not holding for it.
-- The initContainer manifest is written, not applied. Nothing deployed.
-- `agent/dashboard/` under `unittest discover` in a seat without `uvicorn` —
-  unrelated to this change, but it will bite whoever runs discovery here.
+```
+python3 -c 'import agent; print(agent._bound_script_path("Scout"))'  -> None
+```
+
+`_bound_script_path` is an **instance method** on `BotRunner`
+(`agent.py:2667  def _bound_script_path(self):`). There is no module-level
+function of that name. Run at the rev:
+
+```
+module has attr:      False
+BotRunner has attr:   True
+literal plan command -> AttributeError: module 'agent' has no attribute '_bound_script_path'
+```
+
+The operator runs this in-pod after the restart, at the one point the plan says
+distinguishes "inert" from "silently doing something". It cannot execute. An
+operator who hits an `AttributeError` at a verification step has to decide on
+the spot whether that is the feature or the command — and the whole run's
+ordering rests on this observation being real.
+
+**Fix:** construct the runner, e.g.
+`
+python3 -c 'import agent; r=agent.BotRunner.__new__(agent.BotRunner); r.name="Scout"; print(r._bound_script_path())'
+`
+or expose a module-level helper `bound_script_path(name)` and call that. The
+second is better for a run plan: one line, no `__new__` idiom in an operator's
+terminal. Note `__new__` is needed because the real constructor opens sockets
+and threads — same reason the test file does it.
+
+This is the second time in this change that a verification step named an
+observable that does not exist on the surface it names. The difference here is
+that it fails loudly (`AttributeError`) rather than silently, which is why it is
+one command away from passing.
+
+## 6. Not verified
+
+Every cluster fact: the deploy at `9de2a68`, `1/1`, five bots ticking, the
+registry reads behind `a97ae5a7…b6b2e6`. No `kubectl` on this seat. The digest
+and its provenance are taken as reported; what I verified is that the rev it
+names contains the reviewed code.
+
+---
 
 ## Summary
 
 | item | verdict |
 |---|---|
-| Routing via `_l3_orchestrator_dispatch` | **PASS** — mutant kills it, 4 failures |
-| Refusals fall through to the planner | **PASS** — `ran == 0` → `False` |
-| `PROFILES_DIR` + set/unset/empty tests | **PASS** — mutant kills it, 1 failure |
-| 8 modules green on `578f182` | **PASS** — `Ran 81 tests, OK` |
-| `snapshot.task` guard in scout.js | **HOLD** — always `null`; demonstrated in a VM |
-| §1 snapshot contract vs code vs test | **HOLD** — same defect; test pins an unfeedable payload |
-| Rollback commands | **FIXED by me** — `-c agent`, selector, PVC sentence |
+| Profile edit abandoned for bindings | **PASS** — failure history recorded |
+| §8.3.3 ordering is inert at step 1 | **PASS** — resolver run in all three states |
+| Image digest pin (my `e14c284` HOLD) | **PASS** — old marked dead, new carries reviewed code |
+| Env names and token reference | **PASS** — all match source; key matches game_id gate |
+| Step 2 verification command | **HOLD** — `AttributeError`, method not module function |
+| Run/rollback prose | PASS on read; cluster facts unverified here |
 
-Nothing built, nothing pushed, nothing deployed. No secret value printed.
+Nothing deployed. No build or push by me. No secret value printed or read.
