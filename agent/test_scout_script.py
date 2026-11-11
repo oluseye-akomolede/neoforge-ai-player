@@ -64,12 +64,12 @@ class ScoutScriptTest(unittest.TestCase):
 
     def test_returns_exactly_the_parity_directive(self):
         # 8.2's subject, pinned in full. STORE_ALL is emitted BARE here on
-        # purpose: this is the form the planner's seed match produces
-        # (agent.py:1888, whose pattern has no capture groups). The parity test
-        # therefore holds the argument form CONSTANT between paths -- it is not
-        # constructing a coords-bearing call the planner never makes. That
-        # distinction is the difference between the test proving agreement and
-        # the test proving only that the harness agrees with itself.
+        # purpose, and §3 pins that coordless form: it is what every producer in
+        # this repo emits (agent.py:1622's pattern has no capture groups). The
+        # form is CONSTRUCTED from code, not observed from TEST logs -- those
+        # logs carry no current STORE_ALL record -- and §3 says so. Constructing
+        # the coordless form holds constant a call the planner really makes,
+        # rather than comparing it against one it never makes.
         result = _run('{"health": 20, "task": null}')
         self.assertEqual(result["actions"], [{"kind": "STORE_ALL"}],
                          f"script returned {result['actions']!r}, logs={result['logs']!r}")

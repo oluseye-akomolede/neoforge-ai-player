@@ -66,9 +66,17 @@ data:
       // off asks the mod to choose, which is the form the planner's own seed match
       // produces (agent.py:1888 -- its pattern has no capture groups).
       //
-      // The coordinates here come from this script, not from a fixture. If a
-      // future edit deletes this object, the parity test in 8.2 must fail rather
-      // than silently compare two empty bodies.
+      // This script emits the COORDLESS form on purpose, and 8.2 pins that form.
+      // Every producer in this repo emits it coordless: the planner's own seed
+      // match (agent.py:1888) returns a bare object because its pattern has no
+      // capture groups, and the mod's seed specs put the coordinates on AREA_LOOT
+      // with STORE_ALL bare beside it (SkillRegistry.java:154). The coordless form
+      // is therefore the plausible call, and a constructed fixture should
+      // construct that one.
+      //
+      // The directive here comes from THIS script, not from the test harness. If a
+      // future edit returns nothing, the 8.2 parity test must fail rather than
+      // silently compare two empty bodies.
       return [
         { kind: "STORE_ALL" }
       ];

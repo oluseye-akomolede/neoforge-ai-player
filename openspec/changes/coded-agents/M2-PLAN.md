@@ -490,13 +490,33 @@ established** — a raw model output outside a seed match is untraced. But nothi
 in this repo is known to produce one, so the test would be building it.
 
 So the parity test **constructs** the argument form rather than sampling one
-the planner naturally emits: the script requests `STORE_ALL` with coordinates for
-a known storage block, and the planner path is issued *the same call*, with that
-being stated as constructed rather than natural. The assertion is that the POST
-bodies are byte-identical. This is a real cost — a constructed fixture proves
-the two paths agree on the call you wrote, not on the spread of calls the planner
-actually makes — and the plan states it rather than letting "pinned" imply
-"representative".
+the planner naturally emits. The form it constructs is the **coordless** one,
+because that is what every producer in this repo emits — and a constructed
+fixture should construct the *plausible* call, not one nothing here makes. Both
+paths are issued the same bare `STORE_ALL`. The assertion is that the POST
+bodies are byte-identical. This is still a real cost — a constructed fixture
+proves the two paths agree on the call you wrote, not on the spread of calls the
+planner actually makes — and the plan states it rather than letting "pinned"
+imply "representative". The difference from a coords-bearing pin is *how* that
+cost is paid: a coordless pin at least holds constant a form the planner really
+produces, so a mismatch means the two paths disagree. A coords-bearing pin would
+compare the planner against a call it never makes, so a mismatch would be
+uninformative about parity.
+
+**The form is taken from code, not from observation — and the plan says so.**
+The TEST planner logs do not carry it: the agent's directive record is the
+trajectory JSONL, the store holds exactly one `STORE_ALL` record (coordless,
+archive dated 2026-07-16, four months stale), and one stale record is not
+current behaviour. The pinning rests on the structural argument above
+(`agent.py:1622` no capture groups; `SkillRegistry.java:154` bare beside
+`AREA_LOOT`). That is read from source, and it is a scoped claim: producers
+enumerated, a raw model emission outside a seed match untraced.
+
+The live check does not disappear — it moves. **The 8.2 run records the real
+mod-side POST** for whichever form the planner actually emits, so the observed
+form is captured during step 4 and can be compared against this pin afterwards.
+If the run shows the planner emitting coordinates, that is a finding about this
+paragraph, not a reason to reshape the test on the fly.
 
 The pinning is load-bearing precisely because the comparator at `:1356` fires
 **before any behaviour runs**: a coords-bearing and a coordless `STORE_ALL`
@@ -505,11 +525,6 @@ bot to the coordinates; without them it walks its own candidate list). The
 comparator is branch-free *by design*, which makes it neutral between paths but
 blind to argument-form differences — so the argument form has to be pinned by
 the test, not left to chance.
-
-**Before step 4 writes the test:** confirm from a real planner run which form
-`STORE_ALL` actually reaches the mod in. If it is coordless in practice, the
-honest framing above stands, and a subject the planner genuinely parametrises
-is the better long-run choice.
 
 **Observation point: the directive POST response, not a behaviour log line.**
 `HttpApiServer.java:1356` returns `status: accepted` plus `directive.toMap()` on
@@ -530,10 +545,11 @@ for this one.
 - **(b) two-path comparison over a narrower directive** — kept as the
   later-check slot alongside `MINE` and `CHANNEL`; `STORE_ALL` is the primary
   because its argument form is a single optional coordinate triple with no
-  formatting to normalise, and that triple is pinned (above) rather than
-  relied on. An earlier version justified this with "carries no args to
-  format" — the retracted claim, which survived here after being deleted from
-  the prose it came from.
+  formatting to normalise, the pinned call is the coordless form (above) that
+  the producers actually emit, and the test constructs that form explicitly
+  rather than relying on it. An earlier version justified this with "carries no
+  args to format" — the retracted claim, which survived here after being deleted
+  from the prose it came from.
 - **(c) drop bare parity, rely on §8.2** — does not remove the phantom subject,
   it *moves* it: §8.2's game-side evidence was originally "the `say` line in
   the server log", which has now been corrected in §8.2 as well.
@@ -730,33 +746,39 @@ Three pieces of evidence, all required:
    script — the same `seq` the runner returned, which ties the request to the
    effect.
 3. **Game-side:** the directive POST response for the subject §3 names —
-   `STORE_ALL`, **with the coordinates §3 pins** — i.e. `status: accepted` with
-   `directive.toMap()` carrying type `STORE_ALL` and the same `x`/`y`/`z` the
-   planner path sends for the same action, byte-identical between paths.
+   `STORE_ALL`, **in the coordless form §3 pins (constructed from code, not
+   observed)** — i.e. `status: accepted` with `directive.toMap()` carrying type
+   `STORE_ALL` and no `x`/`y`/`z`, byte-identical between the script path and the
+   planner path for the same bare call.
    Deliberately *not* a behaviour log line: `HttpApiServer.java:1356` emits this
    from the same handler on both paths, so the evidence does not depend on
    whether the behaviour happens to log.
+   **This run also records the planner's own real POST**, so the coordless
+   assumption is checked live here rather than only argued from source. If the
+   planner emits coordinates, record that — it is a finding against §3's pin.
+
 
    **The silence case asserts the absence of that POST specifically — that no
    directive request left the agent — not the absence of a log line or chat
    message.** A quiet log also passes when a call was sent and failed at the far
    end, which is the failure this comparator exists to make visible.
 
-   The coordinates are part of the evidence, not incidental: `:1356` fires
+   The argument form is part of the evidence, not incidental: `:1356` fires
    before the behaviour runs, so a coordless and a coords-bearing `STORE_ALL`
-   give the same POST body but different effects. Pinning the argument form —
-   acknowledging that the test is what supplies coordinates the known producers
-   never emit (§3) — is what keeps this comparator honest.
+   give the same POST body but different effects. Pinning the coordless form —
+   acknowledging that the test constructs the call rather than sampling the
+   planner's spread (§3) — is what keeps this comparator honest.
 
-   **The test must take the script's coordinates from the script.** They enter
-   on the script side at `api.do(directive, args)` (M2-PLAN:246, contract §4.1) and reach
-   the wire through `set_directive` (`agent/api.py:428`, which copies `x`/`y`/`z`
-   only when all three are present). The test reads the `STORE_ALL` directive
-   and its `x`/`y`/`z` out of the runner's returned `actions[]` and uses *those*
-   coordinates on both paths. If the harness writes both bodies itself, the
+   **The test must take the directive from the script, not write it.** A bare
+   `STORE_ALL` has no arguments to smuggle a value through, which removes the
+   coordinates as a possible harness-written constant but does **not** remove
+   the defect: a harness that synthesises `{"kind": "STORE_ALL"}` on both sides
+   still compares two things it wrote. The `kind` itself must come from the
+   script. The test reads the action out of the runner's returned `actions[]`
+   and feeds *that* to both paths. If the harness writes both bodies itself, the
    assertion compares two things the harness wrote and proves nothing — the
    in-memory thread assertion's defect in a new coat. The assertion is allowed
-   to fail only because the script chose the coordinates; that is the whole of
+   to fail only because the script chose the directive; that is the whole of
    its force.
 
    The exemption is **positional, not intrinsic** (reviewer, 12:20Z):
