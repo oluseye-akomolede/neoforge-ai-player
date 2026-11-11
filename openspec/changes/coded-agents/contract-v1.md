@@ -234,10 +234,25 @@ for why, and the spec delta.
 | `api.recall()` | `string` \| `null` | the blob this tick started with |
 | `api.log(level, text)` | `void` | ≤1 KB/line, counted |
 
-`api.do` takes a directive name from the existing agent dispatch set (51 names,
-`agent/agent.py`). The runner does **not** validate directive names against the
-set — that is the game's job, because the set is the game's — but it does bound
-the *shape* (JSON, size, call count).
+`api.do` takes a directive name from the mod's `DirectiveType` set — **exactly
+37 names**, `src/main/java/com/sigmastrain/aiplayermod/brain/DirectiveType.java`
+(lead ruling, 11:47Z). The runner does **not** validate directive names against
+the set — that is the game's job, because the set is the game's — but it does
+bound the *shape* (JSON, size, call count).
+
+**Agent-side verbs are refused, by name.** The agent's L3 vocabulary is a
+*disjoint* 13-name set — `ANCHOR_ON` `ASK_PLAYER` `DESPAWN_DRONES`
+`DISMISS_GOLEM` `DROP` `EQUIP` `PROVISION_TERMINAL` `SHARE_LOCATION`
+`SPAWN_DRONES` `SPAWN_GOLEM` `TEXT` `VAULT_STORE` `VAULT_WITHDRAW` — handled in
+`agent/agent.py` without ever being posted as a `DirectiveType` (verified: the
+intersection with the mod's 37 is empty). `EQUIP_ALL`, `WITHDRAW` and `STORE`
+are additionally accepted **aliases** in the same dispatch block. A script
+calling `api.do("DROP", ...)` gets a named refusal, not a silent no-op and not
+a mod-side 500. Widening the set is a later change.
+
+An earlier revision of this line said "51 names". No set of 51 was ever
+identified; the number came from counting a different collection and was
+reproduced in the plan without being re-derived. The figure is 37.
 
 `api.recall()` returns the blob this tick **started** with — the same UTF-8
 string `api.remember` accepts, so recall-and-remember is a byte-identical round
