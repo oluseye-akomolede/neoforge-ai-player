@@ -1188,6 +1188,19 @@ logged `[Scout] cancelDirective called` and `[Scout] HTTP DELETE /directive
 (id=-1)`, so the detector was live and naming Scout. **Baseline established:
 with no `script` key, the planner runs and the runner is never contacted.**
 
+**What the planner actually does (this is run 2's bar).** It dispatched a real
+directive, first subtask of three:
+
+```
+[Scout/L1] Directive sent: WIDE_SEARCH {'target': 'minecraft:chest'} -> accepted (id=1)
+[Scout/L1] Wide search for minecraft:chest — moving to cell 1/25 (phase=pathing_to_cell)
+```
+
+Re-checked after that dispatch at 13:26:00Z: the runner still showed 78 lines and
+0 Scout references. So the baseline is not "the planner was idle" — it is **the
+planner did real work and the script path was never in it.** Run 2 must show the
+runner receive a tick that the control never produced.
+
 ### 8.3.5 Verification, per piece
 
 Every row below names a line the code **actually prints or sends** (reviewer,
