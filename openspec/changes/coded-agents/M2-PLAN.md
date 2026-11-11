@@ -1155,7 +1155,7 @@ revision is hashed from the script body, not carried in the ConfigMap.
 | 3 | Mod POST response: `status: accepted`, `STORE_ALL`, **coordless** | coordinates present → §3's pin is wrong, record it |
 | 4 | Run 1 produces no script-path POST | a POST with no script → something else is emitting it |
 | 5 | **The in-flight guard fired**: a tick with a directive already running emits **no** runner tick at all for that bot, and the agent log shows neither `dispatch:` nor `not executed:` | a runner tick appears → the guard did not fire; a `not executed:` line → the guard did not fire and the action was refused downstream instead |
-| 6 | **The low-health guard fired**: with Scout damaged below 8 hp, the agent log carries `[Scout/script] scout: health N too low, holding` and no runner tick | a runner tick with `STORE_ALL` → the guard did not fire (this was the live defect until `d75f30b`) |
+| 6 | **The low-health guard fired**: with Scout damaged below 8 hp, **no runner tick for Scout**, read from the RUNNER's log | a runner tick carrying `STORE_ALL` → the guard did not fire (this was the live defect until `d75f30b`) |
 
 **Row 5 is not satisfied by row 2's absence-of-refusal.** Those look identical
 in the log and mean opposite things. Row 2's clean case (dispatch happened,
@@ -1173,6 +1173,19 @@ downstream as `already-has-a-directive`, and the run would have shown a
 `not executed:` line — a refusal, which reads as the system working, rather than
 a guard that never fired. §1's third scenario was unmet and the evidence could
 not have shown it.
+
+**Why row 6 does not require a log line** (reviewer, 13:10Z; verified here). The
+script does produce `scout: health N too low, holding`, but `api.log` is not an
+action: it rides the tick as the wire `logs` field, and `tick()` returns
+`(handled, actions, refusals, detail)` — `logs` is in none of those, and a grep
+of `agent/` for a reader of it finds only the Minecraft item name `"logs"`.
+Nothing in the agent prints it, so a correctly-firing guard would go red against
+a correct fix — and a red row here invites the conclusion that the guard is
+broken, which is the exact confusion row 6 exists to prevent. The
+absence-of-a-runner-tick condition already separates a firing guard from a dead
+one, for the same reason it does in row 5. Plumbing wire `logs` into the tick
+tuple and all its callers is a real change and belongs in its own slice, not
+this gate.
 
 **Why row 2 exists as its own line.** `agent.py` used to read `act["directive"]`
 from the *bound* action, get `None`, and `continue` — printing
