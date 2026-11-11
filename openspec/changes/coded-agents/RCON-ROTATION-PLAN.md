@@ -269,12 +269,37 @@ anyone is connected, unless the lead says otherwise.
    missed two dotfiles. Prefer the enumerate form.
 
    **The scan is published: `evidence/rcon-enumerate-scan.sh` (`344f7f2`).**
-   What it printed at execution: `new_fp=1d0eab43090b08bb`, `new_len=48`; three
-   RCON assignments (`.rcon-cli.env`, `.rcon-cli.yaml`, `server.properties`), all
-   three holding the new value, set-compared; two non-rcon `password` fields
-   named rather than dropped (`ae2webintegration.toml`, the bundled Showdown
-   server's JS — the toml's value fingerprints `f9fbeb6b0b51c6e9`, not the
-   rcon value). RC=0.
+   What it established: the new value is 48 hex characters; **three rcon
+   assignments** exist on the volume — `server.properties`, `.rcon-cli.env` and
+   `.rcon-cli.yaml` — and all three carry the new value, compared as a **set**
+   (`comm -23`), not by count; two further `password=` fields belong to other
+   software (`ae2webintegration.toml` and the bundled Showdown server's JS),
+   are **named rather than silently dropped**, and are known not to carry the
+   rcon value. RC=0.
+
+   **A hole a reviewer found in that scan is closed, and the closure is a test.**
+   A bare `password=` holding a *stale* value used to be classified `OTHER`,
+   printed, and never checked — so the final "every rcon assignment carries the
+   new value" passed with an unlisted holder present. That is the enumerate
+   form narrowed back into the search-inside-a-known-set form, i.e. the exact
+   failure it exists to prevent. Now any `password=` that is neither the new
+   value nor one of the two known non-rcon *paths* is `UNKNOWN`, and `UNKNOWN`
+   fails the run. The allowlist is by path, not by value digest: a digest
+   allowlist would commit the AE2 credential's fingerprint here, which is the
+   oracle mistake this rotation keeps unmaking.
+   `evidence/rcon-scan-selftest.sh` extracts the real decision function from
+   the scan (not a copy — a copy agrees with itself) and drives it with five
+   fixture outputs. The stale-holder case fails the gate; the three-holder case
+   passes. Its first version **proved the hole was still open**: `UNKNOWN` was
+   printed and the exit status was 0, because the gate lived in a code path the
+   fixture never reached. A fix to classification is worth nothing until the
+   decision reaches it.
+
+   **No fingerprint is published here.** A 16-hex digest of a live credential
+   is a cheap way to check a guess — §1 says so at `:28`, and it applies to the
+   *new* value exactly as it did to the old one. The numbers appear in the run
+   log, which is where a credential's fingerprints belong; this document says
+   what the scan established.
    It took **four broken versions** to become a check that can fail, and each
    broke the same way — a control that passes on garbage: wrong pod selector
    (the agent, which has no `/data`); the value piped on stdin to `sh -s`,

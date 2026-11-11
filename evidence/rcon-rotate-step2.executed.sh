@@ -38,6 +38,10 @@ kubectl -n "$NS" create secret generic "$SEC" \
 WRITTEN_FP=$(kubectl -n "$NS" get secret "$SEC" -o jsonpath='{.data.password}' \
              | base64 -d | sha256sum | cut -c1-16)
 
+# These fingerprints are for THIS run log and nowhere else. A 16-hex digest of a
+# live credential is a cheap way to check a guess: do not paste this output into
+# a plan, a row, a message or a note. The plan says what the scan established;
+# the numbers stay here.
 echo "old_fp=$OLD_FP"
 echo "new_fp_generated=$NEW_FP"
 echo "new_fp_in_cluster=$WRITTEN_FP"

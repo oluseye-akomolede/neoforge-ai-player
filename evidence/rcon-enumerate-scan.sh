@@ -35,8 +35,9 @@ echo "pod=$POD  selector=app=$SEL  container=$CTR"
 # 20-file "success".
 read -r -d '' SCAN <<'EOS'
 NEW=${NEW:-}
-NEWFP=$(printf %s "$NEW" | sha256sum | cut -c1-16)
-echo "new_fp=$NEWFP"
+# NO FINGERPRINT IS PRINTED. A 16-hex digest of a live credential is a cheap
+# way to check a guess, and this script's output gets pasted into plans. The
+# length and the counts below establish everything the rotation needs.
 echo "new_len=${#NEW}"
 if [ "${#NEW}" -ne 48 ]; then
   echo "REFUSED: value is ${#NEW} chars, expected 48 -- scan would be meaningless" >&2
@@ -50,12 +51,29 @@ echo "--- S2: rcon-password ASSIGNMENTS (key names only, never values) ---"
 # checked set. A green check that excludes the files that already bit us.
 #   RCON  -- key is rcon.password, OR a bare password= that holds the secret
 #   OTHER -- a password field holding something else (AE2 mod, Showdown JS)
+# A third class, UNKNOWN, is the fix for the hole a reviewer found: a bare
+# password= holding a STALE rcon value used to land in OTHER and never be
+# checked, so the final gate passed with an unlisted holder present. Now a
+# password field is only OTHER if the file is one of the KNOWN non-rcon files;
+# anything else is UNKNOWN, which fails the run.
+#
+# The allowlist is by PATH, deliberately not by value fingerprint. A fingerprint
+# allowlist would need the AE2 credential's digest committed here, which is the
+# same oracle-by-digest mistake this rotation exists to stop making -- and a
+# stale rcon value would be invisible only if it hashed to the AE2 value.
+KNOWN_OTHER_PATHS='/data/config/ae2webintegration.toml
+/data/config/pokemon-showdown/config/replays.js'
 find /data -type f -size -64k 2>/dev/null | while read -r f; do
   if grep -qE "^[[:space:]]*rcon\.password[[:space:]]*[=:]" "$f" 2>/dev/null; then
     echo "RCON $f"
   elif grep -qE "^[[:space:]]*password[[:space:]]*[=:]" "$f" 2>/dev/null; then
-    if grep -qF -- "$NEW" "$f" 2>/dev/null; then echo "RCON $f"
-    else echo "OTHER $f"; fi
+    if grep -qF -- "$NEW" "$f" 2>/dev/null; then
+      echo "RCON $f"
+    elif printf '%s\n' "$KNOWN_OTHER_PATHS" | grep -qxF -- "$f"; then
+      echo "OTHER $f"
+    else
+      echo "UNKNOWN $f"
+    fi
   fi
 done
 echo "--- S1: files CONTAINING the current value ---"
@@ -81,6 +99,8 @@ echo "$OUT"
 
 echo
 echo "=== controls ==="
+judge_scan() {
+OUT="$1"
 # Gate 0: the scanner must have had a 48-char needle. An empty NEW makes grep
 # match every file, which reads as a huge success -- this is the check that
 # would have caught the first run.
@@ -93,10 +113,19 @@ fi
 hasnew=$(echo "$OUT" | grep -c '^HAS_NEW')
 assigned=$(echo "$OUT" | grep -c '^RCON')
 other=$(echo "$OUT" | grep -c '^OTHER')
+unknown=$(echo "$OUT" | grep -c '^UNKNOWN')
 echo "positive control: files containing the new value = $hasnew (expect 3)"
-echo "rcon_assignments=$assigned   holding_new_value=$hasnew   non_rcon_password_fields=$other"
+echo "rcon_assignments=$assigned   holding_new_value=$hasnew   non_rcon_password_fields=$other   unknown_password_fields=$unknown"
 if [ "$hasnew" -lt 3 ]; then
   echo "POSITIVE CONTROL FAILED: scanner is blind, its zero means nothing" >&2
+  exit 1
+fi
+# An UNKNOWN is a password= that is neither the new value nor a known non-rcon
+# file. That is precisely the "holder nobody listed" the enumerate form exists
+# to surface, so it fails rather than being printed and passed over.
+if [ "$unknown" -gt 0 ]; then
+  echo "UNKNOWN PASSWORD FIELD(S) -- neither the new value nor a known non-rcon file:" >&2
+  echo "$OUT" | grep '^UNKNOWN' >&2
   exit 1
 fi
 # Set comparison, not a count comparison: every RCON assignment must ALSO be in
@@ -111,4 +140,9 @@ if [ -n "$UNCOVERED" ]; then
   echo "$UNCOVERED" >&2
   exit 1
 fi
+}
+# The decision is a function so it can be driven from a fixture (see
+# evidence/rcon-scan-selftest.sh). A gate that only exists inline is a gate
+# nobody can demonstrate failing, which is how the OTHER hole survived review.
+judge_scan "$OUT"
 echo "OK: every rcon assignment on the volume carries the new value"
