@@ -248,6 +248,41 @@ class BindingsTest(unittest.TestCase):
     def test_no_bindings_file_means_no_script(self):
         self.assertIsNone(self._runner("Scout")._bound_script_path())
 
+    def test_unset_scripts_dir_does_not_fall_back_to_the_image_copy(self):
+        """SCRIPTS_DIR unset must disable script mode, and say so.
+
+        Review 2026-11-11 C1. Before this, the resolver fell back to
+        `dirname(__file__)/scripts` -- the copy baked into the image. Measured
+        on TEST: with the env unset, Scout bound the image's bindings.json and
+        every log line read normal, so a pod whose ConfigMap mount had failed
+        ran a stale script that looked healthy. That is the one configuration
+        where the failure hides, so it gets its own test rather than a comment.
+
+        The image no longer carries scripts/ (Dockerfile), but the guard is what
+        makes the removal durable: a future COPY that reintroduces the file
+        fails here instead of at 3am on TEST.
+        """
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SCRIPTS_DIR", None)
+            with mock.patch.object(self.agent_mod, "__file__",
+                                   os.path.join(self.tmp, "agent.py")):
+                # Plant exactly what the image used to bake in.
+                baked = os.path.join(self.tmp, "scripts")
+                os.makedirs(baked, exist_ok=True)
+                with open(os.path.join(baked, "bindings.json"), "w",
+                          encoding="utf-8") as f:
+                    json.dump({"Scout": "scout.js"}, f)
+                with open(os.path.join(baked, "scout.js"), "w",
+                          encoding="utf-8") as f:
+                    f.write("// stale\n")
+                with mock.patch("builtins.print") as p:
+                    path = self._runner("Scout")._bound_script_path()
+        self.assertIsNone(
+            path, "with SCRIPTS_DIR unset the baked-in map must not bind")
+        printed = " ".join(str(c.args[0]) for c in p.call_args_list if c.args)
+        self.assertIn("SCRIPTS_DIR is not set", printed,
+                      "declining the fallback must be loud, not silent")
+
     def test_a_malformed_bindings_file_is_logged_and_ignored(self):
         with open(os.path.join(self.tmp, "bindings.json"), "w",
                   encoding="utf-8") as f:

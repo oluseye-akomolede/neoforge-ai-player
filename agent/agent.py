@@ -2679,15 +2679,27 @@ Respond with ONLY a JSON array. Example:
         make visible.
         """
         import os as _os
-        scripts_dir = _os.getenv("SCRIPTS_DIR") or _os.path.join(
-            _os.path.dirname(__file__), "scripts")
+        # No baked-in fallback. SCRIPTS_DIR must be set by the deployment
+        # because the bindings live in a ConfigMap, and the image's own
+        # scripts/bindings.json is a build-time artefact that would bind the
+        # WRONG file -- silently -- in exactly the configuration that looks
+        # safest: mount failed AND env unset. Measured on TEST 2026-11-11: with
+        # the env unset, Scout bound the image's copy and every log line read
+        # normal.
+        scripts_dir = (_os.getenv("SCRIPTS_DIR") or "").strip()
+        if not scripts_dir:
+            print(f"[{self.name}/script] SCRIPTS_DIR is not set; script mode "
+                  f"disabled rather than falling back to the image's copy")
+            return None
         bindings_path = _os.path.join(scripts_dir, "bindings.json")
         try:
             with open(bindings_path, encoding="utf-8") as f:
                 bindings = json.load(f)
         except FileNotFoundError:
-            # The normal case for a bot with no script, and for every pod that
-            # has not been given the ConfigMap. Quiet by design.
+            # Genuinely absent: no ConfigMap mounted here. That is a deployment
+            # fault, not a bot without a script, so say which one it is.
+            print(f"[{self.name}/script] no bindings at {bindings_path}; "
+                  f"this bot runs the planner")
             return None
         except (OSError, ValueError) as e:
             print(f"[{self.name}/script] cannot read {bindings_path}: {e}")
