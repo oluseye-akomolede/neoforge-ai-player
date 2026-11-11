@@ -249,9 +249,11 @@ dependencies, and are not started until this change is approved.
 
 ## Step 4 — runner service and hosting
 
-- [ ] 4.1 Runner service that executes scripts outside the game server process
-      and feeds ticks.
-- [ ] 4.2 Runner hosting — **ANSWERED, no longer blocked.** Minecraft **owns and
+- [x] 4.1 Runner service that executes scripts outside the game server process
+      and feeds ticks. **DONE 2026-11-11** — agent-script-runner live in ns
+      minecraft-test, digest `sha256:416ef999…`, 5/5 TEST-RUN-PLAN §5 checks pass
+      (rollout, /readyz, cold transition, token enforcement, wall 113 ms median).
+- [x] 4.2 Runner hosting — **DONE 2026-11-11.** Minecraft **owns and
       hosts** the runner: one Node service in local repo
       `~/minecraft/agent-script-runner` (no remote), its own k8s namespace,
       consumed by cardgame through contract v1 (`cardgame-lead` 05:22Z/05:28Z;
@@ -319,8 +321,10 @@ dependencies, and are not started until this change is approved.
 
 ## Step 8 — test environment
 
-- [ ] 8.1 Deploy to the test server; sandbox + tests green there. This is
-      milestone (1) to control-operator.
+- [x] 8.1 Deploy to the test server; sandbox + tests green there. **DONE
+      2026-11-11** — deployed by OCI index digest; 102/102 unit tests green at
+      9de61db; all five post-deploy checks pass. This is milestone (1) to
+      control-operator.
 - [ ] 8.2 First bot running from a script on the test server. Milestone (2).
 - [ ] 8.3 Prod, later and separately reviewed. Milestone (3).
 
