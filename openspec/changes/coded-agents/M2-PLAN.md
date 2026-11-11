@@ -61,11 +61,26 @@ guarantee — the script gets bytes, and mutating them cannot reach the bot. The
 contract says the runner deep-freezes it as well; that is defence in depth, not
 the only guard.
 
+**Three different times, named once, because this change has confused them three
+times.** Do not interchange these:
+
+| name | value | what it is |
+|---|---|---|
+| **tick cadence** | **2 s** (`TICK_DELAY`, `agent/config.py:89`) | how often the planner runs. This is the budget the snapshot competes against. |
+| **`deadline_ms`** | 250 ms | the *runner's* wall budget for one script evaluation, sent in the request body. Unrelated to the planner's cadence. |
+| **snapshot bound** | 100 ms | this plan's proposed cap on the read side of a script call (§4.4). |
+
+An earlier draft compared a 150 ms snapshot against "the tick budget (250 ms)".
+That is two errors in one sentence: 250 ms is `deadline_ms`, not the tick
+cadence, and the cadence is 2 s, not 250 ms.
+
 **Discovery risk — measure before assuming.** These four calls are four HTTP
-round trips to the mod at ~250 ms tick cadence. The plan's first implementation
-step is to *measure* their combined latency on TEST. If one snapshot costs more
-than ~150 ms, the tick budget (250 ms) is consumed before the runner is called,
-and the fix is a single aggregated `GET /bot/{name}/snapshot` in the mod rather
+round trips to the mod. The plan's first implementation step is to *measure*
+their combined latency on TEST. A tick runs every **2 s**, so a snapshot costing
+150 ms leaves ~1850 ms — the cadence is not close to being the binding
+constraint. The number that matters is the 100 ms bound in §4.4, and the
+measurement is what tells us whether four round trips fit inside it. If they do
+not, the fix is a single aggregated `GET /bot/{name}/snapshot` in the mod rather
 than four calls. **I am not adding that endpoint unless the measurement says it
 is needed** — it is the larger change and may be unnecessary.
 
@@ -83,11 +98,29 @@ args)`, `api.say(text)`, `api.send(otherBot,msg)`. The runner returns
 | `say` | the existing chat-send path |
 | `send` | the existing inter-bot message path |
 
-**The dispatch set is not extended.** `api.do` names one of the existing 51
-directives (`agent/agent.py` dispatch); the runner deliberately does not validate
-names (contract §4.1 — the set is the game's). The agent therefore resolves the
-name at the moment it applies the action, and an unknown directive is
-**rejected and logged**, never passed through.
+**The dispatch set is not extended.** `api.do` names one of the kinds in
+`_VALID_DIRECTIVE_KINDS` (`agent/l3_planner.py:204`), which is the mod's
+`DirectiveType` enum. The plan does not restate that list and does not hard-code
+its size: it is read from the symbol at runtime, because the number has already
+drifted twice in review (I wrote 51; a reviewer wrote 36; the set holds 35 as of
+this commit — verified by counting the frozenset, not by eye). A literal here
+would be one more number to get wrong.
+
+Two properties of that set matter for the refusal, and both are corrections to
+the first draft of this plan:
+
+- **The kinds are UPPERCASE** (`MINE`, `GOTO`, `SEND_ITEM`). The dispatch
+  upper-cases at `agent/agent.py:904` before comparing, so a script naming
+  `"mine"` must be normalised or refused — silently passing lowercase through
+  would reach the mod and fail there, where the error is far away from the cause.
+- **`api.set_directive` does NO validation** (`agent/api.py:428`). It builds
+  `{"type": name}` and POSTs. So the rejection described below **does not exist
+  yet** — this plan introduces it, in `script_client.py`, on the agent side.
+
+The runner deliberately does not validate names (contract §4.1 — the set is the
+game's). The agent therefore resolves the name at the moment it applies the
+action, and an unknown or wrong-case directive is **rejected and logged**, never
+passed through.
 
 **Proof required:** a test that submits a script calling `api.do("NOT_A_REAL_-
 DIRECTIVE")`, and asserts (a) the runner returns it as an action (it does not
@@ -116,13 +149,36 @@ and world state; `say` isolates *does the script→action binding produce the sa
 effect as the planner→action binding*, which is the actual claim. `MINE` parity
 is worth doing, but as a separate, later check — not as the first proof.
 
+**The counter-case parity alone cannot catch.** Parity only proves the two paths
+agree *when both act*. It cannot see a bug where the script path acts in a
+situation the planner would have stayed silent in — both sides of the comparison
+are silent, the sequences match, and the proof passes while the bot says
+something it never should have. So step 3 gains a fourth run:
+
+4. **Silence case:** a situation where the planner produces **no** action
+   (condition false, or rate-limited). The script path must also produce none.
+   Recorded evidence is the absence of the chat line *and* the absence of the
+   API call — asserting only the chat line would pass if the call went out and
+   failed.
+
 ---
 
 ## 4. Tasks 4.3 / 4.4 — reachability, bounded wait, fallback
 
-The agent calls `/v1/tick` with a **hard bound** below the tick cadence: connect
-+ read timeout of **100 ms** (the runner's own `deadline_ms` is 250 ms; the agent
-must give up before the bot stalls a tick).
+The agent calls `/v1/tick` with a **hard bound**: connect + read timeout of
+**100 ms**. This is not the runner's `deadline_ms` (250 ms) and not the 2 s tick
+cadence — see the table in §1. The agent's bound is the *client-side* one, and it
+must be shorter than what the runner can take, so the agent gives up first and
+falls back rather than waiting on a runner that is already past its own budget.
+
+**The 100 ms must be passed explicitly, not inherited.** `agent/api.py:33`
+defines `_post(path, data=None, timeout=5)` — a **5 s** default, sized for
+planner calls that may do real work. Reusing `_post` without an explicit
+`timeout=0.1` would let one slow runner stall a 2 s tick five times over, and it
+would do so silently because 5 s is a legal value. The script path therefore
+calls `_post(..., timeout=SCRIPT_TIMEOUT)` where `SCRIPT_TIMEOUT = 0.1`, and
+§7 requires a test that pins it: a unit test asserting the script path passes
+0.1, which fails if someone drops the argument and falls back to the default.
 
 States and behaviour:
 
@@ -270,3 +326,21 @@ Each step's tests run before the next. Gradle/agent tests: `-Xmx2g`
    changing a script needs a rebuild. Acceptable for M2 (one hand-written
    script), but it is the thing that will hurt when 7.1 lands. Worth a ConfigMap
    now, or defer?
+
+---
+
+## Decided at review (2026-11-11 10:33Z)
+
+The reviewer ruled on all three open questions. Recorded here so the plan does
+not carry open items into implementation:
+
+1. **§1 snapshot: measure first, and add no mod endpoint in M2.** All four calls
+   are already made by the planner, so a short-TTL cache in `api.py` is
+   agent-only work. Escalate to a mod endpoint only if the cache proves
+   insufficient — and then as its own change, not folded into M2.
+2. **§3.3 parity: `say` accepted**, with the silence counter-case above.
+3. **§6 script storage: ConfigMap now, not deferred.** Deferring is the
+   expensive choice, because §8's negative control requires stopping and
+   restarting the runner mid-proof; a baked-in script would need a **rebuild**
+   for every re-proof. If a later change does bake scripts in, the rebuild cost
+   must be stated, not left implicit.
