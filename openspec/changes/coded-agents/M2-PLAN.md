@@ -459,25 +459,52 @@ to this section, so without a concrete action §8.2 has no observable at all.
 - **Not `MINE`.** A movement action's parity is confounded by tick timing and
   world state.
 
-**`STORE_ALL` takes a target too — pin the argument form.** An earlier version
-of this section claimed `STORE_ALL` "takes neither", which is false and must
-not be quoted as the reason for choosing it. `StoreAllBehavior.java:63` does
+**`STORE_ALL` accepts a location, but nothing in this codebase sends one — and
+the parity test constructs one deliberately.** An earlier version of this
+section claimed `STORE_ALL` "takes neither", which is false. A later version
+said both forms were "real in the planner's own vocabulary", citing
+`l3_planner.py:142` pairing `STORE_ALL` with `("x","y","z","radius")`. That is
+also false, and in the same way: **the tuple is the parameter list for the whole
+two-directive skill signature, not for each directive in it.** `_SEED_SKILLS`
+values are `(kinds, param_names)` and `_build_skill_extra` (`:270-272`) harvests
+those names across the sequence and folds them into a `SKILL` extra. `x`/`y`/`z`/
+`radius` are `AREA_LOOT`'s; `crop`/`count` are `FARM`'s. Neither entry gives
+`STORE_ALL` a parameter. The mod's own seed specs agree — `SkillRegistry.java:154`
+puts the coordinates on `AREA_LOOT` as `extra`, and `STORE_ALL` beside it is bare.
+
+What *is* true is one level down: `StoreAllBehavior.java:63` does
 `if (directive.hasLocation()) targetedContainer = BlockPos.containing(getX(),
-getY(), getZ())`, and `:161` branches on `isStorageBlock(...)`. Both forms are
-real in the planner's own vocabulary: `l3_planner.py:142` pairs `STORE_ALL` with
-`("x","y","z","radius")`, and `skill_author.py:281` posts a bare
-`{"type": "STORE_ALL"}`.
+getY(), getZ())`, and `:161` branches on `isStorageBlock(...)`. The behaviour
+accepts coordinates. Nothing we can point at emits them: the only single-directive
+producers of `STORE_ALL` are the seed matcher (`agent.py:1888-1889`, returning
+`{"type": "STORE_ALL"}` with no coordinates at all) and the author prompt
+(`skill_author.py:281`, also bare).
 
-So the parity test **pins the argument form**: both paths post the same
-coordinates for a known storage block, and the assertion is that the POST
-bodies are byte-identical. The confound is therefore controlled rather than
-ignored, at the cost of one fixture detail.
+That the planner *cannot* emit a coords-bearing `STORE_ALL` is **not
+established** — a raw model output outside a seed match is untraced. But nothing
+in this repo is known to produce one, so the test would be building it.
 
-This matters because the comparator at `:1356` fires **before any behaviour
-runs**: a coords-bearing and a coordless `STORE_ALL` produce an identical POST
-body while their effects diverge. The comparator is branch-free *by design*,
-which makes it neutral between paths but blind to argument-form differences —
-so the argument form has to be held constant by the test, not left to chance.
+So the parity test **constructs** the argument form rather than sampling one
+the planner naturally emits: the script requests `STORE_ALL` with coordinates for
+a known storage block, and the planner path is issued *the same call*, with that
+being stated as constructed rather than natural. The assertion is that the POST
+bodies are byte-identical. This is a real cost — a constructed fixture proves
+the two paths agree on the call you wrote, not on the spread of calls the planner
+actually makes — and the plan states it rather than letting "pinned" imply
+"representative".
+
+The pinning is load-bearing precisely because the comparator at `:1356` fires
+**before any behaviour runs**: a coords-bearing and a coordless `STORE_ALL`
+produce an identical POST body while their effects diverge (`:171` moves the
+bot to the coordinates; without them it walks its own candidate list). The
+comparator is branch-free *by design*, which makes it neutral between paths but
+blind to argument-form differences — so the argument form has to be pinned by
+the test, not left to chance.
+
+**Before step 4 writes the test:** confirm from a real planner run which form
+`STORE_ALL` actually reaches the mod in. If it is coordless in practice, the
+honest framing above stands, and a subject the planner genuinely parametrises
+is the better long-run choice.
 
 **Observation point: the directive POST response, not a behaviour log line.**
 `HttpApiServer.java:1356` returns `status: accepted` plus `directive.toMap()` on
@@ -491,7 +518,11 @@ silently if the call went out and failed.
 
 - **(b) two-path comparison over a narrower directive** — kept as the
   later-check slot alongside `MINE` and `CHANNEL`; `STORE_ALL` is the primary
-  because it carries no args to format.
+  because its argument form is a single optional coordinate triple with no
+  formatting to normalise, and that triple is pinned (above) rather than
+  relied on. An earlier version justified this with "carries no args to
+  format" — the retracted claim, which survived here after being deleted from
+  the prose it came from.
 - **(c) drop bare parity, rely on §8.2** — does not remove the phantom subject,
   it *moves* it: §8.2's game-side evidence was originally "the `say` line in
   the server log", which has now been corrected in §8.2 as well.
