@@ -39,9 +39,20 @@ Fingerprint of the compromised value: `902a001fdc05`.
 | `secret/mod-api-key` | `api-key` | `minecraft-test-server` | `secretKeyRef` → `AIPLAYER_API_KEY` |
 | `secret/agent-config` | `MOD_API_KEY` | `aibot-agent-test` | `envFrom` (whole secret) |
 
-Ten Secrets and three ConfigMaps were scanned, and the scan was shown to see
-non-empty objects first — so the two hits are a real result, not a silent
-no-op over an empty list.
+Three sweeps, all by sha256 fingerprint of the **decoded** value:
+
+1. **14** Secrets and ConfigMaps in `minecraft-test` — 2 hits. (An earlier pass
+   counted 13; a second pass found one more object. The corrected count is 14.)
+2. **All 10 Deployments** in `minecraft-test`, inline `env.value` literals — 0
+   hits. **Positive control:** the same query sees 50 inline env literals and
+   correctly matches a value known to be present (`NODE_OPTIONS` on
+   `agent-script-runner`). Without that control a zero is indistinguishable
+   from a query that cannot match at all, and neither of the other two sweeps
+   exercises this path.
+3. **Every namespace in the cluster**, Secrets and ConfigMaps — the same 2 hits
+   and nothing else. This is the sweep that turns "two holders in the test
+   namespace" into "there is no third holder anywhere", and it independently
+   confirms prod (`ns minecraft`) holds a different value.
 
 `secret/agent-config` carries 18 keys and only `MOD_API_KEY` holds this value.
 The patch changes that one key and leaves the other 17 byte-identical.
@@ -81,8 +92,12 @@ TEST offline. Verified in the cluster rather than assumed:
   waits up to 180 s for the Server thread, then TERM, 30 s, KILL. **A normal
   stop saves the world; there is no data loss.**
 - `terminationGracePeriodSeconds: 300`, strategy `Recreate`.
-- **Measured startup on the current pod:** scheduled `04:33:55Z`, container
-  started `04:34:15Z`, Ready `04:38:11Z` — **3 m 56 s from schedule to Ready.**
+- **Measured startup on the current pod:** PodScheduled `04:33:55Z`, container
+  started `04:34:15Z`, Ready `04:38:11Z`. That is **20 s** from schedule to
+  container start and **3 m 56 s** from container start to Ready — so **4 m 16 s
+  from schedule to Ready**, which is the figure to plan downtime around. The
+  3 m 56 s is boot alone; quoting it as schedule-to-Ready understates the outage
+  by the 20 s the scheduler spends first.
 
 Restart order (lead ruling): patch all three, restart the mod, then both
 clients immediately. That leaves a **short window** in which a client still

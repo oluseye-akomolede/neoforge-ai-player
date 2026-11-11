@@ -58,11 +58,14 @@ value. This rule exists because breaking it is what created this change.
         A normal stop therefore **saves the world**; no data loss.
       - `terminationGracePeriodSeconds: 300`, strategy `Recreate`.
       - **Measured startup on the current pod:** PodScheduled `04:33:55Z` →
-        container started `04:34:15Z` → Ready `04:38:11Z`, i.e. **3 m 56 s from
-        schedule to Ready**. That is the floor for downtime, before the stop
-        half is added.
-      - Expected total downtime: startup (measured ≈3 m 56 s) plus the stop
-        (bounded by the hook: ≤30 s stop + ≤180 s thread wait + ≤30 s TERM).
+        container started `04:34:15Z` → Ready `04:38:11Z`. That is **20 s**
+        schedule→container and **3 m 56 s** container→Ready, so **4 m 16 s**
+        schedule→Ready. Plan downtime around **4 m 16 s**; 3 m 56 s is boot
+        alone and understates the outage by the 20 s before the container
+        starts.
+      - Expected total downtime: startup (measured **4 m 16 s** schedule→Ready)
+        plus the stop (bounded by the hook: ≤30 s stop + ≤180 s thread wait +
+        ≤30 s TERM = 240 s worst case).
         State the observed figure on the row when it actually runs; do not
         carry this estimate forward as a measurement.
 
