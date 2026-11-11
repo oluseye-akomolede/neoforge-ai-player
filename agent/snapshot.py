@@ -134,7 +134,14 @@ class SnapshotCache:
         )
         tick = self._tick.get(bot, 0) + 1
         self._tick[bot] = tick
-        envelope = build_envelope(state, tick=tick)
+        # `task` must be passed explicitly. build_state reads the running
+        # directive via api.get_directive into state["task"], but the envelope
+        # and the state are separate objects: calling build_envelope without
+        # `task=` leaves envelope["task"] at its None default on EVERY tick,
+        # whatever the bot is doing. That is not a rare shape, it is the only
+        # shape this cache can produce - so any script guarding on
+        # `snapshot.task` had a dead first branch.
+        envelope = build_envelope(state, tick=tick, task=state.get("task"))
         self._entries[bot] = (now + self._ttl, envelope, errors)
         return envelope, errors
 
