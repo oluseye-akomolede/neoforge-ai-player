@@ -239,9 +239,19 @@ dependencies, and are not started until this change is approved.
 
 ## Step 3 — script contract
 
-- [ ] 3.1 Read-only per-tick snapshot (health, food, position, inventory,
+- [x] 3.1 Read-only per-tick snapshot (health, food, position, inventory,
       nearby blocks and mobs, task progress, recent events); prove script
       mutation of the snapshot does not change world state.
+      **DONE 2026-11-11** — `agent/snapshot.py`, 19 tests in
+      `agent/test_snapshot.py`. The mutation proof is
+      `SnapshotIsReadOnlyTest`: decode the frozen envelope, mutate it freely,
+      assert the agent's state and a second decode are both unaffected — the
+      boundary is `json.dumps` here, not the runner's deep-freeze, which is
+      defence in depth. Read-only is asserted against the api surface actually
+      invoked, not the module text. Per-tick cache is keyed per bot and pays
+      the refresh once per tick (M2-PLAN §1: 99.4 ms median against a 2 s
+      cadence). Three mutants killed: shared cache entry, task re-wrap, tick
+      rewind on invalidate.
 - [ ] 3.2 Action binding limited to the agent's action dispatch set; prove an
       unknown action name is refused and executes nothing.
 - [ ] 3.3 Prove a script action produces the same behaviour as the LLM
