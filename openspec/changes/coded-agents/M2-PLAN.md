@@ -446,19 +446,33 @@ If both paths call the same helper directly, there is **no binding under test**
 and the comparison is vacuous — that is the failure mode this section exists to
 avoid.
 
-**Choice of effect action:** the parity action must be a real `DirectiveType`
-with an observable, non-movement effect. `CHANNEL` and `STORE_ALL` qualify, with
-the caveats that `CHANNEL`'s `target`/`count` formatting
-(`l3_planner.py:142-146`) adds a confound and both are narrower than they look.
-**Not `MINE` as the first proof:** a movement action's parity is confounded by
-tick timing and world state. `MINE`, `CHANNEL` and `STORE_ALL` all belong in the
-later-check slot; the first proof needs the smallest one that still crosses the
-binding.
+**The subject is `STORE_ALL`, ruled 12:16Z.** Naming it here rather than leaving
+"the smallest one that still crosses the binding" is the point: an unnamed
+subject in step 3 becomes an unbuildable test in step 4, and §8.2 item 3 defers
+to this section, so without a concrete action §8.2 has no observable at all.
+
+- **Not `IDLE`.** `IdleBehavior.java` contains no log call, no chat, no send —
+  nothing observable. Ruled out by reading the file, not by preference. A
+  parity check needs an effect that leaves a trace on both paths.
+- **Not `CHANNEL`.** It takes `target`/`count` (`l3_planner.py:142-146`), which
+  adds a formatting confound on top of the binding. `STORE_ALL` takes neither,
+  so the comparison isolates the binding.
+- **Not `MINE`.** A movement action's parity is confounded by tick timing and
+  world state.
+
+**Observation point: the directive POST response, not a behaviour log line.**
+`HttpApiServer.java:1356` returns `status: accepted` plus `directive.toMap()` on
+*both* paths, from the same handler. Anchoring the comparison there means the
+check does not depend on whether a given behaviour happens to log — which is
+precisely what made `IDLE` unusable. It also makes the silence case in step 4 a
+clean assertion: no POST at all, rather than no log line, which would pass
+silently if the call went out and failed.
 
 **Rejected options, and why:**
 
-- **(b) CHANNEL/STORE_ALL as the primary** — real directives but narrower; kept
-  in the later-check slot alongside `MINE`.
+- **(b) two-path comparison over a narrower directive** — kept as the
+  later-check slot alongside `MINE` and `CHANNEL`; `STORE_ALL` is the primary
+  because it carries no args to format.
 - **(c) drop bare parity, rely on §8.2** — does not remove the phantom subject,
   it *moves* it: §8.2's game-side evidence was originally "the `say` line in
   the server log", which has now been corrected in §8.2 as well.
@@ -654,8 +668,13 @@ Three pieces of evidence, all required:
 2. **Agent-side:** the log line where the agent applied action `seq` from the
    script — the same `seq` the runner returned, which ties the request to the
    effect.
-3. **Game-side:** the observable effect of that action in the server log,
-   matching §3's parity result.
+3. **Game-side:** the directive POST response for the subject §3 names —
+   `STORE_ALL` — i.e. `status: accepted` with `directive.toMap()` carrying
+   type `STORE_ALL`, identical to what the planner path produces for the same
+   action. Deliberately *not* a behaviour log line: `HttpApiServer.java:1356`
+   emits this from the same handler on both paths, so the evidence does not
+   depend on whether the behaviour happens to log. The absence of that POST is
+   the silence case's evidence.
 
 The three together rule out every false pass: runner-only fails to show the bot
 acted; game-only fails to show the *script* caused it; agent-only fails to show

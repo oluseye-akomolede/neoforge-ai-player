@@ -10,23 +10,36 @@ and then never replies — the agent must give up at the bound and must not leav
 a thread hanging.
 """
 
+import importlib.util
 import json
+import os
 import socket
 import threading
 import time
 import unittest
 
-from agent.script_client import (
-    DIRECTIVE_KINDS,
-    SCRIPT_TIMEOUT,
-    STATE_FALLBACK_ERROR,
-    STATE_FALLBACK_REFUSED,
-    STATE_FALLBACK_TIMEOUT,
-    STATE_SCRIPT,
-    UnknownDirective,
-    call_runner,
-    normalise_directive_name,
+# Loaded by path, deliberately NOT `from agent.script_client import ...`.
+# `agent/` has no __init__.py, so the name `agent` resolves to agent.py itself;
+# importing `agent.script_client` therefore executes agent.py and drags in
+# psycopg2 and uvicorn. That made this file unrunnable in any environment
+# without the full agent dependencies -- including a reviewer's seat and CI --
+# which is the one property a test must have to be evidence at all.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_spec = importlib.util.spec_from_file_location(
+    "script_client_under_test", os.path.join(_HERE, "script_client.py")
 )
+_sc = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_sc)
+
+DIRECTIVE_KINDS = _sc.DIRECTIVE_KINDS
+SCRIPT_TIMEOUT = _sc.SCRIPT_TIMEOUT
+STATE_FALLBACK_ERROR = _sc.STATE_FALLBACK_ERROR
+STATE_FALLBACK_REFUSED = _sc.STATE_FALLBACK_REFUSED
+STATE_FALLBACK_TIMEOUT = _sc.STATE_FALLBACK_TIMEOUT
+STATE_SCRIPT = _sc.STATE_SCRIPT
+UnknownDirective = _sc.UnknownDirective
+call_runner = _sc.call_runner
+normalise_directive_name = _sc.normalise_directive_name
 
 
 # ── Directive names (condition 4 of the lead's OK) ──────────────────────────
