@@ -251,8 +251,12 @@ dependencies, and are not started until this change is approved.
 
 - [x] 4.1 Runner service that executes scripts outside the game server process
       and feeds ticks. **DONE 2026-11-11** — agent-script-runner live in ns
-      minecraft-test, digest `sha256:416ef999…`, 5/5 TEST-RUN-PLAN §5 checks pass
-      (rollout, /readyz, cold transition, token enforcement, wall 113 ms median).
+      minecraft-test, digest `sha256:7ca7e1e2…` (push of `c0c33bc`; this
+      supersedes the `416ef999…` figure recorded earlier the same day, which is
+      now the rollback target), 5/5 TEST-RUN-PLAN §5 checks pass (rollout 1/1,
+      /readyz 200, cold→warm transition 130.2→2.9 ms, token enforcement
+      401/401/200, wall median 121.1 ms / max 143.5 ms against the 250 ms
+      deadline over 60 cold bots).
 - [x] 4.2 Runner hosting — **DONE 2026-11-11.** Minecraft **owns and
       hosts** the runner: one Node service in local repo
       `~/minecraft/agent-script-runner` (no remote), its own k8s namespace,
@@ -322,9 +326,12 @@ dependencies, and are not started until this change is approved.
 ## Step 8 — test environment
 
 - [x] 8.1 Deploy to the test server; sandbox + tests green there. **DONE
-      2026-11-11** — deployed by OCI index digest; 102/102 unit tests green at
-      9de61db; all five post-deploy checks pass. This is milestone (1) to
-      control-operator.
+      2026-11-11** — deployed by OCI index digest `sha256:7ca7e1e2…` (push of
+      `c0c33bc`), verified from the registry's `Docker-Content-Digest` header
+      with content-type `application/vnd.oci.image.index.v1+json`, not from a
+      local image ID. 119/119 unit tests green at that revision (the earlier
+      102/102 was at `9de61db`, before the four review fixes); all five
+      post-deploy checks pass. This is milestone (1) to control-operator.
 - [ ] 8.2 First bot running from a script on the test server. Milestone (2).
 - [ ] 8.3 Prod, later and separately reviewed. Milestone (3).
 
