@@ -43,7 +43,14 @@ where §3.3 below says otherwise.
 
 ## 1. Task 3.1 — read-only per-tick snapshot
 
-Built in the agent, from data it already fetches, into contract §3's shape:
+Built in the agent, from data it already fetches. **The shape below is
+contract §3's, and the code does not match it** (reviewer, 13:03Z): §3 nests the
+bot facts under `bot` and the directive under `task`; `build_envelope`
+(`snapshot.py:80`) emits `{tick, server_ms, state, events, task}` with those bot
+facts inside `state`. Step 4 does **not** depend on the difference — the built
+script reads `snapshot.state` for facts and `snapshot.task` for the guard — but
+the divergence is real and belongs to the contract, not to this run. Recording it
+here so the run is not mistaken for a check of §3's shape:
 
 ```json
 { "bot": {"name","health","food","position":{"x","y","z","dim"}},
@@ -1130,6 +1137,24 @@ revision is hashed from the script body, not carried in the ConfigMap.
 | 2 | **Agent** log: `[Scout/script] dispatch: STORE_ALL {...}` followed by a `COMPLETED STORE_ALL` return, and **no** `[Scout/script] not executed:` line | the `dispatch:` line never appears → the action was refused before dispatch; a `not executed:` line → the orchestrator returned FAILED and that action did not run |
 | 3 | Mod POST response: `status: accepted`, `STORE_ALL`, **coordless** | coordinates present → §3's pin is wrong, record it |
 | 4 | Run 1 produces no script-path POST | a POST with no script → something else is emitting it |
+| 5 | **The in-flight guard fired**: a tick with a directive already running emits **no** runner tick at all for that bot, and the agent log shows neither `dispatch:` nor `not executed:` | a runner tick appears → the guard did not fire; a `not executed:` line → the guard did not fire and the action was refused downstream instead |
+
+**Row 5 is not satisfied by row 2's absence-of-refusal.** Those look identical
+in the log and mean opposite things. Row 2's clean case (dispatch happened,
+`COMPLETED`) and row 5's case (nothing attempted) are both "no `not executed:`
+line", so the pass condition for row 5 is the **absence of the runner tick for
+that bot in that tick**, taken from the runner log, not the absence of a
+refusal line in the agent log.
+
+This row exists because the guard was dead until just now: `scout.js` opens with
+`if (snapshot.task) return []`, and `SnapshotCache.get` built the envelope
+without `task=`, so `envelope["task"]` was `None` on **every** tick and the guard
+could never fire (reviewer, 13:03Z; `snapshot.py:144` fixed). Under the old code
+the first branch ran even with a directive in flight, the action was refused
+downstream as `already-has-a-directive`, and the run would have shown a
+`not executed:` line — a refusal, which reads as the system working, rather than
+a guard that never fired. §1's third scenario was unmet and the evidence could
+not have shown it.
 
 **Why row 2 exists as its own line.** `agent.py` used to read `act["directive"]`
 from the *bound* action, get `None`, and `continue` — printing
@@ -1198,9 +1223,12 @@ POD=$(kubectl -n minecraft-test get pod -l app=aibot-agent,tier=test -o jsonpath
 echo "$POD"                                                      # must be non-empty before continuing
 
 git revert <this change's commits>                               # agent-side only
-kubectl -n minecraft-test cp "$POD:/srv/aibot-profiles/scout.json" ./scout.json.current   # keep what is there now
+# -c agent is required once the initContainer makes this a two-container pod:
+# without it kubectl cp picks a container and can pick the seed one, silently
+# copying to a path the agent never reads.
+kubectl -n minecraft-test cp -c agent "$POD:/srv/aibot-profiles/scout.json" ./scout.json.current   # keep what is there now
 # restore the original profile captured BEFORE the edit (§8.3.2 part 3 (i)):
-kubectl -n minecraft-test cp ./evidence/step4-scout-profile.before.json "$POD:/srv/aibot-profiles/scout.json"
+kubectl -n minecraft-test cp -c agent ./evidence/step4-scout-profile.before.json "$POD:/srv/aibot-profiles/scout.json"
 kubectl -n minecraft-test rollout undo deploy/aibot-agent-test
 kubectl -n minecraft-test delete configmap agent-scripts
 
@@ -1219,12 +1247,17 @@ references the ConfigMap, but **does not delete the ConfigMap itself**. Left
 behind it is inert, but it is a stale script a later reader might mistake for
 live. Delete it so the rollback leaves no artefact claiming to be active.
 
-The profile restore is the piece git cannot do. `scout.json` on the
-`agent-data` PVC is edited in place and is not in the repo, so a `git revert`
-does nothing to it; without the explicit `cp` above, the rollback would leave
-Scout loading a script file that the deleted ConfigMap no longer provides — a
-profile pointing at a missing path, which `_get_script_tick` reports and falls
-through on, i.e. a *silently* reverted bot rather than a cleanly reverted one.
+The profile restore is the piece git cannot do. The working copy at
+`/srv/aibot-profiles/scout.json` is an **emptyDir** seeded from the image by the
+initContainer, and is not in the repo, so a `git revert` does nothing to it;
+without the explicit `cp` above, the rollback would leave Scout loading a script
+file that the deleted ConfigMap no longer provides — a profile pointing at a
+missing path, which `_get_script_tick` reports and falls through on, i.e. a
+*silently* reverted bot rather than a cleanly reverted one.
+
+It is also why the rollback needs `-c agent`: the emptyDir is shared by the
+initContainer and the agent container at the same path, so an unqualified
+`kubectl cp` has two plausible targets and no error either way.
 
 After the rollback, verify: the restored file's sha256 equals the one recorded
 on the row at step 3 (i), and the pod is 1/1.

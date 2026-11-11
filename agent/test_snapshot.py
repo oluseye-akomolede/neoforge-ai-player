@@ -251,6 +251,34 @@ class SnapshotCacheTest(unittest.TestCase):
         self.assertEqual(second["tick"], first["tick"] + 1,
                          "invalidate rewound the tick counter")
 
+    def test_envelope_from_the_cache_carries_the_running_task(self):
+        # Built THROUGH SnapshotCache, not through build_envelope with a
+        # hand-passed task=. That distinction is the whole test: the earlier
+        # EnvelopeTest called build_envelope(task={...}) and passed, while
+        # production called build_envelope(state, tick=tick) - no task - so
+        # envelope["task"] was None on every tick and scout.js's first guard
+        # (if (snapshot.task) return []) could never fire. The fixture agreed
+        # with the reader instead of with the producer.
+        cache = SnapshotCache(_FakeApi(), ttl=60.0, clock=lambda: 1000.0)
+        envelope = cache.get("Scout")[0]
+        self.assertIsNotNone(
+            envelope["task"],
+            "envelope['task'] is None while the bot has a directive running - "
+            "the script's in-flight guard is dead")
+        self.assertEqual(envelope["task"].get("type"), "STORE_ALL")
+
+    def test_envelope_task_is_none_when_nothing_is_running(self):
+        # The control. A fixture that always reports a directive would let a
+        # hardcoded task pass; an idle bot must yield None so the guard's
+        # two branches stay distinguishable.
+        class _IdleApi(_FakeApi):
+            def get_directive(self, bot):
+                self.calls.append(("directive", bot))
+                return None
+
+        cache = SnapshotCache(_IdleApi(), ttl=60.0, clock=lambda: 1000.0)
+        self.assertIsNone(cache.get("Scout")[0]["task"])
+
     def test_ttl_zero_disables_caching(self):
         cache = SnapshotCache(_FakeApi(), ttl=0.0, clock=lambda: 1000.0)
         cache.get("Scout")
