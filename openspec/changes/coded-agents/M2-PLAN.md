@@ -1157,6 +1157,37 @@ the script is loaded proves nothing. Both halves are required, in this order.
 The control must **never stop the runner** (lead, 11:37Z) and must cut Scout off
 agent-side only — the shared runner serves other work.
 
+**How to drive the goal.** Not rcon, and not `/api/directive` (that sets a
+directive directly and skips the tick the script is consulted on — it proves
+nothing about §8.2). Use the mod's own chat injection, which is the same path a
+player's line takes:
+
+```
+kubectl exec -n minecraft-test deploy/aibot-agent-test -c agent -- \
+  python3 -c 'import api; print(api.inject_chat("Scout","OperatorTest","Scout, please store all your items in the nearby chest."))'
+```
+
+The message lands in Scout's chat inbox, `_chat_poll_loop` drains it, and
+`_maybe_plan` routes it to the L3 orchestrator (it logs
+`[Scout/orchestrator] L3 plan layer accepting: ...`). Addressed-by-name is what
+routes it: **include the bot's name in the text.**
+
+**Run 1 result (control, measured 13:23–13:25Z at `46629e9`).** Injected the
+goal shown above. Observed:
+
+| observed | value |
+|---|---|
+| `[Scout/orchestrator] L3 plan layer accepting` | present (13:23:54Z) |
+| `[Scout/orchestrator] starting plan for` | present |
+| runner log lines before → after | 78 → 78 (**no change**) |
+| runner lines matching `scout` | 0 |
+| `STORE_ALL` in the mod log | 0 |
+
+The zero is a measured absence, not a dead grep: in the same window the mod
+logged `[Scout] cancelDirective called` and `[Scout] HTTP DELETE /directive
+(id=-1)`, so the detector was live and naming Scout. **Baseline established:
+with no `script` key, the planner runs and the runner is never contacted.**
+
 ### 8.3.5 Verification, per piece
 
 Every row below names a line the code **actually prints or sends** (reviewer,
