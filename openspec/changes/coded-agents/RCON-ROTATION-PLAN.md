@@ -40,8 +40,8 @@ false pass.
 |---|---|---|---|
 | 1 | Secret `minecraft-rcon` | key `password`, 32 bytes | consumed by Deployment env `RCON_PASSWORD` via `secretKeyRef` |
 | 2 | `/data/server.properties` | line `rcon.password` | the server's own runtime copy on the PVC |
-| 3 | `/data/.rcon-cli.env` | key `password` | operator rcon-cli convenience file, 1 line, written 11:57Z today |
-| 4 | `/data/.rcon-cli.yaml` | key `password` | operator rcon-cli convenience file, 1 line, written 11:57Z today |
+| 3 | `/data/.rcon-cli.env` | key `password` | **derived** — written from `$RCON_PASSWORD` on every start (`start-configuration:87`) |
+| 4 | `/data/.rcon-cli.yaml` | key `password` | **derived** — written from `$RCON_PASSWORD` on every start (`start-configuration:88`) |
 
 All four match one another by value fingerprint (recorded on the row and printed
 at execution time, never here).
@@ -65,6 +65,17 @@ two files carrying the old public password on the PVC; §5(a)-(b) would have
 passed (the Secret and `server.properties` rotate correctly) while the old value
 survived on disk. Checking only the paths the plan already knew about is what
 would have made it pass.
+
+**Two errors, not one, and they are worth separating.** The first was the scan
+missing the files. The second came *after* I found them: I wrote that they were
+"operator convenience files nobody declared" and proposed deleting them. That
+was an inference from absence-in-my-table dressed as a finding -- exactly the
+error class this document exists to avoid, committed in the same section about
+looking properly. What settled it was checking the mtime against the pod start
+(21 s after, two files 15 ms apart) and then reading the generator at
+`start-configuration:87-88`. Had the delete been executed, it would have removed
+two files the image rewrites anyway and left the appearance of having cleaned
+something up. **Absence from your inventory is not absence of an owner.**
 
 **Deployment env.** `RCON_PASSWORD` is a `secretKeyRef` to
 `minecraft-rcon/password`, not a literal. So rotating the Secret covers the
@@ -119,25 +130,37 @@ anyone is connected, unless the lead says otherwise.
    ... --dry-run=client -o yaml | kubectl apply -f -`. Value never printed.
 3. **Restart the server** so the env re-reads and `server.properties` is
    rewritten: `kubectl rollout restart deploy/minecraft-test-server`.
-4. **Rewrite the on-disk holders the server does not own.** The server rewrites
-   `/data/server.properties` from its env on start; it knows nothing about
-   holders 3 and 4. For each of `/data/.rcon-cli.env` and `/data/.rcon-cli.yaml`,
-   set the value in-pod from the Secret without printing it (read the new value
-   into a shell variable with `kubectl exec ... -- printenv RCON_PASSWORD` and
-   write it with `sed` or by rewriting the single line; never on a command line
-   that `ps` can see). Then confirm each file's value fingerprints to the new
-   value.
-   **Alternative the lead may prefer:** delete both files. They are conveniences
-   nobody declared, written 11:57Z today, and the rotation does not need them to
-   exist. Deleting a holder is a stronger outcome than rotating it. Not done
-   here because it is a decision, not a step.
+4. **Change nothing on disk. Verify the restart regenerated holders 3 and 4.**
+   These two files are **not independent holders**: they are *derived*. The
+   image writes them on every start, at `/image/scripts/start-configuration:87-88`,
+   from `$RCON_PASSWORD`, and only removes them when rcon is disabled entirely.
+   Measured: pod start `11:57:37Z`, both files `11:57:58Z` (15 ms apart from each
+   other -- one script writing both in sequence). So step 3's restart rewrites
+   them from the new env automatically, and editing them by hand would only be
+   overwritten on the next start.
+   - After the restart, confirm both files' mtime is **newer than the restart**,
+     and that each fingerprints to the new value.
+   - If either still holds the **old** value, STOP and report. That means the
+     start script did not run, or `RCON_PASSWORD` is not what was written to the
+     Secret -- not that the file needs editing.
+
+   **Correction of an earlier version of this step, and of the sentence that
+   preceded it.** The first correction called these "operator convenience files
+   nobody declared" and offered deleting them. Both claims were inferences from
+   the fact that the table did not list them, not measurements: the mtimes and
+   the generating lines above are the evidence, and they say the opposite. An
+   undeclared-looking file is not an unowned one; check who writes it before
+   deciding who should stop writing it.
+
 5. **Verify.** (a) rcon with the new password → a real command returns a reply;
    (b) the old password is refused; (c) **all four** holders fingerprint to the
    new value, and a repeat of §1's 1168-file scan returns **zero** hits for the
    old value; (d) the deployment is Ready and the server accepts players.
    (c) is the step that would have caught the missed holders, and it is a
    *scan*, not a list of known paths — checking the four paths only proves the
-   four paths were changed.
+   four paths were changed. The mtime check in step 4 and this scan are not
+   redundant: the mtime says the generator ran, the scan says no copy anywhere
+   still carries the old value.
 6. **Report** fingerprints and lengths only.
 
 ---
