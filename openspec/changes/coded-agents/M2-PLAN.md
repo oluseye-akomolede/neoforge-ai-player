@@ -993,12 +993,24 @@ so "Scout only" has to be established per bot, not asserted:
    a tag is not a pin (deploy rights require the digest, and a local image ID is
    not reproducible).
 
+   **The build context is `agent/`, not the repo root** (found the hard way,
+   13:15Z): `docker build -f agent/Dockerfile -t <tag> .` fails at
+   `COPY requirements.txt .` with `"/requirements.txt": not found`, because the
+   Dockerfile's paths are relative to `agent/`. The command that works is
+
+   ```
+   docker build -f agent/Dockerfile -t <tag> agent/
+   ```
+
+   Nothing in the failure is M2-specific — it is the same on any commit — but
+   the operator runs this build, so it belongs here rather than in a message.
+
    **The new image carries far more than M2, and that must be said plainly**
    (reviewer, 12:53Z). The deployed image is `d45751d` (2026-11-04 04:39Z);
-   `HEAD` is **146 commits** ahead of it. Those commits contain work by other
-   seats and other tasks, not only `coded-agents`. Two consequences:
+   `HEAD` is **153 commits** ahead of it at `bf94724`. Those commits contain work
+   by other seats and other tasks, not only `coded-agents`. Two consequences:
 
-   - **Do not describe the image step as "shipping M2".** It ships 146 commits,
+   - **Do not describe the image step as "shipping M2".** It ships 153 commits,
      of which M2 is a subset. If the run goes wrong, the cause is not
      automatically M2, and the rollback returns the *whole* image to
      `d45751d`, not just the script path.
