@@ -1066,6 +1066,16 @@ pair caught at §8.3.4, and the same reason a value sweep cannot find it.
 command in §8.3.3 on the *image being pinned*, not on the worktree. A command
 that works at head and not in the image is exactly this defect.
 
+**What a reviewer can and cannot check here (reviewer, 15:2xZ, stated once).**
+Every cluster-side figure in this section and in the run plan — the counts, the
+mtimes, the pod start times, the `bound_script_path` grep at each rev, the file
+hashes inside the image — was produced on my seat. A reviewer reading the plan
+can verify its internal consistency and the shape of an argument, but not those
+numbers, and should not be read as having verified them. Where a figure decides
+whether a step is safe, the run re-checks it at execution time rather than
+trusting this text; §8.3.2 step 0 and the §8.3.5 table are written that way on
+purpose.
+
 ### 8.3.2 The change, in three parts
 
 0. **Image** — build a new agent image from the reviewed head and push it. The
@@ -1249,6 +1259,35 @@ Re-checked after that dispatch at 13:26:00Z: the runner still showed 78 lines an
 0 Scout references. So the baseline is not "the planner was idle" — it is **the
 planner did real work and the script path was never in it.** Run 2 must show the
 runner receive a tick that the control never produced.
+
+**The 78 is dead (lead, 15:31Z).** It was measured at 13:26Z. The agent pod has
+been up since 13:39Z without restart and by 15:27Z carried **337** lines, so the
+control's line count describes a two-hour-old process. Comparing run 2 against
+78 would compare against a number nothing produces any more.
+
+So the baseline is **re-taken immediately before run 2**, not quoted from above.
+The command, and what each figure is for:
+
+```
+P=$(kubectl -n minecraft-test get pod -l app=aibot-agent -o jsonpath='{.items[0].metadata.name}')
+L=$(kubectl -n minecraft-test logs $P -c agent)
+printf '%s\n' "$L" | wc -l                    # total, for "did anything append"
+printf '%s\n' "$L" | grep -c 'Scout/script'   # MUST be 0 before run 2
+printf '%s\n' "$L" | grep -c 'script tick'    # MUST be 0 before run 2
+```
+
+Measured 15:27:26Z: 337 lines, `Scout/script` **0**, `script tick` **0**. The two
+zeros are the ones that matter; the total is only a cursor. **Count the
+behaviour, not the bot's name:** `grep -ci scout` returns 52 on this log and
+every one of them is unrelated (profile discovery, a fleet respawn, and 47 HTTP
+connection-pool retries written while the Minecraft server restarted for the
+rcon rotation). A name count would have been read as script activity; it is not.
+
+**Baseline hazard, stated once.** Those 227 pool errors are still in the log.
+Run 2's diff must be taken on the `Scout/script` and `script tick` lines, never
+on total line count alone, or a burst of connection noise will look like
+script-path activity. The agent recovered cleanly at 15:25:01Z (schema re-push),
+so the errors are historical, not ongoing.
 
 ### 8.3.5 Verification, per piece
 
