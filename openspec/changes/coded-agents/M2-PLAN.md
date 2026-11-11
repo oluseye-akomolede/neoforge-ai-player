@@ -79,13 +79,14 @@ fit, and the reason is not what the risk assumed.**
 
 The plan said to measure before assuming, so I did — bounded `Job` in
 `minecraft-test` against the live mod, api key from `mod-api-key`, 40+ samples per
-endpoint. The result is **bimodal**, which is the whole finding:
+endpoint. Two different shapes came back — `/directive` **bimodal**, `/bots`
+**deterministic** — and the distinction is the finding:
 
 | endpoint | min | median | shape |
 |---|---|---|---|
 | `/bot/Mystic/status` | 2.4 ms | 3.0 ms | consistently fast |
 | `/bot/Mystic/directive` | 2.4 ms | 42.2 ms | **alternates 2.5 ms / 42 ms** |
-| `/bots` | 2.5 ms | 41.9 ms | ~42 ms (see correction, §1 reproduce note) |
+| `/bots` | 41.9 ms | 42.2 ms | **deterministic ~42 ms** (cause unexplained — see correction below) |
 
 Raw sample for `/directive`, consecutive draws:
 `29.2 44.3 2.4 42.6 3.8 42.2 2.5 42.4 3.0 42.2`. There is no middle: a call
