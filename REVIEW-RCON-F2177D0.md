@@ -91,6 +91,15 @@ missing.
 would pass — several `HAS_NEW`, every `RCON` also `HAS_NEW` — so only the
 needle gate can reject it. One fixture; the gate itself needs no change.
 
+> **CLOSED at `a5de029`** (verified after this review was committed). The new
+> fixture is `new_len=0` with five `HAS_NEW` lines against three `RCON`
+> holders, so `hasnew < 3` passes and only the needle gate can reject. Re-ran
+> mutant B against it: `FAIL empty needle must FAIL, not match everything:
+> expected rc=1, got rc=0`, suite rc=1. Unmutated: 5/5, rc=0. The scan file is
+> byte-identical between `f2177d0` and `a5de029` (`git diff --stat` empty), so
+> this is a test-only change to code already passed above. `a5de029` adds 15
+> lines to `evidence/rcon-scan-selftest.sh` and touches nothing else.
+
 ## 3. Row 1 (`3d321d78`) — provenance sentence
 
 `:961` now cites `REVIEW-M2-STEP4F.md` by name and says why not STEP4G, and
@@ -142,7 +151,9 @@ read the secret.
 
 ## Verdict
 
-**PASS** on `f2177d0`, with one non-blocking test gap.
+**PASS** on `f2177d0`, with one non-blocking test gap — **since closed at
+`a5de029`** (see §2), so the PASS now covers the plan and its tests without
+qualification.
 
 The blocking finding from `d3b6bb9` is closed at the tree with controls that
 fire. The scan is a genuine enumerate form and its `UNKNOWN` gate reddens under
