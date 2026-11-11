@@ -60,9 +60,24 @@ HAS_NEW /data/server.properties
 HAS_NEW /data/.rcon-cli.yaml
 --- END ---'
 
+# The realistic empty-needle hazard: an empty pattern makes `grep -F` match
+# EVERY file, so S1 reports more hits than there are holders -- every count
+# control passes. Only the needle-length gate can reject this.
+#
+# The first version of this fixture had a single HAS_NEW line, so with the gate
+# disabled it still failed via `hasnew < 3`. It asserted rc=1 and passed without
+# ever reaching the gate it names -- the fixture confirming the consumer again.
 empty_needle='new_len=0
+--- S2 ---
+RCON /data/.rcon-cli.env
+RCON /data/server.properties
+RCON /data/.rcon-cli.yaml
 --- S1 ---
+HAS_NEW /data/.rcon-cli.env
 HAS_NEW /data/server.properties
+HAS_NEW /data/.rcon-cli.yaml
+HAS_NEW /data/README.txt
+HAS_NEW /data/banned-ips.json
 --- END ---'
 
 blind='new_len=48
