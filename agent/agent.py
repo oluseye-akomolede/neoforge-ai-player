@@ -3780,6 +3780,26 @@ def _drone_adoption_worker():
             print(f"[agent/drones] adoption error: {e}")
 
 
+def bound_script_path(bot_name):
+    """The script bound to `bot_name` for the deployment's current config, or None.
+
+    A module-level door onto `BotRunner._bound_script_path`. The run plan needs
+    to answer "does this bot bind a script right now?" in one line, inside the
+    pod, at the moment the answer separates an inert deployment from one that
+    is quietly running the wrong file. Calling the method directly from a
+    one-liner is not possible (`self`), and constructing a real BotRunner for
+    the question would open sockets and start threads for a lookup that reads
+    one small JSON file -- so this builds an uninitialised instance instead,
+    which is exactly what the tests do.
+
+    The resolution itself is *not* reimplemented here. This delegates, so the
+    plan's one-liner and the working tick can never disagree about what binds.
+    """
+    runner = BotRunner.__new__(BotRunner)
+    runner.name = bot_name
+    return runner._bound_script_path()
+
+
 def _squad_cohesion_worker():
     """Physical cohesion: a bound drone escorts its officer, so the squad moves
     as one unit. Whenever a drone has no live work (no ACTIVE directive, not

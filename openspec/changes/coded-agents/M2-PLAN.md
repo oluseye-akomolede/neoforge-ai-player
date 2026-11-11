@@ -1142,7 +1142,15 @@ so "Scout only" has to be established per bot, not asserted:
    the restart's risk is paid at a moment when the feature cannot act.
 2. Confirm 1/1, that `scout.js` is in the mounted dir, and — the check that
    matters — that the resolver binds **nobody**:
-   `python3 -c 'import agent; print(agent._bound_script_path("Scout"))'` → `None`.
+   `python3 -c 'import agent; print(agent.bound_script_path("Scout"))'` → `None`.
+   (`bound_script_path` is the module-level door added for this plan. The
+   resolver itself is `BotRunner._bound_script_path`, an instance method — a
+   plan line calling it off the module raises `AttributeError` at exactly the
+   moment an operator is deciding whether the deployment is inert or quietly
+   running the wrong file, which is a bad time to discover a typo. The door
+   delegates rather than reimplements, and
+   `test_the_module_level_door_agrees_with_the_method_in_every_state` holds the
+   two in agreement across bound, unbound, no-file and the C1 refusal.)
 3. **Run 1, the control** (§8.3.4). The planner handles the goal; the runner
    must see no tick.
 4. Add `bindings.json` to the ConfigMap and restart. With the map present the

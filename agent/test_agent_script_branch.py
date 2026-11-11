@@ -248,6 +248,49 @@ class BindingsTest(unittest.TestCase):
     def test_no_bindings_file_means_no_script(self):
         self.assertIsNone(self._runner("Scout")._bound_script_path())
 
+    def test_the_module_level_door_agrees_with_the_method_in_every_state(self):
+        """`self.agent_mod.bound_script_path(name)` must answer exactly what the tick asks.
+
+        Review 2026-11-11: the run plan told an operator to run
+        `python3 -c 'import agent; print(agent._bound_script_path("Scout"))'`.
+        That raises AttributeError -- the resolver is an instance method -- at
+        the one point in the run that separates an inert deployment from one
+        quietly running the wrong file, so a typo there costs a live judgement
+        call about whether the feature or the command broke.
+
+        The risk of adding a module-level door is that it becomes a second
+        implementation that drifts from the first. So this asserts agreement
+        across the states rather than testing the wrapper in isolation: bound,
+        unbound, no file, and the C1 refusal. If someone reimplements the
+        wrapper, one of these four diverges.
+        """
+        # 1. bound
+        self._bind({"Scout": "scout.js"})
+        self.assertEqual(self.agent_mod.bound_script_path("Scout"),
+                         self._runner("Scout")._bound_script_path())
+        self.assertTrue(self.agent_mod.bound_script_path("Scout").endswith("scout.js"))
+
+        # 2. in the file but not in the map
+        self.assertEqual(self.agent_mod.bound_script_path("Miner"),
+                         self._runner("Miner")._bound_script_path())
+        self.assertIsNone(self.agent_mod.bound_script_path("Miner"))
+
+        # 3. no bindings file at all
+        os.unlink(os.path.join(self.tmp, "bindings.json"))
+        self.assertEqual(self.agent_mod.bound_script_path("Scout"),
+                         self._runner("Scout")._bound_script_path())
+        self.assertIsNone(self.agent_mod.bound_script_path("Scout"))
+
+        # 4. the C1 refusal: SCRIPTS_DIR unset, a baked map present. Both must
+        # refuse rather than read the image's copy.
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SCRIPTS_DIR", None)
+            baked = os.path.join(os.path.dirname(self.agent_mod.__file__), "scripts")
+            if os.path.isdir(baked):
+                self.assertIsNone(self.agent_mod.bound_script_path("Scout"))
+            self.assertEqual(self.agent_mod.bound_script_path("Scout"),
+                             self._runner("Scout")._bound_script_path())
+
     def test_unset_scripts_dir_does_not_fall_back_to_the_image_copy(self):
         """SCRIPTS_DIR unset must disable script mode, and say so.
 
