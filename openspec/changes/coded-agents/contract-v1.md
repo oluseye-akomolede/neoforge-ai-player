@@ -507,8 +507,18 @@ regardless of quota, and recompiled on its next tick, also reported as
 | `api.log` rate | 100 | lines/min | runner | dropped, `logs_dropped` |
 | `api.log` retention | unstated (minecraft) / 7 days (cardgame, their own store) | days | each game, in its own store | the runner stores nothing and forwards lines in the tick result, so it has no retention to breach |
 
-**MINECRAFT BINDING** rates: `api.do` 30/min, `api.say` 30/min, `api.send`
-20/min per bot, anchored to the 30 decisions/minute the 2.0 s cadence permits.
+**Per-game action rates** are configuration, resolved by the runner from the
+game id exactly as `tick_cpu_ms` is (§8), never supplied by the request body.
+The per-bot per-minute caps:
+
+| game | `api.do` | `api.say` | `api.send` | why |
+|---|---|---|---|---|
+| minecraft | 30/min | 30/min | 20/min | anchored to the 30 decisions/minute the 2.0 s cadence permits |
+| cardgame | 120/min | 30/min | 20/min | 64 bots act on a 2 s tick and need to batch world queries into one tick; 30/min forced them to spread work across minutes it could have done at once |
+
+Only `api.do` differs between games. The window is per bot, not per game: two
+bots on the same rate never share a budget. A call past the cap is refused with
+`reason: "rate_limited"` and is not recorded as an action.
 
 **The stack row's enforcement point is load-bearing:** the limit only applies if
 every context is created from the runtime that carries it
