@@ -68,21 +68,69 @@ times.** Do not interchange these:
 |---|---|---|
 | **tick cadence** | **2 s** (`TICK_DELAY`, `agent/config.py:89`) | how often the planner runs. This is the budget the snapshot competes against. |
 | **`deadline_ms`** | 250 ms | the *runner's* wall budget for one script evaluation, sent in the request body. Unrelated to the planner's cadence. |
-| **snapshot bound** | 100 ms | this plan's proposed cap on the read side of a script call (§4.4). |
+| **snapshot bound** | 300 ms | client-side cap on the cache refresh (§4.4); raised from 100 ms after the §1 measurement. |
 
 An earlier draft compared a 150 ms snapshot against "the tick budget (250 ms)".
 That is two errors in one sentence: 250 ms is `deadline_ms`, not the tick
 cadence, and the cadence is 2 s, not 250 ms.
 
-**Discovery risk — measure before assuming.** These four calls are four HTTP
-round trips to the mod. The plan's first implementation step is to *measure*
-their combined latency on TEST. A tick runs every **2 s**, so a snapshot costing
-150 ms leaves ~1850 ms — the cadence is not close to being the binding
-constraint. The number that matters is the 100 ms bound in §4.4, and the
-measurement is what tells us whether four round trips fit inside it. If they do
-not, the fix is a single aggregated `GET /bot/{name}/snapshot` in the mod rather
-than four calls. **I am not adding that endpoint unless the measurement says it
-is needed** — it is the larger change and may be unnecessary.
+**Discovery risk — measured on TEST, 2026-11-11. The answer is: four calls do not
+fit, and the reason is not what the risk assumed.**
+
+The plan said to measure before assuming, so I did — bounded `Job` in
+`minecraft-test` against the live mod, api key from `mod-api-key`, 40+ samples per
+endpoint. The result is **bimodal**, which is the whole finding:
+
+| endpoint | min | median | shape |
+|---|---|---|---|
+| `/bot/Mystic/status` | 2.4 ms | 3.0 ms | consistently fast |
+| `/bot/Mystic/directive` | 2.4 ms | 42.2 ms | **alternates 2.5 ms / 42 ms** |
+| `/bots` | 2.5 ms | 41.9 ms | **alternates** |
+
+Raw sample, consecutive draws: `29.2 44.3 2.4 42.6 3.8 42.2 2.5 42.4 3.0 42.2`.
+There is no middle: a call costs ~3 ms or ~42 ms, never ~20.
+
+**Cause: the mod's tick-loop handoff.** A request either catches the tick thread
+ready (~3 ms) or waits for the next server tick (~42 ms ≈ one 20 Hz tick plus
+overhead). 65% of `directive` calls paid it (26 of 40 samples ≥ 15 ms). It is not
+network cost, not container CPU, and not a runner problem — `status` is served off
+the tick path and never pays it.
+
+**Consequence for the 100 ms bound.** These waits do not amortise. Four calls
+fired back-to-back land in different tick windows and can each pay the wait —
+measured 4-call refresh: **median 100.9 ms, max 129.5 ms, against a 100 ms
+bound.** So the bound as written is unachievable on this path roughly half the
+time, and a naive four-call refresh would intermittently trip the timeout and
+silently fall back to the planner. That is the false-pass failure this milestone
+must not ship.
+
+**Revised design, and it is the cheap one.** The plan originally floated a new
+aggregated `GET /bot/{name}/snapshot` endpoint in the mod. The measurement says
+do **not** add one, because the cost is the *tick wait*, not the number of round
+trips on the wire: a single endpoint that still hops to the tick thread once
+would pay the same ~42 ms and buy almost nothing, while adding surface to the mod.
+
+Two changes to §4.4 instead, both agent-side:
+
+1. **Raise the read bound above one tick wait.** A 100 ms bound sits just under
+   the worst observed 4-call cost. Set `SCRIPT_TIMEOUT` to **300 ms** (well above
+   the 129.5 ms observed max, still far below the 2 s cadence) so a normal slow
+   tick does not masquerade as a failure. The bound exists to stop a *stalled*
+   runner, not to refuse a busy one.
+2. **Cache per tick.** Fetch the four values once per bot per planner iteration,
+   TTL = the 2 s cadence, in `api.py` (agent-only, per the reviewer's ruling), so
+   the refresh cost is paid once rather than per script evaluation.
+
+**This supersedes the "if one snapshot costs more than ~150 ms" branch**, which was
+reasoning about the wrong quantity (it compared against a per-call cost and against
+`deadline_ms`, when the real constraint is the tick wait and the real budget is the
+2 s cadence). Raising the bound and caching is smaller than a mod endpoint and
+addresses the measured cause.
+
+*Reproduce:* bounded Job in `minecraft-test` running the probe against
+`minecraft-test-server...:3100` with `X-Api-Key` from `secret/mod-api-key`,
+40 samples per endpoint. Measurements are from the committed probe script; the
+numbers above are the raw output, not a summary of it.
 
 ---
 
@@ -256,26 +304,34 @@ something it never should have. So step 3 gains a fourth run:
 ## 4. Tasks 4.3 / 4.4 — reachability, bounded wait, fallback
 
 The agent calls `/v1/tick` with a **hard bound**: connect + read timeout of
-**100 ms**. This is not the runner's `deadline_ms` (250 ms) and not the 2 s tick
-cadence — see the table in §1. The agent's bound is the *client-side* one, and it
-must be shorter than what the runner can take, so the agent gives up first and
-falls back rather than waiting on a runner that is already past its own budget.
+**300 ms**, set by the §1 measurement, not assumed. This is not the runner's
+`deadline_ms` (250 ms) and not the 2 s tick cadence — see the table in §1.
 
-**The 100 ms must be passed explicitly, not inherited.** `agent/api.py:33`
+The bound's job is to stop a **stalled** runner, not to refuse a **busy** one.
+The original 100 ms was picked before the measurement and sits *below* the
+observed worst 4-call cost (129.5 ms), so on a normal slow tick it would time out
+and fall back — a silent failure indistinguishable from the runner being down.
+300 ms clears the observed maximum with headroom while staying far below the 2 s
+cadence, so even a fully timed-out script call leaves the planner running.
+
+Because the snapshot is cached per tick (§1), the bound is applied to the cache
+refresh, not to every script evaluation — the common path pays no network at all.
+
+**The bound must be passed explicitly, not inherited.** `agent/api.py:33`
 defines `_post(path, data=None, timeout=5)` — a **5 s** default, sized for
 planner calls that may do real work. Reusing `_post` without an explicit
-`timeout=0.1` would let one slow runner stall a 2 s tick five times over, and it
+`timeout` would let one slow runner stall a 2 s tick five times over, and it
 would do so silently because 5 s is a legal value. The script path therefore
-calls `_post(..., timeout=SCRIPT_TIMEOUT)` where `SCRIPT_TIMEOUT = 0.1`, and
+calls `_post(..., timeout=SCRIPT_TIMEOUT)` where `SCRIPT_TIMEOUT = 0.3`, and
 §7 requires a test that pins it: a unit test asserting the script path passes
-0.1, which fails if someone drops the argument and falls back to the default.
+0.3, which fails if someone drops the argument and falls back to the default.
 
 States and behaviour:
 
 | runner state | detection | bot action |
 |---|---|---|
 | connect refused | immediate (§4.3) | fall back to planner this tick |
-| accepted but silent | read timeout at 100 ms (§4.4) | fall back to planner, log |
+| accepted but silent | read timeout at 300 ms (§4.4) | fall back to planner, log |
 | 5xx / malformed | response check | fall back to planner, log |
 | 200 ok | normal | apply `actions[]` |
 
