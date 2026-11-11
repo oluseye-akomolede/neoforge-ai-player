@@ -411,7 +411,15 @@ idle-with-reason. The planner is never removed, only pre-empted.
 
 ## 6. The first script: where it lives, and the 6.x read path
 
-**Hand-written**, for `Scout`, stored as a file in the agent's config:
+**Hand-written**, for `Scout`, stored in a **ConfigMap** and mounted into the
+agent — not baked into the agent image (review decision 3, `:537`; lead
+condition 2, 11:37Z). An earlier draft said "a file in the agent's config",
+which read as shipped-with-the-image and contradicted that decision:
+
+```
+agent/scripts/scout.js          # the script source  (ConfigMap data key)
+agent/scripts/scout.json        # {"revision": "sha256:…", "game": "minecraft", "bot": "Scout"}
+```
 
 ```
 agent/scripts/scout.js          # the script source
@@ -421,6 +429,60 @@ agent/scripts/scout.json        # {"revision": "sha256:…", "game": "minecraft"
 `revision` is the content hash, computed at load, so the runner's cache key and
 the stored file cannot drift. Changing the script changes the hash, which the
 runner treats as a new revision (contract §2 `script_revision` is required).
+
+**The ConfigMap, concretely.** The live agent Deployment is
+**`aibot-agent-test` in `minecraft-test`**, which currently mounts one volume,
+`agent-data` (PVC), at `/opt/aibot-agent/data`, and takes env from
+`secretRef: agent-config`. The script is added as a **second, additive volume**
+— it replaces nothing.
+
+**Read this before editing `deploy/`.** `deploy/agent-deployment.yaml` is *not*
+what produces the live object, and following it blindly mounts into the wrong
+place: `deploy/kustomization.yaml` sets `namespace: mindcraft` and the manifest
+is named `aibot-agent`, while the deployment serving TEST is
+`minecraft-test/aibot-agent-test`, applied by `kubectl apply` rather than
+kustomize. A separate `mindcraft/aibot-agent` exists and is scaled to zero
+(0/0). The step-2 run plan must therefore either edit the live object's
+last-applied config or state explicitly which file now owns it; treating
+`deploy/` as authoritative without that check would move the mount into a
+namespace the agent does not run in.
+
+```yaml
+# deploy/agent-scripts-configmap.yaml   (new object)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-scripts
+  namespace: minecraft-test
+data:
+  scout.js: |
+    <the script source>
+  scout.json: |
+    {"revision": "sha256:<hash>", "game": "minecraft", "bot": "Scout"}
+```
+
+```yaml
+# minecraft-test/aibot-agent-test   (added to the existing pod spec)
+volumes:
+  - name: agent-scripts
+    configMap:
+      name: agent-scripts
+# ...and on the existing `agent` container:
+volumeMounts:
+  - name: agent-scripts
+    mountPath: /opt/aibot-agent/scripts
+    readOnly: true
+```
+
+Scout's script path in config becomes `/opt/aibot-agent/scripts/scout.js`. Edits
+are a `kubectl apply` of the ConfigMap plus a pod restart — no image build, which
+is the whole reason decision 3 chose this over baking them in. `readOnly: true`
+because nothing in the agent should write its own instructions.
+
+The ConfigMap is **not** in the runner's namespace or Deployment: the script is
+read by the agent, which sends it to the runner in the tick body. The runner
+stays stateless with respect to script storage, and a script edit needs no
+runner change at all.
 
 **How 6.x will read them later, without building 6.x now:** the scripts are
 already plain files with a stable name→path convention and a content hash. The
@@ -443,7 +505,9 @@ observable.
 | `agent/script_client.py` | **new** — `/v1/tick` client, bounded wait, snapshot builder |
 | `agent/agent.py` | `BotRunner._loop`: try script, apply `actions[]`, fall back |
 | `agent/config.py` | runner URL, token env, script path |
-| `agent/scripts/scout.js`, `.json` | **new** — the first script |
+| `deploy/agent-scripts-configmap.yaml` | **new** — holds `scout.js` / `.json` (§6) |
+| `agent/scripts/scout.js`, `.json` | **new** — the source, mirrored into the ConfigMap |
+| `minecraft-test/aibot-agent-test` | **edit** — second volume + readOnly mount at `/opt/aibot-agent/scripts` (see §6 on why not `deploy/`) |
 | `tests/test_script_client.py` | **new** — 4.3/4.4 including accept-and-never-reply |
 | `tests/test_action_binding.py` | **new** — 3.2 refusal, 3.3 parity |
 
@@ -471,10 +535,40 @@ Three pieces of evidence, all required:
 
 The three together rule out every false pass: runner-only fails to show the bot
 acted; game-only fails to show the *script* caused it; agent-only fails to show
-either end. **A negative control is part of the proof:** stop the runner, confirm
-the bot falls back to the planner and logs it with a reason, then restart and
-confirm it returns to the script. Without that control, "it works" is untested
-against the failure it is meant to survive.
+either end. **A negative control is part of the proof:** make the runner
+unreachable **for Scout only**, confirm Scout falls back to the planner and logs
+it with a reason, then restore it and confirm Scout returns to the script.
+Without that control, "it works" is untested against the failure it is meant to
+survive.
+
+**The control must not stop the shared runner** (lead condition, 11:37Z). The
+runner in `minecraft-test` is shared: cardgame calls it from their own test
+account, so stopping it to prove our fallback would break a peer's dependency to
+demonstrate our own resilience — the wrong cost, paid by someone else. The cut
+is therefore **agent-side, on Scout alone**, and the runner keeps serving every
+other caller throughout. An earlier draft of this section said "stop the
+runner"; that is the version that would have done it.
+
+Two agent-side ways to make the runner unreachable for one bot, both purely
+config:
+
+- **Closed port.** Point Scout's runner URL at a port nothing listens on
+  (e.g. `127.0.0.1:1`). Proves the connection-refused path, which is fast and
+  unambiguous.
+- **Accept and never reply.** Point it at a listener that accepts and never
+  answers. Proves the *bounded wait* (4.3), which the closed port does not
+  exercise at all — a refused connection returns immediately and would let a
+  missing timeout pass the test.
+
+Do **both**, because they fail differently: the closed port tests the error
+branch, the silent listener tests the timeout branch. The same
+`tests/test_script_client.py` case covers the second (4.4's
+accept-and-never-reply); the proof on TEST uses whichever the run plan can
+configure without touching the shared Deployment.
+
+Evidence is the same shape as the positive case, and must show all three
+transitions in the agent log: **script → fallback (with reason) → script**. A
+control that shows only "it fell back" does not show it recovered.
 
 ---
 
@@ -483,9 +577,20 @@ against the failure it is meant to survive.
 No data migration and no schema change, so rollback is code-only:
 
 ```
-git revert <this change's commits>       # agent-side only
-kubectl -n minecraft-test rollout undo deploy/aibot-agent
+git revert <this change's commits>                              # agent-side only
+kubectl -n minecraft-test rollout undo deploy/aibot-agent-test
+kubectl -n minecraft-test delete configmap agent-scripts
 ```
+
+The last line matters: `rollout undo` reverts the Deployment to its previous
+pod spec, which no longer references the ConfigMap, but **does not delete the
+ConfigMap itself**. Left behind it is inert, but it is a stale script a later
+reader might mistake for live. Delete it so the rollback leaves no artefact
+claiming to be active.
+
+If the Deployment edit has not been applied yet (the ConfigMap is added but the
+mount is not), deleting the ConfigMap is the whole rollback and `rollout undo`
+is unnecessary.
 
 The runner is **not** removed — it is deployed, verified and independent; the bot
 simply stops calling it and uses the planner. That is a property worth stating:
@@ -520,7 +625,8 @@ Each step's tests run before the next. Gradle/agent tests: `-Xmx2g`
 3. **§6 script storage in the agent image**: scripts ship in the agent image, so
    changing a script needs a rebuild. Acceptable for M2 (one hand-written
    script), but it is the thing that will hurt when 7.1 lands. Worth a ConfigMap
-   now, or defer?
+   now, or defer? — **ANSWERED: ConfigMap now** (below), and §6 has been
+   rewritten to match; it no longer says the script lives in the image.
 
 ---
 
@@ -535,7 +641,12 @@ not carry open items into implementation:
    insufficient — and then as its own change, not folded into M2.
 2. **§3.3 parity: `say` accepted**, with the silence counter-case above.
 3. **§6 script storage: ConfigMap now, not deferred.** Deferring is the
-   expensive choice, because §8's negative control requires stopping and
-   restarting the runner mid-proof; a baked-in script would need a **rebuild**
-   for every re-proof. If a later change does bake scripts in, the rebuild cost
-   must be stated, not left implicit.
+   expensive choice, because re-proving 8.2 means changing the script and
+   running the proof again; a baked-in script would need an **image rebuild**
+   for every re-proof, where a ConfigMap needs an apply and a pod restart. The
+   original rationale here said the control requires "stopping and restarting
+   the runner mid-proof" — that is no longer true, since the lead ruled
+   (11:37Z) that the control must never stop the shared runner and cuts Scout
+   off agent-side instead. The decision stands on the rebuild cost alone. If a
+   later change does bake scripts in, the rebuild cost must be stated, not left
+   implicit.
