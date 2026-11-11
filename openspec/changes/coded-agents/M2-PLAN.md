@@ -455,10 +455,29 @@ to this section, so without a concrete action §8.2 has no observable at all.
   nothing observable. Ruled out by reading the file, not by preference. A
   parity check needs an effect that leaves a trace on both paths.
 - **Not `CHANNEL`.** It takes `target`/`count` (`l3_planner.py:142-146`), which
-  adds a formatting confound on top of the binding. `STORE_ALL` takes neither,
-  so the comparison isolates the binding.
+  adds a formatting confound on top of the binding.
 - **Not `MINE`.** A movement action's parity is confounded by tick timing and
   world state.
+
+**`STORE_ALL` takes a target too — pin the argument form.** An earlier version
+of this section claimed `STORE_ALL` "takes neither", which is false and must
+not be quoted as the reason for choosing it. `StoreAllBehavior.java:63` does
+`if (directive.hasLocation()) targetedContainer = BlockPos.containing(getX(),
+getY(), getZ())`, and `:161` branches on `isStorageBlock(...)`. Both forms are
+real in the planner's own vocabulary: `l3_planner.py:142` pairs `STORE_ALL` with
+`("x","y","z","radius")`, and `skill_author.py:281` posts a bare
+`{"type": "STORE_ALL"}`.
+
+So the parity test **pins the argument form**: both paths post the same
+coordinates for a known storage block, and the assertion is that the POST
+bodies are byte-identical. The confound is therefore controlled rather than
+ignored, at the cost of one fixture detail.
+
+This matters because the comparator at `:1356` fires **before any behaviour
+runs**: a coords-bearing and a coordless `STORE_ALL` produce an identical POST
+body while their effects diverge. The comparator is branch-free *by design*,
+which makes it neutral between paths but blind to argument-form differences —
+so the argument form has to be held constant by the test, not left to chance.
 
 **Observation point: the directive POST response, not a behaviour log line.**
 `HttpApiServer.java:1356` returns `status: accepted` plus `directive.toMap()` on
@@ -669,12 +688,18 @@ Three pieces of evidence, all required:
    script — the same `seq` the runner returned, which ties the request to the
    effect.
 3. **Game-side:** the directive POST response for the subject §3 names —
-   `STORE_ALL` — i.e. `status: accepted` with `directive.toMap()` carrying
-   type `STORE_ALL`, identical to what the planner path produces for the same
-   action. Deliberately *not* a behaviour log line: `HttpApiServer.java:1356`
-   emits this from the same handler on both paths, so the evidence does not
-   depend on whether the behaviour happens to log. The absence of that POST is
-   the silence case's evidence.
+   `STORE_ALL`, **with the coordinates §3 pins** — i.e. `status: accepted` with
+   `directive.toMap()` carrying type `STORE_ALL` and the same `x`/`y`/`z` the
+   planner path sends for the same action, byte-identical between paths.
+   Deliberately *not* a behaviour log line: `HttpApiServer.java:1356` emits this
+   from the same handler on both paths, so the evidence does not depend on
+   whether the behaviour happens to log. The absence of that POST is the
+   silence case's evidence.
+
+   The coordinates are part of the evidence, not incidental: `:1356` fires
+   before the behaviour runs, so a coordless and a coords-bearing `STORE_ALL`
+   give the same POST body but different effects. Holding the argument form
+   constant is what keeps this comparator honest.
 
 The three together rule out every false pass: runner-only fails to show the bot
 acted; game-only fails to show the *script* caused it; agent-only fails to show
