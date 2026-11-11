@@ -151,11 +151,26 @@ Three ways to resolve it, and why one is chosen:
 | (c) mod exposes its enum over HTTP | **rejected** — §1 argues against new mod endpoints in M2 |
 
 **Implementation:** a small generator reads `DirectiveType.java` and emits
-`SCRIPT_DIRECTIVE_KINDS` into a generated Python module that is committed. A test
-regenerates from the Java source and asserts the committed module matches, so
-adding an enum member without regenerating fails the suite rather than silently
-narrowing what scripts may call. The generator parses the enum's member list, not
-the file's prose.
+`SCRIPT_DIRECTIVE_KINDS` into a generated Python module that is committed.
+
+The parser can be exact rather than heuristic, and that is what makes this safe:
+`DirectiveType.java` is `public enum DirectiveType {`, then 37 bare uppercase,
+comma-terminated names, then `}` — no constructor arguments, no method bodies, no
+trailing semicolon, nothing after the closing brace. A line-oriented parser over
+that range matches the whole enum.
+
+**The test asserts two independent things**, because either alone can pass on a
+broken parser:
+
+1. **Byte comparison:** regenerate to a temp file and diff against the committed
+   module.
+2. **Independent count:** assert the module's member count equals the number of
+   lines in the Java file matching the member pattern.
+
+Check 1 alone is not enough: a parser that silently matched only, say, the first
+30 names would emit a short module that still diffs clean against itself. Two
+independent readings of the same source is what makes drift loud rather than
+silent.
 
 ### SKILL is accepted by the set but not satisfiable as a bare directive
 
@@ -164,6 +179,12 @@ its name — `agent/agent.py:3849` dispatches it as `set_directive(b, "SKILL",
 target=sid, extra=...)` with a skill id. And `SkillValidator.java:59` rejects
 `SKILL` as a directive leaf outright ("a directive leaf must not be SKILL — use a
 skill-ref node"), which is precisely why it is absent from the frozenset.
+
+**Membership means "the mod accepts this kind", not "callable with a name alone".**
+Per-kind payload requirements — the `target=sid` that `SKILL` needs, a `block` for
+`MINE` — are enforced at dispatch, where the payload is visible, not at set
+membership, where it is not. Stated explicitly so a future reader does not
+optimise on the set by assuming membership implies callability.
 
 A flat name set cannot express "valid only with a resolvable id". Therefore:
 
