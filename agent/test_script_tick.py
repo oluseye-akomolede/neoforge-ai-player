@@ -19,7 +19,12 @@ import re
 import unittest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_RUNNER_MAIN = "/home/sigmastrain/minecraft/agent-script-runner/src/main.js"
+# The file that VALIDATES the request, which is where the contract is decided.
+# This pointed at src/main.js, which holds handleTick -- the handler that runs
+# only after a request was accepted. It cannot see the gate that rejects one, so
+# a body missing `contract_version` passed every test here and then 409'd on
+# every real tick. Read the gate, not the handler behind it.
+_RUNNER_SERVER = "/home/sigmastrain/minecraft/agent-script-runner/src/server.js"
 
 
 def _load(name, filename):
@@ -87,8 +92,12 @@ class RequestShapeTest(unittest.TestCase):
         ScriptTick(api, "Scout", "api.log('hi')", post=_capture).tick()
         self.assertEqual(captured["path"], "/v1/tick")
         data = captured["data"]
-        for field in ("game_id", "bot_id", "script_revision", "source",
-                      "snapshot", "memory"):
+        # The list this test carries is a copy of the contract, so it is only as
+        # good as the copy -- the version without `contract_version` here agreed
+        # with a sender that also omitted it, and both were wrong together. The
+        # source-anchored test below is what keeps this list honest.
+        for field in ("contract_version", "game_id", "bot_id",
+                      "script_revision", "source", "snapshot", "memory"):
             self.assertIn(field, data, f"runner contract requires {field}")
         self.assertIsInstance(data["game_id"], str)
         self.assertIsInstance(data["bot_id"], str)
@@ -99,19 +108,49 @@ class RequestShapeTest(unittest.TestCase):
         for field in ("health", "position", "inventory"):
             self.assertIn(field, data["snapshot"])
 
-    def test_body_matches_the_runner_source_not_just_this_file(self):
-        # Read the runner's handler and confirm it really destructures these
-        # names. Pins the copy to the consumer, the same guard action_binding
-        # uses for its vocabulary.
-        if not os.path.exists(_RUNNER_MAIN):
-            self.skipTest("runner source not checked out here")
-        with open(_RUNNER_MAIN, encoding="utf-8") as f:
+    def test_every_field_the_runner_gates_on_is_present(self):
+        # The runner's pre-routing gate, read from source. Each entry here is a
+        # condition that REFUSES the request before handleTick is reached:
+        #
+        #   body?.contract_version !== 1   -> 409, every path
+        #   body?.game_id !== tokenGame    -> 401
+        #
+        # A body missing any of them never reaches the handler the old version
+        # of this test inspected. That is precisely how `contract_version` came
+        # to be missing from a request every test called correct.
+        if not os.path.exists(_RUNNER_SERVER):
+            self.fail(f"runner source not at {_RUNNER_SERVER}; this test cannot "
+                      "verify the contract without it")
+        with open(_RUNNER_SERVER, encoding="utf-8") as f:
             src = f.read()
-        m = re.search(r"handleTick\(body\)\s*\{\s*const \{([^}]*)\}", src)
-        self.assertIsNotNone(m, "could not read handleTick's destructuring")
-        required = {n.strip().split(":")[0].strip() for n in m.group(1).split(",")}
-        self.assertTrue({"game_id", "bot_id", "script_revision"} <= required,
-                        f"runner no longer requires these: {required}")
+        gates = set(re.findall(r"body\??\.(\w+)", src))
+        self.assertTrue(gates, "could not read any body.<field> gate from the runner")
+
+        captured = {}
+
+        def _capture(p, d=None, **kw):
+            captured.update(d or {})
+            return {"contract_version": 1, "status": "ok", "actions": []}
+
+        ScriptTick(_FakeApi(), "Scout", "api.log('hi')", post=_capture).tick()
+        missing = sorted(f for f in gates if f not in captured)
+        self.assertEqual(missing, [],
+                         f"runner gates on {sorted(gates)} but the tick body "
+                         f"omits {missing}; every such tick is refused before "
+                         "it is handled")
+
+    def test_the_body_sends_contract_version_one(self):
+        # Called out separately because it is the field that was missing and
+        # because the value matters, not just its presence: the runner refuses
+        # anything that is not exactly 1.
+        captured = {}
+
+        def _capture(p, d=None, **kw):
+            captured.update(d or {})
+            return {"contract_version": 1, "status": "ok", "actions": []}
+
+        ScriptTick(_FakeApi(), "Scout", "api.log('hi')", post=_capture).tick()
+        self.assertEqual(captured.get("contract_version"), 1)
 
     def test_the_bound_is_passed_explicitly(self):
         captured = {}
@@ -153,12 +192,18 @@ class RequestShapeTest(unittest.TestCase):
 
         import script_tick
         import config
-        original = config.SCRIPT_RUNNER_URL
+        original_url = config.SCRIPT_RUNNER_URL
+        original_token = config.RUNNER_TOKEN
         config.SCRIPT_RUNNER_URL = "http://runner.example:8080/"
+        # A token too, because a transport without one is deliberately None now:
+        # the runner 401s every unauthenticated call, so a transport that would
+        # always be refused is misconfiguration, not a runner.
+        config.RUNNER_TOKEN = "test-token-not-real"
         try:
             transport = script_tick._default_transport()
         finally:
-            config.SCRIPT_RUNNER_URL = original
+            config.SCRIPT_RUNNER_URL = original_url
+            config.RUNNER_TOKEN = original_token
         self.assertIsNotNone(transport)
         # Bound the URL it will hit rather than trusting the string.
         seen["src"] = __import__("inspect").getsource(script_tick._default_transport)

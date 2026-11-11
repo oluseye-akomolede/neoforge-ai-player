@@ -134,12 +134,22 @@ class ScriptTick:
             return False, [], [], "no script"
 
         envelope, snap_errors = self._build_snapshot()
-        # The body is the runner's §2.1 tick request, read from its handler
-        # (agent-script-runner src/main.js:167-216), not invented here:
-        # `game_id`, `bot_id` and `script_revision` are required strings;
-        # `source` is the script (cached by revision); the script's input goes
-        # under `snapshot`, NOT flattened into the tick object.
+        # The body is the runner's §2.1 tick request, read from its actual
+        # validation (agent-script-runner src/server.js:151-164), not invented
+        # here. That function is the authority and runs BEFORE routing:
+        #
+        #   contract_version !== 1  -> 409, for every path
+        #   game_id !== token's game -> 401, wrong_game_token
+        #
+        # `contract_version` was missing from the first version of this body and
+        # every tick was refused with a 409 that read, in this agent's log, as
+        # an ordinary runner failure -- the script fired and was turned away at
+        # the door, and the planner quietly took the tick. The old comment here
+        # cited `src/main.js:167-216`, a file that does not do this check, which
+        # is how a required field came to be absent from the request that sends
+        # it. Cite the code that validates, not the code that looks related.
         body = {
+            "contract_version": 1,
             "game_id": self._game_id,
             "bot_id": self._bot,
             "script_revision": self._revision,
