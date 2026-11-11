@@ -49,6 +49,14 @@ Three sweeps, all by sha256 fingerprint of the **decoded** value:
    `agent-script-runner`). Without that control a zero is indistinguishable
    from a query that cannot match at all, and neither of the other two sweeps
    exercises this path.
+
+   **What the control does *not* establish (reviewer's residual, recorded so a
+   future reader does not over-read it):** `NODE_OPTIONS` is a plain string,
+   whereas the target is a 40-char value that in Secrets/ConfigMaps is stored
+   base64-encoded. So the control proves the *extraction path* — the part that
+   was actually at risk of missing inline literals — and not the base64-decode
+   step. If this sweep is ever extended to encoded forms, that step needs its
+   own control rather than inheriting this one's confidence.
 3. **Every namespace in the cluster**, Secrets and ConfigMaps — the same 2 hits
    and nothing else. This is the sweep that turns "two holders in the test
    namespace" into "there is no third holder anywhere", and it independently
