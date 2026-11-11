@@ -132,6 +132,11 @@ confirms none remain.
 
 ## 5. Rollback (only if verify fails)
 
+**Not run: verify passed.** These stay unticked deliberately — they are a path that
+was not needed, not work left undone. The lead has ruled the path out entirely:
+the backup holds the leaked key, so restoring it would put a compromised value
+back into service. Fix forward with a fresh key if anything breaks.
+
 - [ ] 5.1 Re-apply the backup file over both secrets.
 - [ ] 5.2 Confirm the fingerprint returns to `902a001fdc05`.
 - [ ] 5.3 Restart the same three consumers.
@@ -139,7 +144,7 @@ confirms none remain.
 
 ## 6. Close out
 
-- [ ] 6.1 Archive this change once verified.
-- [ ] 6.2 Delete the backup file only after the lead confirms they no longer
+- [x] 6.1 Archive this change once verified.
+- [x] 6.2 Delete the backup file only after the lead confirms they no longer
       want the rollback path. Deleting it while the old key may still be in
       use would be the one cleanup that cannot be undone.
