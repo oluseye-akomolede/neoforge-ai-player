@@ -159,3 +159,58 @@ the ground on which `MINE` and `PATROL` were excluded. It does not affect this
 comparator because §8.2 compares the POST response, emitted at `:1356` before
 any behaviour runs. Worth knowing that the exemption is positional, not
 intrinsic.
+
+---
+
+## 5. Follow-up at `bcd2447` — gap closed, and a THIRD correction to my own evidence
+
+The gap is closed correctly. §8.2 now says the test reads `STORE_ALL` and its
+`x`/`y`/`z` out of the runner's `actions[]`, names the harness-writes-both-bodies
+failure mode, and records the positional-not-intrinsic exemption. I verified the
+`set_directive` claim too — `agent/api.py:437` really is
+`if x is not None and y is not None and z is not None:`, all three or none.
+
+**But I checked the wrong thing twice, and this time it is the evidence itself.**
+I have twice cited `l3_planner.py:142-143` as showing "both forms are real in the
+planner's own vocabulary". Read properly, it shows nothing of the kind:
+
+```
+139  _SEED_SKILLS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+142    "search_and_loot":   (("AREA_LOOT", "STORE_ALL"), ("x","y","z","radius")),
+143    "harvest_and_store": (("FARM", "STORE_ALL"),      ("crop","count")),
+```
+
+The second tuple is the parameter list for **the whole two-step signature**, and
+`_build_skill_extra(param_names, directives)` (`:270-272`) harvests those names
+from *all* directives in the sequence and folds them into a `SKILL` extra. So
+`("x","y","z","radius")` are `AREA_LOOT`'s parameters, and `("crop","count")` are
+`FARM`'s. **`STORE_ALL` receives no parameters in either entry.** On the planner
+path, `STORE_ALL` appears to be coordless; the only place a coords-bearing
+`STORE_ALL` demonstrably exists is `skill_author.py:281`-adjacent authoring.
+
+**Why it matters, and why it does not overturn the ruling.** The parity test
+still works — but its force now rests on the *script's* choice of coordinates
+raising a form the planner does not itself emit for `STORE_ALL`, not on both
+paths naturally producing the same form. That makes the pinned-coordinates
+assertion **more** load-bearing than the plan currently says: it is not holding a
+natural argument form constant, it is constructing one the planner path may not
+naturally have.
+
+**What I am not claiming:** that the planner can never emit a coords-bearing
+`STORE_ALL`. I have shown the seed table does not attach coordinates to it and
+that the skill-collapse path folds params upward. A model emitting a raw
+`{"kind":"STORE_ALL","x":…}` outside a seed match would still carry them. I did
+not trace that path and am not asserting its absence.
+
+**Recommendation:** before step 4 writes the test, confirm from a real planner
+run which form the planner actually emits for `STORE_ALL`, and write the §8.2
+expectation from that. If it emits coordless, pinning coordinates tests the
+script against a form the planner does not produce, and the honest comparison is
+either a different subject or an explicitly-constructed planner call.
+
+**Method note on myself:** this is the third time in this thread I have ruled on
+a name by reading the vocabulary that *references* it rather than the code that
+*consumes* it. The `l3_planner` tuple looked like per-directive arguments; it is
+a skill signature. Reading the consumer (`_build_skill_extra`) is what settles it,
+and I should have done that the first time rather than after the builder had
+already applied the reason twice.
