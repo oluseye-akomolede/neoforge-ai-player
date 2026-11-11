@@ -1226,7 +1226,7 @@ to the planner. This does not endanger the step-4 run, whose script sends
 second script exists.
 
 **Row 1's revision is computed, not read.** `823920fd7277b98b` is
-`sha256(agent/scripts/scout.js)[:16]` at `d75f30b` Recompute it against the image that actually ships; if the script
+`sha256(agent/scripts/scout.js)[:16]` at `85f6809`. Recompute it against the image that actually ships; if the script
 changed, this value changes and a stale one in this table is the whole finding.
 
 Item 4 is the one that makes 1–3 mean anything.
