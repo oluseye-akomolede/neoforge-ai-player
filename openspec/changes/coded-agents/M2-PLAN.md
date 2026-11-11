@@ -709,7 +709,7 @@ data:
 earlier draft of this section showed one. The script's revision is not a file
 the ConfigMap carries: `_revision_of` (`script_tick.py:58`) hashes the JS the
 agent holds and sends `script_revision = sha256(source)[:16]` on the wire, which
-for `scout.js` at `d75f30b` is `823920fd7277b98b`. Whoever executes §8.3.5 row 2
+for `scout.js` at `85f6809` is `823920fd7277b98b`. Whoever executes §8.3.5 row 2
 must compare against **that computed value**, not read a revision from the
 ConfigMap — there is nothing there to read.
 
@@ -1151,7 +1151,7 @@ revision is hashed from the script body, not carried in the ConfigMap.
 | # | Evidence | Failure looks like |
 |---|---|---|
 | 1 | **Runner** log: the tick carries `bot_id: "Scout"`, `script_revision: 823920fd7277b98b`, non-empty `actions` | no runner line at all → the tick never left the agent |
-| 2 | **Agent** log: `[Scout/script] dispatch: STORE_ALL {...}` followed by a `COMPLETED STORE_ALL` return, and **no** `[Scout/script] not executed:` line | the `dispatch:` line never appears → the action was refused before dispatch; a `not executed:` line → the orchestrator returned FAILED and that action did not run |
+| 2 | **Agent** log: `[Scout/script] dispatch: STORE_ALL {...}` present, and **no** `[Scout/script] not executed:` line (see note: the success return is **not** in the agent log) | the `dispatch:` line never appears → the action was refused before dispatch; a `not executed:` line → the orchestrator returned FAILED and that action did not run |
 | 3 | Mod POST response: `status: accepted`, `STORE_ALL`, **coordless** | coordinates present → §3's pin is wrong, record it |
 | 4 | Run 1 produces no script-path POST | a POST with no script → something else is emitting it |
 | 5 | **The in-flight guard fired**: a tick with a directive already running emits **no** runner tick at all for that bot, and the agent log shows neither `dispatch:` nor `not executed:` | a runner tick appears → the guard did not fire; a `not executed:` line → the guard did not fire and the action was refused downstream instead |
@@ -1173,6 +1173,20 @@ downstream as `already-has-a-directive`, and the run would have shown a
 `not executed:` line — a refusal, which reads as the system working, rather than
 a guard that never fired. §1's third scenario was unmet and the evidence could
 not have shown it.
+
+**Why row 2 does not require a success line** (reviewer, 13:11Z; verified here).
+`_run_script_tick` prints the dispatch result **only when it starts with
+`FAILED`** (`agent.py:2647`); the success string is pushed to telemetry
+(`agent.py:1025` → `telemetry.py:37`, a POST to `MOD_API_URL/telemetry/event` on
+a daemon thread) and never reaches the agent log. Grepping the suites for both
+strings returns six `dispatch:` lines and zero `COMPLETED`. So an operator
+running the original row 2 would have found `dispatch:` and no `COMPLETED`,
+concluded the action was refused, and recorded a failed run against working
+code. The two surviving clauses already separate the three cases: `dispatch:`
+present distinguishes ran from refused-before-dispatch, and a `not executed:`
+line distinguishes dispatched-then-FAILED. If the success return is wanted, it
+is telemetry, and §8.3 names no telemetry reader — so it is left out rather
+than cited from the wrong surface.
 
 **Why row 6 does not require a log line** (reviewer, 13:10Z; verified here). The
 script does produce `scout: health N too low, holding`, but `api.log` is not an
