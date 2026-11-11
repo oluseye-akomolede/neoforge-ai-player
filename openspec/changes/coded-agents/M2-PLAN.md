@@ -1062,10 +1062,10 @@ so "Scout only" has to be established per bot, not asserted:
 
    **The new image carries far more than M2, and that must be said plainly**
    (reviewer, 12:53Z). The deployed image is `d45751d` (2026-11-04 04:39Z);
-   `HEAD` is **153 commits** ahead of it at `bf94724`. Those commits contain work
+   `HEAD` is **167 commits** ahead of it at the run image's `3887e79`. Those commits contain work
    by other seats and other tasks, not only `coded-agents`. Two consequences:
 
-   - **Do not describe the image step as "shipping M2".** It ships 153 commits,
+   - **Do not describe the image step as "shipping M2".** It ships 167 commits,
      of which M2 is a subset. If the run goes wrong, the cause is not
      automatically M2, and the rollback returns the *whole* image to
      `d45751d`, not just the script path.
@@ -1076,12 +1076,23 @@ so "Scout only" has to be established per bot, not asserted:
      were part of M2; it is not M2, and it does change what the new image
      contains for a misconfigured pod. It stays safe (the env is unset here), but
      it is a passenger, not a deliverable.
-1. **ConfigMap** — apply `deploy/agent-scripts.yaml` (already generated from
-   `agent/scripts/scout.js`; the drift test keeps the two equal).
+1. **ConfigMap** — apply `deploy/agent-scripts.yaml`. It carries **two** keys:
+   `scout.js` (generated from `agent/scripts/scout.js`) and `bindings.json`
+   (generated from `agent/scripts/bindings.json`). The drift test keeps both
+   equal to their sources. A ConfigMap with only `scout.js` is the 13:34Z
+   failure in §8.3.1a: the mount exists, nothing binds, and no bot runs a script.
 2. **Mount + env** — add to the container:
    - `volumeMounts: [{name: scripts, mountPath: /srv/aibot-scripts, readOnly: true}]`
    - `volumes: [{name: scripts, configMap: {name: agent-scripts}}]`
    - `env: [{name: SCRIPT_RUNNER_URL, value: "http://agent-script-runner.minecraft-test.svc.cluster.local:8080"}]`
+   - `env: [{name: SCRIPTS_DIR, value: "/srv/aibot-scripts"}]` — **required**.
+     Unset, the resolver used the image-local copy; the C1 fix (01e9eaf) makes
+     that a loud refusal rather than a silent bind, but the scripts still do not
+     run. Both the mount and this variable are needed, and neither is enough alone.
+   - `env: [{name: RUNNER_TOKEN, valueFrom: {secretKeyRef: {name: agent-script-runner-token, key: minecraft}}}]`
+     — the runner refuses every contract call without it. Found by running, not
+     by reading: the code has no token at all before `f17fc10`, so the first
+     real tick returned 409 and the agent fell back. Never print this value.
    - `env: [{name: PROFILES_DIR, value: "/srv/aibot-profiles"}]`
    - the `/srv/aibot-profiles` initContainer seed described in part 3.
 
@@ -1096,114 +1107,63 @@ so "Scout only" has to be established per bot, not asserted:
 
    Consequently Scout's `script` path — in part 3 and in §6 above — is
    `/srv/aibot-scripts/scout.js`.
-3. **Scout's profile only** — add `"script": "/srv/aibot-scripts/scout.js"`.
+3. **Bindings, not a profile key** — `agent/scripts/bindings.json` maps a bot
+   name to a script file: `{"Scout": "scout.js"}`. With `SCRIPTS_DIR` set, the
+   resolver reads that map and binds only the bots named in it. Every other bot
+   resolves to no script and keeps the planner exactly as today.
 
-   **The profile was not editable where the plan first said it was** (reviewer,
-   12:53Z; verified live at 12:5xZ). Three facts settle it:
+   **Why not `"script"` in Scout's profile.** That was the original design and it
+   failed twice on TEST (2026-11-11, §8.3.1a):
 
-   - `load_profiles()` (`agent.py:3286`) read `os.path.dirname(__file__)/profiles`
-     — the **image** path, `/opt/aibot-agent/profiles/`. That is where all five
-     profiles are: `axiom forge mystic scout tiller .json`.
-   - The `agent-data` PVC mounts at `/opt/aibot-agent/data` **only**, and
-     `/opt/aibot-agent/data/profiles/` **does not exist** on the pod (verified:
-     `ls` → No such file or directory).
-   - So the earlier "edit the PVC copy" step was a no-op: nothing the loader
-     reads would have changed, and the run would have proved nothing.
+   - Profiles live in the **image** (`os.path.dirname(__file__)/profiles`). The
+     `agent-data` PVC mounts `/opt/aibot-agent/data` only, and
+     `/opt/aibot-agent/data/profiles/` does not exist, so the "edit the PVC
+     copy" step the plan once had was a no-op — nothing the loader reads would
+     have changed.
+   - The image copy is read-only to a running pod, so the fix was an `emptyDir`
+     at `/srv/aibot-profiles` seeded by an initContainer. But an `emptyDir`
+     survives a container restart and not a pod recreation, so **any restart
+     silently reverted the edit** and the run became a test of the stock
+     profile. The `cp -an` seed kept the first edit but not the second.
 
-   The image copy is read-only to a running pod, so the fix is a **writable
-   profile directory seeded from the image**:
-
-   - `load_profiles()` now honours **`PROFILES_DIR`** (unset = the image path,
-     i.e. unchanged behaviour; prod sets nothing).
-   - The Deployment mounts an `emptyDir` at `/srv/aibot-profiles`, and an
-     initContainer seeds it from the image's `profiles/` before the agent
-     starts.
-   - `PROFILES_DIR=/srv/aibot-profiles` is set in the same env block as
-     `SCRIPT_RUNNER_URL` — i.e. in step 2, while no profile names a script, so
-     the restart still changes no behaviour.
-
-   **The seed MUST skip files that already exist.** An `emptyDir` survives a
-   container restart but not pod recreation, so a recreate re-seeds from the
-   image — which would silently revert step 4's edit to Scout's profile and
-   turn the run into a test of the stock profile. The `cp -n` below is the
-   whole guard; without it, "restart the pod" and "keep the edited profile" are
-   contradictory instructions, and the run would prove nothing while looking
-   successful. The manifest (add to `deploy/agent-deployment.yaml` in step 2):
-
-   ```yaml
-   spec:
-     template:
-       spec:
-         initContainers:
-           - name: seed-profiles
-             image: <same image as the agent container>
-             command: ["sh", "-c", "cp -an /opt/aibot-agent/profiles/. /srv/aibot-profiles/"]
-             volumeMounts:
-               - {name: aibot-profiles, mountPath: /srv/aibot-profiles}
-         volumes:
-           - name: aibot-profiles
-             emptyDir: {}
-   ```
-
-   `cp -an` = no-clobber + preserve attributes. Verified after rollout:
-   `kubectl -n minecraft-test exec <pod> -- ls -l /srv/aibot-profiles/` shows the
-   same five profiles, and re-applying the Deployment does **not** change
-   Scout's file's sha256.
-
-   Only after that does editing Scout's profile mean anything. Held to the
-   lead's three conditions (12:46Z):
-
-   **(i) Copy the original off the pod first.** Write it to
-   `evidence/step4-scout-profile.before.json` in the repo and commit it. Not to
-   `/tmp`: the whole point is that the original survives this seat, this pod and
-   this session. The copy is the rollback's source of truth.
-
-   ```
-   kubectl -n minecraft-test exec deploy/aibot-agent-test -c agent -- \
-       cat /srv/aibot-profiles/scout.json > evidence/step4-scout-profile.before.json
-   sha256sum evidence/step4-scout-profile.before.json     # record it on the row
-   ```
-
-   Read back what landed (`wc -c`, and that it parses) before editing anything: a
-   failed redirect leaves an empty file, and an empty "backup" of a profile is
-   worse than none.
-
-   **(ii) Commit the edited text as evidence.** `evidence/step4-scout-profile.after.json`,
-   in the same commit as its diff, so the change is reviewable from the repo and
-   not only from a pod that will be replaced.
-
-   **(iii) The rollback restores that file** — not "re-edit the key out". See §9.
+   Bindings remove the problem instead of managing it: the map is a ConfigMap
+   key, versioned in the repo, applied and rolled back like everything else. No
+   profile is edited, so nothing is lost on a restart. `PROFILES_DIR` and the
+   initContainer seed remain in the plan (parts 2 and 3 of the manifest) because
+   they are already deployed and harmless, but **no run step depends on them**.
 
 ### 8.3.3 Order, and why
 
-1. Apply the ConfigMap. Nothing consumes it yet — safe on its own.
-2. Patch the Deployment (mount + env). The new pod has the script available but
-   no profile names it, so script mode is still off: **the restart changes no
-   behaviour**. This is the deliberate point of the order — the restart's risk is
-   paid at a moment when the feature is provably inert.
-3. Confirm 1/1 and that the pod has the file (`cat /srv/aibot-scripts/scout.js`).
-4. **Copy Scout's profile off the pod and commit it** (§8.3.2 part 3 (i)) — this
-   happens *before* the edit, and the edit does not proceed if the copy is empty
-   or does not parse. Then write the edited profile to
-   `/srv/aibot-profiles/scout.json` **in the pod** and restart the pod so the
-   agent re-reads it at startup (state which was done). A restart is safe here
-   only because the initContainer seed is `cp -an` — no-clobber — so it cannot
-   overwrite the edit with the image's stock profile. Verify that after the
-   restart: the file's sha256 must still be the edited one, not the image's.
-   Commit the edited text (§8.3.2 part 3 (ii)).
-5. **Control first, then the real run** (§8.3.4).
+1. Apply the ConfigMap **without `bindings.json`** — i.e. only `scout.js` — and
+   patch the Deployment (image + mount + env incl. `SCRIPTS_DIR` and the token).
+   With no bindings map, `SCRIPTS_DIR` points at a directory with no map in it,
+   so nothing binds and script mode is off: **the restart changes no behaviour**.
+   The mount, `SCRIPTS_DIR` and the token are all present and provably inert, so
+   the restart's risk is paid at a moment when the feature cannot act.
+2. Confirm 1/1, that `scout.js` is in the mounted dir, and — the check that
+   matters — that the resolver binds **nobody**:
+   `python3 -c 'import agent; print(agent._bound_script_path("Scout"))'` → `None`.
+3. **Run 1, the control** (§8.3.4). The planner handles the goal; the runner
+   must see no tick.
+4. Add `bindings.json` to the ConfigMap and restart. With the map present the
+   resolver binds `Scout` only; every other bot still returns `None`.
+5. **Run 2, the real run** (§8.3.4). Same goal, same everything else.
 
 ### 8.3.4 The negative control
 
 The proof is worthless without one: a bot that happens to store something while
 the script is loaded proves nothing. Both halves are required, in this order.
 
-- **Run 1 (control):** Scout's profile *without* `"script"`. Drive the same goal
-  and record whether any `STORE_ALL` POST reaches the mod. Expected: none from
-  the script path (the planner may still emit one — that is the baseline to
-  compare against, not a failure).
-- **Run 2 (script):** same goal, `"script"` added. Record the runner's action,
-  the agent's applied `seq`, and the mod's POST response.
+- **Run 1 (control):** bindings absent, so no bot runs a script. Drive the same
+  goal and record whether any `STORE_ALL` POST reaches the mod. Expected: none
+  from the script path (the planner may still emit one — that is the baseline
+  to compare against, not a failure).
+- **Run 2 (script):** same goal, `bindings.json` present and `SCRIPTS_DIR` set.
+  Record the runner's action, the agent's applied `seq`, and the mod's POST
+  response. **Confirm first that the two runs differ in the log**: run 1 must
+  show no script line at all, run 2 must show the tick reaching the runner. If
+  both show none, the comparison is meaningless and the run is void — that is
+  exactly what happened at 13:34Z (§8.3.1a).
 
 The control must **never stop the runner** (lead, 11:37Z) and must cut Scout off
 agent-side only — the shared runner serves other work.
@@ -1217,6 +1177,10 @@ player's line takes:
 kubectl exec -n minecraft-test deploy/aibot-agent-test -c agent -- \
   python3 -c 'import api; print(api.inject_chat("Scout","OperatorTest","Scout, please store all your items in the nearby chest."))'
 ```
+
+`inject_chat` posts to the **mod** API and needs the mod's key; in-pod `api`
+already holds it (`api.API_KEY`), so run it inside the container as above and do
+not put the key on a command line. Read it from the module, never print it.
 
 The message lands in Scout's chat inbox, `_chat_poll_loop` drains it, and
 `_maybe_plan` routes it to the L3 orchestrator (it logs
@@ -1378,8 +1342,8 @@ Item 4 is the one that makes 1–3 mean anything.
   `agent/` has no `__init__.py`, so `unittest agent.test_x` resolves `agent` to
   `agent.py`. A CI runner invoking from the root would fail; the run plan says
   `agent/` explicitly for that reason.
-- **Profiles are pod-local**, not in git: the step-3 edit is not recoverable from
-  a checkout. Record the exact file edited and its before/after `script` key.
+- **The script map is a ConfigMap**, so it rolls back and reviews like any other
+  manifest. Nothing the run depends on lives only on a pod.
 
 ### 8.3.7 What this plan does NOT claim
 
@@ -1403,23 +1367,33 @@ POD=$(kubectl -n minecraft-test get pod -l app=aibot-agent,tier=test -o jsonpath
 echo "$POD"                                                      # must be non-empty before continuing
 
 git revert <this change's commits>                               # agent-side only
-# -c agent is required once the initContainer makes this a two-container pod:
-# without it kubectl cp picks a container and can pick the seed one, silently
-# copying to a path the agent never reads.
-kubectl -n minecraft-test cp -c agent "$POD:/srv/aibot-profiles/scout.json" ./scout.json.current   # keep what is there now
-# restore the original profile captured BEFORE the edit (§8.3.2 part 3 (i)):
-kubectl -n minecraft-test cp -c agent ./evidence/step4-scout-profile.before.json "$POD:/srv/aibot-profiles/scout.json"
+# rollout undo first: it restores the Deployment's previous pod spec, which has
+# neither the scripts mount nor SCRIPTS_DIR, so the new pod cannot run a script
+# even while the ConfigMap still exists.
 kubectl -n minecraft-test rollout undo deploy/aibot-agent-test
+kubectl -n minecraft-test rollout status deploy/aibot-agent-test --timeout=180s
 kubectl -n minecraft-test delete configmap agent-scripts
 
-# verify the restore landed, not just that cp exited 0:
-kubectl -n minecraft-test exec "$POD" -c agent -- sha256sum /srv/aibot-profiles/scout.json
-git show HEAD~0:evidence/step4-scout-profile.before.json | sha256sum   # compare the two
+# verify the restore landed, not just that the commands exited 0:
+kubectl -n minecraft-test get deploy aibot-agent-test \
+  -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}{.spec.template.spec.containers[0].env[*].name}'
+# expect: the rollback digest, and exactly [NN_COMPRESSOR_URL]
+kubectl -n minecraft-test get cm agent-scripts                          # expect NotFound
+kubectl -n minecraft-test logs deploy/aibot-agent-test -c agent --tail=200 | grep -c '\[.*/script\]'   # expect 0
 ```
 
-Order matters: **take the current profile off the pod before restoring**, so the
-failed state is preserved for diagnosis too — restoring without that copy
-destroys the only record of what went wrong.
+**No profile file is restored, because no profile is edited.** An earlier
+version of this section copied `evidence/step4-scout-profile.before.json` back
+over `/srv/aibot-profiles/scout.json`. That step is now deleted: with bindings
+driving the run, the profile never changed, so the copy would exit 0 while
+restoring a file nothing reads — the "silent no-op that reports success" shape
+this rig has been bitten by before. The profile evidence files stay in the repo
+as history of the abandoned design.
+
+The rollback was exercised for real at 13:34Z (§8.3.1a) and the three commands
+above are that sequence: `rollout undo`-equivalent patch, ConfigMap delete,
+then the three reads. It left the deployment on the rollback digest with
+`env=[NN_COMPRESSOR_URL]`, 1/1 Ready, five bots ticking and zero script lines.
 
 The `rollout undo` line matters for the same reason the ConfigMap line does:
 `rollout undo` reverts the Deployment to its previous pod spec, which no longer
