@@ -40,12 +40,31 @@ false pass.
 |---|---|---|---|
 | 1 | Secret `minecraft-rcon` | key `password`, 32 bytes | consumed by Deployment env `RCON_PASSWORD` via `secretKeyRef` |
 | 2 | `/data/server.properties` | line `rcon.password` | the server's own runtime copy on the PVC |
+| 3 | `/data/.rcon-cli.env` | key `password` | operator rcon-cli convenience file, 1 line, written 11:57Z today |
+| 4 | `/data/.rcon-cli.yaml` | key `password` | operator rcon-cli convenience file, 1 line, written 11:57Z today |
 
-Both holders match one another by fingerprint (recorded on the row and printed
-at execution time, never here). Nothing else assigns `rcon.password`: the 400+
-`.bak` and mod-config files on the volume were scanned **by value**, not by
-name, and none match. That scan includes the `.bak` files — they are part of
-the scanned set in this section, not a separate claim in the table.
+All four match one another by value fingerprint (recorded on the row and printed
+at execution time, never here).
+
+**Holders 3 and 4 were missed by the first version of this section, and that
+version was reviewed and PASSED.** It reported two holders and stated that
+"nothing else assigns `rcon.password`". The scan that supported that claim
+looked at `.bak` and mod-config files **by name and extension** — and the two
+missers are dotfiles with no extension, so the file set never contained them. A
+scan whose file set is chosen by a name pattern cannot find a holder the pattern
+does not describe, and a zero from it is not an absence.
+
+The corrected scan takes **every** regular file under `/data` outside
+`world/`, `libraries/` and `cache/` (1168 files), reads the value once into a
+shell variable, and greps each file for it. That is the scan the numbers above
+come from. Its positive control: the same command finds `/data/server.properties`
+when given the string `rcon.password=`, so a hit reporting zero would be visible.
+
+**This is the failure §4 names.** Rotating with the old table would have left
+two files carrying the old public password on the PVC; §5(a)-(b) would have
+passed (the Secret and `server.properties` rotate correctly) while the old value
+survived on disk. Checking only the paths the plan already knew about is what
+would have made it pass.
 
 **Deployment env.** `RCON_PASSWORD` is a `secretKeyRef` to
 `minecraft-rcon/password`, not a literal. So rotating the Secret covers the
@@ -100,11 +119,25 @@ anyone is connected, unless the lead says otherwise.
    ... --dry-run=client -o yaml | kubectl apply -f -`. Value never printed.
 3. **Restart the server** so the env re-reads and `server.properties` is
    rewritten: `kubectl rollout restart deploy/minecraft-test-server`.
-4. **Rewrite `/data/server.properties`** if the server did not: set
-   `rcon.password` to the new value in-pod from the Secret, without printing it.
+4. **Rewrite the on-disk holders the server does not own.** The server rewrites
+   `/data/server.properties` from its env on start; it knows nothing about
+   holders 3 and 4. For each of `/data/.rcon-cli.env` and `/data/.rcon-cli.yaml`,
+   set the value in-pod from the Secret without printing it (read the new value
+   into a shell variable with `kubectl exec ... -- printenv RCON_PASSWORD` and
+   write it with `sed` or by rewriting the single line; never on a command line
+   that `ps` can see). Then confirm each file's value fingerprints to the new
+   value.
+   **Alternative the lead may prefer:** delete both files. They are conveniences
+   nobody declared, written 11:57Z today, and the rotation does not need them to
+   exist. Deleting a holder is a stronger outcome than rotating it. Not done
+   here because it is a decision, not a step.
 5. **Verify.** (a) rcon with the new password → a real command returns a reply;
-   (b) the old password is refused; (c) both holders fingerprint to the new
-   value; (d) the deployment is Ready and the server accepts players.
+   (b) the old password is refused; (c) **all four** holders fingerprint to the
+   new value, and a repeat of §1's 1168-file scan returns **zero** hits for the
+   old value; (d) the deployment is Ready and the server accepts players.
+   (c) is the step that would have caught the missed holders, and it is a
+   *scan*, not a list of known paths — checking the four paths only proves the
+   four paths were changed.
 6. **Report** fingerprints and lengths only.
 
 ---
@@ -116,9 +149,11 @@ There is no value rollback by design (§2). If step 5 fails:
 - If the **server will not start** with the new value, the fault is in the
   write, not the value: re-apply the Secret from the same generated value,
   restart, and re-verify. Rolling back to the old password is not an option.
-- If the **old password still works**, the rotation did not take: a holder was
-  missed. Re-run §1's value scan before retrying, because a surviving old value
-  means a holder outside this table.
+- If **the old password still works, or §5(c)'s scan still finds it**, the
+  rotation did not take: a holder was missed. Re-run §1's value scan before
+  retrying, because a surviving old value means a holder outside this table.
+  This is not hypothetical — the first version of §1 missed two holders, and the
+  scan, not the table, is what found them.
 
 ---
 
