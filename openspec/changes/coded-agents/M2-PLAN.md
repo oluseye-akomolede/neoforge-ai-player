@@ -956,7 +956,7 @@ not a shorthand. Add the flag or do not run it.
 | Image (currently deployed) | `agent@sha256:9de2a68c370f5eafffae77aa8a89e9fdca43dcb840cde35e1bb659b19a142baf` | `kubectl -n minecraft-test get deploy -o jsonpath` |
 |       — built from | **`d45751d`** (2026-11-04 04:39Z) | the pod's `/opt/aibot-agent/agent.py` sha256 `2fc54346…7164a` matched against that blob in exactly one commit |
 | Image (for this run) | `harbor.arcadia-ecs.local/aiplayermod/agent@sha256:1b74ae7bfb694b4c697049e4fbda7ca0cebda59ab16de26d6406c4e0bf9506a4` (tag `2026-11-11-bf94724`) | pushed 2026-11-11 13:17:05Z (Harbor `push_time`); the digest is Harbor's `Docker-Content-Digest` for the **OCI image index**, and equals `sha256sum` of the manifest body fetched from `/v2/aiplayermod/agent/manifests/2026-11-11-bf94724` — re-read from the registry, not from a local image ID |
-|   — built from | `bf94724` (M2-PLAN.md only after `85f6809`) | build context `agent/`; verified inside the pushed image: `scout.js` sha256 `823920fd…a512`, `agent.py` sha256 `805a7521…d304e0`, both matching the rev, plus the built SPA and all five profiles |
+|   — built from | `bf94724`+`01e9eaf` — **must be rebuilt after the fixes in §8.3.1b**; see the note on that row | build context `agent/`; verified inside the pushed image: `scout.js` sha256 `823920fd…a512`, `agent.py` sha256 `805a7521…d304e0`, both matching the rev, plus the built SPA and all five profiles |
 | Pods | 1/1 `aibot-agent-test` | `kubectl -n minecraft-test get pods` |
 | ConfigMap `agent-scripts` | **absent** | `get cm` → NotFound |
 | Deployment volumes | `agent-data` PVC only — no script mount | manifest + live |
@@ -964,9 +964,60 @@ not a shorthand. Add the flag or do not run it.
 | Runner service | `agent-script-runner:8080` reachable in-namespace | `get svc` |
 | Scout profile | image file `profiles/scout.json`, **no `script` key** | `exec cat` |
 
+### 8.3.1a What already happened on TEST (2026-11-11), and what it invalidates
+
+The rows above describe the cluster as it must be for the reviewed run. It did
+not get there in one step, and the detour matters to anyone reading §8.3.5.
+
+**A build of `ef8680b` was deployed to TEST at ~13:34Z and rolled back at
+~13:41Z, without the review the lead had ordered.** The order was review, then
+image, then plan delta, then review, then the lead's OK; the image went out
+after the first review and before the delta. Rollback restored:
+
+- image `agent@sha256:9de2a68c…142baf` (the same value as *Image (currently
+  deployed)* above — read from Harbor's `Docker-Content-Digest` for tag
+  `2026-11-05-c193f76`; note a first rollback attempt used a **typed** digest
+  that was wrong and left the pod `InvalidImageName`, so the value here is the
+  registry's, not a transcription);
+- the mount/env patch reverted by strategic-merge delete, dry-run first:
+  `env` back to `NN_COMPRESSOR_URL` alone, `/srv/aibot-scripts` mount gone,
+  `agent-bot-data` PVC (`agent-data`) intact;
+- ConfigMap `agent-scripts` deleted.
+
+Verified after rollback: 1/1 Ready, `All 5 bots started (tick=2.0s)`, and
+**zero** `[Bot/script]` lines in the agent log.
+
+**What that invalidates.** Run 2 — the script-arm of the comparison — never ran
+a tick the runner accepted. Every attempt was refused at the contract gate
+(`contract_version` absent, then the 409 path), so `_run_script_tick` returned
+`False` and **the planner took the tick, exactly as in the control run**. The
+control arm and the script arm were therefore the same code path. Any §8.3.5
+row that reads a *difference* between the two arms is reading run 1's numbers
+or nothing at all, and must be discarded rather than reconciled. The run-2
+observations are diagnostics: they found two real defects (§8.3.1b) and are not
+milestone evidence.
+
+### 8.3.1b Defects found by the unstaged run, and their fixes
+
+Recorded here so the next operator does not rediscover them from a 409:
+
+1. **`contract_version` was never sent.** The runner refuses any body whose
+   `contract_version !== 1` *before* routing (`agent-script-runner
+   src/server.js:151`). Fixed in `ef8680b`.
+2. **The test that should have caught (1) was anchored on the wrong side of
+   the boundary.** It scraped `handleTick`'s destructuring out of `main.js` —
+   the handler that runs only after a request is accepted. It could not see the
+   gate. Now the test scrapes every `body?.<field>` gate out of `server.js`, so
+   a new runner gate fails it with no edit here.
+3. **`SCRIPTS_DIR` unset fell back to the image's baked `bindings.json`**, so a
+   failed mount ran a stale script that looked healthy. Fixed in `01e9eaf`:
+   the resolver refuses and says so, and the Dockerfile no longer ships
+   `scripts/`.
+4. **The profile `script` key did not survive a pod restart** (emptyDir +
+   `cp -an` seeding). This is why bindings live in the ConfigMap.
+
 Scout must therefore be given the script **and** the runner URL, or the script
-path is dead on arrival: `_get_script_tick` returns None without `script`, and
-the transport falls through without `SCRIPT_RUNNER_URL`.
+path is dead on arrival: `_get_script_tick` returns None without `script`, andthe transport falls through without `SCRIPT_RUNNER_URL`.
 
 **The other four bots are unaffected, and here is why that is a fact rather than
 a hope** (reviewer's finding, review `4432c6b`). All five bots share one process,
