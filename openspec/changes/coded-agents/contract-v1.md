@@ -308,7 +308,7 @@ Named by cardgame, required by both games:
 
 | field | type | meaning |
 |---|---|---|
-| `cpu_ms` | number | CPU milliseconds spent in the sandbox this tick |
+| `cpu_ms` | number | CPU milliseconds the **script** ran this tick — see below for what it excludes |
 | `wall_ms` | number | wall-clock milliseconds for the whole tick call |
 | `host_calls` | integer | accepted `api.*` calls this tick |
 | `heap_peak_bytes` | integer | peak QuickJS heap during the tick |
@@ -316,6 +316,25 @@ Named by cardgame, required by both games:
 | `script_revision` | string | the revision actually executed |
 | `logs` | array | `{level, line}` entries |
 | `logs_dropped` | integer | lines dropped by the rate limit this tick |
+
+**What `cpu_ms` measures, exactly.** It is the bot process's CPU (user+system)
+consumed by the **script body**, measured on the same clock that enforces
+`tick_cpu_ms` — so the reported number and the overrun decision can never
+disagree. It **excludes** the fresh-context setup that precedes the script
+(API install, snapshot install, and the one-off interpreter warm-up), because
+the clock is armed after that setup completes.
+
+The exclusion is large and deliberate, not a rounding detail. Measured on a cold
+worker running `return 1;`: module load and runtime creation 96.8 ms, warm-up
+39.0 ms, and then a reported `cpu_ms` of **3.9 ms**. Whole-process CPU up to the
+end of that tick was 146.9 ms. A field that included setup would therefore
+report ~147 ms for a script that cost 3.9 ms, and would make every bot's first
+tick look catastrophic.
+
+Consequence for readers: `cpu_ms` is **not** comparable to `deadline_ms`. The
+two measure different things — one is a script's CPU, the other is a caller's
+wall-clock budget for a whole HTTP call including spawn. Comparing them, or
+using `cpu_ms` to predict whether a call will meet `deadline_ms`, is wrong.
 
 minecraft's daily cap is **per bot** and counts **wall-clock time its script is
 active** — not `cpu_ms`. The game counts it on its own side: each tick it sends
@@ -338,7 +357,7 @@ The runner reports a **per-tick outcome**, never a bot state. Fixed class list
 |---|---|
 | `ok` | the tick completed |
 | `script_error` | the script threw |
-| `cpu_exceeded` | exceeded 20 ms CPU |
+| `cpu_exceeded` | the **script** exceeded 20 ms CPU (setup excluded; same clock as `cpu_ms`) |
 | `memory_exceeded` | exceeded the 32 MB QuickJS heap **or** the 128 MiB wasm cap (§7.1) |
 | `stack_overflow` | recursion exceeded the 256 KB stack |
 | `host_call_timeout` | a host call exceeded 2 s |
