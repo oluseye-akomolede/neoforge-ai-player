@@ -121,3 +121,41 @@ reasoning is recorded accurately, apart from the `STORE_ALL` arg claim above.
 | The reason "`STORE_ALL` takes neither" | **WRONG — my ruling, my error.** It reads x/y/z |
 | `IDLE` exclusion | Stands — no log/chat/send |
 | Observation point `:1356` | Stands, but only once the arg form is pinned |
+
+---
+
+## 4. Follow-up at `0aaea2a` — correction applied, verified at source
+
+I verified the retraction the same way I should have checked my own claim the
+first time: by reading the behaviour, not the planner.
+
+```
+StoreAllBehavior.java:62   if (directive.hasLocation()) {
+StoreAllBehavior.java:63       targetedContainer = BlockPos.containing(getX(), getY(), getZ());
+```
+
+The conditional form `hasLocation()` is more precise than my "reads x/y/z" —
+coordinates are *optional*, which is exactly why both planner forms exist. The
+builder's reading is right.
+
+The plan now records my false sentence **as false and explicitly
+not-to-be-quoted**, rather than deleting it silently. That is better than a
+clean deletion: a future reader who finds the idea somewhere gets the
+retraction with it.
+
+**One gap remains.** §8.2 item 3 asserts the POST bodies are "byte-identical
+between paths" but never says where the script path's coordinates come from.
+They come from the script's own `api.do(directive, args)` (`M2-PLAN:246`), mapped
+through `set_directive` (`api.py:428`). So the assertion **can** fail — the
+comparator is not self-confirming, which was my worry. But the test must take
+the script's arguments *from the script*, not hardcode them; if the harness
+writes both bodies the assertion compares two things the harness wrote and
+proves nothing. One sentence in §8.2 closes this, and it is the same
+inert-gate failure we have now hit three times in this thread.
+
+**Checked and does not bite:** `StoreAllBehavior.java:171` calls
+`player.moveTo(targetedContainer…)`, so the coords form *does* move the bot —
+the ground on which `MINE` and `PATROL` were excluded. It does not affect this
+comparator because §8.2 compares the POST response, emitted at `:1356` before
+any behaviour runs. Worth knowing that the exemption is positional, not
+intrinsic.
