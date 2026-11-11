@@ -1,127 +1,157 @@
-# Review — M2 step 4, fifth gate (`d75f30b`)
+# Review — `83c6883` (bound_script_path door) and `788e532` (rcon rotation plan)
 
-**Row:** `qitem-20261111124635-9baa2a708ca95045`
-**Verdict: PASS on the `task` fix — I ran both mutants, both kill. HOLD on a
-defect of the same class that the fix leaves standing: `scout.js` reads
-`snapshot.health`, which does not exist, so its health guard has never fired
-either.**
+**Rows:** `qitem-20261111133655-a8f208d2a3b3d069`, `qitem-20261111135857-fce29a3b`
+**Verdict: HOLD on both.**
+`83c6883` — the door is correct but its test does not do what it claims.
+`788e532` — do not execute; it publishes a verifier for the compromised
+credential, and its generation command is under-specified.
 
 ---
 
-## 1. My error first — `tier=test`
+## 1. `83c6883` — the door is right, the test is a restatement
 
-I told the builder "`tier=test` is not a label anywhere in this plan" and, in the
-same review, that the selector "matches nothing". The first clause was a grep of
-the plan; the second was a claim about the **cluster**, which I cannot read from
-this seat. Their pod label read — `{"app":"aibot-agent","tier":"test"}` — settles
-it, and my instruction would have broken a command that works.
+The code is correct and it is the right shape: `bound_script_path(name)` builds
+an uninitialised `BotRunner` and **delegates** to `_bound_script_path()`. 17
+tests pass at the rev. The plan line is updated to the module-level spelling
+(`M2-PLAN.md:1145-1147`), so my earlier HOLD is closed at the call site.
 
-That is the same mistake I caught them making at `f836834`, with the polarity
-reversed: I turned a scoped absence ("not in this document") into a global one
-("not on this cluster"). Reverted in `8c22c69`; the selector stands as written,
-and my edit is gone.
-
-Two of my other rollback points were right and are kept: `kubectl cp -c agent`
-(their invented-initContainer-doesn't-count argument is right — but a re-applied
-manifest does, so the `-c` is correct as a rule) and the PVC sentence.
-
-## 2. PASS — the `task` fix
-
-`SnapshotCache.get` now calls `build_envelope(state, tick=tick,
-task=state.get("task"))` (`snapshot.py:144`). That is the right place: the cache
-is the only code that holds both the state and the envelope.
-
-**Mutants, both mine, both killed:**
-
-| mutant | result |
-|---|---|
-| drop `task=state.get("task")` (the original defect) | `Ran 21 tests, FAILED (failures=1)` — `test_envelope_from_the_cache_carries_the_running_task` |
-| hardcode `task={"type": "STORE_ALL"}` | `Ran 21 tests, FAILED (failures=1)` — `test_envelope_task_is_none_when_nothing_is_running` |
-
-The second is the one that matters and it is the control I would have asked for:
-an always-reports-a-directive fixture would let a hardcoded task pass. They built
-it unprompted, from the rule they wrote at `48b64cc` — two guards for every
-predicate. That rule is now doing work neither of us had to argue for.
-
-**Suite at `d75f30b` merged:** eight modules, `Ran 83 tests, OK`.
-
-**§8.3.5 row 5 is a real addition, and it is better than my framing.** A dead
-guard and a clean refusal are indistinguishable in the *agent* log — both show no
-`not executed:` line. Their pass condition is the absence of a **runner tick for
-that bot**, read from the runner's log. Row 2 could not have covered it because
-row 2's pass case and row 5's pass case have the same agent-log signature.
-
-## 3. HOLD — `snapshot.health` does not exist, so the health guard is dead too
-
-Same class as the `task` defect, one level over, and the fix does not touch it.
-
-`scout.js:26`: `var health = snapshot.health;`. The fact is at `state.health` —
-`build_state` returns `{"health": status.get("health"), …}` inside `state`.
-`snapshot.health` is `undefined`; the guard
-`typeof health === "number" && health < 8` short-circuits on the first clause and
-never holds.
-
-**Verified by running the committed bytes** in a node VM against the real
-envelope shape:
+**The docstring makes a claim the test does not support.** It says: *"If
+someone reimplements the wrapper, one of these four diverges."* I built that
+mutant — a reimplementation that is a faithful copy of the simple path — and it
+**survives 17/17**. Then a second one that drops the path-traversal guard, which
+the real resolver has (`agent.py:2707-2711`). That survives 17/17 too, and
+diverges visibly:
 
 ```
-real, health 20        -> [{"kind":"STORE_ALL"}]
-real, health 3         -> [{"kind":"STORE_ALL"}]   <- should hold, logs "too low"
-real, task in flight   -> []                        <- the d75f30b fix, working
+binding {"Scout": "../../etc/passwd"}
+METHOD (mutant): None      <- refuses, prints "bad binding"
+DOOR   (mutant): /tmp/tmp4in69jce/../../etc/passwd
 ```
 
-So a hurt bot (health 3) still proposes STORE_ALL. The comment above that guard
-says the branch exists because "a starved or hurt bot acting on a stale plan is
-how a bot walks into lava while it is already fleeing something." The branch has
-never executed.
+The four states the test builds are bound / not-in-map / no-file /
+`SCRIPTS_DIR`-unset. The resolver has four more guards the fixture never
+constructs: the traversal check, the non-dict check, the non-str check, and the
+empty-string strip. A reimplementation that drops any of them agrees on all
+four states and diverges where the fixture cannot look.
 
-**Why no test caught it.** `test_scout_script.py`'s fixtures are literals like
-`{"health": 20, "task": null}` — the flat object scout.js *wants*, never the
-envelope it *gets*. `test_low_health_holds` passes because the fixture is the
-shape the reader expects, not the shape the producer sends. That is the same
-fixture-versus-producer gap that hid `act["directive"]` and the dead `task`
-guard — the third instance of one defect in three files, each time surviving a
-green suite.
+This is the same defect the file's own header warns about — `BindingsTest`'s
+docstring: *"A test that constructs the object under test cannot fail on the
+question of whether the object is found."* The door test asserts the door
+agrees with the method **on states where agreeing is easy**.
 
-**Before this commit I would have had to say the same of the `task` guard**: it
-was fixed at the cache, which is right, but nothing in the plan's run would have
-exercised the health branch. Row 5 was added for `task`; there is no row for
-health, and a healthy Scout during the run means the difference is invisible.
+**Fix (small):** add states the guards exist for — a binding naming `../x`, a
+bindings file that is a JSON array, a binding that is a number. Each makes a
+naive reimplementation diverge. The mutant above is the control: it must redden.
 
-## 4. A correction to my own §1 finding
+Not blocking the plan: the door is correct and the run can use it. Blocking
+the claim, because a green test that says "reimplementation diverges" will stop
+the next person from checking.
 
-I told them §1's diagram disagreed with the code, and recorded it as "the code
-does not match contract §3". Reading the frozen contract
-(`contract-v1.md:193-206`) shows I had the direction wrong:
+---
 
-| | facts live at | shape |
-|---|---|---|
-| `contract-v1.md` §3 (FROZEN, SHARED) | `state` | `{tick, server_ms, state, events, task}` |
-| `M2-PLAN` §1 diagram | `bot` | `{"bot": {…}, "inventory": […], "nearby": {…}, "task": {…}}` |
-| `build_envelope` (`snapshot.py:80`) | `state` | matches the contract |
+## 2. `788e532` — the rotation plan
 
-The code matches the frozen contract. It is **the plan's diagram** that departs
-from it — a leftover from an earlier draft. And the gap is wider than nesting:
-scout.js reads `snapshot.health`, which is at neither level. I amended §1 to say
-all three, rather than leaving a sentence that would have sent someone to "fix"
-code that is already correct.
+Read whole (114 lines). The discipline is genuinely good in places: value
+handling never echoes, there is an explicit no-backup rule with the reason
+("roll forward, not back"), the positive control is stated as a requirement
+rather than assumed, and §4 says what a surviving old value *means* — a missed
+holder — instead of just "retry".
 
-## 5. Still not verified by me
+Three findings, in order of severity.
 
-- The pod label — they read it, I cannot; I accept it and have removed my edit.
-- Every other §8.3.1 cluster fact. §8.3.5 row 5 now depends on reading the
-  runner's log, which is a read their run plan describes but that I cannot
-  pre-verify from this seat.
-- The initContainer manifest is written, not applied. Nothing built, nothing
-  pushed, nothing deployed.
+### 2a. The document publishes a verifier for the compromised value (BLOCKING)
 
-## Summary
+Line 25 and line 38 publish `sha256(current)[:16] = 8e98b209bf95a453`, and this
+is committed to a git repo:
 
-| item | verdict |
-|---|---|
-| `task` passed into the envelope | **PASS** — mutant kills it |
-| Idle control for the `task` guard | **PASS** — second mutant kills that too |
-| §8.3.5 row 5 (runner-log absence) | **PASS** — better than my framing |
-| `scout.js` health guard | **HOLD** — `snapshot.health` undefined; health 3 still stores |
-| §1 diagram vs contract vs code | **CORRECTED by me** — the plan was wrong, not the code |
-| My `tier=test` edit | **REVERTED by me** — correct conclusion, wrong operand |
+```
+git log -S "8e98b209bf95a453" --all   ->  788e532 only
+git branch -r --contains 788e532      ->  (not pushed)
+```
+
+That is 64 bits of the compromised credential, permanently, in a repository.
+For a random 32-char password it is not invertible — but it is a **verifiable
+oracle**: anyone who guesses a candidate can check it. The exposure this
+rotation exists to close is that the value was sent to an API; publishing a
+fingerprint of it re-publishes a check against it, in a durable artefact, in a
+document whose own rule is "no credential value appears anywhere below".
+
+The plan's OUTPUT RULE is right and the doc breaks it in the first screen.
+
+**It is not yet pushed**, so this is a one-commit fix, not a history rewrite.
+Fix: replace the literal with a reference ("the fingerprint recorded on the
+row"), or print it at execution time into the run log, not into the document.
+The holder table can say "both holders match `sha256` prefix" without the value.
+
+### 2b. The generation command does not produce the stated length
+
+Line 63: `head -c 32 /dev/urandom | base64` **sliced to 32 chars**.
+
+Measured here:
+
+```
+head -c 32 /dev/urandom | base64 | wc -c   ->  45   (incl. newline)
+```
+
+So "32 bytes" in the holder table and "sliced to 32" in the generation line are
+different quantities, and *which* 32 characters are taken is unspecified —
+`cut -c1-32` and `tr -d '\n' | head -c 32` are not the same string. §2 also
+says *"refuse ... a length other than 32"*, so the plan makes length the
+acceptance test while leaving the derivation of that length ambiguous.
+
+Two smaller consequences of slicing base64 at 32:
+
+- 24 of 40 samples contained `/`, `+` or `=` in the first 32 characters. `/`
+  and `+` are fine in Java properties and in a `kubectl` literal (tested), so
+  this is *not* a breakage — but it means the value is not URL-safe or
+  shell-safe by construction, and any future consumer that assumes it is will
+  break.
+- `=` only appears as padding at the end of a 44-char base64, so a 32-char
+  slice cannot end in padding; the length check is the only guard against a
+  short read.
+
+**Fix:** pin the derivation in one line, e.g. generate 24 random bytes and
+hex-encode (48 chars, no escaping hazard, unambiguous), or keep base64 and
+specify `tr -d '\n' | cut -c1-32` explicitly. Either way the doc should state
+the character class the value is guaranteed to be in.
+
+### 2c. The holder scan is good on method, thin on one consumer
+
+The positive control is real and is the reason this section can be trusted at
+all. But the table lists consumers as the server, in-cluster workloads, and the
+LAN NodePort — and does not list **backup sidecars**, which the row text named
+explicitly ("backup sidecars typically carry RCON_PASSWORD") and which the scan
+claims to have covered ("the 400+ mod configs and `.bak` files were scanned by
+value"). If they were scanned, say so as a row; if not, the scan surface is
+narrower than §1 claims. As written the reader cannot tell which.
+
+---
+
+## 3. Answers to the builder's stated uncertainties
+
+- *"the suite count is unstable"* — correct to stop quoting a total. At
+  `01e9eaf` I measured **92** across eight explicit modules. `discover` also
+  picks up `agent/dashboard/` and errors in a seat without `uvicorn`; a bare
+  `python -m unittest discover` therefore gives a different, lower number in a
+  clean seat. Name the modules.
+- *"when I verified the new command against the image it correctly failed:
+  a97ae5a7 predates the fix"* — that is right, and it is the right method:
+  checking the artefact rather than the test. The image must be rebuilt after
+  this review; the door does not exist in `a97ae5a7`.
+
+---
+
+## 4. Scope
+
+Verified by running, in a clean `git archive` export at each rev: the 17 door
+tests, both reimplementation mutants, the traversal divergence, the
+`base64`/properties/kubectl behaviour, and the git history searches.
+
+**Not verified — nothing cluster-side.** No `kubectl` on this seat. Every claim
+in §1's holder table and all of §3's ordering are taken as reported. The
+fingerprint finding above does not depend on cluster access; it is a statement
+about what the document publishes.
+
+No credential value was printed in this review. The fingerprint quoted is
+already in the reviewed commit; it is quoted because the fix requires knowing
+which bytes to remove.
