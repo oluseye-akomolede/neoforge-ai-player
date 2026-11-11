@@ -421,11 +421,6 @@ agent/scripts/scout.js          # the script source  (ConfigMap data key)
 agent/scripts/scout.json        # {"revision": "sha256:…", "game": "minecraft", "bot": "Scout"}
 ```
 
-```
-agent/scripts/scout.js          # the script source
-agent/scripts/scout.json        # {"revision": "sha256:…", "game": "minecraft", "bot": "Scout"}
-```
-
 `revision` is the content hash, computed at load, so the runner's cache key and
 the stored file cannot drift. Changing the script changes the hash, which the
 runner treats as a new revision (contract §2 `script_revision` is required).
@@ -548,6 +543,34 @@ demonstrate our own resilience — the wrong cost, paid by someone else. The cut
 is therefore **agent-side, on Scout alone**, and the runner keeps serving every
 other caller throughout. An earlier draft of this section said "stop the
 runner"; that is the version that would have done it.
+
+**Which config, exactly — and the wrong answer is the obvious one.** The naive
+reading of "agent-side" is a new environment variable (`RUNNER_URL`). That would
+cut off **every** bot, breaching the very condition it appears to satisfy:
+`agent/config.py` has no per-bot environment — `MOD_API_URL` (`:7`),
+`PROFILE_PATH` (`:87`) and the rest are read once, process-wide — and the
+Deployment runs `replicas: 1`, so all bots share one process and one
+environment.
+
+Per-bot state comes from the **profile dict** instead, and that is the only
+per-bot unit that exists. `config.load_profile()` (`:111`) reads the single
+`PROFILE_PATH`; `BotRunner.__init__` (`agent.py:155`) takes that dict and reads
+`name`/`model`/`specializations` from it. So the mechanism is:
+
+- `agent/profiles/scout.json` gains `"runner_url"` and `"script_path"`
+  (`/opt/aibot-agent/scripts/scout.js`), consumed alongside the existing
+  profile keys.
+- **No other profile is touched.** `agent/profiles/*.json` contains no
+  `url`/`runner`/`endpoint` field today (verified: the grep returns nothing), so
+  this adds one field to one file rather than altering a shared default.
+- Absent field means fall through to the existing behaviour, so a profile
+  without `runner_url` behaves exactly as it does now.
+
+The isolation is therefore **one file, not shared state** — which is what makes
+it clean. It is also why the plan must name it: an implementer reading
+"agent-side, on Scout alone" against a single-replica Deployment with
+process-wide env will reach for the env var, and the result would be a proof that
+passes while secretly cutting off every bot.
 
 Two agent-side ways to make the runner unreachable for one bot, both purely
 config:
