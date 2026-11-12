@@ -16,7 +16,7 @@
 ## IDLE — no directive in flight (never null; this is an OBJECT)
 {"progress": {"phase": "idle"}, "self_preservation": "ok", "state": "Standing by"}
 
-## BUSY — a WIDE_SEARCH directive in flight (id 14)
+## BUSY — a WIDE_SEARCH directive in flight (id 15; the response below carries it)
 ## Note `progress` is an OBJECT with `phase`, NOT a number, and the envelope's
 ## `task` additionally carries a `directive` key with its own id and status.
 {"directive": {"id": 15, "radius": 32, "status": "ACTIVE", "target": "minecraft:iron_ore", "type": "WIDE_SEARCH"}, "progress": {"phase": "pathing_to_cell", "recent_events": ["Wide search: target=minecraft:iron_ore type=block center=-100, 40, -33 bot 1/1 cell_size=16"]}, "self_preservation": "ok", "state": "Wide search for minecraft:iron_ore \u2014 moving to cell 1/25 [bot 1/1]"}
