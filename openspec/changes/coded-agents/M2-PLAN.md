@@ -1236,9 +1236,18 @@ goal shown above. Observed:
 |---|---|
 | `[Scout/orchestrator] L3 plan layer accepting` | present (13:23:54Z) |
 | `[Scout/orchestrator] starting plan for` | present |
-| runner log lines before → after | 78 → 78 (**no change**) |
+| runner log lines before → after | 78 → 78 (no change — but this is **vacuous**, see below) |
 | runner lines matching `scout` | 0 |
 | `STORE_ALL` in the mod log | 0 |
+| **script ticks in the agent log** (`[Scout/script]`) | **0** — this is the control that means something, because the agent logs every tick attempt whereas the runner logs none |
+
+**The runner-log rows above prove nothing, and must not be cited as a control.**
+`agent-script-runner/server.js` logs only startup, shutdown and errors, so
+"runner log lines before → after 78 → 78" would read 78 → 78 whether the agent
+sent zero ticks or a thousand. Measured on 2026-11-12: a tick that reached the
+runner and executed (revision `823920fd` came back in the response) wrote no
+line at all. A control that cannot move is worse than an absent one — it looks
+like evidence. The script-tick line above is the real one.
 
 The zero is a measured absence, not a dead grep: in the same window the mod
 logged `[Scout] cancelDirective called` and `[Scout] HTTP DELETE /directive
@@ -1307,24 +1316,33 @@ revision is hashed from the script body, not carried in the ConfigMap.
 
 | # | Evidence | Failure looks like |
 |---|---|---|
-| 1 | **Runner** log: the tick carries `bot_id: "Scout"`, `script_revision: 823920fd7277b98b`, non-empty `actions` | no runner line at all → the tick never left the agent. The value is **measured**, not derived: on the live pod, `sha256sum /srv/aibot-scripts/scout.js` returns `823920fd…a512` at 3526 bytes, identical to the source file (the ConfigMap round-trip is byte-exact). See the note below the table |
+| 1 | **Tick response** (not the runner log): the tick carries `bot_id: "Scout"`, `script_revision: 823920fd7277b98b`, non-empty `actions` | a tick that returns no revision, or one that never reaches the runner → the tick never left the agent. Read it from the RESPONSE, because `agent-script-runner/server.js` logs only startup, shutdown and errors — a successful tick writes **no runner log line at all** (measured 2026-11-12; corrected here after run 2). The revision value is **measured**, not derived: on the live pod, `sha256sum /srv/aibot-scripts/scout.js` returns `823920fd…a512` at 3526 bytes, identical to the source file (the ConfigMap round-trip is byte-exact) |
 | 2 | **Agent** log: `[Scout/script] dispatch: STORE_ALL {...}` present, and **no** `[Scout/script] not executed:` line (see note: the success return is **not** in the agent log) | the `dispatch:` line never appears → the action was refused before dispatch; a `not executed:` line → the orchestrator returned FAILED and that action did not run |
 | 3 | Mod POST response: `status: accepted`, `STORE_ALL`, **coordless** | coordinates present → §3's pin is wrong, record it |
 | 4 | Run 1 produces no script-path POST | a POST with no script → something else is emitting it |
-| 5 | **The in-flight guard fired**: a tick with a directive already running emits **no** runner tick at all for that bot, and the agent log shows neither `dispatch:` nor `not executed:` | a runner tick appears → the guard did not fire; a `not executed:` line → the guard did not fire and the action was refused downstream instead |
-| 6 | **The low-health guard fired**: with Scout damaged below 8 hp, **no runner tick for Scout**, read from the RUNNER's log | a runner tick carrying `STORE_ALL` → the guard did not fire (this was the live defect until `d75f30b`) |
+| 5 | **The in-flight guard fired**: with a directive genuinely running (`task.progress.phase` not `"idle"`), the tick emits **no** `actions` for that bot, and the agent log shows neither `dispatch:` nor `not executed:` | non-empty `actions` → the guard did not fire; a `not executed:` line → the guard did not fire and the action was refused downstream instead |
+| 6 | **The low-health guard fired**: with Scout damaged below 8 hp, the tick carries **no** `actions`, and the agent log shows the `too low` line | `actions` carrying `STORE_ALL` → the guard did not fire (this was the live defect until `d75f30b`) |
 
 **Row 5 is not satisfied by row 2's absence-of-refusal.** Those look identical
 in the log and mean opposite things. Row 2's clean case (dispatch happened,
 `COMPLETED`) and row 5's case (nothing attempted) are both "no `not executed:`
-line", so the pass condition for row 5 is the **absence of the runner tick for
-that bot in that tick**, taken from the runner log, not the absence of a
-refusal line in the agent log.
+line", so the pass condition for row 5 is the **absence of `actions` in that
+bot's tick for that tick**, read from the tick response, not the absence of a
+refusal line in the agent log. (It was "read from the runner log" until
+2026-11-12; the runner emits no per-tick line on success, so that form could
+never be satisfied and would have read as a permanent failure.)
 
-This row exists because the guard was dead until just now: `scout.js` opens with
-`if (snapshot.task) return []`, and `SnapshotCache.get` built the envelope
-without `task=`, so `envelope["task"]` was `None` on **every** tick and the guard
-could never fire (reviewer, 13:03Z; `snapshot.py:144` fixed). Under the old code
+This row exists because the guard was dead twice over, and the first fix was
+not enough. `scout.js` opens with `if (snapshot.task) return []`, and
+`SnapshotCache.get` built the envelope without `task=`, so `envelope["task"]`
+was `None` on **every** tick and the guard could never fire (reviewer, 13:03Z;
+`snapshot.py:144` fixed the PLUMBING). But with `task=` wired up, `task` holds
+`api.get_directive()`, which returns an idle bot as an OBJECT —
+`{"state":"Standing by","progress":{"phase":"idle"}}` — never `None`. So the
+truthiness guard fired on every idle tick too, and the script proposed nothing
+at all (run 2, 2026-11-12). The guard now reads
+`task.progress.phase === "idle"`, and the fixtures are copied from the real
+idle and busy responses rather than constructed. Under the old code
 the first branch ran even with a directive in flight, the action was refused
 downstream as `already-has-a-directive`, and the run would have shown a
 `not executed:` line — a refusal, which reads as the system working, rather than
@@ -1435,7 +1453,9 @@ Item 4 is the one that makes 1–3 mean anything.
 - It does not claim the bot will store anything. The script may return early
   (low health, task in flight) — that is a fall-through to the planner, which is
   correct behaviour and would make run 2 look like run 1. If both runs match,
-  check the runner log for the tick before concluding the feature failed.
+  check the AGENT log for `[Scout/script]` tick lines before concluding the
+  feature failed — the runner writes no per-tick line, so an empty runner log is
+  not evidence either way.
 
 ---
 
@@ -1558,7 +1578,15 @@ not carry open items into implementation:
 3. **§6 script storage: ConfigMap now, not deferred.** Deferring is the
    expensive choice, because re-proving 8.2 means changing the script and
    running the proof again; a baked-in script would need an **image rebuild**
-   for every re-proof, where a ConfigMap needs an apply and a pod restart. The
+   for every re-proof, where a ConfigMap needs an apply and a pod restart.
+   **The restart is not optional, and there is no runtime toggle.** The agent
+   caches the script on the first tick (`self._script_loaded`, `agent.py:2797`)
+   and never re-reads it, so editing the ConfigMap on a running pod changes
+   nothing — measured 2026-11-12: the ConfigMap was patched with
+   `bindings.json` and the running pod logged `no bindings at
+   /srv/aibot-scripts/bindings.json` for six minutes until it was restarted.
+   Switching the script ON and OFF both take a pod restart. No rebuild, but not
+   a live toggle either. The
    original rationale here said the control requires "stopping and restarting
    the runner mid-proof" — that is no longer true, since the lead ruled
    (11:37Z) that the control must never stop the shared runner and cuts Scout

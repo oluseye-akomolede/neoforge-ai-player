@@ -41,7 +41,27 @@ function tick() {
   // The task we are on. `snapshot.task` is the directive the agent is
   // currently running, so a script does not start a second job underneath one
   // already in flight.
-  if (snapshot.task) {
+  //
+  // It is NOT null when idle. Measured on TEST 2026-11-12, api.get_directive
+  // returns, at rest:
+  //   {"state":"Standing by","self_preservation":"ok","progress":{"phase":"idle"}}
+  // and, mid-task:
+  //   {"state":"Wide search ...","directive":{"id":7,"status":"ACTIVE",...},
+  //    "progress":{"phase":"pathing_to_cell","recent_events":[...]}}
+  // So `if (snapshot.task)` was ALWAYS true and this script never acted: an
+  // idle bot looked busy. The discriminator is progress.phase === "idle", not
+  // the presence of the object. The fixtures in test_scout_script.py are copied
+  // from those two real responses, not constructed from what this script
+  // expects -- a hand-built idle `null` would have confirmed the wrong guard,
+  // which is exactly how the snapshot.state bug at line 30 survived every test.
+  // Hold unless the task is PROVABLY idle. "Busy" is everything else,
+  // including a directive that carries no progress block at all -- an older
+  // mod, a shape we have not seen, or a bare test directive. Writing this as
+  // `phase !== "idle" && progress exists` would let a directive we cannot read
+  // through as idle, which is the unsafe direction: the script would start a
+  // second job underneath an unknown one. Only an explicit idle phase opens it.
+  var task = snapshot.task;
+  if (task && !(task.progress && task.progress.phase === "idle")) {
     return [];
   }
 

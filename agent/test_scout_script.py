@@ -59,7 +59,32 @@ console.log(JSON.stringify({{ actions: fn(api, snapshot), logs }}));
     return json.loads(out.stdout)
 
 
-def _envelope(health=20.0, task=None, **extra):
+# The two directive shapes the mod really returns, copied verbatim from TEST
+# on 2026-11-12 (deploy/aibot-agent-test, api.get_directive("Scout")).
+#
+# IDLE_DIRECTIVE is what a bot standing still reports. It is an OBJECT, not
+# null -- which is why `if (snapshot.task) return []` silenced the script on
+# every tick of run 2. BUSY_DIRECTIVE is one captured while a WIDE_SEARCH was
+# genuinely running. The discriminator is progress.phase: "idle" at rest, a
+# real phase while working.
+#
+# These are copied from the producer's response, not constructed from what the
+# script wants. A hand-written `task: null` for idle is precisely the fixture
+# error that has now hidden three dead guards in this file.
+IDLE_DIRECTIVE = {"state": "Standing by", "self_preservation": "ok",
+                  "progress": {"phase": "idle"}}
+
+BUSY_DIRECTIVE = {
+    "state": "Wide search for minecraft:oak_log — moving to cell 1/25 [bot 1/1]",
+    "self_preservation": "ok",
+    "directive": {"id": 7, "type": "WIDE_SEARCH", "status": "ACTIVE",
+                  "target": "minecraft:oak_log", "radius": 32, "count": 3},
+    "progress": {"phase": "pathing_to_cell",
+                 "recent_events": ["Wide search: target=minecraft:oak_log"]},
+}
+
+
+def _envelope(health=20.0, task=IDLE_DIRECTIVE, **extra):
     """A snapshot in the shape SnapshotCache.get actually produces.
 
     The flat {"health": ...} literals these tests used to pass are the shape
@@ -68,6 +93,10 @@ def _envelope(health=20.0, task=None, **extra):
     what let a dead guard pass three green suites, so this builds the real one
     by default. test_guards_fire_on_the_envelope_the_cache_actually_produces
     goes further and builds it through the cache itself.
+
+    `task` defaults to IDLE_DIRECTIVE, the real idle directive, NOT None. A
+    None default meant every test below exercised a state production never
+    sends, and the always-truthy guard passed while silencing every run.
     """
     env = {"tick": 1, "server_ms": 1700000000000, "events": [],
            "state": {"health": health, "food": 18,
@@ -106,9 +135,26 @@ class ScoutScriptTest(unittest.TestCase):
         self.assertTrue(any("too low" in line for line in result["logs"]), result["logs"])
 
     def test_busy_bot_does_not_stack_a_second_action(self):
-        result = _run(_envelope(20.0, {"type": "MINE"}))
+        # The real busy directive, captured from TEST mid-WIDE_SEARCH. The old
+        # fixture was {"type": "MINE"} -- a shape the mod never returns, which
+        # happened to be truthy and so "passed" the same wrong guard.
+        result = _run(_envelope(20.0, BUSY_DIRECTIVE))
         self.assertEqual(result["actions"], [],
                          "script started an action under one already in flight")
+
+    def test_real_idle_directive_does_not_silence_the_script(self):
+        # THE RUN-2 REGRESSION. The mod reports an idle bot as an OBJECT
+        # {"state":"Standing by","progress":{"phase":"idle"}}, never null. A
+        # guard on the object's truthiness therefore read every idle bot as
+        # busy and the script proposed nothing, on every tick, forever.
+        #
+        # This asserts the script ACTS on the exact bytes an idle bot emits.
+        # It fails against `if (snapshot.task)` and passes only when the guard
+        # reads progress.phase.
+        result = _run(_envelope(20.0, IDLE_DIRECTIVE))
+        self.assertEqual(result["actions"], [{"kind": "STORE_ALL"}],
+                         "an idle bot was treated as busy; actions="
+                         f"{result['actions']!r} logs={result['logs']!r}")
 
     def test_guards_fire_on_the_envelope_the_cache_actually_produces(self):
         # THE FIX FOR THE THIRD FIXTURE-VS-PRODUCER GAP.
