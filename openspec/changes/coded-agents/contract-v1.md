@@ -201,12 +201,33 @@ runner treats it as opaque, read-only data.
   "server_ms": 1762777200123,           // game's clock, for drift diagnosis
   "state": { … },                        // game-specific, opaque to the runner
   "events": [ { "type": "…", "data": { … } } ],  // outcomes of earlier actions
-  "task": { "goal": "…", "progress": 0.5 } // game-specific, opaque
+  "task": { … }                         // game-specific, opaque; see binding
 }
 ```
 
+> **`task` in the MINECRAFT binding** is the object `api.get_directive` returns
+> for the bot, passed through unchanged (`snapshot.py:76` → `:144`). It is
+> **never null** — an idle bot gets an object, not `None`:
+>
+> ```json
+> {"bot": "Scout", "state": "Standing by", "progress": {"phase": "idle"}}
+> ```
+>
+> When a directive is in flight the same object carries `progress.phase` set to
+> a non-idle value (`"searching"` during a WIDE_SEARCH) and an extra `directive`
+> key holding the directive itself (`{"id":…, "status":"ACTIVE", …}`).
+>
+> **`progress` is an OBJECT here, not a number.** The shape above
+> (`{"goal":…, "progress":0.5}`) is illustrative of other bindings; a Minecraft
+> script must not assume it. In particular, testing `if (snapshot.task)` to mean
+> "the bot is busy" is wrong: that test is true on a *standing-by* bot, so the
+> script would hold forever. Test `task.progress.phase === "idle"` to detect
+> idleness, and treat any shape that cannot be read that way as busy.
+> `evidence/m2-run2/` records both live shapes from TEST.
+
 **MINECRAFT BINDING** for `state`: health, food, position `{x,y,z,dim}`,
-inventory, nearby blocks and nearby mobs, plus the agent's task progress. This
+inventory, nearby blocks and nearby mobs. The agent's task progress is **not**
+here — it rides on the envelope's `task` (see above). This
 matches the spec's read-only-snapshot requirement; the runner deep-freezes it
 before the script sees it, and mutation by the script never reaches the game.
 

@@ -24,6 +24,11 @@ COPY --from=frontend /build/static ./static
 # makes impossible rather than merely unlikely (review 2026-11-11, C1).
 RUN rm -rf ./scripts
 
+# Tests are development artefacts and have no business in a runtime image: they
+# pull in pytest-only imports and add surface nobody executes. Nothing imports
+# test_*.py, so their absence is not observable at run time (review 2026-11-12).
+RUN rm -f ./test_*.py
+
 ENV PYTHONUNBUFFERED=1
 
 CMD ["python3", "agent.py"]
