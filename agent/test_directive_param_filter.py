@@ -119,6 +119,15 @@ class DirectiveParamFilterTest(unittest.TestCase):
         inspect.signature(api.set_directive) to build its allowlist, and a
         bare Mock reports (*args, **kwargs), which would make it drop every
         key. That is a stub artefact, not a property of the code under test.
+
+        It must be a REAL FUNCTION rebound into the module, not a MagicMock
+        with __signature__ attached: _set_directive_params calls
+        inspect.signature(api.set_directive) on the MODULE ATTRIBUTE, so a
+        patched mock is what gets inspected and the stub's __signature__ is
+        never consulted. The first version of this test made exactly that
+        mistake, so it exercised the fallback set -- which happened to contain
+        `type` -- and never ran the signature path or found that the filter
+        dropped the kind (reviewer, 2026-11-12).
         """
         real = self.agent_mod.api.set_directive
 
@@ -134,10 +143,6 @@ class DirectiveParamFilterTest(unittest.TestCase):
                     self.captured[k] = v
             return {"status": "accepted", "directive": {"id": 7}}
 
-        # Give the stub the real signature so inspect.signature() agrees with
-        # production -- the filter must see the true contract, not the stub's.
-        fake_set_directive.__signature__ = inspect.signature(real)
-
         # _run_directive reads these; __new__ skipped __init__.
         self.a.L2_MAX_RETRIES = 0
         self.a._stop_event = mock.Mock()
@@ -145,13 +150,35 @@ class DirectiveParamFilterTest(unittest.TestCase):
         self.a._store_success_memory = mock.Mock()
         self.a._l2_adjust = mock.Mock(return_value=None)
 
-        with mock.patch.object(self.agent_mod.api, "set_directive",
-                               side_effect=fake_set_directive), \
-             mock.patch.object(self.agent_mod.api, "system_chat"), \
-             mock.patch.object(self.a, "_poll_directive",
-                               return_value={"success": True,
-                                             "progress": {"counters": {}}}):
-            return self.a._l3_orchestrator_dispatch(directive)
+        # mock.patch replaces the module attribute, so if the mock is installed
+        # BEFORE the helper runs, the helper inspects the mock. Bind the real
+        # function in place of the mock for the duration instead.
+        self.agent_mod.api.set_directive = fake_set_directive
+        try:
+            with mock.patch.object(self.agent_mod.api, "system_chat"), \
+                 mock.patch.object(self.a, "_poll_directive",
+                                   return_value={"success": True,
+                                                 "progress": {"counters": {}}}):
+                return self.a._l3_orchestrator_dispatch(directive)
+        finally:
+            self.agent_mod.api.set_directive = real
+
+    def test_helper_agrees_with_the_real_callee(self):
+        # The reviewer's condition: the allowlist must be the callee's real
+        # parameter names. If the helper and api.set_directive ever disagree,
+        # the filter drops a live field -- which is how `type` was lost. This
+        # asserts the two contracts are the same set, not merely non-empty.
+        names = self.agent_mod._set_directive_params(
+            self.agent_mod.api.set_directive)
+        real = {n for n, p in inspect.signature(
+            self.agent_mod.api.set_directive).parameters.items()
+            if n != "bot" and p.kind in (p.POSITIONAL_OR_KEYWORD,
+                                         p.KEYWORD_ONLY)}
+        self.assertEqual(names, real,
+                         "the filter's allowed set differs from the callee's "
+                         "real signature: a key in the gap is silently dropped")
+        self.assertIn("directive_type", names,
+                      "directive_type missing: api.py:428 takes that name")
 
     def test_run1_stray_container_key_is_dropped_and_dispatched(self):
         # The exact directive shape that failed run 1: a known kind carrying an

@@ -163,13 +163,15 @@ def _set_directive_params(fn=None):
     except (TypeError, ValueError):
         # Unintuitable callee (C function, patched Mock). Fall back to the
         # documented contract rather than returning an empty set, which would
-        # silently strip every field.
-        return {"type", "target", "count", "radius", "x", "y", "z", "extra"}
+        # silently strip every field. Must be the CALLEE's names: api.py:428
+        # takes `directive_type`, not `type`. A fallback carrying `type` would
+        # agree with neither the callee nor the caller (reviewer, 2026-11-12).
+        return {"directive_type", "target", "count", "radius", "x", "y", "z", "extra"}
     names = {
         n for n, p in sig.parameters.items()
         if n != "bot" and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)
     }
-    return names or {"type", "target", "count", "radius", "x", "y", "z", "extra"}
+    return names or {"directive_type", "target", "count", "radius", "x", "y", "z", "extra"}
 
 
 class BotRunner:
@@ -1030,7 +1032,14 @@ class BotRunner:
         # _set_directive_params rather than hard-coded here, so a signature
         # change cannot silently re-open this.
         _accepted = _set_directive_params()
-        _dropped = sorted(set(params) - _accepted)
+        # api.set_directive names its second parameter `directive_type`
+        # (api.py:428), but this function and _run_directive both call the kind
+        # `type`, and _run_directive pops it to pass positionally. So `type` is
+        # a legitimate key here: admit it explicitly rather than letting the
+        # filter see it as "not in the signature" and drop the field that names
+        # the directive. The rename to the callee's spelling happens in
+        # _run_directive, at the splat, on a copy.
+        _dropped = sorted(set(params) - _accepted - {"type"})
         if _dropped:
             # Name them, never drop them silently: a field the planner meant to
             # send vanishing without a trace is how this class of bug hides.
@@ -1043,7 +1052,7 @@ class BotRunner:
         # get there. Default the waypoint recipient to whoever gave the order
         # so "find me an end city" ends with a pin in their TemPad. L3 can
         # override by setting share_with explicitly (including "" to opt out).
-        if params["type"] == "LOCATE":
+        if params.get("directive_type", params.get("type")) == "LOCATE":
             extra = params.get("extra")
             extra = dict(extra) if isinstance(extra, dict) else {}
             if "share_with" not in extra and getattr(self, "_task_sender", ""):
@@ -2070,7 +2079,18 @@ class BotRunner:
 
         while retries <= self.L2_MAX_RETRIES and not self._stop_event.is_set():
             params = dict(directive_params)
-            dtype = params.pop("type")
+            # Callers name the kind `type` (the L3 path renames kind->type, the
+            # L1 parser builds 'type'); api.set_directive names its parameter
+            # `directive_type`. Accept either spelling so a caller may hand over
+            # the callee-shaped dict unchanged.
+            dtype = params.pop("type", None)
+            if dtype is None:
+                dtype = params.pop("directive_type", None)
+            else:
+                # The dict said `type`; the callee's keyword is
+                # `directive_type`. dtype is passed POSITIONALLY, so the splat
+                # must simply not still carry either name.
+                params.pop("directive_type", None)
 
             try:
                 resp = api.set_directive(self.name, dtype, **params)
