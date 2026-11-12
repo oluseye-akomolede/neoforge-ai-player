@@ -5,6 +5,7 @@ Supports multiple bots from a single process, each with its own
 observe → think → act loop running in a separate thread.
 """
 
+import inspect
 import json
 import os
 import re
@@ -147,6 +148,28 @@ def reset_all():
         except Exception:
             pass
     return list(_all_runners.keys())
+
+
+# The directive params api.set_directive accepts (everything but the positional
+# `bot`). Computed once from the REAL function object, at import, and not from
+# whatever `api.set_directive` is bound to at call time: a patched or wrapped
+# callee reports *args/**kwargs as its signature, which would make the filter
+# drop every key. Computed at import so the cost is paid once, not per
+# directive.
+def _set_directive_params(fn=None):
+    """Names api.set_directive accepts as keywords, excluding `bot`."""
+    try:
+        sig = inspect.signature(api.set_directive if fn is None else fn)
+    except (TypeError, ValueError):
+        # Unintuitable callee (C function, patched Mock). Fall back to the
+        # documented contract rather than returning an empty set, which would
+        # silently strip every field.
+        return {"type", "target", "count", "radius", "x", "y", "z", "extra"}
+    names = {
+        n for n, p in sig.parameters.items()
+        if n != "bot" and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)
+    }
+    return names or {"type", "target", "count", "radius", "x", "y", "z", "extra"}
 
 
 class BotRunner:
@@ -997,6 +1020,25 @@ class BotRunner:
                 return f"FAILED DROP {e}"
         params = dict(directive)
         params["type"] = params.pop("kind")
+        # Only keys api.set_directive actually accepts may reach it: the call
+        # below splats this dict, so any extra L3 key is a TypeError that kills
+        # the directive before dispatch (run 1, 2026-11-12: L3 emitted
+        # kind=SEARCH_AND_STORE carrying a stray `container` key, l2-mcp flagged
+        # it unknown_kind and passed it through fail-open, and every attempt
+        # died with "set_directive() got an unexpected keyword argument
+        # 'container'"). The accepted set is read from the real signature by
+        # _set_directive_params rather than hard-coded here, so a signature
+        # change cannot silently re-open this.
+        _accepted = _set_directive_params()
+        _dropped = sorted(set(params) - _accepted)
+        if _dropped:
+            # Name them, never drop them silently: a field the planner meant to
+            # send vanishing without a trace is how this class of bug hides.
+            print(f"[{self.name}/L1] dropping non-directive key(s) "
+                  f"{_dropped} for {params.get('type')}: not in "
+                  f"api.set_directive's signature")
+            for _k in _dropped:
+                params.pop(_k)
         # A located structure is only half an answer — the player still has to
         # get there. Default the waypoint recipient to whoever gave the order
         # so "find me an end city" ends with a pin in their TemPad. L3 can

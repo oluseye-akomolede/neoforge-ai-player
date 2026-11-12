@@ -1274,12 +1274,23 @@ The command, and what each figure is for:
 P=$(kubectl -n minecraft-test get pod -l app=aibot-agent -o jsonpath='{.items[0].metadata.name}')
 L=$(kubectl -n minecraft-test logs $P -c agent)
 printf '%s\n' "$L" | wc -l                    # total, for "did anything append"
-printf '%s\n' "$L" | grep -c 'Scout/script'   # MUST be 0 before run 2
+printf '%s\n' "$L" | grep -c 'Scout/script] dispatch:'   # MUST be 0 before run 2
+printf '%s\n' "$L" | grep -c 'Scout/script] not executed:' # MUST be 0 before run 2
 printf '%s\n' "$L" | grep -c 'script tick'    # MUST be 0 before run 2
 ```
 
-Measured 15:27:26Z: 337 lines, `Scout/script` **0**, `script tick` **0**. The two
-zeros are the ones that matter; the total is only a cursor. **Count the
+**Do not gate on bare `Scout/script` (found 04:19Z 11-12).** The resolver
+prints `[Scout/script] no bindings at /srv/aibot-scripts/bindings.json; this bot
+runs the planner` on every start of a planner-mode bot. On a correctly inert pod
+that is **1**, not 0, so the old `grep -c 'Scout/script' # MUST be 0` failed on
+a healthy run and would have been "fixed" by loosening a check that was right.
+Gate on the two behaviour lines (a `dispatch:` or a `not executed:` line) or on
+`script tick`; the bracket tag alone matches the resolver's own status line.
+
+Measured 15:27:26Z: 337 lines, `dispatch:`/`not executed:` **0**, `script tick`
+**0**. The two zeros are the ones that matter; the total is only a cursor. (The
+`Scout/script` tag itself read 1 on the healthy 04:19Z pod — see the hazard note
+below the command.) **Count the
 behaviour, not the bot's name:** `grep -ci scout` returns 52 on this log and
 every one of them is unrelated (profile discovery, a fleet respawn, and 47 HTTP
 connection-pool retries written while the Minecraft server restarted for the
