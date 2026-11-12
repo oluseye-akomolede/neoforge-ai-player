@@ -25,9 +25,16 @@ COPY --from=frontend /build/static ./static
 RUN rm -rf ./scripts
 
 # Tests are development artefacts and have no business in a runtime image: they
-# pull in pytest-only imports and add surface nobody executes. Nothing imports
-# test_*.py, so their absence is not observable at run time (review 2026-11-12).
-RUN rm -f ./test_*.py
+# add surface nobody executes, and nothing in the tree imports them, so their
+# absence is not observable at run time (review 2026-11-12).
+#
+# Three globs because the tree uses three namings, and the first version of this
+# line used only the first: test_*.py at the top level (9 files), *_test.py at
+# the top level (rl_reward_test.py, task_d_fixes_test.py), and tests/. A single
+# `rm -f ./test_*.py` leaves ten test files in the image while the comment says
+# there are none - a claim and an artefact with nothing comparing them. Measured
+# on a clean export: 15 test files -> 0.
+RUN rm -rf ./tests && rm -f ./test_*.py ./*_test.py
 
 ENV PYTHONUNBUFFERED=1
 

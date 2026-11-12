@@ -223,7 +223,11 @@ runner treats it as opaque, read-only data.
 > "the bot is busy" is wrong: that test is true on a *standing-by* bot, so the
 > script would hold forever. Test `task.progress.phase === "idle"` to detect
 > idleness, and treat any shape that cannot be read that way as busy.
-> `evidence/m2-run2/` records both live shapes from TEST.
+> `evidence/m2-run2/get-directive-shapes.txt` records both shapes, captured
+> from a running TEST agent (`api.get_directive("Scout")`, image
+> `sha256:5f34afe4…`, 2026-11-12 13:50Z) rather than written from the expected
+> form. The busy shape was produced by setting a real directive and reading it
+> back mid-flight.
 
 **MINECRAFT BINDING** for `state`: health, food, position `{x,y,z,dim}`,
 inventory, nearby blocks and nearby mobs. The agent's task progress is **not**
