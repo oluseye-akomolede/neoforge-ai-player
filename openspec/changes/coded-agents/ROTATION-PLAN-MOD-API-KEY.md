@@ -11,8 +11,9 @@ lead ruled: rotate. The value is compromised; assume the transcript is readable.
 
 ## Holder list — established from source and manifests only, no values read
 
-The same secret value is held in **two** places under **two different names**. This is
-what makes it a two-sided rotation.
+The same secret value is held in **two Secrets** read by **three consumers** under
+**two different names**. This is what makes it a two-sided rotation: two writes, three
+restarts.
 
 | # | Side | Holder | Citation (file:line) |
 |---|---|---|---|
@@ -153,23 +154,35 @@ it needs no write.
 
 ```bash
 # both pods healthy before we start
-ssh controlplane "kubectl -n minecraft-test get pods -l tier=test -o wide"
+ssh controlplane "kubectl -n minecraft-test get pods -l tier=test -o wide" || exit 1
+
 # record the BEFORE fingerprints of ALL THREE holders so we can prove the change afterwards
 # EVERY hash runs on controlplane, inside the ssh command string (lead ruling): the value
 # never crosses ssh to this VM. Only the 16-char prefix comes back.
+# THE GUARD IS CODE, NOT PROSE (reviewer finding): each read emits "OK <fp>" or "BAD ..." and
+# exits non-zero unless the value is exactly 40 bytes. A down pod or a failed exec yields an
+# empty value, whose sha256 is e3b0c44298fc1c14 -- 16 plausible hex characters. Any step that
+# consumed that would "pass" while testing nothing.
 for s in "agent-config MOD_API_KEY" "mod-api-key api-key"; do
   set -- $s
-  ssh controlplane "kubectl -n minecraft-test get secret $1 -o jsonpath='{.data.$2}' \
-    | base64 -d | sha256sum | cut -c1-16"
+  fp=$(ssh controlplane "kubectl -n minecraft-test get secret $1 -o jsonpath='{.data.$2}' \
+    | base64 -d | sha256sum | cut -c1-16")
+  [ -n "$fp" ] && [ ${#fp} -eq 16 ] || { echo "ABORT: $1/$2 gave no fingerprint (empty/partial read)"; exit 1; }
+  echo "$1/$2 $fp"
 done
 # holder 3 reads the same Secret, but is fingerprinted at its OWN consumer, or a
 # deployment pointing at a different secret would look identical to us.
 # printf %s, NOT printenv: printenv appends a newline, so its sha256 can never equal the
-# base64 -d fingerprint of the Secret (measured: 01ba4719c80b6fe9 from printenv, vs the
-# real f0a2fb80ac069907 for the same 40-byte value). The compare would either fail outright
-# or be "fixed" ad hoc mid-run -- which is how a check stops checking.
-ssh controlplane "kubectl -n minecraft-test exec deploy/l2-mcp -- \
-  sh -c 'printf %s \"\$MOD_API_KEY\" | sha256sum | cut -c1-16'"
+# base64 -d fingerprint of the Secret. Measured on the LIVE value (reviewer, and re-measured):
+#   Secret base64 -d, hashed on controlplane  -> 3b0a18f8580cad25
+#   same value through printenv (+ newline)   -> 2235f29719279a4c
+#   same value through printf %s in the pod   -> 3b0a18f8580cad25   MATCHES
+# The compare would either fail outright or be "fixed" ad hoc mid-run -- which is how a
+# check stops checking.
+fp3=$(ssh controlplane "kubectl -n minecraft-test exec deploy/l2-mcp -- \
+  sh -c 'printf %s \"\$MOD_API_KEY\" | sha256sum | cut -c1-16'")
+[ -n "$fp3" ] && [ ${#fp3} -eq 16 ] || { echo "ABORT: l2-mcp gave no fingerprint"; exit 1; }
+echo "l2-mcp $fp3"
 ```
 
 **Compare three ways, not two** (reviewer finding): all three lines must agree, and step 0
@@ -180,15 +193,29 @@ run would have caused it.
 Expect all three to print `3b0a18f8580cad25`. If any differ, **stop** — the premise of
 this plan (one value in three places) is wrong and must be re-derived.
 
-**Both defects above were measured, not reasoned about.** A throwaway 40-byte Secret
-`rot-quotetest` gave: Secret read + hashed on controlplane → `f0a2fb80ac069907`; the same
-value through `printenv` → `01ba4719c80b6fe9`; through `printf %s` **inside the pod** →
-`f0a2fb80ac069907`. Only the third form is comparable with lines 1–2. The `printf`
-nesting was then tested against a value containing `"`, `$`, `;` and double spaces
-(`rot-quotetest2`, 10 bytes → `e414f9a25c428e1e`) and reproduced that exact fingerprint
-through the four levels of quoting, so the form is safe for values that are not
-alphanumeric. Both throwaway Secrets were deleted afterwards and `get secret | grep -c
-'^rot-'` returned 0.
+**Both defects above were measured, not reasoned about.** On the LIVE value: Secret read
+and hashed on controlplane → `3b0a18f8580cad25`; the same value through `printenv` →
+`2235f29719279a4c`; through `printf %s` **inside the pod** → `3b0a18f8580cad25`. Only the
+third form is comparable with lines 1–2. The `printf` nesting was then tested against a
+value containing `"`, `$`, `;` and double spaces (`rot-quotetest2`, 10 bytes →
+`e414f9a25c428e1e`) and reproduced that exact fingerprint through the four levels of
+quoting, so the form is safe for values that are not alphanumeric. Both throwaway Secrets
+were deleted afterwards and `get secret | grep -c '^rot-'` returned 0.
+
+**A correction to an earlier draft of this plan, kept visible because a later reader
+cannot re-derive it once the value is gone.** That draft claimed `printenv` hashes a
+40-byte value to `01ba4719c80b6fe9`. That is wrong, and instructively so: `01ba4719c80b6fe9`
+is `sha256("\n")` — the hash of **nothing but a newline**, i.e. what `printenv` emits when
+the variable is **empty**. It is not a corrupted 40-byte value. So the old sentence read as
+"printenv corrupts the value" when the real defect is only that it appends a newline, and
+the constant quoted was the empty-output signature this plan's own guard exists to catch.
+Two different failures had been conflated. The three constants, measured on this host:
+
+```
+sha256("")            = e3b0c44298fc1c14   <- what a DOWN pod or a failed exec looks like
+sha256("\n")          = 01ba4719c80b6fe9   <- printenv with an EMPTY variable
+sha256(value + "\n")  = 2235f29719279a4c   <- printenv with the real 40-byte value
+```
 
 **A green line from an empty value is the failure mode to guard against.** Every one of
 these three commands must be checked for *non-empty* output before its fingerprint is
@@ -225,15 +252,41 @@ set -eu
 NS=minecraft-test
 for src in "agent-config MOD_API_KEY rot-agent-config" "mod-api-key api-key rot-mod-api-key"; do
   set -- $src
-  # copy the whole Secret, then rename it; never decode a value here
-  kubectl -n $NS get secret "$1" -o json \
-    | python3 -c 'import json,sys;o=json.load(sys.stdin);o["metadata"].pop("resourceVersion",None);o["metadata"].pop("uid",None);o["metadata"].pop("creationTimestamp",None);o["metadata"]["name"]=sys.argv[1];print(json.dumps(o))' "$3" \
-    | kubectl apply -f -
+  SRC=$1; FIELD=$2; DST=$3
+  # copy the whole Secret, then rename it; never decode a value here.
+  # 'immutable' is stripped too: -o json carries it, so if a source ever became immutable the
+  # COPY would be immutable as well and rollback's apply could not write the rotated Secret
+  # back -- failing exactly when it is needed. Absent on both live sources today; popping it
+  # keeps the copy writable either way.
+  kubectl -n $NS get secret "$SRC" -o json \
+    | python3 -c 'import json,sys;o=json.load(sys.stdin);[o["metadata"].pop(k,None) for k in ("resourceVersion","uid","creationTimestamp","selfLink","immutable")];o["metadata"]["name"]=sys.argv[1];print(json.dumps(o))' "$DST" \
+    | kubectl apply -f - >/dev/null
+
+  # VERIFY THE COPY, NOT THE SOURCE (reviewer finding, medium): hash .data, which is still
+  # base64, so no plaintext reaches stdout or disk. An exists-check would pass for a copy
+  # whose data is empty; this compares content and length against the source it came from.
+  a=$(kubectl -n $NS get secret "$SRC" -o jsonpath="{.data.$FIELD}")
+  b=$(kubectl -n $NS get secret "$DST" -o jsonpath="{.data.$FIELD}")
+  [ -n "$a" ] || { echo "ABORT: $SRC .data.$FIELD is EMPTY"; exit 1; }
+  [ -n "$b" ] || { echo "ABORT: $DST .data.$FIELD is EMPTY"; exit 1; }
+  ha=$(printf %s "$a" | sha256sum | cut -c1-16)
+  hb=$(printf %s "$b" | sha256sum | cut -c1-16)
+  la=$(printf %s "$a" | base64 -d | wc -c)
+  lb=$(printf %s "$b" | base64 -d | wc -c)
+  [ "$la" -eq 40 ] || { echo "ABORT: $SRC decodes to $la bytes, not 40"; exit 1; }
+  [ "$ha" = "$hb" ] && [ "$la" = "$lb" ] \
+    || { echo "ABORT: copy $DST differs from $SRC (src $ha/$la vs copy $hb/$lb)"; exit 1; }
+  echo "$DST verified: fp=$hb len=$lb matches $SRC"
 done
-# confirm the copies exist and are non-empty, WITHOUT printing values
-kubectl -n $NS get secret rot-agent-config rot-mod-api-key -o name
 REMOTE
 ```
+
+This replaces the old evidence line, which read `… mod-api-key … | base64 -d | wc -c → 40`
+and proved only that the **source** decodes to 40 bytes — it never read `rot-mod-api-key`
+at all. Nothing else in the plan touched the copy between step 1 and step 5, so a copy
+with empty data would have looked present (`-o name` only checks existence) right up until
+the rollback needed it. That is the same silent-success shape this plan exists to avoid:
+the failure surfaces only at the moment of recovery.
 
 The rollback and the old-key 401 check both read from `rot-agent-config` /
 `rot-mod-api-key`, never from a VM file.
@@ -280,12 +333,16 @@ one-hour fallback that holder 3 exists to prevent (reviewer finding on `4d43a83`
 ```bash
 for s in "agent-config MOD_API_KEY" "mod-api-key api-key"; do
   set -- $s
-  ssh controlplane "kubectl -n minecraft-test get secret $1 -o jsonpath='{.data.$2}' \
-    | base64 -d | sha256sum | cut -c1-16"
+  fp=$(ssh controlplane "kubectl -n minecraft-test get secret $1 -o jsonpath='{.data.$2}' \
+    | base64 -d | sha256sum | cut -c1-16")
+  [ -n "$fp" ] && [ ${#fp} -eq 16 ] || { echo "ABORT: $1/$2 gave no fingerprint"; exit 1; }
+  echo "$1/$2 $fp"
 done
 # holder 3 at its OWN consumer, after its restart (step 4) -- printf %s, never printenv
-ssh controlplane "kubectl -n minecraft-test exec deploy/l2-mcp -- \
-  sh -c 'printf %s \"\$MOD_API_KEY\" | sha256sum | cut -c1-16'"
+fp3=$(ssh controlplane "kubectl -n minecraft-test exec deploy/l2-mcp -- \
+  sh -c 'printf %s \"\$MOD_API_KEY\" | sha256sum | cut -c1-16'")
+[ -n "$fp3" ] && [ ${#fp3} -eq 16 ] || { echo "ABORT: l2-mcp gave no fingerprint"; exit 1; }
+echo "l2-mcp $fp3"
 ```
 
 Expect **three identical** new fingerprints, all **different** from `3b0a18f8580cad25`.
@@ -417,17 +474,20 @@ for pair in "rot-agent-config agent-config" "rot-mod-api-key mod-api-key"; do
 import json,sys
 o=json.load(sys.stdin)
 o["metadata"]["name"]=sys.argv[1]
-for k in ("resourceVersion","uid","creationTimestamp","selfLink"): o["metadata"].pop(k,None)
+for k in ("resourceVersion","uid","creationTimestamp","selfLink","immutable"): o["metadata"].pop(k,None)
 print(json.dumps(o))' "$2" \
     | ssh controlplane "kubectl -n minecraft-test apply -f -"
 done
 # strip server-side fields or the apply is rejected as stale -- the run-3 trap
 for d in aibot-agent-test minecraft-test-server l2-mcp; do
-  ssh controlplane "kubectl -n minecraft-test rollout restart deploy/$d"
+  ssh controlplane "kubectl -n minecraft-test rollout restart deploy/$d" || { echo "ABORT: restart of $d failed"; exit 1; }
 done
 ```
 
-Then re-run step 0c's fingerprints: all three must return to `3b0a18f8580cad25`.
+Then re-run step 0c's fingerprints: all three must return to `3b0a18f8580cad25`. That
+check carries its own guards, so a failed read here cannot masquerade as a successful
+restore — which matters more in rollback than anywhere else, because this is the one path
+where a false green leaves no second attempt.
 
 ### Rollback chain tested, not assumed
 
