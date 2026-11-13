@@ -2019,14 +2019,24 @@ moves). Measured 10:46Z over `…-cbpz9`'s whole life, `--timestamps`, first to
 last `dispatch:` line:
 
 ```
-214 dispatch: lines / 497.4 s = 25.8 dispatch/min, 2.335 s apart
+worked example, 10:46Z:
+  214 dispatch lines / 497.4 s  ->  25.8 dispatch/min
+  (rate = lines / window_seconds * 60; the interval is window/(lines-1) = 2.335 s,
+   per-gap, not window/lines = 2.324 s. Do not quote the gap without saying which.)
 ```
+
+**This is a worked example, not a checkable constant — re-measure it.** The pod
+keeps ticking, so the same instruction gives a different count minutes later:
+214/497.4 at 10:46Z, 244/564.9 three minutes on. *The rate is the stable
+quantity* — 25.8, 25.9 and 25.8/min across three independent measurements — and
+it is what to compare. A reader who re-runs the command and cannot reproduce the
+raw count has not found a fault; re-derive the window and compare the rate.
 
 **`dispatch:` is the line counted, one per tick.** Each tick also emits
 `N action(s) this tick`, so the bare `[Scout/script]` tag appears in pairs;
-counting the tag doubles the figure (428 vs 214 on this pod). Say which line you
-counted, and take `first→last dispatch` as the window rather than a wall-clock
-span that can exceed the pod's age. "Scout's ticks stop erroring" therefore passes on the
+counting the tag doubles the figure (428 vs 214, pair ratio exactly 2.0). Say
+which line you counted, and take `first→last dispatch` as the window rather than
+a wall-clock span that can exceed the pod's age. "Scout's ticks stop erroring" therefore passes on the
 old image too and cannot attribute anything to `aa7b00a`. **The fix is proven by
 the reviewed suite** (127/127 with the boundary-capture mutation at 126/127),
 not by this rollout; the rollout's job is to show it does not regress.
