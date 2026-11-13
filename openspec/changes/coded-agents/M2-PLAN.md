@@ -1986,6 +1986,18 @@ speculated about a sidecar or proxy. There is no sidecar and no proxy. **The
 URL C2a runs against is a genuinely closed port**, which is exactly why the
 same URL can become C2b's silent port the moment something binds it.
 
+⚠ **The isolation is the env value, not the network.** The real runner is still
+reachable from this pod: `AGENT_SCRIPT_RUNNER_SERVICE_HOST=10.107.105.168` is
+injected and `agent-script-runner.minecraft-test.svc.cluster.local` resolves
+(reviewer, 11:09Z). The agent uses neither, because `config.py:16` reads
+`SCRIPT_RUNNER_URL` and every consumer is downstream of it — a grep of the image
+finds six references, all in `config.py`/`script_tick.py`, and none reads the
+injected variables. So the arms are isolated **because the client keys off one
+env var**, and not because the runner is unreachable. Do not read the
+`ConnectionRefused` above as evidence of isolation. If anyone later points
+`SCRIPT_RUNNER_URL` at the service name, this isolation disappears and C2b's
+listener would be a second, unused socket beside a working runner.
+
 **What the listener must do, and why each part is load-bearing.**
 
 | Requirement | Why it is not optional |
@@ -2013,14 +2025,15 @@ the pod, so the proof survives the process:
 ```
 kubectl -n minecraft-test exec "$POD" -c agent -- sh -c '
   nohup python3 -u -c "
-import socket, sys, time
+import os, socket, sys, time
 s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 s.bind((\"127.0.0.1\", 9)); s.listen(8)
-sys.stderr.write(\"listening\n\"); sys.stderr.flush()
+sys.stderr.write(\"pid %d\n\" % os.getpid()); sys.stderr.write(\"listening\n\"); sys.stderr.flush()
+held = []
 while True:
     c, _ = s.accept()
     sys.stderr.write(\"accepted %d\n\" % int(time.time())); sys.stderr.flush()
-    c.settimeout(60); time.sleep(60); c.close()
+    held.append(c)          # keep it OPEN and never reply; the loop keeps accepting
 " >/tmp/c2b.log 2>&1 &
 ' ; sleep 1 ; kubectl -n minecraft-test exec "$POD" -c agent -- cat /tmp/c2b.log
 ```
@@ -2030,6 +2043,43 @@ up and the arm has not started. If it prints `Address already in use`, something
 else took `:9` between the measurement above and this step — stop and re-probe
 rather than proceeding, because the arm would then be measuring another
 process.
+
+The listener starts with `pid <n>` because **`pgrep`, `pkill`, `ps` and
+`procps` are all absent from this image** (reviewer-measured 11:09Z: `sh: 1:
+pgrep: not found`, inner rc 2). The pid has to come from the listener itself.
+
+**Why the loop does not sleep inside the accept.** An earlier draft called
+`c.settimeout(60); time.sleep(60)` inside the loop, which holds one connection
+for a full minute and accepts nothing else meanwhile. The reviewer reproduced
+the consequence: five clients one second apart produced exactly **one**
+`accepted` line, and a client arriving while the listener was sleeping still saw
+`read timeout` after 300 ms — **identical to C2b evidence, with nothing
+accepted for it**. That is the failure this section's own table warns about, and
+it would make an accept count meaningless. Appending to `held` keeps the socket
+open (so the client still stalls) while leaving the loop free to accept every
+connection. The thread never writes, never closes, and never replies.
+
+**Bound the held list.** `held` grows one socket per tick and nothing reaps it,
+so over a long arm it is an unbounded resource against the pod's existing
+`memory=512Mi` limit. One client is enough to prove the arm; cap it at 32 and
+close the surplus after accepting it, which still exercises the accept path and
+the stall without letting the list run away:
+
+```
+    held.append(c)
+    if len(held) > 32:
+        held.pop(0).close()
+```
+
+**Measured on a bare socket (this VM, 11:12Z): a capped close still reads as a
+timeout, not an EOF.** Six clients against a listener capped at two held
+sockets each stalled for the full 300 ms and none observed the close early —
+the client never writes, so the peer's FIN is not observed before the read
+deadline. So the cap does not by itself contaminate the evidence. It is still
+stated as a bound rather than a working mode, and the residual risk is named
+honestly: this was measured with raw sockets, **not** with `requests` against
+the real client, so if a `connect refused:` appears after the accept epoch,
+check whether the cap was reached before concluding the listener died.
 
 ⚠ **The evidence window starts at the first `accepted` line, not at
 `listening`.** This is the lead's requirement (2) and it is the subtlest trap in
@@ -2056,17 +2106,27 @@ read both back) — but the listener still has to go first, because it is a
 process in the pod and not a Deployment object:
 
 ```
-# find the listener's pid from its own start line, never by a pattern that
-# also matches the cleanup probe below
-kubectl -n minecraft-test exec "$POD" -c agent -- sh -c \
-  'kill $(pgrep -f "python3 -u -c" | head -1)' ; \
-kubectl -n minecraft-test exec "$POD" -c agent -- sh -c \
-  'python3 -c "import socket; s=socket.socket(); s.bind((\"127.0.0.1\",9))"' ; \
-echo rc=$?
+# the pid comes from the listener's OWN start line (evidence 0), not from a
+# process scan -- pgrep/pkill/ps are absent from this image, and a /proc or
+# source-text scan would also match the cleanup probe below
+PID=$(kubectl -n minecraft-test exec "$POD" -c agent -- \
+        sed -n 's/^pid \([0-9][0-9]*\)$/\1/p' /tmp/c2b.log)
+kill_rc=0
+kubectl -n minecraft-test exec "$POD" -c agent -- kill "$PID" || kill_rc=$?
+probe_rc=0
+kubectl -n minecraft-test exec "$POD" -c agent -- \
+  python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",9))' || probe_rc=$?
+echo "PID=$PID kill_rc=$kill_rc probe_rc=$probe_rc"
 ```
 
-`rc=0` means the port is free and the listener is gone; a non-zero rc means it
-is still holding the port — do **not** start the restore until it is gone.
+`probe_rc=0` means the port is free and the listener is gone; a non-zero
+`probe_rc` means it is still holding the port — do **not** start the restore
+until it is gone. `kill_rc` is reported **separately and deliberately**: an
+earlier draft wrote the kill and the probe into one compound command and then
+read `$?`, which is the *probe's* status, not the kill's. The reviewer measured
+`kill_rc=2` against `FINAL rc=0` — the documented rc could not see the kill
+failing at all, and the step looked healthy precisely because a live listener
+keeps the port held. Capture both, print both, judge both.
 Because the env is unchanged in the reuse route, a survivor here is worse than
 in the restart route: the restored pod would keep pointing at `:9`, now served
 by the fake listener, and §8.4.9's re-read would confirm a URL that no longer
@@ -2078,6 +2138,8 @@ also matches the probe and the check kills itself before it can answer.)*
 
 **Evidence to capture, in order.**
 
+0. `pid <n>` from `/tmp/c2b.log` — needed for the deletion step below; it is
+   the listener's own pid, since no process-listing tool exists in this image.
 1. `listening` from `/tmp/c2b.log` — the listener is up. **This is not the
    start of the evidence window.**
 2. The first `accepted <epoch>` — **this is the start of the evidence window.**
@@ -2086,6 +2148,21 @@ also matches the probe and the check kills itself before it can answer.)*
    (`script_client.py:116`), **timestamped after the epoch in 2**. Record the
    exact detail prefix as emitted, and record the line's own timestamp so the
    ordering is checkable and not asserted.
+
+   ⚠ **The agent's log lines carry no timestamp of their own** (reviewer,
+   11:09Z). "Record the line's timestamp" has nothing to read unless the log is
+   fetched with `--timestamps`, which prefixes each line with RFC3339 and was
+   confirmed to agree with the pod clock and the listener epoch within 3 s.
+   **Every `kubectl logs` used for C2b evidence must carry `--timestamps`:**
+
+   ```
+   kubectl -n minecraft-test logs "$POD" -c agent --timestamps --since-time="$SINCE" \
+     | grep -F 'STATE_FALLBACK_TIMEOUT'
+   ```
+
+   Compare that RFC3339 stamp against the accept epoch from evidence 2. Without
+   `--timestamps` the ordering is asserted, not checkable — and asserted
+   ordering is how an arm that saw nothing gets counted as a pass.
    Both `connect timeout:` (`:165`) and `read timeout:` (`:167`) are valid C2b
    evidence, and the code says so at `:163-164`: *"Accepted-then-silent, or
    refused after the connect phase. Both are treated as a stall: the bot cannot
