@@ -53,17 +53,19 @@ patch covers it) but it **does** need its own restart, because it reads at impor
 
 ### Holder-list scope limit (stated, not glossed)
 
-This list covers the two holders reachable from this repo's manifests and the live TEST
-objects. It does **not** cover: (a) any other cluster or namespace — PROD was not
-searched, by standing order; (b) copies inside an image layer, an `env` file baked into
-an image, or a developer machine. If the reviewer knows of another holder, it belongs
-in this table before the script runs.
+This list covers the three consumers of the exposed value reachable from this repo's
+manifests and the live TEST objects. It does **not** cover: (a) any other cluster or
+namespace — PROD was not searched, by standing order; (b) copies inside an image layer,
+an `env` file baked into an image, or a developer machine. If the reviewer knows of
+another holder, it belongs in this table before the script runs.
 
 ## The change
 
-One new value, **generated inside the script**, written to both holders in one atomic
-operation, then both pods restarted. The operator never types or sees the value: it is
-generated, piped to `kubectl`, and only its fingerprint is printed.
+One new value, **generated inside the script**, written to both **Secrets** in one atomic
+operation, then all **three consumers** restarted. Two writes, three restarts: holder 3
+consumes `mod-api-key` and so needs the write but no write of its own. The operator never
+types or sees the value: it is generated, piped to `kubectl`, and only its fingerprint is
+printed.
 
 ### Step 0a — fingerprint sweep, before anything else (lead ruling 3)
 
@@ -153,15 +155,21 @@ it needs no write.
 # both pods healthy before we start
 ssh controlplane "kubectl -n minecraft-test get pods -l tier=test -o wide"
 # record the BEFORE fingerprints of ALL THREE holders so we can prove the change afterwards
+# EVERY hash runs on controlplane, inside the ssh command string (lead ruling): the value
+# never crosses ssh to this VM. Only the 16-char prefix comes back.
 for s in "agent-config MOD_API_KEY" "mod-api-key api-key"; do
   set -- $s
-  ssh controlplane "kubectl -n minecraft-test get secret $1 -o jsonpath='{.data.$2}'" \
-    | base64 -d | sha256sum | cut -c1-16
+  ssh controlplane "kubectl -n minecraft-test get secret $1 -o jsonpath='{.data.$2}' \
+    | base64 -d | sha256sum | cut -c1-16"
 done
-# holder 3 reads the same Secret, but must be fingerprinted at its OWN consumer, or a
-# deployment pointing at a different secret would look identical to us
-ssh controlplane "kubectl -n minecraft-test exec deploy/l2-mcp -- printenv MOD_API_KEY" \
-  | sha256sum | cut -c1-16
+# holder 3 reads the same Secret, but is fingerprinted at its OWN consumer, or a
+# deployment pointing at a different secret would look identical to us.
+# printf %s, NOT printenv: printenv appends a newline, so its sha256 can never equal the
+# base64 -d fingerprint of the Secret (measured: 01ba4719c80b6fe9 from printenv, vs the
+# real f0a2fb80ac069907 for the same 40-byte value). The compare would either fail outright
+# or be "fixed" ad hoc mid-run -- which is how a check stops checking.
+ssh controlplane "kubectl -n minecraft-test exec deploy/l2-mcp -- \
+  sh -c 'printf %s \"\$MOD_API_KEY\" | sha256sum | cut -c1-16'"
 ```
 
 **Compare three ways, not two** (reviewer finding): all three lines must agree, and step 0
@@ -171,6 +179,21 @@ run would have caused it.
 
 Expect all three to print `3b0a18f8580cad25`. If any differ, **stop** — the premise of
 this plan (one value in three places) is wrong and must be re-derived.
+
+**Both defects above were measured, not reasoned about.** A throwaway 40-byte Secret
+`rot-quotetest` gave: Secret read + hashed on controlplane → `f0a2fb80ac069907`; the same
+value through `printenv` → `01ba4719c80b6fe9`; through `printf %s` **inside the pod** →
+`f0a2fb80ac069907`. Only the third form is comparable with lines 1–2. The `printf`
+nesting was then tested against a value containing `"`, `$`, `;` and double spaces
+(`rot-quotetest2`, 10 bytes → `e414f9a25c428e1e`) and reproduced that exact fingerprint
+through the four levels of quoting, so the form is safe for values that are not
+alphanumeric. Both throwaway Secrets were deleted afterwards and `get secret | grep -c
+'^rot-'` returned 0.
+
+**A green line from an empty value is the failure mode to guard against.** Every one of
+these three commands must be checked for *non-empty* output before its fingerprint is
+trusted; an `exec` that fails prints an error to stderr and an empty stdout, and the
+resulting hash of the empty string is a plausible-looking 16 hex characters.
 
 ### Step 1 — back up both secrets as in-cluster copies (lead ruling 1)
 
@@ -248,18 +271,30 @@ taken with `-o yaml` carries `resourceVersion` and rejects as stale — the exac
 made run 3's rollback a silent no-op (`openspec/changes/coded-agents/M2-PLAN.md`, and
 memory: *a yaml backup is not re-appliable*).
 
-### Step 3 — verify both holders changed together
+### Step 3 — verify all three consumers changed together
+
+Step 0 was widened to three consumers; this gate — the one that decides whether rollback
+fires — must be as wide, or a stale l2-mcp mount passes it and surfaces as the silent
+one-hour fallback that holder 3 exists to prevent (reviewer finding on `4d43a83`).
 
 ```bash
 for s in "agent-config MOD_API_KEY" "mod-api-key api-key"; do
   set -- $s
-  ssh controlplane "kubectl -n minecraft-test get secret $1 -o jsonpath='{.data.$2}'" \
-    | base64 -d | sha256sum | cut -c1-16
+  ssh controlplane "kubectl -n minecraft-test get secret $1 -o jsonpath='{.data.$2}' \
+    | base64 -d | sha256sum | cut -c1-16"
 done
+# holder 3 at its OWN consumer, after its restart (step 4) -- printf %s, never printenv
+ssh controlplane "kubectl -n minecraft-test exec deploy/l2-mcp -- \
+  sh -c 'printf %s \"\$MOD_API_KEY\" | sha256sum | cut -c1-16'"
 ```
 
-Expect two **identical** new fingerprints, **different** from `3b0a18f8580cad25`.
-If they differ from each other: **stop and roll back** — a half-rotated pair 401s.
+Expect **three identical** new fingerprints, all **different** from `3b0a18f8580cad25`.
+If any two differ: **stop and roll back** — a half-rotated or stale-mounted holder 401s
+(or, for l2-mcp, degrades silently for up to an hour).
+
+This gate runs **after** step 4's restarts, not before: the two Secret lines are true as
+soon as the patch lands, so reading them early would show a change that no consumer has
+picked up yet.
 
 ### Step 4 — restart all three consumers
 
