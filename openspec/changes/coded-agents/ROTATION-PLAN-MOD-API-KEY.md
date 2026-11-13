@@ -276,7 +276,17 @@ for src in "agent-config MOD_API_KEY rot-agent-config" "mod-api-key api-key rot-
   [ "$la" -eq 40 ] || { echo "ABORT: $SRC decodes to $la bytes, not 40"; exit 1; }
   [ "$ha" = "$hb" ] && [ "$la" = "$lb" ] \
     || { echo "ABORT: copy $DST differs from $SRC (src $ha/$la vs copy $hb/$lb)"; exit 1; }
-  echo "$DST verified: fp=$hb len=$lb matches $SRC"
+
+  # WHOLE-COPY check (reviewer finding, low): the comparison above covers only the
+  # rotated field. agent-config carries 18 keys, so a copy that lost or altered any of
+  # the other 17 would pass. Hash the entire .data object -- still base64, so nothing
+  # decodes and no value reaches stdout or disk -- and compare source to copy. This
+  # proves the copy is whole without naming a single value.
+  wa=$(kubectl -n $NS get secret "$SRC" -o json | python3 -c 'import json,sys,hashlib;print(hashlib.sha256(json.dumps(json.load(sys.stdin)["data"],sort_keys=True).encode()).hexdigest()[:16])')
+  wb=$(kubectl -n $NS get secret "$DST" -o json | python3 -c 'import json,sys,hashlib;print(hashlib.sha256(json.dumps(json.load(sys.stdin)["data"],sort_keys=True).encode()).hexdigest()[:16])')
+  [ -n "$wa" ] && [ "$wa" = "$wb" ] \
+    || { echo "ABORT: copy $DST .data is not identical to $SRC (src $wa vs copy $wb)"; exit 1; }
+  echo "$DST verified: fp=$hb len=$lb matches $SRC; whole .data fp=$wb"
 done
 REMOTE
 ```
@@ -467,8 +477,16 @@ fingerprints differ from each other, step 4's rollouts fail, step 5(a) fails, or
 Restore from the **in-cluster copies** made in step 1 — never from a VM file (lead ruling 1):
 
 ```bash
+set -euo pipefail
 for pair in "rot-agent-config agent-config" "rot-mod-api-key mod-api-key"; do
   set -- $pair
+  # Every stage of the pipe is gated. A missing or unreadable copy makes
+  # `kubectl get` emit NOTHING on stdout (its error goes to stderr), json.load
+  # then raises, `apply` receives empty stdin, and bare bash would carry on to
+  # the next pair and exit 0 -- "rolled back", with a Secret still on the key we
+  # were abandoning. Measured against the live cluster with a missing secret:
+  # body rc 255, loop rc 0. `set -euo pipefail` makes each of those fatal, and
+  # the explicit guard keeps the message readable.
   ssh controlplane "kubectl -n minecraft-test get secret $1 -o json" \
     | python3 -c '
 import json,sys
@@ -476,7 +494,8 @@ o=json.load(sys.stdin)
 o["metadata"]["name"]=sys.argv[1]
 for k in ("resourceVersion","uid","creationTimestamp","selfLink","immutable"): o["metadata"].pop(k,None)
 print(json.dumps(o))' "$2" \
-    | ssh controlplane "kubectl -n minecraft-test apply -f -"
+    | ssh controlplane "kubectl -n minecraft-test apply -f -" \
+    || { echo "ABORT: restore of $2 from $1 failed -- do NOT restart the consumers"; exit 1; }
 done
 # strip server-side fields or the apply is rejected as stale -- the run-3 trap
 for d in aibot-agent-test minecraft-test-server l2-mcp; do
