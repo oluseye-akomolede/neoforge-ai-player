@@ -2071,15 +2071,21 @@ the stall without letting the list run away:
         held.pop(0).close()
 ```
 
-**Measured on a bare socket (this VM, 11:12Z): a capped close still reads as a
-timeout, not an EOF.** Six clients against a listener capped at two held
-sockets each stalled for the full 300 ms and none observed the close early —
-the client never writes, so the peer's FIN is not observed before the read
-deadline. So the cap does not by itself contaminate the evidence. It is still
-stated as a bound rather than a working mode, and the residual risk is named
-honestly: this was measured with raw sockets, **not** with `requests` against
-the real client, so if a `connect refused:` appears after the accept epoch,
-check whether the cap was reached before concluding the listener died.
+**The cap is safe at both layers, measured twice.** On bare sockets (this VM,
+11:12Z): six clients against a cap of two each stalled the full 300 ms and none
+saw an early EOF — the client never writes, so the peer's FIN is not observed
+before the read deadline. That measurement was raw-socket only, so the reviewer
+closed the gap with the **real `requests` client**: eight posts through a cap of
+two all raised `ReadTimeout` and **none** raised `ConnectionError`, i.e. a
+capped close cannot manufacture a `connect refused:` and void the arm. The
+reviewer also found the cap closes sockets *immediately* (accepted and closed in
+the same second) and every client still ran the full 0.303 s, because `requests`
+is blocked in `recv` and never observes the FIN before its own deadline.
+`SCRIPT_TIMEOUT = 0.3` against a ~2.3 s tick means the cap cannot strand an
+in-flight request either: the request holding the oldest socket gave up long
+before the cap could reach it (§8.4.8 for the rate). So the cap is a defensive
+bound with no measured cost, **not** a working mode — and keep it: an unbounded
+list grows one socket per tick against a 512Mi limit.
 
 ⚠ **The evidence window starts at the first `accepted` line, not at
 `listening`.** This is the lead's requirement (2) and it is the subtlest trap in
@@ -2094,11 +2100,25 @@ window is:
 |---|---|
 | **opens** | the first `accepted <epoch>` in `/tmp/c2b.log` |
 | **closes** | the kill, before the restore (§8.4.5.1 deletion) |
+| **granularity** | one second: the accept epoch truncates, so a line inside the first accept second is ambiguous and not counted |
 
 Every tick line used as C2b evidence must have a timestamp **strictly after**
 that first accept epoch. A `read timeout:`/`connect timeout:` line before it is
 not C2b evidence even though it looks identical; a `connect refused:` line after
 it means the listener died mid-arm and the arm is void.
+
+⚠ **The accept epoch is second-resolution, so "strictly after" is one-second
+granularity, not sub-second.** `int(time.time())` truncates, and accepted epochs
+repeat within a run (several ticks land in the same second). A log line stamped
+inside the *same second* as the first accept is therefore **ambiguous**: it could
+have been emitted microseconds before or after the accept that opened the window,
+and the two records have no common clock finer than the second. Treat it as
+follows — a tick line in the first accept second is **not** counted as C2b
+evidence (it is neither confirmed in nor confirmed out); evidence starts with the
+first line strictly later than that second. Use a few seconds of margin after the
+first accept as the clean window. `--timestamps` gives RFC3339 with sub-second
+precision, but the *accept* side does not, so the comparison is only as fine as
+the coarser of the two records.
 
 **Delete it before restoring the env.** With the reuse route the env does not
 change, so the restore is §8.4.9 run **once** at the end (env back, re-pause,
@@ -2160,9 +2180,11 @@ also matches the probe and the check kills itself before it can answer.)*
      | grep -F 'STATE_FALLBACK_TIMEOUT'
    ```
 
-   Compare that RFC3339 stamp against the accept epoch from evidence 2. Without
-   `--timestamps` the ordering is asserted, not checkable — and asserted
-   ordering is how an arm that saw nothing gets counted as a pass.
+   Compare that RFC3339 stamp against the accept epoch from evidence 2, **at
+   one-second granularity** (the accept epoch truncates to whole seconds; see
+   the ambiguity rule above). A line inside the first accept second is not
+   counted. Without `--timestamps` the ordering is asserted, not checkable —
+   and asserted ordering is how an arm that saw nothing gets counted as a pass.
    Both `connect timeout:` (`:165`) and `read timeout:` (`:167`) are valid C2b
    evidence, and the code says so at `:163-164`: *"Accepted-then-silent, or
    refused after the connect phase. Both are treated as a stall: the bot cannot
@@ -2173,8 +2195,10 @@ also matches the probe and the check kills itself before it can answer.)*
    arm on evidence 2 and 4. *(An earlier draft of this step called
    `connect timeout:` C2a's branch and a void; that was wrong, and the code
    comment above is what refutes it.)*
-4. Any `connect refused:` line **after** the accept epoch → the listener died
-   mid-arm; the arm is **void**, not passed.
+4. Any `connect refused:` line **strictly later than the first accept second**
+   → the listener died mid-arm; the arm is **void**, not passed. A `connect
+   refused:` inside the first accept second is ambiguous, not void — it belongs
+   to the C2a gap and is neither evidence nor a failure.
 5. The deletion proof above (`rc=0`), captured before the restore.
 
 **The void rule for this arm is therefore the accept record and its timestamp,
