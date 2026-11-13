@@ -142,8 +142,11 @@ era. So the target is 30 cases per kind, taken from current-era
 inputs -- `replan` takes 21 current-era plus 9 August. The report MUST give,
 for each kind, the pass rate **overall and split by input era**, with the `n`
 for each. When a kind's older-input rate differs markedly from its
-current-input rate, the report MUST flag it as a possible prompt-format drift
-between the eras rather than a difference in model quality.
+current-input rate EXCEEDS 15 percentage points, the report MUST flag it as a
+possible prompt-format drift between the eras rather than a difference in model
+quality. "Marked" means that threshold, not an implementer's judgement; when a
+kind's era split has fewer than 10 cases on either side the flag is withheld and
+the small `n` is stated instead, because a 15-point gap over 9 cases is noise.
 
 #### Scenario: The set is sized
 - **WHEN** the eval set is built
@@ -155,8 +158,9 @@ between the eras rather than a difference in model quality.
 - **THEN** the sample is completed from older-era inputs to reach 30
 - **AND** the report gives that kind's overall rate and its rate per input era,
   each with its `n`
-- **AND** it flags a marked difference between the era rates as possible
-  prompt-format drift, not model quality
+- **AND** it flags a gap over 15 points between the era rates as possible
+  prompt-format drift, not model quality, withholding the flag when either era
+  holds fewer than 10 cases and stating the small `n` instead
 
 #### Scenario: The sample's provenance is stated
 - **WHEN** the report is written

@@ -68,11 +68,14 @@ lead OKs step 2.
       `plan_close` on `plan_ref`; redact secret-like values, write
       `evals/cases/<kind>.jsonl`. Exclude, and count separately, calls with no
       label.
-- [ ] 2.2 Scorer with unit tests, one module per kind family:
-      schema/parse + kind/param surface for `plan`/`exec`/`replan`; label
-      agreement for `classify`; coverage and real-bot-names for `partition`;
-      "the rejecting validator accepts it" for `skill_refine`; goal reached
-      within the step bound for `regenerate`.
+- [ ] 2.2 Scorer with unit tests, for the three kinds the corpus can score:
+      `plan` = JSON parses, `validate_plan_dict` accepts it, every
+      `directive.kind` is in `DIRECTIVE_KINDS` in the mod's copied tuple, and
+      `action_binding` accepts its params; `exec` = same kind/param surface on a
+      non-empty directive list; `replan` = a `Subtask` that parses and validates.
+      Each check FAILS CLOSED: a guest table that could not be read is an error,
+      never a pass. `classify`, `partition`, `skill_refine`, `regenerate` are
+      scored only if inputs are sourced (L2); otherwise deferred with the reason.
 - [ ] 2.3 Runner CLI + `evals/config.yaml` (`endpoint`, `model`, `timeout`,
       `concurrency: 1`); refuses to write a report when the case set is empty or
       the endpoint does not answer.
