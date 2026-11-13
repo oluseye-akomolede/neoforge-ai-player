@@ -46,9 +46,11 @@ lead OKs step 2.
       from config/env and does not hardcode it.
 - [x] 1.6 Round 2 on de7e420: PASS with one correction (review 19d671c). The
       era-preference and the 30-minimum were jointly unsatisfiable for `replan`
-      (current era holds 21). Precedence stated: current-era rate is the
-      baseline for that kind, the shortfall reported, older-era cases only with
-      the all-era rate shown separately, never blended.
+      (current era holds 21). Lead chose the fill branch with this wording:
+      every scored OUTPUT is today's model, only the INPUT has an era; target
+      30, current-era first, fill replan's shortfall (21 + 9 August), report
+      each kind's rate overall AND per input era with n, and flag a marked
+      era-rate difference as prompt-format drift, not model quality.
 - [ ] 1.7 Hand the correction to the reviewer; put the sha on the row.
 - [ ] 1.8 File the agent's 35-vs-37 directive-kind gap (`_VALID_DIRECTIVE_KINDS`
       missing `AREA_LOOT`, `SKILL`) as a separate finding on the row — lead's

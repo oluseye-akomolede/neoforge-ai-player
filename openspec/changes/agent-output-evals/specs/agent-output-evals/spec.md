@@ -135,13 +135,15 @@ eras, and MUST prefer inputs recorded with the model the agent runs today. The
 report MUST state how many cases come from each era, because a baseline drawn
 from an older model is not a baseline for today's.
 
-**Precedence.** Preferring the current era wins over reaching 30. Where a kind
-cannot reach 30 from the current era, that kind's baseline is its
-**current-era-only** rate, and the shortfall is reported in the per-era line
-required above. Cases from older eras MAY be added to that kind only if the
-report also gives the all-era rate separately, so the current-era-only rate that
-the baseline rests on stays visible. A single blended rate over mixed eras MUST
-NOT be presented as the baseline for a kind.
+**Precedence: reach 30, current era first.** In a replay eval every scored
+output comes from the configured model (today's); only the **input** has an
+era. So the target is 30 cases per kind, taken from current-era
+(`qwen3-coder:30b`) inputs first, and any shortfall filled from older-August
+inputs -- `replan` takes 21 current-era plus 9 August. The report MUST give,
+for each kind, the pass rate **overall and split by input era**, with the `n`
+for each. When a kind's older-input rate differs markedly from its
+current-input rate, the report MUST flag it as a possible prompt-format drift
+between the eras rather than a difference in model quality.
 
 #### Scenario: The set is sized
 - **WHEN** the eval set is built
@@ -150,10 +152,11 @@ NOT be presented as the baseline for a kind.
 
 #### Scenario: A kind is short of 30 in the current era
 - **WHEN** a kind has fewer than 30 current-era cases (today: `replan`, 21)
-- **THEN** the report gives that kind's current-era-only rate as its baseline
-- **AND** it states the shortfall and the count it was drawn from
-- **AND** if older-era cases are added, it gives the all-era rate separately and
-  does not blend the two into one headline number
+- **THEN** the sample is completed from older-era inputs to reach 30
+- **AND** the report gives that kind's overall rate and its rate per input era,
+  each with its `n`
+- **AND** it flags a marked difference between the era rates as possible
+  prompt-format drift, not model quality
 
 #### Scenario: The sample's provenance is stated
 - **WHEN** the report is written
