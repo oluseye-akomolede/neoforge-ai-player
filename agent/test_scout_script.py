@@ -434,6 +434,55 @@ class _SkipRecorderRunner(unittest.TextTestRunner):
     resultclass = _SkipRecorder
 
 
+class _SkipIsFailure:
+    """Wrap one test case so a skip inside it is recorded as a failure.
+
+    Needed because the RESULT CLASS comes from the runner, and discovery builds
+    its own: a module cannot swap it. `load_tests` is the hook discovery does
+    honour, and it hands back a suite, so the interception has to happen per
+    test case instead of per result.
+
+    Everything is delegated to the real test case except `__call__`, which hands
+    the test a thin result proxy that rewrites addSkip and forwards the rest.
+    """
+
+    def __init__(self, test):
+        self._test = test
+
+    def __call__(self, result):
+        outer = result
+
+        class _Proxy:
+            def addSkip(self, test, reason):
+                exc = AssertionError(
+                    f"test skipped instead of running: {reason}. "
+                    "A skip is not evidence; red is the correct outcome.")
+                outer.addFailure(test, (AssertionError, exc, exc.__traceback__))
+
+            def __getattr__(self, name):
+                return getattr(outer, name)
+
+        self._test(_Proxy())
+
+    def __getattr__(self, name):
+        return getattr(self._test, name)
+
+
+def load_tests(loader, tests, pattern):
+    """Convert every test in this module into a skip-is-failure wrapper.
+
+    Discovery calls this; without it the recorder above only applies to a direct
+    `python3 test_scout_script.py` run, which is NOT how the suite is invoked.
+    Measured 2026-11-13: a skip under discovery printed `OK (skipped=1)` rc=0
+    with the guard green, so the general case was still open one level in.
+    """
+    suite = unittest.TestSuite()
+    for test in tests:
+        for case in test:
+            suite.addTest(_SkipIsFailure(case))
+    return suite
+
+
 if __name__ == "__main__":
     result = _SkipRecorderRunner(verbosity=2).run(
         unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__]))
