@@ -126,17 +126,34 @@ another bot's unrelated calls.
 
 The corpus this change was sized against holds, per kind: `exec` 1545 `call`
 records with 1530 outcomes, `plan` 299, `replan` 271, and 359 `plan_close`
-records, all on the bot's PVC.
+records, all on the bot's PVC. Split by model era, the current model
+(`qwen3-coder:30b`) holds `exec` 148, `plan` 37 and `replan` **21** — so the
+30-case minimum cannot be met from the current era for `replan`.
 
 The sample MUST be stratified across the bots and across the corpus's model
 eras, and MUST prefer inputs recorded with the model the agent runs today. The
 report MUST state how many cases come from each era, because a baseline drawn
 from an older model is not a baseline for today's.
 
+**Precedence.** Preferring the current era wins over reaching 30. Where a kind
+cannot reach 30 from the current era, that kind's baseline is its
+**current-era-only** rate, and the shortfall is reported in the per-era line
+required above. Cases from older eras MAY be added to that kind only if the
+report also gives the all-era rate separately, so the current-era-only rate that
+the baseline rests on stays visible. A single blended rate over mixed eras MUST
+NOT be presented as the baseline for a kind.
+
 #### Scenario: The set is sized
 - **WHEN** the eval set is built
 - **THEN** each of `plan`, `exec` and `replan` carries at least 30 cases counted
   from the corpus, or the report states how many it carries and why that is fewer
+
+#### Scenario: A kind is short of 30 in the current era
+- **WHEN** a kind has fewer than 30 current-era cases (today: `replan`, 21)
+- **THEN** the report gives that kind's current-era-only rate as its baseline
+- **AND** it states the shortfall and the count it was drawn from
+- **AND** if older-era cases are added, it gives the all-era rate separately and
+  does not blend the two into one headline number
 
 #### Scenario: The sample's provenance is stated
 - **WHEN** the report is written

@@ -44,9 +44,13 @@ lead OKs step 2.
       model is `qwen3-coder:30b`. Durability is not a problem: `AIBOT_TRAJECTORY_DIR`
       is set in the pod and files are on the longhorn PVC; the spec reads the dir
       from config/env and does not hardcode it.
-- [ ] 1.6 Hand to the reviewer for round 2; put the commit sha on the row
-      (`qitem-20261113162928-37115062c5f6665a`).
-- [ ] 1.7 File the agent's 35-vs-37 directive-kind gap (`_VALID_DIRECTIVE_KINDS`
+- [x] 1.6 Round 2 on de7e420: PASS with one correction (review 19d671c). The
+      era-preference and the 30-minimum were jointly unsatisfiable for `replan`
+      (current era holds 21). Precedence stated: current-era rate is the
+      baseline for that kind, the shortfall reported, older-era cases only with
+      the all-era rate shown separately, never blended.
+- [ ] 1.7 Hand the correction to the reviewer; put the sha on the row.
+- [ ] 1.8 File the agent's 35-vs-37 directive-kind gap (`_VALID_DIRECTIVE_KINDS`
       missing `AREA_LOOT`, `SKILL`) as a separate finding on the row — lead's
       direction — not fixed in this change.
 
