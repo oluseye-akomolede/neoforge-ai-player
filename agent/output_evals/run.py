@@ -242,7 +242,11 @@ def main(argv=None):
         return 3
 
     run_params = {
-        "per_kind": per_kind,
+        # In --cases-in mode the set was built elsewhere, so per-kind is not
+        # this run's parameter to claim; report the sizes that were loaded.
+        "per_kind": per_kind if not args.cases_in else None,
+        "per_kind_source": "cases-in (set built by write_cases)"
+                           if args.cases_in else "sampled here",
         "cases_total": sum(n_cases.values()),
         "cases_bytes": sum(case_sizes.values()) if case_sizes else None,
         "cases_bytes_by_kind": case_sizes or None,

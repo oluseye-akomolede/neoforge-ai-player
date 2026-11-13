@@ -59,6 +59,30 @@ class RunnerTests(unittest.TestCase):
         self.assertFalse(os.path.exists(self.out),
                          "a report from a dead endpoint is the defect")
 
+    def test_cases_in_path_is_exercised_by_the_job_and_works(self):
+        """--cases-in is how the Job actually runs; nothing else covers it.
+
+        Every other test here goes through --trajectory-dir. The Job scores a
+        pre-built ConfigMap set, and on that path per_kind is not sampled, so
+        an unguarded reference to it crashed before any model was called.
+        """
+        cases = os.path.join(self.tmp.name, "cases")
+        os.makedirs(cases)
+        with open(os.path.join(cases, "exec.jsonl"), "w") as f:
+            f.write(json.dumps({"kind": "exec", "call_id": "c1", "bot": "scout",
+                                "model": CURRENT, "prompt_system": "s",
+                                "prompt_user": "u", "world_state_summary": "w",
+                                "recorded_output": "{}", "label": "",
+                                "label_source": ""}) + "\n")
+        rc = run.main(["--config", self.cfg, "--cases-in", cases,
+                       "--out", self.out, "--dry-run"])
+        self.assertEqual(rc, 0, "the --cases-in path must not crash")
+        with open(self.out) as f:
+            rp = json.load(f)["run_parameters"]
+        self.assertIsNone(rp["per_kind"], "no sampling happened on this path")
+        self.assertEqual(rp["per_kind_source"], "cases-in (set built by write_cases)")
+        self.assertEqual(rp["cases_total"], 1)
+
     def test_dry_run_makes_no_model_calls(self):
         self._write([_record_call("c1", "exec"),
                      {"type": "outcome", "call_id": "c1", "satisfied": True}])
