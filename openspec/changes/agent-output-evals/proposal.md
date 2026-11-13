@@ -36,14 +36,16 @@ No code in this step.
 This determines how the eval set can be sourced, so it is part of the design,
 not an implementation detail.
 
-- **Plan / exec / replan: recorded in full.** `agent/trajectory_log.py` writes
-  an append-only JSONL stream (`agent_trajectories/trajectory-YYYY-MM-DD.jsonl`)
-  with, per call, `prompt_system`, `prompt_user`, `world_state_summary`,
-  `response_raw`, `parsed`, and `parse_error`; and later an `outcome` record
-  (`satisfied`, `strategy`, `reason`) joined by `call_id`. The three L3 call
-  kinds therefore have exactly the `(prompt → response → outcome)` triples an
-  eval set needs, including the model's true ground truth —
-  `criteria_eval` settling the subtask.
+- **Plan / exec / replan: recorded, but the ground truth is joined for `exec`
+  only.** `agent/trajectory_log.py` writes an append-only JSONL stream
+  (`agent_trajectories/trajectory-YYYY-MM-DD.jsonl`) with, per call,
+  `prompt_system`, `prompt_user`, `world_state_summary`, `response_raw`,
+  `parsed`, `parse_error` and `plan_ref`. An `outcome` record (`satisfied`,
+  `strategy`, `reason`) is written on `call_id` — but `log_outcome` is called
+  once in the repo (`plan_orchestrator.py:616`) and only for `exec`; neither
+  `call_plan` nor `call_replan` returns the `call_id` its record was written
+  under. `plan` and `replan` therefore get their labels through `plan_ref` and
+  the plan archive, which is a derivation the report must name.
 - **Chat, classify, fleet-partition, regenerate: not recorded.** These paths
   call `OLLAMA_URL` and log nothing. Their eval inputs must be sourced another
   way, and the proposal says which; see the inventory.
@@ -53,6 +55,24 @@ not an implementation detail.
   like a local helper and is not one. They are out of scope for the local-model
   baseline; if they are ever in scope they are a separate eval against a
   different endpoint.
+
+## The corpus has no durability guarantee
+
+The corpus the eval is built from is written wherever `agent_trajectories/`
+falls under the agent's working directory, and **nothing persists it**. The only
+PVC in `deploy/agent-deployment.yaml` mounts at `/opt/aibot-agent/data`;
+`trajectory_log.DIR` resolves to `dirname(PROFILE_PATH)/agent_trajectories` —
+`/opt/aibot-agent/profiles/agent_trajectories` when `PROFILE_PATH` is set as
+`deploy/agent.env.example` shows, or `/opt/aibot-agent/agent_trajectories` if it
+is not — and no manifest sets `AIBOT_TRAJECTORY_DIR`. Either way it is
+container-local: a restart destroys it, including this morning's 14:53Z
+rollout.
+
+So the sizing in this change is a target, not a measurement. **Step 2 counts
+what exists before any kind is promised 30 cases**, and reports a shortfall as a
+shortfall. Making the corpus durable (a `subPath` on the existing PVC, or an
+`AIBOT_TRAJECTORY_DIR` under `/opt/aibot-agent/data`) is a separate, small
+change this one depends on — it is not built here.
 
 ## Owner decisions
 

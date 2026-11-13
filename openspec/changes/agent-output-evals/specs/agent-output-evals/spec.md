@@ -30,8 +30,15 @@ answer must have. Cases MUST be sourced from data the agent really produced, and
 the report MUST say where each kind's cases came from.
 
 For `plan`, `exec` and `replan` the source is the agent's trajectory log
-(`agent/trajectory_log.py`), joining each `call` record to its `outcome` record
-on `call_id`. A case whose `outcome` is missing MUST NOT be counted as a
+(`agent/trajectory_log.py`). `exec` cases join each `call` record to its
+`outcome` record on `call_id`. `plan` and `replan` have no `outcome` record —
+`log_outcome` has one call site, on `exec_call_id` — so their attribution is
+**plan-level**: a `plan`/`replan` call record carries `plan_ref`, and the
+terminal `plan_close` record for that `plan_ref` carries the plan's `status`.
+That attribution is weaker than `exec`'s: a plan that closed `complete` does not
+mean every subtask it proposed was good, so the spec asks for the plan-level
+rate and does not claim a per-call one. The report MUST name which derivation a
+case used, and a case whose label cannot be derived MUST NOT be counted as a
 success.
 
 Secret-like values in a recorded input (API keys, tokens, DSNs, player names)
@@ -46,9 +53,10 @@ only locally — the committed file never carries the raw value.
   what the model did
 
 #### Scenario: No outcome means no credit
-- **WHEN** a trajectory `call` record has no matching `outcome` record
+- **WHEN** an `exec` trajectory `call` record has no matching `outcome` record,
+  or a `plan`/`replan` case's label cannot be derived from the plan archive
 - **THEN** that case is excluded from the pass-rate denominator and counted in
-  a separate `no_outcome` bucket
+  a separate `no_label` bucket
 
 ### Requirement: Scoring Is Automatic Where an Automatic Check Exists
 
@@ -62,6 +70,12 @@ A judge model MUST be used only for a kind where no automatic check decides the
 case — in practice `converse` — and the report MUST name the judge, its endpoint
 and its prompt.
 
+The directive surface an `exec` case is scored against MUST be the **mod's**
+`DIRECTIVE_KINDS` (`script_client.py:35`), not the agent's narrower
+`_VALID_DIRECTIVE_KINDS` (`l3_planner.py:204`), because the mod is what
+executes: a directive the mod accepts is valid whether or not the agent's own
+list names it.
+
 #### Scenario: A check exists
 - **WHEN** a case's kind has an automatic check
 - **THEN** it is scored by that check and the judge is not consulted
@@ -74,13 +88,16 @@ and its prompt.
 ### Requirement: The Main Planner Has At Least 30 Cases Per Kind
 
 The eval set MUST carry at least about 30 cases for each of `plan`, `exec` and
-`replan`. If the recorded data does not yield 30 for a kind, the shortfall MUST
-be reported as a shortfall with the count, not filled with constructed cases.
+`replan` **when the recorded corpus holds that many**. The set is sized from a
+count of what the corpus actually contains, taken before the number is
+promised: a kind whose corpus cannot yield 30 MUST be reported with the count it
+has and the reason, and MUST NOT be filled with constructed cases or padded from
+another bot's unrelated calls.
 
 #### Scenario: The set is sized
 - **WHEN** the eval set is built
-- **THEN** each of `plan`, `exec` and `replan` carries at least 30 cases, or
-  the report states how many it carries and why that is fewer
+- **THEN** each of `plan`, `exec` and `replan` carries at least 30 cases counted
+  from the corpus, or the report states how many it carries and why that is fewer
 
 ### Requirement: Rerunning Against Another Model Changes Config Only
 
@@ -107,6 +124,18 @@ check that rejected it.
 A report MUST NOT be produced from a run that could not read its inputs: a
 missing trajectory file, an unreachable endpoint or an empty case set STOPS the
 run with a non-zero exit, rather than reaching a verdict.
+
+The trajectory corpus MUST be counted before the report is written, and the
+corpus's durability MUST be reported with the result: the trajectory directory is
+container-local unless `AIBOT_TRAJECTORY_DIR` points inside the mounted volume,
+so a restart destroys it. A run MUST NOT present a rate over a corpus whose
+survival it has not checked.
+
+#### Scenario: The corpus is counted
+- **WHEN** a report is written
+- **THEN** it states the number of `call` records, the number joined to a label,
+  and the number of distinct days the corpus covers
+- **AND** it states whether the trajectory directory is on the persistent volume
 
 #### Scenario: A failing case is inspectable
 - **WHEN** a kind has any failing case

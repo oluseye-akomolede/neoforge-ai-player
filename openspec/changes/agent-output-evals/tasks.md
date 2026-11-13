@@ -15,21 +15,41 @@ lead OKs step 2.
       tag lives in the profile (`agent.py:183`, all five profiles
       `qwen3-coder:30b`), not in `config.py`.
 - [x] 1.2 Establish what is already recorded: `trajectory_log.py` holds
-      prompt + verbatim response + `criteria_eval` outcome for `plan`, `exec`,
-      `replan` only. The other nine kinds are logged nowhere; `INVENTORY.md`
-      says how each would be sourced, or that it is deferred.
+      prompt + verbatim response for `plan`, `exec`, `replan`, but an `outcome`
+      record only for `exec` (`log_outcome` has one caller,
+      `plan_orchestrator.py:616`, on `exec_call_id`; `call_plan`/`call_replan`
+      do not return their `call_id`). `plan` and `replan` labels are derived via
+      `plan_ref` + the plan archive. The other nine kinds are logged nowhere;
+      `INVENTORY.md` says how each would be sourced, or that it is deferred.
 - [x] 1.3 Write the proposal, this task list and the spec delta for
       `agent-output-evals`: eval-set format, scorer, size (30 per kind for the
       main planner), CLI + config for endpoint/model, report format.
-- [ ] 1.4 Hand to the reviewer for a spec review; put the commit sha on the row
+- [x] 1.4 Reviewer round 1 (61728ce, 16:33Z) NOT PASS; three findings addressed:
+      the `plan`/`replan` label join (it is `exec`-only — spec corrected to
+      plan-level attribution via `plan_ref` -> `plan_close`, stated as weaker);
+      the `semantic_memory._embed` miss (`nomic-embed-text`, local endpoint,
+      named and scoped out with reasons); and `DIRECTIVE_KINDS` (37, mod) vs
+      `_VALID_DIRECTIVE_KINDS` (35, agent — missing `AREA_LOOT`, `SKILL`; a live
+      agent bug, filed separately). Also recorded the corpus durability gap.
+- [ ] 1.5 Hand 2.0 to the reviewer for round 2; put the commit sha on the row
       (`qitem-20261113162928-37115062c5f6665a`).
+- [ ] 1.6 File the agent's 35-vs-37 directive-kind gap as its own row to the
+      lead (not fixed in this change).
 
 ## Step 2 — build (after reviewer PASS and the lead's OK; not started)
 
+- [ ] 2.0 **Count the corpus first.** Before promising 30 per kind, count
+      `call` / `outcome` / `plan_close` records per phase in the trajectory
+      files, and report the count. If a kind is short, say so with the number.
+- [ ] 2.0a The corpus is container-local (no PVC covers the trajectory dir, no
+      `AIBOT_TRAJECTORY_DIR` set): a small separate change to make it durable is
+      needed for a repeatable baseline. Not built here.
+
 - [ ] 2.1 Eval-set extractor: read `agent_trajectories/trajectory-*.jsonl`,
-      join `call` → `outcome` on `call_id`, redact secret-like values, write
+      join `exec` `call` → `outcome` on `call_id`, and `plan`/`replan` `call` →
+      `plan_close` on `plan_ref`; redact secret-like values, write
       `evals/cases/<kind>.jsonl`. Exclude, and count separately, calls with no
-      outcome.
+      label.
 - [ ] 2.2 Scorer with unit tests, one module per kind family:
       schema/parse + kind/param surface for `plan`/`exec`/`replan`; label
       agreement for `classify`; coverage and real-bot-names for `partition`;
