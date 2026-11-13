@@ -93,6 +93,24 @@ ConfigMap update alone changes nothing the running pod sees.
    (this change touches only the script), so the §8.3.4 control baseline
    should be unchanged. Re-take it rather than assume.
 
+## Expected `script_revision` after the apply (derived 2026-11-13, do not copy the table)
+
+§8.3.5 row 1 quotes `script_revision: 823920fd7277b98b` at 3526 bytes. That is a
+**third** revision — it matches neither the live file nor the fix — so it must
+not be used as the expectation here. `script_tick.py:85-92` computes
+`sha256(source)[:16]`, i.e. the first 16 hex chars of the whole file's sha256:
+
+| file | bytes | `script_revision` |
+|---|---|---|
+| live (broken), `838efd89…` | 4893 | `838efd891994f434` |
+| after apply, `1824967e…` | 5852 | `1824967e200dab94` |
+
+The derivation is validated rather than assumed: applying `_revision_of` to the
+live bytes reproduces the live revision exactly, so the same function on the
+fixed bytes gives the value to expect. If the deployed tick carries
+`823920fd7277b98b`, the cluster is running an older script than the one
+reviewed.
+
 ## Rollback
 
 Same piped form as the apply, and **explicitly namespaced** — the backup was
