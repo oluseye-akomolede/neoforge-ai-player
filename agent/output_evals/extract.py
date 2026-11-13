@@ -107,6 +107,8 @@ class Census:
     total_calls: dict = field(default_factory=lambda: defaultdict(int))
     outcomes: int = 0
     plan_closes: int = 0
+    # status -> count across EVERY plan_close row, joined or not.
+    plan_close_status: dict = field(default_factory=lambda: defaultdict(int))
     replayable: dict = field(default_factory=lambda: defaultdict(int))
     not_replayable: dict = field(default_factory=lambda: defaultdict(int))
     joined: dict = field(default_factory=lambda: defaultdict(int))
@@ -115,7 +117,40 @@ class Census:
     by_era: dict = field(default_factory=dict)   # kind -> {model: {calls, replayable, labelled}}
     days: set = field(default_factory=set)
     bad_lines: int = 0
-    current_era: str = ""   # the model the agent runs today; shortfall is measured against it
+    # The model the agent runs today; the shortfall is measured against it.
+    # Empty means "no era named", which reads as 30 short. That is a LIBRARY
+    # default, not a production mode: evalconfig requires `model` and raises
+    # without it, and era keys are never empty so "" cannot collide with one.
+    current_era: str = ""
+    per_kind: int = MIN_PER_KIND   # n actually run; shortfall is measured against it
+    # kind -> {label: count} for labels harvested from the recording.
+    _labels: dict = field(default_factory=lambda: defaultdict(lambda: defaultdict(int)))
+
+    def _historical(self, kind):
+        """Rate from recorded labels, and the denominator it is a rate of.
+
+        A historical score answers 'how did this END', not 'how good was this
+        output'. Reported with its n so it is never read as a replay result.
+        """
+        counts = dict(self._labels.get(kind, {}))
+        scored = counts.get("satisfied", 0) + counts.get("unsatisfied", 0) \
+            + counts.get("complete", 0) + counts.get("incomplete", 0)
+        good = counts.get("satisfied", 0) + counts.get("complete", 0)
+        return {
+            "counts": counts,
+            "n": scored,
+            "pass": good,
+            "rate": (good / scored) if scored else None,
+            "attribution": "plan_close.status on plan_ref" if kind in ("plan", "replan")
+                           else "outcome.satisfied on call_id",
+            "note": "recorded outcome, not a replay score; cancelled excluded",
+            # n is what is ATTRIBUTABLE to a call -- a closure whose plan_ref
+            # no call carries cannot be scored against one. The corpus-wide
+            # closure count is larger (plan_close rows: 238 complete / 115
+            # failed / 6 cancelled), and quoting one against the other reads
+            # as a discrepancy when it is two different denominators.
+            "n_note": "closures joinable to a call; corpus-wide plan_close rows are more",
+        }
 
     def report(self):
         kinds = {}
@@ -134,19 +169,32 @@ class Census:
                 "labelled": self.joined.get(kind, 0),
                 "no_label": self.no_label.get(kind, 0),
                 "cancelled": self.cancelled.get(kind, 0),
+                # Historical verdict from the recorded label, which for a plan
+                # is plan_close.status (complete/failed), joined on plan_ref.
+                # This is the spec's weaker-attribution historical score: it
+                # says the plan ENDED well, not that the model wrote it well.
+                # Cancelled plans are excluded -- an abandoned run is not a
+                # verdict on the planner.
+                "historical": self._historical(kind),
                 "by_era": {m: dict(v) for m, v in sorted(eras.items())},
                 # The spec's shortfall is about the CURRENT era ("today:
                 # replan, 21"), not about all eras. Measuring it against the
                 # all-era pool reports 0 for replan (271 all-era) and hides
                 # exactly the shortfall the precedence paragraph addresses.
-                "short_of_" + str(MIN_PER_KIND): max(
-                    0, MIN_PER_KIND - eras.get(self.current_era, {}).get("replayable", 0)),
-                "short_of_" + str(MIN_PER_KIND) + "_all_era": max(0, MIN_PER_KIND - replay),
+                # Measured against the n actually RUN, not the default: at
+                # n=25 a current-era pool of 21 is 4 short, not 9.
+                "short_of_" + str(self.per_kind): max(
+                    0, self.per_kind - eras.get(self.current_era, {}).get("replayable", 0)),
+                "short_of_" + str(self.per_kind) + "_all_era": max(0, self.per_kind - replay),
             }
         return {
             "kinds": kinds,
             "outcomes": self.outcomes,
             "plan_closes": self.plan_closes,
+            # Corpus-wide plan_close statuses, independent of the join. Stated
+            # beside the per-kind historical n so the two denominators cannot
+            # be mistaken for each other or reported as a discrepancy.
+            "plan_close_status": dict(self.plan_close_status),
             "distinct_days": len(self.days),
             "bad_lines": self.bad_lines,
         }
@@ -173,11 +221,11 @@ def is_replayable(rec):
     return True
 
 
-def build_cases(records, current_era=""):
+def build_cases(records, current_era="", per_kind=MIN_PER_KIND):
     """(cases, census). Pure function of the records -- easy to test."""
     outcomes_by_call, close_by_plan = {}, {}
     calls = []
-    census = Census(current_era=current_era)
+    census = Census(current_era=current_era, per_kind=per_kind)
 
     for rec in records:
         t = rec.get("type")
@@ -191,6 +239,7 @@ def build_cases(records, current_era=""):
             if ref:
                 close_by_plan[ref] = rec
                 census.plan_closes += 1
+                census.plan_close_status[rec.get("status") or "unknown"] += 1
         elif t == "call":
             calls.append(rec)
 
@@ -246,6 +295,7 @@ def build_cases(records, current_era=""):
         elif label:
             census.joined[kind] += 1
             census.by_era[kind][model]["labelled"] += 1
+            census._labels[kind][label] += 1
         else:
             census.no_label[kind] += 1
 
@@ -305,6 +355,12 @@ def take_era_first(cases, current_era, n=MIN_PER_KIND, seed=0):
 
 
 def write_cases(cases_by_kind, out_dir):
+    """Write one jsonl per kind. Returns {kind: {"path", "bytes"}}.
+
+    The byte size is reported back because the case set ships as a ConfigMap
+    and the API server caps one at 1MiB across all keys: the size is a
+    property of the artifact that has to be stated, not discovered at apply.
+    """
     out = pathlib.Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     written = {}
@@ -313,7 +369,7 @@ def write_cases(cases_by_kind, out_dir):
         with open(path, "w", encoding="utf-8") as f:
             for c in cases:
                 f.write(json.dumps(c.__dict__, sort_keys=True) + "\n")
-        written[kind] = str(path)
+        written[kind] = {"path": str(path), "bytes": path.stat().st_size}
     return written
 
 

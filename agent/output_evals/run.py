@@ -140,11 +140,16 @@ def flag_drift(era_rows):
     return {"flagged": False, "gap_points": round(gap * 100, 1)}
 
 
-def build_report(cfg, census, results, n_cases):
+def build_report(cfg, census, results, n_cases, run_params=None):
     return {
         "config": {"endpoint": cfg.endpoint, "model": cfg.model,
                    "config_path": cfg.path, "timeout": cfg.timeout,
                    "endpoint_from_env": cfg.endpoint_from_env},
+        # Stated on the face of the report, not left to be inferred: what n was
+        # run, how many cases that produced, and how big the set is. The lead
+        # requires these three, and a shortfall is only meaningful against the
+        # n actually run.
+        "run_parameters": run_params or {},
         "corpus": census,
         "cases_per_kind": n_cases,
         "results": results,
@@ -153,6 +158,9 @@ def build_report(cfg, census, results, n_cases):
             "an unscorable case is a failed measurement, not a pass",
             "era flags compare rates of Inputs from different model eras "
             "answered by today's model",
+            "'historical' is the recorded verdict joined from the corpus -- "
+            "for plan/replan, plan_close.status on plan_ref (the spec's "
+            "weaker-attribution score). It is NOT a replay result.",
         ],
     }
 
@@ -205,21 +213,27 @@ def main(argv=None):
     else:
         directory = extract.trajectory_dir(args.trajectory_dir)
         records, bad = extract.read_records(directory)
-        cases, census = extract.build_cases(records, current_era=cfg.model)
+        # n actually run: the shortfall must be measured against THIS, not the
+        # default. At n=25 a current-era pool of 21 is 4 short, not 9.
+        per_kind = args.per_kind or extract.MIN_PER_KIND
+        cases, census = extract.build_cases(records, current_era=cfg.model,
+                                            per_kind=per_kind)
         census.bad_lines = bad
         corpus = census.report()
         print(json.dumps({"corpus": corpus}, indent=2))
 
         current = cfg.model
-        per_kind = args.per_kind or extract.MIN_PER_KIND
         by_kind, tally = {}, {}
         for kind in extract.SCORABLE:
             pool = [c for c in cases if c.kind == kind]
             picked, t = extract.take_era_first(pool, current, n=per_kind)
             by_kind[kind] = picked
             tally[kind] = t
+    case_sizes = {}
     if args.cases_out:
-        print("wrote:", extract.write_cases(by_kind, args.cases_out))
+        written = extract.write_cases(by_kind, args.cases_out)
+        case_sizes = {k: v["bytes"] for k, v in written.items()}
+        print("wrote:", {k: v["path"] for k, v in written.items()})
 
     n_cases = {k: len(v) for k, v in by_kind.items()}
     if sum(n_cases.values()) == 0:
@@ -227,17 +241,24 @@ def main(argv=None):
               file=sys.stderr)
         return 3
 
+    run_params = {
+        "per_kind": per_kind,
+        "cases_total": sum(n_cases.values()),
+        "cases_bytes": sum(case_sizes.values()) if case_sizes else None,
+        "cases_bytes_by_kind": case_sizes or None,
+    }
     if args.dry_run:
         report = {"config": {"endpoint": cfg.endpoint, "model": cfg.model,
                              "config_path": cfg.path,
                              "endpoint_from_env": cfg.endpoint_from_env},
+                  "run_parameters": run_params,
                   "corpus": corpus, "cases_per_kind": n_cases,
                   "results": {}, "dry_run": True,
                   "endpoint_probed": False,
                   "era_tally": tally}
     else:
         results = run(cfg, by_kind)
-        report = build_report(cfg, corpus, results, n_cases)
+        report = build_report(cfg, corpus, results, n_cases, run_params)
         report["era_tally"] = tally
 
     out = pathlib.Path(args.out)

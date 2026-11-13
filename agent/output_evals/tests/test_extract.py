@@ -175,6 +175,60 @@ class CensusTests(unittest.TestCase):
         self.assertEqual(rep["short_of_30"], 30)
         self.assertEqual(rep["short_of_30_all_era"], 9)
 
+    def test_historical_plan_score_is_plan_close_status(self):
+        """plan_close.status IS the plan-level verdict, joined on plan_ref.
+
+        The lead corrected my reading here: satisfied/strategy/reason being
+        null on plan_close rows does not mean no verdict exists -- status is
+        the verdict. Cancelled leaves the rate; it is not a planner failure.
+        """
+        recs = [call("c1", "plan", plan_ref="a"), plan_close("a", "complete"),
+                call("c2", "plan", plan_ref="b"), plan_close("b", "failed"),
+                call("c3", "plan", plan_ref="c"), plan_close("c", "cancelled")]
+        _, census = extract.build_cases(recs)
+        h = census.report()["kinds"]["plan"]["historical"]
+        self.assertEqual(h["counts"].get("complete"), 1)
+        self.assertEqual(h["counts"].get("incomplete"), 1)
+        self.assertEqual(h["n"], 2, "cancelled is excluded from the rate")
+        self.assertAlmostEqual(h["rate"], 0.5)
+        self.assertEqual(h["attribution"], "plan_close.status on plan_ref")
+
+    def test_historical_exec_score_is_outcome_satisfied(self):
+        recs = [call("c1", "exec"), outcome("c1", True),
+                call("c2", "exec"), outcome("c2", False)]
+        _, census = extract.build_cases(recs)
+        h = census.report()["kinds"]["exec"]["historical"]
+        self.assertEqual(h["n"], 2)
+        self.assertAlmostEqual(h["rate"], 0.5)
+        self.assertEqual(h["attribution"], "outcome.satisfied on call_id")
+
+    def test_corpus_wide_plan_close_status_is_reported_separately(self):
+        """Two denominators: closures joinable to a call, and closure rows.
+
+        A closure whose plan_ref no call carries is not attributable to a
+        case, so it cannot be in the historical n -- but its row still exists
+        and the report must say so, or the two figures read as a discrepancy.
+        """
+        recs = [call("c1", "plan", plan_ref="a"), plan_close("a", "complete"),
+                plan_close("orphan", "failed")]      # no call carries 'orphan'
+        _, census = extract.build_cases(recs)
+        rep = census.report()
+        self.assertEqual(rep["kinds"]["plan"]["historical"]["n"], 1)
+        self.assertEqual(rep["plan_close_status"].get("failed"), 1,
+                         "the orphan closure is still counted corpus-wide")
+        self.assertEqual(rep["plan_closes"], 2)
+
+    def test_shortfall_measures_the_n_actually_run(self):
+        """At n=25 a current-era pool of 21 is 4 short, not 9.
+
+        The shortfall is only meaningful against the n that ran.
+        """
+        recs = [call(f"c{i}", "replan", plan_ref=f"p{i}") for i in range(21)]
+        _, census = extract.build_cases(recs, current_era=CURRENT, per_kind=25)
+        rep = census.report()["kinds"]["replan"]
+        self.assertEqual(rep["short_of_25"], 4)
+        self.assertNotIn("short_of_30", rep)
+
     def test_distinct_days(self):
         recs = [call("c1", "exec")]
         recs[0]["ts"] = "2026-08-14T01:00:00"
