@@ -1762,7 +1762,7 @@ the arm it claims to be**, and voids the run if that line is absent.
 |---|---|---|---|
 | **C1 control** | no `bindings.json` (key absent) | `no bindings at /srv/aibot-scripts/bindings.json; this bot runs the planner` (`agent.py`, `FileNotFoundError` branch) → **no `[Scout/script]` action line at all** | any `[Scout/script] dispatch:` line appears |
 | **C2a closed port** | Scout bound, `SCRIPT_RUNNER_URL=http://127.0.0.1:1` | state `fallback_connect_refused`, detail `connect refused: ...` (`script_client.py:169`) | the state is `fallback_timeout` — that is C2b, not C2a |
-| **C2b silent listener** | Scout bound, listener accepts and never replies | state `fallback_timeout`, detail `connect timeout: ...` or `read timeout: ...` (`:165`,`:167`) **and the listener logged `accepted`** (§8.4.5.1) | no fallback line within the tick bound (a hang — report as a defect); or a timeout with **no** accept recorded — the connection never got a handshake |
+| **C2b silent listener** | Scout bound, `SCRIPT_RUNNER_URL` **unchanged** (`127.0.0.1:9`) with a listener bound to it in the same pod (§8.4.5.1) | state `fallback_timeout`, detail `connect timeout: …` or `read timeout: …` (`:165`,`:167`), **timestamped after the listener's first `accepted`** | any `connect refused:` after that accept (listener died mid-arm); or a timeout with **no** accept recorded; or a fallback line before the first accept (that is C2a's window) |
 | **C4 script arm** | Scout bound, runner healthy | `dispatch: STORE_ALL seq=1` **and** the mod's accepted POST | no `dispatch:` line (this is what the 05:57Z regression looked like) |
 
 C2's two sub-cases are distinct and §8.3.4 requires both: a **closed port**
@@ -1933,22 +1933,30 @@ observe, then restore and recreate again.
 
 ### 8.4.5 C2b — accept and never reply (the bounded wait)
 
-Same shape, pointing `SCRIPT_RUNNER_URL` at a listener that accepts and holds
-the connection. The distinguishing evidence is the state is
-`STATE_FALLBACK_TIMEOUT` (`script_client.py:116`) with detail `connect timeout:`
-or `read timeout:` (`:165`,`:167`) — **not** `fallback_connect_refused`. The two
-states are why both cases are required: a refused connection returns
-immediately and cannot exercise a missing timeout. §4.4's accept-and-never-reply test covers
-the unit; this is the same branch on TEST.
+**Revised 11:06Z: this arm reuses the running C2a pod** (lead ruling 11:03Z).
+The URL C2a runs against — `http://127.0.0.1:9` — is a genuinely closed port in
+that pod (measured: nothing listens there, one container, no sidecar), so C2b
+is the *same* URL with something bound to it. No env patch, no restart, no new
+ReplicaSet; the arm transition is a single `bind`. §8.4.5.1 is the procedure.
 
-**Void if** the bot hangs (no fallback line within the documented tick bound).
-That is a real defect and is reported as one, not worked around.
+The distinguishing evidence is state `STATE_FALLBACK_TIMEOUT`
+(`script_client.py:116`) **with** the listener's own `accepted` record
+timestamped before it. Both `connect timeout:` (`:165`) and `read timeout:`
+(`:167`) are acceptable prefixes — `requests` may report either against an
+accepting silent socket, and the code at `:163-164` says the bot cannot tell
+them apart. The two arms are why both cases are required: a refused connection
+returns immediately and cannot exercise a missing timeout. §4.4's
+accept-and-never-reply test covers the unit; this is the same branch on TEST.
 
-**Inherits every guard from §8.4.4** — the only-bound-bot proof, the paused-
-Deployment diff before resuming, and the new pod's env proof. The env cut is the
-same mechanism, so the same traps apply. Its void condition **differs** and is
-stated in §8.4.5.1 step 6: here the discriminator is the listener's accept
-record, not the detail prefix.
+**Void if** the bot hangs (no fallback line within the documented tick bound) —
+a real defect, reported as one, not worked around — or if any `connect refused:`
+line appears **after** the first accept, which means the listener died mid-arm.
+
+**Inherits from §8.4.4** the only-bound-bot proof and the new pod's env proof
+(the env is unchanged here, so the latter is a confirmation, not a patch). It
+does **not** inherit the paused-Deployment diff or the detail-prefix void rule:
+the Deployment stays resumed for the whole reuse, and the discriminator here is
+the accept record and its timestamp (§8.4.5.1, evidence 2 and 4).
 
 #### 8.4.5.1 The listener (docs only; nothing here has run)
 
@@ -1956,23 +1964,47 @@ record, not the detail prefix.
 or how to know it held. This subsection supplies the missing step. It adds no
 new image, no new Service and no new port on the agent.
 
+**Revised 11:06Z on the lead's ruling (11:03Z): C2b reuses the C2a pod.** C2a
+is running now in `aibot-agent-test-6f76986444-vqs44` (started 11:01:22Z) with
+`SCRIPT_RUNNER_URL=http://127.0.0.1:9`, bindings `10cef1b8`, `scout.js`
+`1824967e`, Deployment **resumed**, serving RS `…-6f76986444`. Because the URL
+is already the one C2b needs, there is **no env patch, no second restart and no
+second ReplicaSet**, and the paused-Deployment steps (§8.4.4 step 3) do **not
+apply to C2b**. The arm transition is a single `bind` inside the live container.
+
+**Measured before writing this (read-only, 11:04Z, in that pod):**
+
+| Question | Result | How |
+|---|---|---|
+| Can the container bind port 9 (<1024)? | **Yes** | `id -u` → `0`. No `USER` in `agent/Dockerfile`, no `runAsUser`, no `capabilities` in the pod spec, so the process is root and the unprivileged-port floor does not apply. Confirmed by an actual throwaway `bind(('127.0.0.1',9))` → `BIND-OK`, socket closed immediately |
+| What serves `:9` today? | **Nothing** | One container in the pod (`agent`); no sidecar. A `connect` probe → `ConnectionRefusedError [Errno 111]`. The live log shows `fallback_connect_refused … Connection refused` |
+| Is the Deployment resumed? | **Yes** | `.spec.paused` empty |
+
+The middle row is the one that makes this arm cheap *and* is the one my first
+draft guessed wrong: it said what serves `:9` was "not established" and
+speculated about a sidecar or proxy. There is no sidecar and no proxy. **The
+URL C2a runs against is a genuinely closed port**, which is exactly why the
+same URL can become C2b's silent port the moment something binds it.
+
 **What the listener must do, and why each part is load-bearing.**
 
 | Requirement | Why it is not optional |
 |---|---|
-| Bind `127.0.0.1:<port>` **inside the agent pod's network namespace** | `SCRIPT_RUNNER_URL` is read by the agent process (`script_client.py:161`) and must reach it on loopback; a Service is unreachable at `127.0.0.1` and a Service would also need a new pull target |
-| **Accept the connection, then never write** | An un-accepted connection sitting in the listen backlog still completes the TCP handshake in the kernel, so `connect()` returns success and the client stalls the same way — but the listener has then proved nothing about *its* accept path, and on some stacks a full backlog turns into a refusal (C2a's state, not C2b's). Accepting makes the arm unambiguously C2b |
+| Bind `127.0.0.1:9` **inside the agent pod's network namespace** | The agent reads `SCRIPT_RUNNER_URL` and connects on loopback (`script_client.py:161`); only a process in the same netns is reachable at `127.0.0.1`. Reusing the port means reusing the env, which is what makes the arm a single bind |
+| **Accept the connection, then never write** | An un-accepted connection sitting in the listen backlog still completes the TCP handshake in the kernel, so `connect()` returns success and the client stalls the same way — but the listener has then proved nothing about *its* accept path. Accepting makes the arm unambiguously C2b |
 | Hold the connection **> 300 ms** | `SCRIPT_TIMEOUT = 0.3` (`script_client.py:109`). Holding for less than the bound would let the client read a close as an error and never reach the timeout branch |
 | **Prove the accept happened** | Same state, either prefix, for both arms (§8.4.5.1 evidence 2–3). The listener's own `accepted` record is the only thing that separates C2b from C2a; without it a run where nothing connected could still produce a `connect timeout:` and be misread as a pass |
 
-**Image: the existing agent image.** `harbor.arcadia-ecs.local/aiplayermod/agent`
-is `python:3.11-slim` (`agent/Dockerfile:10`) with a working `python3`, and it
-is already pulled on the node the pod runs on. No new image, no new pull,
-no new registry dependency. The listener is a `python3 -c` one-liner run in the
-**same container** as the agent — a second container in the pod would share the
-network namespace and also work, but a second container changes the pod
-template, and a paused-Deployment template change is the trap §8.4.4 step 3
-exists to catch. **Do not add a container.**
+**Image: the existing agent image, no new pull.**
+`harbor.arcadia-ecs.local/aiplayermod/agent@sha256:a9e75ad1…` is currently
+serving, its base is `python:3.11-slim` (`agent/Dockerfile:10`) with a working
+`python3`, and it is already pulled on the node. The listener is a `python3 -c`
+run in the **same container** as the agent — a second container would share the
+netns and also work, but it changes the pod template, and any template change
+forces a recreation, which is the cost this revision exists to avoid.
+**Do not add a container.** Resources stay as they are: the pod's existing
+`cpu=1 / memory=512Mi` limits are untouched, and the listener idles at a
+negligible cost.
 
 **The listener**, verbatim, to be placed in the pod with `kubectl exec` as a
 backgrounded process. It writes one line per accepted connection to a file in
@@ -1994,26 +2026,34 @@ while True:
 ```
 
 The second command must print `listening`. If it does not, the listener is not
-up and the arm has not started.
+up and the arm has not started. If it prints `Address already in use`, something
+else took `:9` between the measurement above and this step — stop and re-probe
+rather than proceeding, because the arm would then be measuring another
+process.
 
-⚠ **Port choice is a decision, not a default.** `SCRIPT_RUNNER_URL` is
-currently `http://127.0.0.1:9` (read from the live Deployment template at
-11:02Z). *What serves `:9` is not established here* — a sidecar, a proxy on
-loopback, or the runner container itself in the same network namespace; that
-has to be read from the pod before the bind, not assumed. The listener above
-deliberately uses `:9` **only after the env patch in §8.4.4 step 3 has pointed
-`SCRIPT_RUNNER_URL` at the C2b port and the pod has been recreated** — binding
-`:9` while the real route is still live would replace the runner's own
-listener and turn C2b into C4. The order is therefore fixed: patch env →
-recreate pod → prove the new pod's `SCRIPT_RUNNER_URL` → start the listener →
-prove it is listening. If whatever serves `:9` is a separate process, `bind`
-fails with `Address already in use` and the listener step aborts, which is the
-correct outcome: it means the port is still serving the real runner.
+⚠ **The evidence window starts at the first `accepted` line, not at
+`listening`.** This is the lead's requirement (2) and it is the subtlest trap in
+the arm. Ticks that fall between the bind and the first connection are
+**still C2a-shaped**: for that interval the listener is bound but the agent's
+next tick may already have failed to connect, or the listener may be up and not
+yet connected to. Either way a `fallback_connect_refused` line in that gap
+belongs to the closed-port arm and must not be counted as C2b evidence. The
+window is:
 
-**Delete it before restoring the env.** The listener is a process in the pod,
-not a Deployment object, so it is not removed by the restore or by the pod
-recreation — but it dies with the pod, which is exactly why the restore step
-(§8.4.2 procedure) is its deletion:
+| Boundary | Marker |
+|---|---|
+| **opens** | the first `accepted <epoch>` in `/tmp/c2b.log` |
+| **closes** | the kill, before the restore (§8.4.5.1 deletion) |
+
+Every tick line used as C2b evidence must have a timestamp **strictly after**
+that first accept epoch. A `read timeout:`/`connect timeout:` line before it is
+not C2b evidence even though it looks identical; a `connect refused:` line after
+it means the listener died mid-arm and the arm is void.
+
+**Delete it before restoring the env.** With the reuse route the env does not
+change, so the restore is §8.4.9 run **once** at the end (env back, re-pause,
+read both back) — but the listener still has to go first, because it is a
+process in the pod and not a Deployment object:
 
 ```
 # find the listener's pid from its own start line, never by a pattern that
@@ -2026,10 +2066,11 @@ echo rc=$?
 ```
 
 `rc=0` means the port is free and the listener is gone; a non-zero rc means it
-is still holding the port — do **not** restore the env until it is gone, or the
-restored route will be served by the fake listener and the rollback re-read in
-§8.4.9 will prove the wrong thing. Deleting the pod is the guaranteed fallback
-(§8.4.2), and is what the restore does anyway.
+is still holding the port — do **not** start the restore until it is gone.
+Because the env is unchanged in the reuse route, a survivor here is worse than
+in the restart route: the restored pod would keep pointing at `:9`, now served
+by the fake listener, and §8.4.9's re-read would confirm a URL that no longer
+reaches the real runner. Deleting the pod is the guaranteed fallback (§8.4.2).
 
 *(A `pkill -f` on the listener's own source text is wrong here: the cleanup
 probe is also a `python3 -c`, so a pattern broad enough to find the listener
@@ -2037,39 +2078,41 @@ also matches the probe and the check kills itself before it can answer.)*
 
 **Evidence to capture, in order.**
 
-1. `listening` from `/tmp/c2b.log` — the listener is up.
-2. The agent's fallback line with state `STATE_FALLBACK_TIMEOUT`
-   (`script_client.py:116`). **Record the exact detail prefix as emitted.**
+1. `listening` from `/tmp/c2b.log` — the listener is up. **This is not the
+   start of the evidence window.**
+2. The first `accepted <epoch>` — **this is the start of the evidence window.**
+   Record its epoch.
+3. The agent's fallback line with state `STATE_FALLBACK_TIMEOUT`
+   (`script_client.py:116`), **timestamped after the epoch in 2**. Record the
+   exact detail prefix as emitted, and record the line's own timestamp so the
+   ordering is checkable and not asserted.
    Both `connect timeout:` (`:165`) and `read timeout:` (`:167`) are valid C2b
    evidence, and the code says so at `:163-164`: *"Accepted-then-silent, or
    refused after the connect phase. Both are treated as a stall: the bot cannot
    tell them apart and must not wait."* **Which of the two `requests` will
    report here is an expectation, not a measurement** — the unit test at
-   `agent/test_script_client.py:95` does not assert the exception class, only
-   that the result is a fallback. Treat either prefix as valid and decide the
-   arm on evidence 3. *(An earlier draft of this step called `connect timeout:`
-   C2a's branch and a void; that was wrong, and the code comment above is what
-   refutes it.)*
-3. `accepted <epoch>` from `/tmp/c2b.log` — the listener took the connection.
-   **This, not the detail prefix, is what separates C2b from C2a**: same state,
-   same possible prefix, distinguished only by whether a connection was
-   actually accepted. An agent-side timeout with **no** `accepted` line means
-   the client never got a handshake — capture it, do not pass it.
-4. The deletion proof above (`rc=0`), captured before the restore.
+   `agent/test_script_client.py:166` asserts only `STATE_FALLBACK_TIMEOUT`,
+   never the exception class or prefix. Treat either as valid and decide the
+   arm on evidence 2 and 4. *(An earlier draft of this step called
+   `connect timeout:` C2a's branch and a void; that was wrong, and the code
+   comment above is what refutes it.)*
+4. Any `connect refused:` line **after** the accept epoch → the listener died
+   mid-arm; the arm is **void**, not passed.
+5. The deletion proof above (`rc=0`), captured before the restore.
 
-**The void rule for this arm is therefore the listener's log, not the state.**
-§8.4.4 step 5's detail-prefix rule does not transfer to C2b: for C2a the port
-is closed and nothing can accept, so the prefix is genuine evidence; here the
-whole point is that something *did* accept, so the accept record is the
-discriminator. Stated plainly because the two arms share a state constant and
-an earlier version of this text assumed they also shared a discriminator.
+**The void rule for this arm is therefore the accept record and its timestamp,
+not the state and not the prefix.** C2a and C2b share a state constant *and* a
+possible prefix; the only thing that separates them is whether a connection was
+accepted, *and when*. §8.4.4 step 5's detail-prefix rule does not transfer
+here. Stated plainly because the two arms share so much that an earlier version
+of this text assumed they also shared a discriminator.
 
 **What this arm still cannot prove.** The unit test
 (`agent/test_script_client.py:95`, `_NeverReplies`) covers the client's branch
 with a real accepted-and-silent socket. This TEST run adds the live deployment
-path — the env plumbing, the pod recreation and the real `requests` stack — and
-nothing more. It is not independent evidence for the timeout *value*; that
-stays the unit test's claim.
+path — the real `requests` stack, the real env, the real pod — and nothing
+more. It is not independent evidence for the timeout *value*; that stays the
+unit test's claim (`test_script_client.py:150`).
 
 ### 8.4.6 C1 — control arm, bindings absent
 
