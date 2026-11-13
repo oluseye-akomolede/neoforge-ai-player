@@ -196,6 +196,15 @@ ssh controlplane "kubectl -n minecraft-test rollout restart deploy/minecraft-tes
 
 Then re-run step 0's fingerprints: both must return to `3b0a18f8580cad25`.
 
+### Rollback chain tested, not assumed
+
+The restore shape was exercised end-to-end against a throwaway secret (`rt-check`,
+created and deleted within the test): a YAML carrying `resourceVersion`, `uid` and
+`creationTimestamp` → strip those three → `ssh controlplane "kubectl apply -f -"` →
+`secret/rt-check created` → value read back correctly. This is the fix for the trap that
+made run 3's rollback a rejected no-op, and `apply -f -` does read stdin through `ssh`
+(verified, because an intermediate consumer is exactly what broke the old-key check).
+
 **Rollback ordering note:** restore **both** secrets before restarting either pod. A
 restart between the two restores will 401 and look like a failed rollback.
 
