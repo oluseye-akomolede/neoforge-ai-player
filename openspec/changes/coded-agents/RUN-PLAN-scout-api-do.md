@@ -28,16 +28,29 @@ ConfigMap update alone changes nothing the running pod sees.
 
 ## Steps
 
-1. **Back up the live ConfigMap** (the rollback source):
+1. **Back up the live ConfigMap** (the rollback source), **saved on this VM**,
+   not on controlplane (lead, 05:13Z):
    ```
-   kubectl -n minecraft-test get cm agent-scripts -o yaml > /tmp/agent-scripts.bak.yaml
+   ssh controlplane "kubectl -n minecraft-test get cm agent-scripts -o yaml" \
+     > ~/m2-run3-agent-scripts.bak.yaml
    ```
-   Verify it contains both keys and the digest above before continuing.
+   Verify it contains both keys and that its `scout.js` body hashes to
+   `838efd89…` before continuing. A backup that holds the wrong bytes is not a
+   rollback: check the content, not that the file exists and is non-empty.
 
-2. **Apply the generated ConfigMap**:
+2. **Apply the reviewed bytes**, not whatever is in the working tree, and name
+   the namespace explicitly (lead, 05:13Z — three corrections):
    ```
-   kubectl apply -f deploy/agent-scripts.yaml
+   git show 6f8ad66:deploy/agent-scripts.yaml | ssh controlplane \
+     "kubectl -n minecraft-test apply -f -"
    ```
+   **Why the pipe:** it applies the bytes at the reviewed rev, so a later
+   worktree edit cannot reach the cluster unnoticed — the pairing rule from
+   §8.3.1d. `deploy/agent-scripts.yaml` carries **no `metadata.namespace`**, and
+   the kubectl context's default namespace is empty (resolves to `default`), so
+   a bare `kubectl apply -f` would have written `agent-scripts` into `default`,
+   reported success, and changed nothing on TEST. Always pass `-n minecraft-test`.
+
    Then re-read the digest and confirm it equals `1824967e200dab94bb02108c0dfa84584f070007ce2cc0eab0b0a89783ca7b22`. If it
    does not, stop: the cluster is not running the reviewed bytes.
 
@@ -62,7 +75,16 @@ ConfigMap update alone changes nothing the running pod sees.
      that can act (`POST /bot/Scout/chat` inside the pod; key never on a
      command line).
    - The evidence is a tick whose collected `actions` is **non-empty and names
-     `STORE_ALL`**, quoted verbatim.
+     `STORE_ALL`**, quoted verbatim. Concretely, `agent.py:2700-2708` prints the
+     agent loop's own lines on a successful tick, and these are the artefacts:
+     ```
+     [Scout/script] 1 action(s) this tick
+     [Scout/script] dispatch: STORE_ALL {'kind': 'STORE_ALL'}
+     ```
+     Read them from the **agent** log — the runner emits no per-tick line on
+     success (§8.3.5 row 1). The two failure shapes are distinct lines, so a
+     miss is not ambiguous: `not executed: ...` (refused downstream) or
+     `no action executed, falling back` (every action refused).
    - Scout carries 16 cobblestone and a chest exists at (16, 99, -15), so a
      `STORE_ALL` has something to do. If the script legitimately holds, say
      which guard and why — holding is not a pass.
@@ -73,8 +95,12 @@ ConfigMap update alone changes nothing the running pod sees.
 
 ## Rollback
 
+Same piped form as the apply, and **explicitly namespaced** — the backup was
+taken from `minecraft-test`, so it restores to `minecraft-test`:
+
 ```
-kubectl apply -f /tmp/agent-scripts.bak.yaml
+ssh controlplane "kubectl -n minecraft-test apply -f -" \
+  < ~/m2-run3-agent-scripts.bak.yaml
 kubectl -n minecraft-test rollout restart deploy/aibot-agent-test
 kubectl -n minecraft-test rollout status deploy/aibot-agent-test --timeout=300s
 ```
