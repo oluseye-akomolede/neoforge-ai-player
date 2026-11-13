@@ -98,17 +98,24 @@ for k,v in (o.get("data") or {}).items():
     scanned += 1
     if hashlib.sha256(raw).hexdigest().startswith(want):
         print(f"HIT  {ns}/{nm}/{k}")
-print(f"     {ns}/{nm}: scanned={scanned} unparsed={skipped}") if skipped else None
-' "$WANT"
+if skipped:
+    # EXIT NON-ZERO, not just print. Printing unparsed=N and carrying on makes the
+    # count advisory: the sweep would end 0 and the "complete" line below would
+    # print over an object that was only partly examined. A crash mid-object skips
+    # the rest of it silently, so a clean "no hit" for that object is unearned.
+    print(f"     {ns}/{nm}: scanned={scanned} unparsed={skipped}")
+    sys.exit(1)
+' "$WANT" || { echo "ABORT: sweep could not parse every object -- 'no hit' is not a clean result"; exit 1; }
     done
   done
 done
-echo "--- sweep complete"
+echo "--- sweep complete (every object parsed; unparsed=0 throughout)"
 REMOTE
 ```
 
 **Requires `unparsed=0` on every line.** A non-zero count means part of that object was not
-checked, so "no hit" is not a clean result for it.
+checked, so "no hit" is not a clean result for it. The sweep now fails the step instead of
+merely reporting that number, and the completion line only prints when it was never reached.
 
 Scope: **`minecraft-test` and our prod namespace (`minecraft`) only** — no other projects'
 namespaces (lead ruling 3). Every hit goes in the holder table, even if it is one we think
