@@ -468,6 +468,18 @@ class _SkipIsFailure:
         return getattr(self._test, name)
 
 
+def _wrap(case):
+    """Return `case` wrapped once, leaving an existing wrapper alone.
+
+    Must be idempotent. loadTestsFromModule turns ANY exception raised out of
+    load_tests into a _FailedTest ERROR, so a double wrap that raised would
+    surface as `errors=1` -- indistinguishable from the known dashboard import
+    that is routinely waved through. A guard that fails as an ignorable error
+    is a weak guard.
+    """
+    return case if isinstance(case, _SkipIsFailure) else _SkipIsFailure(case)
+
+
 def load_tests(loader, tests, pattern):
     """Convert every test in this module into a skip-is-failure wrapper.
 
@@ -475,11 +487,20 @@ def load_tests(loader, tests, pattern):
     `python3 test_scout_script.py` run, which is NOT how the suite is invoked.
     Measured 2026-11-13: a skip under discovery printed `OK (skipped=1)` rc=0
     with the guard green, so the general case was still open one level in.
+
+    The input is a suite of suites in some paths and a flat suite of cases in
+    others -- loadTestsFromModule returns the flat shape -- so classify each
+    member by whether it iterates, and never rewrap what is already wrapped.
     """
     suite = unittest.TestSuite()
-    for test in tests:
-        for case in test:
-            suite.addTest(_SkipIsFailure(case))
+    for member in tests:
+        try:
+            cases = list(member)
+        except TypeError:  # already a single (wrapped) case
+            suite.addTest(_wrap(member))
+        else:
+            for case in cases:
+                suite.addTest(_wrap(case))
     return suite
 
 
