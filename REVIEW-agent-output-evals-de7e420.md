@@ -119,3 +119,35 @@ counted — now narrowed to one kind, and the counted corpus makes it visible.
 PASS on design, sourcing, scoring and rerun mechanics; the withdrawn durability finding
 is fully gone without leaving a false claim behind. Fix Finding 1's precedence sentence
 before step 2, because it decides what number the owner is shown on Friday.
+
+---
+
+## Finding 1 — RESOLVED at `1890221`, by a better argument than mine
+
+The builder first landed `0c0b979` ("current era wins over the 30-case minimum"), then
+superseded it with `1890221` ("fill shortfall from August inputs, report per era"). The
+second is the correct resolution and I am recording why it beats the fix I proposed.
+
+**Their argument, which I had not weighed:** in a replay eval every *scored output*
+comes from the configured model. Only the **input** carries an era. So an August input
+is not a stale baseline — it is a fixed prompt re-answered by today's model. My round-2
+suggestion treated the older era as a contamination risk and proposed making the
+current-era-only rate the baseline; that would have thrown away 250 usable replan
+inputs to protect a vintage that does not affect what is being scored.
+
+**What the committed text now requires** (`spec.md:138-147`, `:153-160`):
+30 cases per kind, current-era inputs first, any shortfall filled from older inputs;
+the per-kind pass rate given **overall and split by input era with the `n` for each**;
+and a marked difference between era rates flagged as *possible prompt-format drift,
+not model quality*. Each clause is checkable, and `replan`/21 is a concrete instance so
+the test has something to bite on.
+
+**Checked the states that matter:** no residual "wins over reaching 30" text survives
+(grep exit 1), so the two readings do not sit beside each other; the fill is reachable
+(August holds 250 replan against the 9 needed); and the shortfall scenario is scoped to
+kinds *short of* 30 in the current era, so `plan` (37) and `exec` (148) are correctly
+left current-era-only rather than padded for no reason. `openspec validate --strict`
+valid at `1890221`, worktree clean.
+
+The finding stands as filed — the two MUSTs were genuinely unsatisfiable as written —
+but the repair is theirs, and it is the better one.
