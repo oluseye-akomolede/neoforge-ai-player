@@ -2,7 +2,8 @@
 
 Reviewer: minecraft-reviewer@minecraft. 2026-11-13 ~11:20Z.
 Row: `qitem-20261113110946-1b676f5be3694dd6`.
-**Verdict: PASS, with two corrections that must be applied before the lead runs it.**
+**Verdict: PASS at `4bf633a`** (was "PASS with two corrections" at `31f166d`; both
+corrections and both findings are applied and re-verified — see the re-check section).
 
 Every claim the builder asked me to check, I verified at source — code read,
 constants re-measured on the live cluster, guards executed. No value was printed:
@@ -112,11 +113,30 @@ Deployments are in scope for restarts; the plan checks `aibot-agent-test`'s `pau
 `agent-script-runner` is not paused. As of now it is not, but the plan should read both,
 for the same reason it reads one.
 
-## Live-state drift the lead should know before running
+## Live-state drift — CORRECTED 11:19Z
 
-- `aibot-agent-test` is **not paused** now (`spec.paused` empty). Step 4's pod-delete
-  branch is therefore not needed today; `rollout restart` is available. The plan handles
-  this correctly by re-reading at run time — this is just the current value.
+My first live read (11:18Z) was stale: C2b was still running then. The lead restored per
+§8.4.9 at 11:17Z, and the state re-read at 11:19Z is:
+
+- `aibot-agent-test` **is PAUSED** (`spec.paused=true`) on new pod
+  `aibot-agent-test-6b65bdfc95-4ndnr`, ready, 0 restarts. So step 4 **must take the
+  pod-delete branch**; `rollout restart` is refused while paused. I read step 4 in the
+  corrected plan and it handles this correctly: it re-reads `paused` on **both**
+  Deployments at run time, uses pod delete for the paused agent, and requires the new pod
+  to be *proved* by `startTime` rather than assumed. It does not depend on the stale value
+  I first recorded.
+- `SCRIPT_RUNNER_URL` is **back on the real runner**
+  (`http://agent-script-runner.minecraft-test.svc.cluster.local:8080`) — no longer
+  `127.0.0.1:9`. The runner pod `agent-script-runner-84cbb889b4-xv7hg` is ready, 0
+  restarts, still `342c10e1`, with a live endpoint.
+
+**Consequence for finding (5):** the premise I endorsed ("step 5a cannot be performed as
+written") was true at review time and is **no longer true**. The URL now points at a live
+runner, so 5a *is* executable. The plan's ⚠ paragraph already instructs the operator to
+re-read the live URL before part (a) and not assume `:9` — which is exactly the right
+handling, and the reason the stale value does not become a defect. My advice to keep 5a as
+written stands: it now runs, and it exercises the agent's real path.
+
 - The runner is running **`342c10e1`**, so step 4 is an upgrade to `a8e7d98d`, not a
   downgrade. Confirmed correct.
 
@@ -132,3 +152,44 @@ for the same reason it reads one.
 
 **Recommended: PASS once Corrections 1 and 2 are applied.** Finding A is worth one
 sentence. Nothing else blocks.
+
+---
+
+## Re-check of `4bf633a` (applied corrections) — CERTIFIED
+
+I re-read the corrected plan at `4bf633a` and verified each item at source.
+
+**Trap 1 mechanism — correct at every point, and better than the correction I asked for.**
+The paragraph now states two layers with only the first firing:
+
+1. The kubelet refuses to create the container. **Verified live:** both `secretKeyRef`s on
+   `deploy/agent-script-runner` have `optional` absent, so a dropped key yields
+   `CreateContainerConfigError` and the container never runs.
+2. `tokensFromEnv` would not have caught it. **Verified at source** (`src/main.js:113-126`,
+   the exact range cited): it iterates `process.env` entries matching `RUNNER_TOKEN_*`, so a
+   dropped key is never iterated; `size === 0` is false while `minecraft` remains; it
+   returns a one-game map. It throws only on a short value (`value.length < 16`, cited
+   correctly at `:117-119` in the step-2 comment) or an empty map.
+
+The counterfactual the builder added — had the key been `optional`, the runner would have
+started silently and refused cardgame's every call at request time — is the part that makes
+this paragraph load-bearing rather than descriptive. It correctly turns `--type=merge`
+scoping from "good practice" into the only thing preventing a silent, request-time failure.
+A reader will not now think a missing key crash-loops the runner. Fixed in all three places
+(Trap 1 paragraph, mechanism block, step-2 comment).
+
+**Finding A (`a8e7d98d` carries `a5d726a`) — applied**, with the rollback consequence
+spelled out (reverting to `342c10e1` drops the trap fix, so an image rollback must be
+decided separately from the token restore).
+
+**Finding B (both pause states) — applied, and the builder found a defect in my
+suggestion's implementation.** I proposed a loop reading `{$d}` inside the jsonpath. That is
+wrong: inside a jsonpath, `{$d}` is a template identifier, not a shell expansion, and kubectl
+errors with `unrecognized identifier d`. The correction — interpolate the name outside the
+jsonpath — is right, and it ran live (`agent-script-runner` resumed, `aibot-agent-test`
+paused=true), matching the lead's 11:19Z state. My intent was right and my code was not; the
+builder caught it by testing rather than pasting.
+
+**(5) kept as written** per my call, and the builder has not asked for the live-401 exec.
+
+**Verdict: PASS at `4bf633a`.** No open findings.
