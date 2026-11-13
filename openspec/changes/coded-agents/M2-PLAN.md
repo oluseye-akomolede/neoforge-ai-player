@@ -1489,9 +1489,22 @@ authoritative for script content and the tests do not ship.
 
 **Steps.**
 
-1. **Build and push.** `docker build -t …/agent:2026-11-13-59f30a5` from
-   `agent/` at `59f30a5`, with `DOCKER_CONFIG=~/.docker-minecraft`. Then read
-   the digest from Harbor for that tag — not from `docker images`.
+1. **Build and push.** DONE: `docker build -t …/agent:2026-11-13-59f30a5` from
+   `agent/`, with `DOCKER_CONFIG=~/.docker-minecraft`; digest read from Harbor
+   for that tag, not from `docker images`.
+
+   **Which rev the image ships.** The tag says `59f30a5` because that is the
+   commit it was built at, and the tag is a record, not a claim to be rewritten.
+   The *reviewed* rev is `513b502`, and the production bytes are byte-identical
+   across `d9c1707`/`59f30a5`/`513b502` (reviewer 3a94d0c: `diff` of
+   `script_tick.py`, `agent.py`, `action_binding.py`, `test_scout_script.py`
+   between `59f30a5` and `513b502` is empty). The image was additionally
+   verified to have been built from this tree: unzipped and hashed, its three
+   files `/opt/aibot-agent/script_tick.py`, `agent.py` and
+   `action_binding.py` match `git show 513b502:<path>` exactly (recorded with
+   the digest row in the table above). So the shipped tree is `513b502` for
+   every purpose that matters, and the tag's `59f30a5` names the build moment
+   of the same bytes.
 2. **Back up both live halves**, and verify each backup holds what it claims:
    `kubectl -n minecraft-test get deploy aibot-agent-test -o yaml` (expect the
    digest above) and the `agent-scripts` ConfigMap (expect `838efd89…`).
@@ -1579,20 +1592,24 @@ references the ConfigMap, but **does not delete the ConfigMap itself**. Left
 behind it is inert, but it is a stale script a later reader might mistake for
 live. Delete it so the rollback leaves no artefact claiming to be active.
 
-The profile restore is the piece git cannot do. The working copy at
-`/srv/aibot-profiles/scout.json` is an **emptyDir** seeded from the image by the
-initContainer, and is not in the repo, so a `git revert` does nothing to it;
-without the explicit `cp` above, the rollback would leave Scout loading a script
-file that the deleted ConfigMap no longer provides — a profile pointing at a
-missing path, which `_get_script_tick` reports and falls through on, i.e. a
-*silently* reverted bot rather than a cleanly reverted one.
+**The profile is not read for the script path, and this is the check that
+settles it.** `_bound_script_path` (`agent/agent.py:2736`) resolves the script
+by reading `<SCRIPTS_DIR>/bindings.json`; it never consults
+`/srv/aibot-profiles/scout.json`. So deleting the ConfigMap removes the only
+thing that pointed Scout at a script, and Scout falls back to the planner with
+`bindings.json` absent — there is no "profile pointing at a missing path" to
+restore, because no profile ever held the path. The emptyDir at
+`/srv/aibot-profiles/` still exists and is still seeded by the initContainer,
+but under the bindings design nothing reads the script field from it.
 
-It is also why the rollback needs `-c agent`: the emptyDir is shared by the
-initContainer and the agent container at the same path, so an unqualified
-`kubectl cp` has two plausible targets and no error either way.
+(An earlier version of this section restored the profile with `kubectl cp -c
+agent`. Both halves of that are now gone: the `cp` because the profile is not
+restored, and the `-c agent` qualification with it, since a copy that does not
+happen has no container to name.)
 
-After the rollback, verify: the restored file's sha256 equals the one recorded
-on the row at step 3 (i), and the pod is 1/1.
+After the rollback, verify: the pod is 1/1, `bindings.json` is absent, and
+`kubectl logs ... | grep -c '\[.*/script\]'` is 0 — which together show the
+bot returned to planner-only operation.
 
 If the Deployment edit has not been applied yet (the ConfigMap is added but the
 mount is not), deleting the ConfigMap is the whole rollback and `rollout undo`

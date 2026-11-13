@@ -89,6 +89,19 @@ def translate_runner_actions(records):
     Refusals are collected rather than raised, matching `bind_actions`, so one
     bad record does not suppress the others. Each refusal carries `seq` and a
     reason.
+
+    `seq` IS NOT AN INDEX, and nothing here may treat it as one. The runner
+    resets it to 0 at the start of each tick and increments it on every
+    *accepted host call* (`agent-script-runner/src/binding.js:116`), so a
+    `say` or `send` between two `do`s consumes a number. A tick can therefore
+    emit seqs `{1, 3}` or `{11, 12, 13}`, and the record at position 0 may
+    carry seq 3. That is why this function returns `(bindable, seq)` pairs
+    rather than zipping a list of seqs against a list of bindables: the two
+    lists are different lengths and different sorts of thing, and aligning
+    them by position would attach the wrong number to the wrong directive
+    exactly when a call was skipped. `seq` is a label for the log line, useful
+    precisely because a gap in it says a call happened that produced no
+    directive.
     """
     if not isinstance(records, list):
         return [], [{"seq": None,
