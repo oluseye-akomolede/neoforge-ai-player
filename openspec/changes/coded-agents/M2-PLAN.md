@@ -1760,13 +1760,55 @@ the script source for the life of the pod** — `self._script_loaded` at
 every tick at `:282`. Measured 2026-11-12: a ConfigMap patch on a running pod
 changed nothing for six minutes.
 
-Therefore **every arm transition requires a pod restart.** This is not a
-convenience detail: a plan that edits the ConfigMap and reads the log without
-restarting will observe the *previous* arm and record it as the new one — a
-false pass in the exact shape §8.3.1a warns about.
+Therefore **every arm transition requires the pod to be recreated.** This is not
+a convenience detail: a plan that edits the ConfigMap and reads the log without
+recreating the pod will observe the *previous* arm and record it as the new one
+— a false pass in the exact shape §8.3.1a warns about.
 
-The restart is agent-side only. **The shared runner is never stopped or
-restarted** (lead, 11:37Z): cardgame calls it from their own test account.
+**Not by `rollout restart`.** `deploy/aibot-agent-test` is **paused**
+(`spec.paused=true`, annotation `m2-step4=step1-inert`; lead, 10:45Z), and a
+paused Deployment **refuses** `kubectl rollout restart` — it failed during the
+rotation at 10:37Z. A paused Deployment still has its ReplicaSet reconciling
+pod count (`spec.replicas=1` on the RS, independent of the pause), so
+**deleting the pod** lets the same ReplicaSet recreate it from the unchanged
+template. Every transition in §8.4 therefore uses:
+
+```
+# THE ONLY permitted recreation procedure. Runner untouched.
+kubectl -n minecraft-test get pod -l app=aibot-agent,tier=test \
+  -o jsonpath='{.items[*].metadata.name}'        # OLD pod name(s)
+kubectl -n minecraft-test delete pod <old-pod> --wait=true
+kubectl -n minecraft-test get pod -l app=aibot-agent,tier=test \
+  -o jsonpath='{.items[*].metadata.name}'        # NEW pod name -- must differ from OLD
+kubectl -n minecraft-test wait --for=condition=Ready pod/<new-pod> --timeout=180s
+```
+
+**Proof the recreation took effect, required before reading any arm evidence** —
+both conditions, not either:
+
+1. **New pod name** differs from the old one, and
+   `.status.startTime` on the new pod is later than the delete.
+2. **A fingerprint read from inside the new pod** matches the arm just applied:
+   `kubectl -n minecraft-test exec <new-pod> -c agent -- sha256sum /srv/aibot-scripts/bindings.json /srv/aibot-scripts/scout.js`
+   (`-c agent` is required: without it kubectl prints a
+   `Defaulted container "agent" out of: agent, seed-profiles (init)` warning
+   into the captured evidence)
+   (`annotate` the two hashes, never print the script or the map). A bindings
+   change that is not visible in the *new* pod's mount means the ConfigMap patch
+   did not land, and the arm is void.
+
+**Do not resume the Deployment to make `rollout restart` work.** Resuming applies
+the pending template change, which is a different deployment than the one being
+measured; if resuming is ever wanted it is a separate lead decision with its own
+plan, not a convenience inside a control run.
+
+Two things that are *not* required, to keep the blast radius small:
+
+- **The shared runner is never stopped or restarted** (lead, 11:37Z): cardgame
+  calls it from their own test account.
+- Only the agent pod is deleted. `replicas=1`, so this is a brief gap in Scout's
+  ticks and every other bot's; that gap is the cost of the control and is
+  accepted by the lead's delete-pod ruling.
 
 ### 8.4.3 Preconditions (read-only; abort if any fails)
 
@@ -1781,13 +1823,14 @@ restarted** (lead, 11:37Z): cardgame calls it from their own test account.
 ### 8.4.4 C2 — dead runner, closed port (no restart of the shared runner)
 
 The cut is agent-side. Set `SCRIPT_RUNNER_URL` to a closed port **for the agent
-Deployment only**, restart the agent pod, observe, then restore and restart.
+Deployment only**, recreate the pod (§8.4.2 procedure, not `rollout restart`),
+observe, then restore and recreate again.
 
 1. Capture pre-state: `kubectl -n minecraft-test get deploy aibot-agent-test -o
    jsonpath='{.spec.template.spec.containers[0].env}'` → save to a file on
    controlplane, and **read it back**.
-2. Patch `SCRIPT_RUNNER_URL=http://127.0.0.1:1`, restart, wait for
-   `All 5 bots started`.
+2. Patch `SCRIPT_RUNNER_URL=http://127.0.0.1:1`, apply the §8.4.2 recreation
+   procedure, wait for `All 5 bots started` in the **new** pod's log.
 3. Drive the goal via `inject_chat` (below). **Expected:** for every tick,
    `falling back to planner: runner fallback_connect_refused: connect refused: ...`
    — the state is `STATE_FALLBACK_REFUSED` (`script_client.py:115`, set at `:169`).
@@ -1824,10 +1867,10 @@ That is a real defect and is reported as one, not worked around.
 
 ### 8.4.7 C4 — script arm (already evidenced by run 5; re-run only if C1–C2 void)
 
-Restore `bindings.json`, restart, drive the same goal, confirm
-`dispatch: STORE_ALL seq=1` **and** the mod's accepted POST with a destination
-read-back (the run-5 method at `01655d8`). This is the arm run 5 already
-supplied; it is listed so the four arms are compared under one method.
+Restore `bindings.json`, recreate the pod (§8.4.2 procedure), drive the same
+goal, confirm `dispatch: STORE_ALL seq=1` **and** the mod's accepted POST with a
+destination read-back (the run-5 method at `01655d8`). This is the arm run 5
+already supplied; it is listed so the four arms are compared under one method.
 
 ### 8.4.8 Acceptance, and what each arm is allowed to prove
 
@@ -1837,7 +1880,9 @@ supplied; it is listed so the four arms are compared under one method.
   arm rather than counting as a negative.
 - The negative control is satisfied only when the log shows the full
   **script → fallback (with reason) → script** transition, which requires C2 or
-  C2b followed by C4 with no restart in between that changes other variables.
+  C2b followed by C4 with no pod recreation in between that changes other
+  variables. "Recreation" here means the §8.4.2 procedure, and its own proof of
+  a new pod + mount fingerprint is required before the C4 evidence is read.
 - ⚠ **Known limit:** the fallback reason for a *trap* (`wasm_trap`, the 05:57Z
   regression) was in the past misreported as `script_error`; the runner fix
   `aa7b00a` corrects the classification but is **not deployed**. Until it is,
@@ -1845,11 +1890,35 @@ supplied; it is listed so the four arms are compared under one method.
   depend on trap classification (they cut the connection, not the sandbox), but
   a run that *also* observes a trap must treat the reason as suspect.
 
+**Acceptance 4/5 of §8.3 are a NO-REGRESSION check, not proof of the fix**
+(lead, 10:41Z). Measured before writing this: the pod running the **old** image
+`a9e75ad1` (pod `…-cbpz9`, started 10:38:02Z, 0 restarts) logged 134
+`[Scout/script]` lines in 20 minutes, healthy, because the 10:15Z `/v1/destroy`
+already cleared the wedge. "Scout's ticks stop erroring" therefore passes on the
+old image too and cannot attribute anything to `aa7b00a`. **The fix is proven by
+the reviewed suite** (127/127 with the boundary-capture mutation at 126/127),
+not by this rollout; the rollout's job is to show it does not regress.
+
+Two checks the lead requires alongside acceptance 4/5, because §8.4 recreates the
+pod four times and the runner is shared:
+
+1. **cardgame's sessions survive the recreation** or are re-established after it
+   — the runner is shared and `replicas=1` on the agent, so a deleted pod briefly
+   takes every minecraft bot's script tick with it.
+2. **Restart count and child respawns stay flat for 10 minutes after the final
+   recreation.** ⚠ The fix inverts recycling to *default-on*: any error without
+   script provenance now recycles a worker. A count that climbs here means the new
+   default is too eager and the rollout should be rolled back on the §8.4.9
+   command, not nursed.
+
 ### 8.4.9 Rollback
 
-Restore the saved `env` patch and the saved `bindings.json`, restart the agent
-pod, and re-read both back. The shared runner is untouched at every step, so it
-has no rollback. Verified-by-re-read, not by `apply` returning 0.
+Restore the saved `env` patch and the saved `bindings.json`, then recreate the
+pod by the §8.4.2 procedure, and re-read both back from the **new** pod. The
+shared runner is untouched at every step, so it has no rollback.
+Verified-by-re-read, not by `apply` returning 0. Confirm the pod name changed
+and its `.status.startTime` is later than the restore; a re-read from the old
+pod proves nothing about the restore.
 
 ### 8.4.10 Driving the goal
 
