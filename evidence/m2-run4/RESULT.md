@@ -103,7 +103,9 @@ What this run DOES prove (and what it does not):
 Evidence surfaces that do NOT carry the answer (checked, all zero):
   - agent container log: no "stored"/"deposited" lines
   - progress.logEvent ("Nothing to store", "Store all complete"): 0 occurrences
-    in the agent log. logEvent does not reach the agent container log.
+    in the agent log. Mechanism, not just absence: ProgressReport.java:41-46
+    appends to an in-memory `eventLog` ring buffer and writes nothing to stdout,
+    so these events cannot appear in `kubectl logs` at all.
   - bot.systemChat writes to IN-GAME chat (StoreAllBehavior :358), not the log.
 
 The only in-band signal of "nothing stored" is the empty counter dict on the
