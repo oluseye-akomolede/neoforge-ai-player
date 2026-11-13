@@ -894,6 +894,18 @@ it clean. It is also why the plan must name it: an implementer reading
 process-wide env will reach for the env var, and the result would be a proof that
 passes while secretly cutting off every bot.
 
+> **DELTA (lead ruling 10:50Z, row `…1b24fe6e9c67c4c9`) — the last clause above
+> is too strong and is corrected here rather than left to contradict §8.4.4.**
+> A process-wide `SCRIPT_RUNNER_URL` cut is *not* a proof that passes while
+> cutting off every bot, provided only bound bots exist. `_get_script_tick`
+> returns `None` for a bot with no bound script path **before any `ScriptTick`
+> or transport is constructed** (`agent.py:2808-2817`), so an unbound bot never
+> reads the variable. The danger is real only if another bot is bound — hence
+> §8.4.4's requirement to prove Scout is the **only** key in the live map, and
+> that the other four bots' tick lines are unchanged across the arm. With that
+> proof the env cut is agent-side for Scout alone. This delta narrows the
+> constraint; it does not delete it.
+
 Two agent-side ways to make the runner unreachable for one bot, both purely
 config:
 
@@ -910,6 +922,13 @@ branch, the silent listener tests the timeout branch. The same
 `tests/test_script_client.py` case covers the second (4.4's
 accept-and-never-reply); the proof on TEST uses whichever the run plan can
 configure without touching the shared Deployment.
+
+> **DELTA (lead ruling 10:50Z).** "Without touching the shared Deployment" is
+> narrowed: the *runner* Deployment must not be touched — it is shared with
+> cardgame. The **agent** Deployment may be patched for an arm, because it is
+> ours and the cut reaches only bound bots (§8.4.4, with its proof
+> requirements). What remains forbidden is cutting the runner service itself,
+> and cutting in a way that silently takes other bots with it.
 
 Evidence is the same shape as the positive case, and must show all three
 transitions in the agent log: **script → fallback (with reason) → script**. A
@@ -1802,6 +1821,15 @@ the pending template change, which is a different deployment than the one being
 measured; if resuming is ever wanted it is a separate lead decision with its own
 plan, not a convenience inside a control run.
 
+⚠ **`bound_script_path()` is not evidence that an arm took effect.** It does
+`BotRunner.__new__` and reads `bindings.json` **fresh** (`agent.py:3850`), so it
+answers *what a new process would bind*, not *what the live bot is running*. A
+step that used it to confirm a binding change without recreating the pod would
+read the new config while the bot still served its cached script — the exact
+false pass this section exists to prevent. Its use at §8.3.4 `:1179` is *before*
+the restart and is correct there; this section's evidence is the log, read from
+the new pod.
+
 Two things that are *not* required, to keep the blast radius small:
 
 - **The shared runner is never stopped or restarted** (lead, 11:37Z): cardgame
@@ -1820,24 +1848,63 @@ Two things that are *not* required, to keep the blast radius small:
 3. The runner answers `ready:true` **and** a real tick — `ready` alone is not
    enough; it stayed true through the entire 05:57–10:15Z outage.
 
-### 8.4.4 C2 — dead runner, closed port (no restart of the shared runner)
+### 8.4.4 C2 — dead runner, closed port
+
+**Approved as option 2** (lead ruling 10:50Z, row `…1b24fe6e9c67c4c9`). The
+reviewer's BLOCK on `ff3745a` assumed a whole-pod URL cut silences all five
+bots. It does not: `_get_script_tick` returns `None` for a bot with no bound
+script path **before any `ScriptTick` or transport exists**
+(`agent.py:2808-2817`), so an unbound bot never reads `SCRIPT_RUNNER_URL`. Only
+bound bots observe the cut. This section supersedes §8.3's `:894`/`:918` premise
+that four bots would fall back — see the delta recorded there.
 
 The cut is agent-side. Set `SCRIPT_RUNNER_URL` to a closed port **for the agent
 Deployment only**, recreate the pod (§8.4.2 procedure, not `rollout restart`),
 observe, then restore and recreate again.
 
-1. Capture pre-state: `kubectl -n minecraft-test get deploy aibot-agent-test -o
+1. **Prove Scout is the only bound bot, before and after the arm.** Read the
+   live map from inside the pod (`exec … -c agent -- cat`) and count its keys;
+   assert exactly one key, `Scout`. Then confirm the other four bots' tick
+   lines are **unchanged across the arm** — a delta in their behaviour means the
+   cut reached them and the arm is void.
+2. Capture pre-state: `kubectl -n minecraft-test get deploy aibot-agent-test -o
    jsonpath='{.spec.template.spec.containers[0].env}'` → save to a file on
    controlplane, and **read it back**.
-2. Patch `SCRIPT_RUNNER_URL=http://127.0.0.1:1`, apply the §8.4.2 recreation
-   procedure, wait for `All 5 bots started` in the **new** pod's log.
-3. Drive the goal via `inject_chat` (below). **Expected:** for every tick,
+3. ⚠ **The Deployment is paused, so an env patch does not roll out** (lead
+   requirement (c)). Publishing a template change on a paused Deployment updates
+   `spec.template` but creates **no new ReplicaSet**; deleting the pod then
+   recreates it from the *old* RS template and the arm silently runs the
+   previous config — the §8.3.1a shape. Before the arm, **diff the paused
+   template against the running RS template** and list any pending change a
+   resume would apply:
+
+   ```
+   kubectl -n minecraft-test get deploy aibot-agent-test -o jsonpath='{.spec.template.spec.containers[0].env}' | sha256sum
+   kubectl -n minecraft-test get rs aibot-agent-test-6b65bdfc95   -o jsonpath='{.spec.template.spec.containers[0].env}' | sha256sum
+   ```
+
+   They were **identical** (`fe1a4d3c…`) when this was written, so resuming
+   applies nothing pending. **If they differ, stop** and report the delta before
+   resuming — resuming would then deploy a change this plan never measured.
+   Then `kubectl -n minecraft-test patch deploy … --type=json` (the real patch,
+   not a dry run), then `kubectl -n minecraft-test rollout resume
+   deploy/aibot-agent-test`, recreate the pod, and **prove the
+   new pod's env took effect**: `SCRIPT_RUNNER_URL` present with **host only,
+   no credentials** (`127.0.0.1`), read from inside the new pod. Record
+   set/unset and host; never print a secret.
+4. Drive the goal via `inject_chat` (below). **Expected:** for every tick,
    `falling back to planner: runner fallback_connect_refused: connect refused: ...`
    — the state is `STATE_FALLBACK_REFUSED` (`script_client.py:115`, set at `:169`).
    Record the exact reason text as emitted, not as expected.
-4. **Void if:** the reason is a timeout (that is C2b, not C2a), or the bot logs
-   no `[Scout/script]` line (means the binding was lost, not that the runner was
-   unreachable).
+5. **Void if:** the **detail prefix** is not `connect refused:` — the state alone
+   is not the discriminator (reviewer measured 10:42Z: `ConnectTimeout` also maps
+   to `fallback_timeout`, so C2a and C2b can share a state); or the bot logs no
+   `[Scout/script]` line (means the binding was lost, not that the runner was
+   unreachable); or the new pod's `SCRIPT_RUNNER_URL` still points at the real
+   runner (the paused-deployment trap in step 3).
+6. **After the arm, restore and leave the Deployment paused** (its pre-run
+   state). Record in the evidence whether it was resumed and re-paused, with the
+   resume's diff from step 3.
 
 ### 8.4.5 C2b — accept and never reply (the bounded wait)
 
@@ -1852,18 +1919,43 @@ the unit; this is the same branch on TEST.
 **Void if** the bot hangs (no fallback line within the documented tick bound).
 That is a real defect and is reported as one, not worked around.
 
+**Inherits every guard from §8.4.4** — the only-bound-bot proof, the paused-
+Deployment diff before resuming, the new pod's env proof, and the detail-prefix
+void condition. The env cut is the same mechanism, so the same traps apply.
+
 ### 8.4.6 C1 — control arm, bindings absent
 
-1. Save the current `bindings.json` (`{"Scout": "scout.js"}`) to a file on
-   controlplane; read it back.
-2. Apply a ConfigMap with `bindings.json` **absent** (not empty-object — absent,
-   so the "no bindings at" branch is exercised rather than an empty map).
-3. **Restart the agent pod** — mandatory per §8.4.2.
-4. Drive the same goal. **Expected:** no `[Scout/script]` action line for Scout
-   at all; the planner may still act, and that is the baseline to compare
-   against, not a failure.
-5. **Void if** any `[Scout/script] dispatch:` line appears — the arm is not the
-   arm.
+**Two branches, two different evidences — pick one and state its own.** Verified
+at `agent.py:2767-2781` (reviewer measured both, 10:42Z):
+
+| state | code path | log evidence |
+|---|---|---|
+| `bindings.json` **absent** | `FileNotFoundError` → `:2767-2771` | **a line**: `no bindings at …; this bot runs the planner` |
+| file present, **no Scout key** | `bindings.get` falsy → `:2779-2781` | **no line at all** (silent `return None`) |
+
+This arm uses **absent-file**, so its evidence is a *present* line plus zero
+dispatches. The earlier draft of this section configured absent-file and then
+looked for the silent branch's evidence (no line at all); that was a
+contradiction and it would have passed on either branch.
+
+1. Save the current `bindings.json` (`{"Scout": "scout.js"}`, 26 bytes, sha
+   `10cef1b8…`) to a file on controlplane; read it back.
+2. Apply a ConfigMap with `bindings.json` **absent** (not an empty object —
+   absent, so the `FileNotFoundError` branch is exercised).
+3. Recreate the pod by the §8.4.2 procedure.
+4. Drive the same goal. **Expected, all three:**
+   - `[Scout/script] no bindings at /srv/aibot-scripts/bindings.json; this bot
+     runs the planner` — present, once per load, quoting the text as emitted.
+   - **zero** `[Scout/script] dispatch:` lines.
+   - Scout still acts, via the planner. That is the baseline, not a failure.
+5. **Void if** any `[Scout/script] dispatch:` line appears (not the arm), **or**
+   the `no bindings at` line is missing (means the mount still has the old file
+   or the pod did not recreate — §8.4.2's fingerprint check should already have
+   caught that).
+6. ⚠ **Do not gate on the bare `Scout/script` tag.** §8.3.4 at `:1287-1290`
+   records this resolver line being counted as 1 instead of 0, because it *is* a
+   `[Scout/script]` line. Count `dispatch:` lines and assert the `no bindings`
+   line separately.
 
 ### 8.4.7 C4 — script arm (already evidenced by run 5; re-run only if C1–C2 void)
 
@@ -1919,6 +2011,15 @@ shared runner is untouched at every step, so it has no rollback.
 Verified-by-re-read, not by `apply` returning 0. Confirm the pod name changed
 and its `.status.startTime` is later than the restore; a re-read from the old
 pod proves nothing about the restore.
+
+**Restore the pause state too.** The Deployment's pre-run state is
+`spec.paused=true`; if an arm resumed it, `kubectl -n minecraft-test rollout
+pause deploy/aibot-agent-test` at the end and re-read `spec.paused` — a rollback
+that leaves the Deployment resumed has left a pending template change free to
+apply on the next pod recreation, which is precisely the trap §8.4.4 step 3
+exists to prevent. Also confirm the restored env's sha256 matches the pre-state
+file captured in step 2, and that `SCRIPT_RUNNER_URL` again points at the real
+runner (host and port read from inside the new pod; no credentials printed).
 
 ### 8.4.10 Driving the goal
 
