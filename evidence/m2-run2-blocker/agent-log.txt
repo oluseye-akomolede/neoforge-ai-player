@@ -1,0 +1,66 @@
+[agent] Checking ollama at http://llm-gateway.minecraft-test.svc.cluster.local:8080...
+[agent] Ollama models: nomic-embed-text:latest, qwen3-coder:30b, qwen3.8:27b-q4_K_M, qwen2.5:14b-instruct, qwen2.5:32b-instruct
+[agent] Connecting to mod API...
+[agent] Mod API: {'status': 'ok', 'mod': 'aiplayermod', 'bots': 5, 'tick_age_seconds': 0}
+[agent] Cleaning up 5 stale bot(s): ['Mystic', 'Tiller', 'Forge', 'Axiom', 'Scout']
+[agent] Task board: connected (cleared on restart)
+[agent] Transmute registry: 120 items (0 new from mod)
+[agent] Transmute tag index: 481 aliases
+[container_db] Synced 47 containers to mod
+[agent] Container registry: 47 containers loaded
+[agent] L4 (OpenAI) disabled or no API key
+[agent] Terrain DB: 555115 blocks mapped (ae2:spatial_storage: 625, allthemodium:the_other: 625, compactmachines:compact_world: 625, minecraft:overworld: 50593, minecraft:the_end: 1430, minecraft:the_nether: 501208, tensura:hell: 9)
+[dashboard] Started on port 5000
+[agent] Found 5 bot profile(s): ['Axiom', 'Forge', 'Mystic', 'Scout', 'Tiller']
+[Axiom] Semantic memory: 15 memories (15 cached)
+[Axiom] Started (model=qwen3-coder:30b)
+[agent] Staggering next bot spawn (5.0s)...
+[Forge] Semantic memory: 10 memories (10 cached)
+[Forge] Started (model=qwen3-coder:30b)
+[agent] Staggering next bot spawn (5.0s)...
+[Mystic] Semantic memory: 9 memories (9 cached)
+[Mystic] Started (model=qwen3-coder:30b)
+[agent] Staggering next bot spawn (5.0s)...
+[Scout] Semantic memory: 12 memories (12 cached)
+[Scout] Started (model=qwen3-coder:30b)
+[agent] Staggering next bot spawn (5.0s)...
+[Tiller] Semantic memory: 10 memories (10 cached)
+[Tiller] Started (model=qwen3-coder:30b)
+[agent] All 5 bots started (tick=2.0s)
+[aibot.nn-compressor] state compression worker started -> http://nn-compressor.nn-compressor.svc.cluster.local
+[skill-author] started (model=deepseek-v4-flash, interval=90.0s)
+==================================================
+[schemas] pushed 33 directive kinds (version 7)
+[Scout/orchestrator] L3 plan layer accepting: Scout, please store all your items in the nearby chest.
+[Scout/orchestrator] starting plan for: Scout, please store all your items in the nearby chest.
+[aibot.plan-memory] plan-memory index built: 57 reusable template(s)
+[aibot.l3-planner] [Scout] L3 PLAN call — task: Scout, please store all your items in the nearby chest.
+[aibot.orchestrator] [Scout] plan written with 1 subtasks
+[aibot.l3-planner] [Scout] L3 EXEC call — subtask 1/1
+[aibot.orchestrator] [Scout] l2-mcp flags on SEARCH_AND_STORE: ['unknown_kind:SEARCH_AND_STORE']
+[Scout/L1] dropping non-directive key(s) ['container'] for SEARCH_AND_STORE: not in api.set_directive's signature
+[Scout/L1] Directive sent: SEARCH_AND_STORE {} -> unknown (id=None)
+[Scout/L1] Directive never appeared (rejected or instant-cleared)
+[Scout/L2] No adjustment possible for: directive_never_started
+[aibot.orchestrator] [Scout] subtask 1 criteria: True (world_state) — holdings 0/0 of minecraft:items (0 carried)
+[aibot.orchestrator] [Scout] plan finalized: complete
+[skill-author] pass: {'mined': 4, 'proposed': 0, 'registered': 0, 'rejected': 0, 'error': 0}
+[skill-author] pass: {'mined': 4, 'proposed': 0, 'registered': 0, 'rejected': 0, 'error': 0}
+[Scout/orchestrator] L3 plan layer accepting: Scout, please store all your items in the nearby chest.
+[Scout/orchestrator] starting plan for: Scout, please store all your items in the nearby chest.
+[aibot.l3-planner] [Scout] L3 PLAN call — task: Scout, please store all your items in the nearby chest.
+[aibot.orchestrator] [Scout] plan written with 3 subtasks
+[aibot.l3-planner] [Scout] L3 EXEC call — subtask 1/3
+[aibot.orchestrator] [Scout] l2-mcp flags on SEARCH_AND_MINE: ['unknown_kind:SEARCH_AND_MINE']
+[Scout/L1] Directive sent: SEARCH_AND_MINE {'target': 'minecraft:chest', 'count': 1} -> unknown (id=None)
+[Scout/L1] Directive never appeared (rejected or instant-cleared)
+[Scout/L2] No adjustment possible for: directive_never_started
+[aibot.orchestrator] [Scout] subtask 1 criteria: False (result_text) — last directive result contained failure token
+[aibot.l3-planner] [Scout] L3 EXEC call — subtask 1/3
+[aibot.orchestrator] [Scout] l2-mcp flags on SEARCH_AND_MINE: ['unknown_kind:SEARCH_AND_MINE']
+[Scout/L1] Directive sent: SEARCH_AND_MINE {'target': 'minecraft:chest', 'count': 1} -> unknown (id=None)
+[Scout/L1] Directive never appeared (rejected or instant-cleared)
+[Scout/L2] No adjustment possible for: directive_never_started
+[aibot.orchestrator] [Scout] subtask 1 criteria: False (result_text) — last directive result contained failure token
+[aibot.l3-planner] [Scout] L3 EXEC call — subtask 1/3
+[skill-author] pass: {'mined': 4, 'proposed': 0, 'registered': 0, 'rejected': 0, 'error': 0}
