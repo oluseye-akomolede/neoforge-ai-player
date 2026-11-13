@@ -71,6 +71,21 @@ def _runner_root() -> str | None:
         candidates.append(override)
     # This file: <root>/<repo>/agent/test_scout_script.py
     candidates.append(str(Path(_HERE).parents[1] / "agent-script-runner"))
+    # In a worktree the repo is <root>/<repo>-wt-<seat>/<repo>, so the sibling
+    # is not next door. Walk up to the directory that HOLDS the checkouts and
+    # look for a plain `agent-script-runner` there. Without this, every test in
+    # this file skips in a worktree and unittest still prints OK -- measured
+    # 2026-11-13: "Ran 9 tests in 0.002s / OK (skipped=9)", a green that ran
+    # nothing, on the file written to prevent exactly that.
+    # ...and, for a worktree, a SIBLING of any of those directories. A worktree
+    # is <root>/<repo>-wt-<seat>/<repo>, so the runner is reachable as
+    # <root>/agent-script-runner -- one level ACROSS, never up. Walking up only
+    # finds it for a plain checkout. Measured 2026-11-13 before this branch
+    # existed: "Ran 9 tests in 0.002s / OK (skipped=9)" -- a green that ran
+    # nothing, on the file written to prevent exactly that.
+    for parent in Path(_HERE).parents:
+        candidates.append(str(parent / "agent-script-runner"))
+        candidates.extend(str(s) for s in sorted(parent.parent.glob("*/agent-script-runner")))
     for cand in candidates:
         if os.path.isfile(os.path.join(cand, "src", "engine.js")):
             return cand
@@ -372,6 +387,34 @@ class ScoutScriptTest(unittest.TestCase):
             logs = _run(literal)["logs"]
             self.assertTrue(any(token in line for line in logs),
                             f"{literal} returned [] without explaining: {logs!r}")
+
+
+class NoSilentSkipTest(unittest.TestCase):
+    """A skip in this file must never read as a pass.
+
+    Every test above that cannot find the runner raises SkipTest, and unittest
+    reports a module whose tests all skipped as `OK (skipped=N)`. So an
+    environment missing the runner -- a fresh clone, a CI box, a worktree whose
+    sibling path is wrong -- printed a green line while asserting nothing. That
+    is the same shape as the defect this whole file exists to catch: a check
+    that cannot distinguish "ran and passed" from "never ran".
+
+    Measured 2026-11-13, before the path fix: "Ran 9 tests in 0.002s / OK
+    (skipped=9)". The message was honest and loud and still produced OK.
+
+    This asserts the file actually ran its engine-backed tests. It is
+    deliberately a hard failure, not a skip: if the runner is absent, the
+    trustworthy outcome is RED, because nothing here has been verified.
+    """
+
+    def test_the_engine_backed_tests_actually_ran(self):
+        root = _runner_root()
+        self.assertIsNotNone(
+            root,
+            "agent-script-runner not found, so every test in this file "
+            "SKIPPED while the suite printed OK without verifying anything. "
+            "Set AGENT_SCRIPT_RUNNER to the runner checkout. Red is the "
+            "correct outcome: an unverified green is the bug.")
 
 
 if __name__ == "__main__":
