@@ -1,17 +1,46 @@
 """Tests for agent/scripts/scout.js — the M2 first script (8.2).
 
-Node-driven: scout.js is the artefact under test, so it is read from disk and
-evaluated with stub `api` / `snapshot` globals exactly as the runner would
-provide them. Nothing here re-implements the script's logic; every assertion is
-against what the committed .js returns.
+THE POINT OF THIS FILE, after the 2026-11-13 rewrite: scout.js runs through the
+runner's REAL engine, byte for byte as committed, and every assertion is made
+against the SAME collector the runner uses to build a tick payload.
+
+What it used to do, and why that was worse than useless. The old `_run` did:
+
+    body = src.replace("\\ntick();", "\\n;return tick();")
+    assert body != src, "scout.js no longer ends with a bare tick(); ..."
+
+-- it EDITED the artefact into a shape its own assertion could read, then ran
+it under a hand-rolled `new Function(...)` harness with `api.do` stubbed to a
+no-op. So the test asserted that a REWRITTEN script's RETURN VALUE contained
+the action, while the real runner (a) runs the source unmodified, (b) collects
+actions only from api.do (agent-script-runner src/worker.js:86
+`actions: state.actions ?? []`), and (c) discards a script's return value
+outright (src/engine.js, contract §4.4: "§4.4's rule that the return value is
+ignored holds either way").
+
+The consequence was not a weak test, it was an inverted one: it was GREEN while
+production emitted zero actions on every tick. Measured on TEST 2026-11-13
+against the live runner, the committed bytes returned
+{"status":"ok","actions":[]}, while a probe identical except for calling
+api.do returned actions:[{directive:"STORE_ALL"}] -- and this file's suite was
+passing throughout.
+
+Two rules follow, and they are why this file looks the way it does:
+
+1. NO SOURCE REWRITE. scout.js is read from disk and handed to the engine
+   exactly as committed. If the script's contract changes, this test must go
+   red, not quietly rewrite it.
+2. NO api.do STUB. api.do is the only channel the runner reads, so stubbing it
+   removes the thing under test. The real binding records into the real
+   tick state, and the assertion reads that.
 
 The load-bearing assertion is `test_returns_exactly_the_parity_directive`. 8.2
 compares the script path's POST body against the planner path's, and that
 comparison is only worth anything if the SCRIPT supplies the directive. If this
 test pinned the expectation loosely (a kind, or a non-empty list), a script that
-later returned nothing would still pass while 8.2 compared two empty bodies --
-the harness-writes-both-sides defect the reviewer named. So the whole return
-value is pinned, not a field of it.
+later emitted nothing would still pass while 8.2 compared two empty bodies --
+the harness-writes-both-sides defect the reviewer named. So the whole action
+record is pinned, not a field of it.
 """
 from __future__ import annotations
 
@@ -20,40 +49,105 @@ import os
 import shutil
 import subprocess
 import unittest
+from pathlib import Path
 
-# This file lives in agent/, and scout.js in agent/scripts/, so _HERE is already
-# the directory to join from. The first version took dirname(_HERE) as well and
-# resolved one level too high -- it only failed because unittest was invoked
-# from inside agent/ and `__file__` happened to be relative then. Absolute
-# __file__ makes the off-by-one visible; the arithmetic is what was wrong.
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SCRIPT = os.path.join(_HERE, "scripts", "scout.js")
 
-# The runner's real surface (agent-script-runner/src/engine.js #installApi).
-_API_VERBS = ("do", "say", "send", "remember", "recall", "log")
+# The runner's real engine. Resolved from the repo layout: this agent and the
+# runner are sibling checkouts under ~/minecraft (and under the worktrees, where
+# the sibling is <repo>-wt-<seat>/agent-script-runner). AGENT_SCRIPT_RUNNER
+# overrides it for a checkout somewhere else. The test SKIPS loudly rather than
+# silently passing when the runner is not present -- a test that cannot run must
+# not look like a test that passed.
+_RUNNER_ENV = "AGENT_SCRIPT_RUNNER"
 
 
-def _run(snapshot_literal: str) -> dict:
-    """Evaluate scout.js with stub globals; return {"actions", "logs"}."""
-    src = open(_SCRIPT, encoding="utf-8").read()
-    # scout.js ends with a bare `tick();`. Rewrite only that final invocation so
-    # the body under test is otherwise the committed bytes.
-    body = src.replace("\ntick();", "\n;return tick();")
-    assert body != src, "scout.js no longer ends with a bare tick(); update this test"
+def _runner_root() -> str | None:
+    """Path to the agent-script-runner checkout, or None if not found."""
+    candidates = []
+    override = os.environ.get(_RUNNER_ENV)
+    if override:
+        candidates.append(override)
+    # This file: <root>/<repo>/agent/test_scout_script.py
+    candidates.append(str(Path(_HERE).parents[1] / "agent-script-runner"))
+    for cand in candidates:
+        if os.path.isfile(os.path.join(cand, "src", "engine.js")):
+            return cand
+    return None
 
-    harness = f"""
-const fs = require("fs");
-const body = {json.dumps(body)};
-const logs = [];
-const api = {{ {", ".join(f'{v}: (...a) => logs.push(a.join(" "))' for v in _API_VERBS)} }};
-api.do = () => ({{}});
-const snapshot = {snapshot_literal};
-const fn = new Function("api", "snapshot", body);
-console.log(JSON.stringify({{ actions: fn(api, snapshot), logs }}));
+
+# The driver runs INSIDE the runner checkout so `import` resolves the runner's
+# own `src/engine.js` and its node_modules (quickjs), rather than reimplementing
+# the sandbox. It reads the script from the path handed to it and evaluates it
+# UNMODIFIED. Output is the engine's own tick state, so the actions come from
+# `api.do` through `createApi` -- the same code path worker.js uses.
+_DRIVER = r"""
+import { loadModule, createLimitedRuntime, Sandbox } from "./src/engine.js";
+import { readFileSync } from "node:fs";
+
+const [scriptPath, snapshotJson] = process.argv.slice(2);
+const source = readFileSync(scriptPath, "utf8");
+// A sentinel, not `undefined`: "undefined" is not valid JSON, and null is a
+// real (different) case the engine distinguishes from an absent snapshot.
+const NO_SNAPSHOT = "__NO_SNAPSHOT__";
+const snapshot = snapshotJson === NO_SNAPSHOT ? undefined : JSON.parse(snapshotJson);
+
+await loadModule();
+const rt = await createLimitedRuntime();
+// bindApi installs the real `api` (do/say/send/remember/recall/log) into the
+// context, recording into the sandbox's own tick state. That is the collector
+// worker.js serialises as `actions`, so nothing here imitates it.
+const box = new Sandbox(rt, { tickCpuMs: 250, bindApi: true });
+const result = box.evaluate(SOURCE(snapshot), { snapshot });
+
+const st = box.tickState;
+process.stdout.write(JSON.stringify({
+  ok: result.ok,
+  error: result.ok ? null : String(result.error && (result.error.message || result.error.kind)),
+  actions: st.actions.map((a) => ({ seq: a.seq, call: a.call, directive: a.directive, args: a.args })),
+  logs: st.logs.map((l) => String(l.line)),
+  host_calls: st.hostCalls,
+}));
 """
-    out = subprocess.run(
-        ["node", "-e", harness], capture_output=True, text=True, timeout=30,
-    )
+
+
+def _run(snapshot, script_path=None):
+    """Evaluate the COMMITTED scout.js bytes in the runner's real engine.
+
+    Returns {"ok", "error", "actions", "logs", "host_calls"}. `actions` is the
+    runner's own record shape ({seq, call, directive, args}), read from the
+    sandbox's tick state -- not from the script's return value, which the
+    runner ignores.
+    """
+    root = _runner_root()
+    if root is None:
+        raise unittest.SkipTest(
+            f"agent-script-runner not found (set {_RUNNER_ENV}); this test must "
+            "run the real engine, not a stand-in")
+    # Written as a file, not `-e`: the driver is an ES module and must resolve
+    # relative imports from the runner's own root.
+    driver = os.path.join(root, "__scout_driver__.mjs")
+    try:
+        with open(driver, "w", encoding="utf-8") as fh:
+            fh.write(_DRIVER.replace("SOURCE(snapshot)", "source"))
+        if snapshot is None:
+            snap_json = "__NO_SNAPSHOT__"
+        elif isinstance(snapshot, str):
+            # Only the sentinel is passed through as a bare string; everything
+            # else is JSON so the driver never has to guess.
+            snap_json = snapshot
+        else:
+            snap_json = json.dumps(snapshot)
+        out = subprocess.run(
+            ["node", driver, script_path or _SCRIPT, snap_json],
+            cwd=root, capture_output=True, text=True, timeout=120,
+        )
+    finally:
+        try:
+            os.remove(driver)
+        except OSError:
+            pass
     if out.returncode != 0:
         raise AssertionError(f"node failed: {out.stderr.strip()}")
     return json.loads(out.stdout)
@@ -105,26 +199,83 @@ def _envelope(health=20.0, task=IDLE_DIRECTIVE, **extra):
                      "inventory": [], "nearby": {"blocks": [], "mobs": []}},
            "task": task}
     env.update(extra)
-    return json.dumps(env)
+    return env
+
+
+def _directives(result):
+    """The directive names the runner collected, in call order."""
+    return [a["directive"] for a in result["actions"]]
 
 
 @unittest.skipUnless(shutil.which("node"), "node is required to run scout.js")
 class ScoutScriptTest(unittest.TestCase):
 
     def test_returns_exactly_the_parity_directive(self):
-        # 8.2's subject, pinned in full. STORE_ALL is emitted BARE here on
+        # 8.2's subject, pinned in full: exactly one api.do, with the coordless
+        # STORE_ALL and an empty args object. STORE_ALL is emitted BARE here on
         # purpose, and §3 pins that coordless form: it is what every producer in
-        # this repo emits (agent.py:1622's pattern has no capture groups). The
-        # form is CONSTRUCTED from code, not observed from TEST logs -- those
-        # logs carry no current STORE_ALL record -- and §3 says so. Constructing
-        # the coordless form holds constant a call the planner really makes,
-        # rather than comparing it against one it never makes.
+        # this repo emits (agent.py:1622's pattern has no capture groups).
         result = _run(_envelope(20.0))
-        self.assertEqual(result["actions"], [{"kind": "STORE_ALL"}],
-                         f"script returned {result['actions']!r}, logs={result['logs']!r}")
+        self.assertTrue(result["ok"], f"engine rejected the script: {result['error']}")
+        self.assertEqual(
+            result["actions"],
+            [{"seq": 1, "call": "do", "directive": "STORE_ALL", "args": {}}],
+            f"script emitted {result['actions']!r}, logs={result['logs']!r}")
+
+    def test_action_is_emitted_through_api_do_not_a_returned_array(self):
+        # THE RUN-3 REGRESSION, pinned directly. scout.js used to
+        # `return [{kind:"STORE_ALL"}]` from tick() and end with a bare
+        # `tick();`. The runner ignores return values (contract §4.4) and
+        # collects actions only from api.do, so the action vanished and
+        # state.actions was empty on every tick of every run.
+        #
+        # The assertion is not "actions is non-empty" -- a script could populate
+        # it any way it liked. It is that the action arrived through the `do`
+        # call, which is the only channel the runner reads.
+        result = _run(_envelope(20.0))
+        self.assertTrue(result["ok"], f"engine rejected the script: {result['error']}")
+        self.assertEqual(len(result["actions"]), 1,
+                         f"expected exactly one action, got {result['actions']!r}")
+        self.assertEqual(result["actions"][0]["call"], "do",
+                         "the action must arrive through api.do; the runner "
+                         "ignores a script's return value (§4.4)")
+        self.assertGreaterEqual(result["host_calls"], 1,
+                                "an api.do call must register as a host call")
+
+    def test_a_returned_array_never_calls_api_do_and_yields_no_actions(self):
+        # THE NEGATIVE TEST the lead asked for, and the one that would have
+        # caught the original bug: a script that RETURNS the action instead of
+        # calling api.do produces ZERO actions in the runner.
+        #
+        # It is deliberately the old scout.js shape, run through the same real
+        # engine. Green here is the proof that returning is not a channel; red
+        # would mean the engine started honouring return values and this test
+        # file's whole premise needs revisiting.
+        old_shape = (
+            "function tick() { return [{ kind: 'STORE_ALL' }]; }\n"
+            "tick();\n"
+        )
+        path = os.path.join(_HERE, "scripts", "__negative_return__.js")
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(old_shape)
+            # Same driver, same engine, only the source differs.
+            result = _run(_envelope(20.0), script_path=path)
+        finally:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        self.assertTrue(result["ok"], f"engine rejected the script: {result['error']}")
+        self.assertEqual(
+            result["actions"], [],
+            "a script that RETURNS an action instead of calling api.do must "
+            f"produce no actions; got {result['actions']!r}. If this is red the "
+            "engine now reads return values and every assumption in this file "
+            "needs re-deriving.")
 
     def test_no_snapshot_proposes_nothing_and_says_so(self):
-        result = _run("undefined")
+        result = _run(None)
         self.assertEqual(result["actions"], [])
         self.assertTrue(any("no snapshot" in line for line in result["logs"]),
                         f"silence was unexplained: {result['logs']!r}")
@@ -152,7 +303,7 @@ class ScoutScriptTest(unittest.TestCase):
         # It fails against `if (snapshot.task)` and passes only when the guard
         # reads progress.phase.
         result = _run(_envelope(20.0, IDLE_DIRECTIVE))
-        self.assertEqual(result["actions"], [{"kind": "STORE_ALL"}],
+        self.assertEqual(_directives(result), ["STORE_ALL"],
                          "an idle bot was treated as busy; actions="
                          f"{result['actions']!r} logs={result['logs']!r}")
 
@@ -188,11 +339,11 @@ class ScoutScriptTest(unittest.TestCase):
         def envelope_json(health, directive):
             cache = snap.SnapshotCache(_Api(health, directive), ttl=60.0,
                                        clock=lambda: 1000.0)
-            return json.dumps(cache.get("Scout")[0])
+            return cache.get("Scout")[0]
 
         # Healthy and idle: acts, as before.
         healthy = _run(envelope_json(20.0, None))
-        self.assertEqual(healthy["actions"], [{"kind": "STORE_ALL"}],
+        self.assertEqual(_directives(healthy), ["STORE_ALL"],
                          f"real envelope broke the happy path: {healthy}")
 
         # HURT and idle: must hold. This is the branch that never ran.
@@ -216,7 +367,7 @@ class ScoutScriptTest(unittest.TestCase):
         # are a deliberate no-op (busy); the busy path logs nothing because the
         # agent already knows why. This asserts the two self-explaining paths
         # do explain, so 8.2 can tell "held" from "broke".
-        for literal, token in (("undefined", "no snapshot"),
+        for literal, token in ((None, "no snapshot"),
                                (_envelope(3.0), "too low")):
             logs = _run(literal)["logs"]
             self.assertTrue(any(token in line for line in logs),

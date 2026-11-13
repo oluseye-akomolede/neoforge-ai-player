@@ -17,7 +17,7 @@ function tick() {
   // on a guess, so say so once and propose nothing.
   if (typeof snapshot === "undefined" || snapshot === null) {
     api.log("scout: no snapshot this tick, proposing nothing");
-    return [];
+    return;  // propose nothing: the runner reads api.do, not this value
   }
 
   // The envelope's shape is {tick, server_ms, state, events, task}; the bot
@@ -35,7 +35,7 @@ function tick() {
   var health = state.health;
   if (typeof health === "number" && health < 8) {
     api.log("scout: health " + health + " too low, holding");
-    return [];
+    return;  // propose nothing: the runner reads api.do, not this value
   }
 
   // The task we are on. `snapshot.task` is the directive the agent is
@@ -62,15 +62,30 @@ function tick() {
   // second job underneath an unknown one. Only an explicit idle phase opens it.
   var task = snapshot.task;
   if (task && !(task.progress && task.progress.phase === "idle")) {
-    return [];
+    return;  // propose nothing: the runner reads api.do, not this value
   }
 
-  // THE ACTION. This is the one 8.2 compares, and its argument form matters:
-  // `STORE_ALL` takes an OPTIONAL coordinate triple (StoreAllBehavior.java:62
-  // `if (directive.hasLocation())`), and when it has one it stores into that
-  // specific container and moves the bot there (:171). Leaving the coordinates
-  // off asks the mod to choose, which is the form the planner's own seed match
-  // produces (agent.py:1888 -- its pattern has no capture groups).
+  // THE ACTION. This is the one 8.2 compares, and TWO things about it matter.
+  //
+  // HOW: it goes through `api.do`, NOT a returned array. The runner collects
+  // actions only from api.do calls during the tick (agent-script-runner
+  // src/worker.js:86 `actions: state.actions ?? []`), and its contract is
+  // explicit that a script's return value is IGNORED (src/engine.js, §4.4).
+  // This script used to `return [{kind:"STORE_ALL"}]` from tick() and end with
+  // a bare `tick();`: the value went nowhere, state.actions stayed empty on
+  // every tick, and the mod was never asked to do anything. Measured on TEST
+  // 2026-11-13 against the live runner - the committed bytes gave
+  // {"status":"ok","actions":[]} while a probe identical except for calling
+  // api.do gave actions:[{directive:"STORE_ALL"}]. The test that should have
+  // caught it REWROTE this file's `tick();` into `;return tick();` before
+  // evaluating, so it asserted on a contract the runner does not implement.
+  //
+  // WHAT: `STORE_ALL` takes an OPTIONAL coordinate triple
+  // (StoreAllBehavior.java:62 `if (directive.hasLocation())`), and when it has
+  // one it stores into that specific container and moves the bot there (:171).
+  // Leaving the coordinates off asks the mod to choose, which is the form the
+  // planner's own seed match produces (agent.py:1888 -- its pattern has no
+  // capture groups).
   //
   // This script emits the COORDLESS form on purpose, and 8.2 pins that form.
   // Every producer in this repo emits it coordless: the planner's own seed
@@ -79,16 +94,11 @@ function tick() {
   // with STORE_ALL bare beside it (SkillRegistry.java:154). The coordless form
   // is therefore the plausible call, and a constructed fixture should
   // construct that one.
-  //
-  // The directive here comes from THIS script, not from the test harness. If a
-  // future edit returns nothing, the 8.2 parity test must fail rather than
-  // silently compare two empty bodies.
-  return [
-    { kind: "STORE_ALL" }
-  ];
+  api.do("STORE_ALL", {});
 }
 
-// The runner calls the script body per tick; returning the array above is the
-// whole contract. Kept as a named function and invoked explicitly so a syntax
-// error surfaces as a script failure rather than as an empty action list.
+// Called explicitly so a syntax error surfaces as a script failure rather than
+// as an empty action list. The call is the contract: whatever tick() does to
+// api.do is what the runner collects. tick() returns nothing, and nothing
+// reads it - returning an array here would be discarded (§4.4).
 tick();

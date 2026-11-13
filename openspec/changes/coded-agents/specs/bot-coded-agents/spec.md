@@ -385,6 +385,51 @@ the mod's internals.
 - **THEN** the call fails and reports the unknown action
 - **AND** nothing is executed on the server
 
+### Requirement: A Script Acts By Calling The API, Never By Returning
+A script MUST emit an action by calling `api.do(kind, args)` during its tick.
+The runner MUST collect a tick's actions solely from those calls and MUST
+ignore the script's return value.
+
+A script that returns an action instead of calling `api.do` MUST be treated as
+proposing nothing. Silence in the agent log is not evidence that a script did
+nothing: a script that runs, succeeds and calls nothing is indistinguishable
+there from one whose action was discarded, so the actions a tick actually
+collected are the only admissible evidence.
+
+This is a contract, not an implementation detail. `agent/scripts/scout.js` was
+written to `return [{kind: "STORE_ALL"}]` and end with a bare `tick();`. The
+runner wraps the source as a function body and discards the value, so the
+action never reached the mod: measured on TEST 2026-11-13, the committed script
+returned `{"status":"ok","actions":[]}` on every tick while a probe identical
+except for calling `api.do` returned
+`actions:[{"directive":"STORE_ALL"}]`. The test that should have caught it
+rewrote the script's `tick();` into `;return tick();` before evaluating it and
+stubbed `api.do`, so it asserted on a contract the runner does not implement.
+
+#### Scenario: An action emitted through api.do reaches the bot
+- **WHEN** a script calls `api.do` with a directive the dispatch set knows
+- **THEN** the tick's collected actions contain that directive, in call order
+- **AND** the agent dispatches it as it would an action the planner requested
+
+#### Scenario: A returned action produces nothing
+- **WHEN** a script returns an action object from its tick instead of calling
+  `api.do`
+- **THEN** the tick's collected actions are empty
+- **AND** nothing is dispatched to the bot
+
+#### Scenario: A silent tick is not read as a successful one
+- **WHEN** a script completes a tick without calling `api.do`
+- **THEN** the tick reports zero actions
+- **AND** that zero is distinguishable from a discarded action by inspecting
+  the collected actions, because the agent log carries no line either way
+
+#### Scenario: The script under test is the script that is deployed
+- **WHEN** the test suite exercises a script's action behaviour
+- **THEN** it evaluates the committed source unmodified through the runner's
+  real engine
+- **AND** it asserts against the actions that engine collected, not against a
+  return value and not through a stubbed `api.do`
+
 ### Requirement: Per-Tick Snapshot Is Read-Only
 Each tick the script MUST receive a read-only snapshot of the bot's state,
 including health, food, position, inventory, nearby blocks and mobs, task
