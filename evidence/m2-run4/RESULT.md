@@ -62,3 +62,55 @@ re-apply `cm.before.yaml` with `resourceVersion`/`uid`/`creationTimestamp`
 stripped, restart, then re-read the in-pod digest. `deploy.before.yaml` and
 `cm.before.yaml` in this directory were both read back and verified before the
 run: the deployment at `d1513fa2…`, the ConfigMap at `838efd89…` / 4893 bytes.
+
+## Item-movement check (05:33Z) — NEGATIVE, and why
+
+The pass criterion was "items actually move", evidenced at source with no key
+in the output. The chain is green; the movement is not there.
+
+Measured after the run, verbatim:
+
+    GET /api/bots/Scout/holdings  -> {"bot":"Scout","items":[],"carried_total":0,"vault_total":0}
+    GET /api/containers/16/99/-15/contents -> {"position":{"z":-15,"y":99,"x":16},"items":[]}
+    GET /api/bots/Scout -> "inventory": []
+
+All 61 dispatch cycles completed with an EMPTY counter payload:
+
+    61  [Scout/L1] Directive COMPLETED: {}
+
+Root cause, from src/main/java/.../behavior/StoreAllBehavior.java:
+
+  :126-129  if (grouped.isEmpty()) {
+                progress.logEvent("No non-essential items to store");
+                bot.systemChat("Nothing to store - inventory is all essentials", "yellow");
+                return BehaviorResult.SUCCESS;
+            }
+  :306      return BehaviorResult.SUCCESS;   // after tickNextItem, which does
+                                             // progress.increment("items_stored", ...)
+
+Scout's inventory is empty, so grouped.isEmpty() is true and every tick takes
+the :126 early return: SUCCESS with no counters. "COMPLETED: {}" is therefore
+the signature of a no-op, not of a completed transfer.
+
+What this run DOES prove (and what it does not):
+
+  PROVEN      script -> api.do -> runner record -> translate_runner_actions
+              -> bind_actions -> L1 dispatch -> directive accepted. 61/61 ticks,
+              0 refusals, 0 tracebacks, seq=1 each tick (binding.js:116 reset).
+  NOT PROVEN  item movement. The bot had nothing to move. A green COMPLETED
+              line is NOT evidence of a transfer.
+
+Evidence surfaces that do NOT carry the answer (checked, all zero):
+  - agent container log: no "stored"/"deposited" lines
+  - progress.logEvent ("Nothing to store", "Store all complete"): 0 occurrences
+    in the agent log. logEvent does not reach the agent container log.
+  - bot.systemChat writes to IN-GAME chat (StoreAllBehavior :358), not the log.
+
+The only in-band signal of "nothing stored" is the empty counter dict on the
+COMPLETED line. That is inferential: it distinguishes stored-nothing from
+stored-something, but it would not distinguish "stored nothing because empty"
+from a future behaviour that returns SUCCESS before incrementing.
+
+To close the criterion properly, the next run must START with a Scout holding
+non-essential items, read its inventory BEFORE the tick, and quote both the
+before and after readings. The before-reading is the one this run lacked.
