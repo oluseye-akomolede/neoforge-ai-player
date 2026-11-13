@@ -125,6 +125,32 @@ kubectl -n minecraft-test rollout status deploy/aibot-agent-test --timeout=300s
 
 Then re-read the ConfigMap digest and confirm it is back to `838efd89…`. The
 rollback is complete when the mounted file matches, not when the apply returns.
+**Restart the pod too** — `_script_loaded` caches the script once, so a
+ConfigMap rollback alone leaves the running pod on the new bytes.
+
+**Measured 2026-11-13 (run 3): a backup taken with `-o yaml` is NOT directly
+re-appliable once the object has changed.** The first rollback attempt was
+rejected:
+
+```
+Operation cannot be fulfilled on configmaps "agent-scripts": the object has
+been modified; please apply your changes to the latest version and try again
+```
+
+The backup carries the `resourceVersion` from when it was taken, and the run's
+own apply moved the object on. Strip the server-managed fields before
+re-applying:
+
+```
+python3 -I -c "import yaml;d=yaml.safe_load(open('$HOME/m2-run3-agent-scripts.bak.yaml'));\
+[d['metadata'].pop(k,None) for k in ('resourceVersion','uid','creationTimestamp')];\
+open('/tmp/rollback-clean.yaml','w').write(yaml.safe_dump(d))"
+ssh controlplane "kubectl -n minecraft-test apply -f -" < /tmp/rollback-clean.yaml
+```
+
+Verify by re-reading the digest, not by the apply's output — a rejected apply
+leaves the previous bytes in place and the next command would otherwise read as
+a successful rollback.
 
 ## Known risks
 
