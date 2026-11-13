@@ -1550,6 +1550,16 @@ from a working translation that had nothing to do.
 
 ## 9. Rollback
 
+**Two different rollbacks, named so they cannot be confused.** Run 3 failed and
+was rolled back to *planner-only* (§9 block below: ConfigMap deleted, so no bot
+runs a script). Run 4's own rollback is different -- it restores the pre-run
+state, which HAS a script bound to Scout, and is specified beside the run at
+§8.3.5: `set image` to the before-digest plus re-apply the ConfigMap from
+backup, so Scout keeps running the old `scout.js` through the old image. Use the
+§8.3.5 one to undo run 4, and the block below to take the whole feature back
+out. Deleting the ConfigMap is a deliberate step *away* from the pre-run state,
+not a restoration of it.
+
 No data migration and no schema change, so rollback is code-only:
 
 ```
@@ -1558,17 +1568,29 @@ POD=$(kubectl -n minecraft-test get pod -l app=aibot-agent,tier=test -o jsonpath
 echo "$POD"                                                      # must be non-empty before continuing
 
 git revert <this change's commits>                               # agent-side only
-# rollout undo first: it restores the Deployment's previous pod spec, which has
-# neither the scripts mount nor SCRIPTS_DIR, so the new pod cannot run a script
-# even while the ConfigMap still exists.
+# ConfigMap first, THEN the deployment. Deleting the ConfigMap is what stops
+# script mode: _bound_script_path reads bindings.json from $(SCRIPTS_DIR), so
+# with the ConfigMap gone it returns None and every bot falls back to the
+# planner -- no restart needed for that, but the tick cache means the running
+# pod keeps its loaded script until it restarts, which is why the rollout
+# follows. (Corrected 2026-11-13: this comment used to say the previous pod
+# spec has neither the scripts mount nor SCRIPTS_DIR. Measured, it has both --
+# so the rollback cannot rely on the spec to disable scripts.)
+kubectl -n minecraft-test delete configmap agent-scripts   # stop script mode
 kubectl -n minecraft-test rollout undo deploy/aibot-agent-test
 kubectl -n minecraft-test rollout status deploy/aibot-agent-test --timeout=180s
-kubectl -n minecraft-test delete configmap agent-scripts
 
 # verify the restore landed, not just that the commands exited 0:
 kubectl -n minecraft-test get deploy aibot-agent-test \
   -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}{.spec.template.spec.containers[0].env[*].name}'
-# expect: the rollback digest, and exactly [NN_COMPRESSOR_URL]
+# expect: the rollback digest, and all four env names in this order --
+#   [NN_COMPRESSOR_URL SCRIPT_RUNNER_URL SCRIPTS_DIR RUNNER_TOKEN]
+# This line used to say "exactly [NN_COMPRESSOR_URL]". That was true when the
+# section was written, before the script wiring existed; it is false on the
+# live object now (measured 2026-11-13), where `scripts` is already a mounted
+# volume and SCRIPTS_DIR/RUNNER_TOKEN are already set. Run rollback does not
+# REMOVE the script wiring -- it restores the previous pod spec, which has it.
+# Follow the old text and a correct rollback reads as a failure.
 kubectl -n minecraft-test get cm agent-scripts                          # expect NotFound
 kubectl -n minecraft-test logs deploy/aibot-agent-test -c agent --tail=200 | grep -c '\[.*/script\]'   # expect 0
 ```
