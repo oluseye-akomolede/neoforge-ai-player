@@ -1840,9 +1840,21 @@ Two things that are *not* required, to keep the blast radius small:
 
 ### 8.4.3 Preconditions (read-only; abort if any fails)
 
-1. `agent-scripts` is `1824967e…` (scout.js) and `bindings.json` is
-   `{"Scout": "scout.js"}` — the C4 state. Read both with a hash, never by
-   printing the script.
+1. `agent-scripts` holds **both** files at their expected hashes — the C4 state:
+
+   | file | sha256 (16-char prefix) | bytes |
+   |---|---|---|
+   | `scout.js` | `1824967e200dab94` | 5852 |
+   | `bindings.json` | `10cef1b830853225` | 26 |
+
+   `bindings.json` carries `{"Scout": "scout.js"}` (pretty-printed, 3 lines —
+   26 bytes, so a byte-exact restore matters). Read both with a hash, never by
+   printing the script. Verify in-pod, on the **same pod** the arm will use:
+
+   ```
+   kubectl -n minecraft-test exec "$POD" -c agent -- \
+     sha256sum /srv/aibot-scripts/bindings.json /srv/aibot-scripts/scout.js | cut -c1-16
+   ```
 2. Scout's inventory is stocked enough to make a store observable (the run-5
    method: two stacks, the non-selected one must be the one that moves).
 3. The runner answers `ready:true` **and** a real tick — `ready` alone is not
@@ -1880,8 +1892,21 @@ observe, then restore and recreate again.
 
    ```
    kubectl -n minecraft-test get deploy aibot-agent-test -o jsonpath='{.spec.template.spec.containers[0].env}' | sha256sum
-   kubectl -n minecraft-test get rs aibot-agent-test-6b65bdfc95   -o jsonpath='{.spec.template.spec.containers[0].env}' | sha256sum
+   kubectl -n minecraft-test get rs -l app=aibot-agent,tier=test \
+     -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.readyReplicas}{"\n"}{end}' | awk '$2==1'
    ```
+   then hash the **name that prints** (exactly one RS has `readyReplicas=1`;
+   eleven exist, the rest are scaled to 0):
+
+   ```
+   kubectl -n minecraft-test get rs "$RS" -o jsonpath='{.spec.template.spec.containers[0].env}' | sha256sum
+   ```
+
+   **Resolve the RS dynamically, never by name** (reviewer, 10:46Z). A literal
+   such as `…-6b65bdfc95` is only correct until the first `rollout resume` in
+   this same step, which creates a new RS; the next arm would then hit
+   `NotFound`. Polarity there is safe — empty input hashes to `e3b0c442` and
+   mismatches, so it stops rather than silently passing — but it halts the run.
 
    They were **identical** (`fe1a4d3c…`) when this was written, so resuming
    applies nothing pending. **If they differ, stop** and report the delta before
@@ -1984,9 +2009,24 @@ already supplied; it is listed so the four arms are compared under one method.
 
 **Acceptance 4/5 of §8.3 are a NO-REGRESSION check, not proof of the fix**
 (lead, 10:41Z). Measured before writing this: the pod running the **old** image
-`a9e75ad1` (pod `…-cbpz9`, started 10:38:02Z, 0 restarts) logged 134
-`[Scout/script]` lines in 20 minutes, healthy, because the 10:15Z `/v1/destroy`
-already cleared the wedge. "Scout's ticks stop erroring" therefore passes on the
+`a9e75ad1` (pod `…-cbpz9`, started 10:38:02Z, 0 restarts) was ticking healthily,
+because the 10:15Z `/v1/destroy` already cleared the wedge.
+
+Quote it as a **rate over a window bounded by the pod's own age**, never a raw
+line count (reviewer, 10:46Z: an earlier "134 lines in 20 minutes" could not
+reproduce — that pod is only ~8 minutes old, and the count drifts as the window
+moves). Measured 10:46Z over `…-cbpz9`'s whole life, `--timestamps`, first to
+last `dispatch:` line:
+
+```
+214 dispatch: lines / 497.4 s = 25.8 dispatch/min, 2.335 s apart
+```
+
+**`dispatch:` is the line counted, one per tick.** Each tick also emits
+`N action(s) this tick`, so the bare `[Scout/script]` tag appears in pairs;
+counting the tag doubles the figure (428 vs 214 on this pod). Say which line you
+counted, and take `first→last dispatch` as the window rather than a wall-clock
+span that can exceed the pod's age. "Scout's ticks stop erroring" therefore passes on the
 old image too and cannot attribute anything to `aa7b00a`. **The fix is proven by
 the reviewed suite** (127/127 with the boundary-capture mutation at 126/127),
 not by this rollout; the rollout's job is to show it does not regress.
