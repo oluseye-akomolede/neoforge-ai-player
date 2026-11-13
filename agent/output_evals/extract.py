@@ -107,24 +107,41 @@ class Census:
     total_calls: dict = field(default_factory=lambda: defaultdict(int))
     outcomes: int = 0
     plan_closes: int = 0
+    replayable: dict = field(default_factory=lambda: defaultdict(int))
+    not_replayable: dict = field(default_factory=lambda: defaultdict(int))
     joined: dict = field(default_factory=lambda: defaultdict(int))
     no_label: dict = field(default_factory=lambda: defaultdict(int))
     cancelled: dict = field(default_factory=lambda: defaultdict(int))
-    by_era: dict = field(default_factory=dict)   # kind -> {model: {calls, joined}}
+    by_era: dict = field(default_factory=dict)   # kind -> {model: {calls, replayable, labelled}}
     days: set = field(default_factory=set)
     bad_lines: int = 0
+    current_era: str = ""   # the model the agent runs today; shortfall is measured against it
 
     def report(self):
         kinds = {}
         for kind in SCORABLE:
             eras = self.by_era.get(kind, {})
+            replay = self.replayable.get(kind, 0)
             kinds[kind] = {
                 "calls": self.total_calls.get(kind, 0),
+                # Replay pool: a call with a usable input. This is what a replay
+                # run is sampled from, and it needs NO historical label -- the
+                # replayed output is scored by the automatic checks.
+                "replayable": replay,
+                "not_replayable": self.not_replayable.get(kind, 0),
+                # Label pool: a call whose recorded outcome is known. This is a
+                # separate, historical score and a different question.
                 "labelled": self.joined.get(kind, 0),
                 "no_label": self.no_label.get(kind, 0),
                 "cancelled": self.cancelled.get(kind, 0),
                 "by_era": {m: dict(v) for m, v in sorted(eras.items())},
-                "short_of_" + str(MIN_PER_KIND): max(0, MIN_PER_KIND - self.joined.get(kind, 0)),
+                # The spec's shortfall is about the CURRENT era ("today:
+                # replan, 21"), not about all eras. Measuring it against the
+                # all-era pool reports 0 for replan (271 all-era) and hides
+                # exactly the shortfall the precedence paragraph addresses.
+                "short_of_" + str(MIN_PER_KIND): max(
+                    0, MIN_PER_KIND - eras.get(self.current_era, {}).get("replayable", 0)),
+                "short_of_" + str(MIN_PER_KIND) + "_all_era": max(0, MIN_PER_KIND - replay),
             }
         return {
             "kinds": kinds,
@@ -135,11 +152,32 @@ class Census:
         }
 
 
-def build_cases(records):
+def is_replayable(rec):
+    """Can this call be replayed? It needs only a usable INPUT, not a label.
+
+    A replay re-sends the recorded prompt to the model and scores the NEW
+    output with the automatic checks, so the recorded outcome is irrelevant to
+    whether the case can be run. What it does need is the user prompt (the
+    actual ask) and a call that parsed; a call with no prompt cannot be re-sent,
+    and one that failed to parse has no trustworthy input to replay.
+
+    Deliberately does NOT look at prompt_system: only plan-phase calls carry it
+    (exec calls leave it empty), so requiring it would silently drop every exec
+    case -- the same defect this function exists to fix.
+    """
+    if not str(rec.get("prompt_user") or "").strip():
+        return False
+    parse_error = rec.get("parse_error")
+    if parse_error:
+        return False
+    return True
+
+
+def build_cases(records, current_era=""):
     """(cases, census). Pure function of the records -- easy to test."""
     outcomes_by_call, close_by_plan = {}, {}
     calls = []
-    census = Census()
+    census = Census(current_era=current_era)
 
     for rec in records:
         t = rec.get("type")
@@ -163,7 +201,8 @@ def build_cases(records):
             continue
         model = str(rec.get("model") or "unknown")
         census.total_calls[kind] += 1
-        census.by_era.setdefault(kind, {}).setdefault(model, {"calls": 0, "labelled": 0})
+        census.by_era.setdefault(kind, {}).setdefault(
+            model, {"calls": 0, "replayable": 0, "labelled": 0})
         census.by_era[kind][model]["calls"] += 1
         ts = str(rec.get("ts") or "")
         if len(ts) >= 10:
@@ -192,12 +231,29 @@ def build_cases(records):
                     source = "plan_close"
 
         if cancelled:
-            continue
-        if not label:
+            # Cancelled affects only the HISTORICAL label: it is not a failure
+            # and not a success, so it leaves that rate. It does NOT remove the
+            # call from the replay pool -- the recorded input is still usable,
+            # and a replay scores a fresh output, never the old verdict. Kicking
+            # it out here silently shrank the current-era plan pool 37 -> 31.
+            label, source = "", ""
+
+        # Label buckets are exclusive: a call is labelled, cancelled, or has no
+        # label -- exactly one, so they sum to the call count. A cancelled call
+        # is already counted above and must not also land in no_label.
+        if cancelled:
+            pass
+        elif label:
+            census.joined[kind] += 1
+            census.by_era[kind][model]["labelled"] += 1
+        else:
             census.no_label[kind] += 1
+
+        if not is_replayable(rec):
+            census.not_replayable[kind] += 1
             continue
-        census.joined[kind] += 1
-        census.by_era[kind][model]["labelled"] += 1
+        census.replayable[kind] += 1
+        census.by_era[kind][model]["replayable"] += 1
 
         cases.append(Case(
             kind=kind,

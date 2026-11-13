@@ -205,7 +205,7 @@ def main(argv=None):
     else:
         directory = extract.trajectory_dir(args.trajectory_dir)
         records, bad = extract.read_records(directory)
-        cases, census = extract.build_cases(records)
+        cases, census = extract.build_cases(records, current_era=cfg.model)
         census.bad_lines = bad
         corpus = census.report()
         print(json.dumps({"corpus": corpus}, indent=2))
@@ -223,7 +223,8 @@ def main(argv=None):
 
     n_cases = {k: len(v) for k, v in by_kind.items()}
     if sum(n_cases.values()) == 0:
-        print("no labelled cases: nothing to score", file=sys.stderr)
+        print("no replayable cases: nothing to score (every call lacked a usable input)",
+              file=sys.stderr)
         return 3
 
     if args.dry_run:

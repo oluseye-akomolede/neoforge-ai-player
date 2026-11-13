@@ -95,8 +95,23 @@ class RunnerTests(unittest.TestCase):
             rep = json.load(f)
         self.assertFalse(rep.get("endpoint_probed"))
 
-    def test_no_labelled_cases_exits_3(self):
-        self._write([_record_call("c1", "exec")])   # no outcome
+    def test_unlabelled_but_replayable_does_not_exit_3(self):
+        """An unlabelled call is a usable REPLAY case; the run must proceed.
+
+        Exit 3 is 'nothing to score', not 'nothing labelled'. Replay scores a
+        fresh output, so a recorded outcome is not required.
+        """
+        self._write([_record_call("c1", "exec")])   # no outcome, but an input
+        rc = run.main(["--config", self.cfg, "--trajectory-dir", self.dir,
+                       "--out", self.out, "--dry-run"])
+        self.assertEqual(rc, 0, "an unlabelled but replayable call is not empty")
+        self.assertTrue(os.path.exists(self.out))
+
+    def test_no_replayable_cases_exits_3(self):
+        """A call with no usable input is not a case; an empty set is exit 3."""
+        rec = _record_call("c1", "exec")
+        rec["prompt_user"] = ""          # nothing to re-send: not replayable
+        self._write([rec])
         rc = run.main(["--config", self.cfg, "--trajectory-dir", self.dir,
                        "--out", self.out, "--dry-run"])
         self.assertEqual(rc, 3)

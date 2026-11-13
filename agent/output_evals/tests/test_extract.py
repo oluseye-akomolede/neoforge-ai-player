@@ -54,10 +54,19 @@ class JoinTests(unittest.TestCase):
         cases, _ = extract.build_cases([call("c1", "exec"), outcome("c1", False)])
         self.assertEqual(cases[0].label, "unsatisfied")
 
-    def test_exec_without_outcome_is_no_label(self):
+    def test_exec_without_outcome_is_still_a_replay_case(self):
+        """A replay scores a NEW output, so it needs only a usable input.
+
+        The recorded outcome is irrelevant to whether the call can be replayed.
+        Requiring one dropped every call the corpus has no outcome for -- all
+        the current-era exec calls without one -- from the replay pool.
+        """
         cases, census = extract.build_cases([call("c1", "exec")])
-        self.assertEqual(cases, [])
-        self.assertEqual(census.no_label["exec"], 1)
+        self.assertEqual(len(cases), 1, "an unlabelled call is still replayable")
+        self.assertEqual(cases[0].label, "", "no recorded outcome, no label")
+        self.assertEqual(census.replayable["exec"], 1)
+        self.assertEqual(census.no_label["exec"], 1, "still counted as unlabelled")
+        self.assertEqual(census.joined["exec"], 0)
 
     def test_plan_joins_plan_close_on_plan_ref(self):
         cases, census = extract.build_cases([call("c1", "plan"), plan_close("p1")])
@@ -72,12 +81,18 @@ class JoinTests(unittest.TestCase):
     def test_cancelled_plan_is_not_a_model_failure(self):
         # The corpus carries statuses complete/failed/cancelled. A cancelled
         # run was abandoned, not failed; scoring it incomplete charges the
-        # model for a decision it did not make. It gets its own counter and
-        # no case, so it cannot reach a rate in either direction.
+        # model for a decision it did not make. It leaves the LABEL rate and
+        # gets its own counter.
+        #
+        # It is still REPLAYABLE: a replay re-sends the recorded input and
+        # scores a fresh output, so the old verdict is irrelevant. Excluding it
+        # from the pool silently shrank the current-era plan sample 37 -> 31.
         cases, census = extract.build_cases([call("c1", "plan"), plan_close("p1", "cancelled")])
-        self.assertEqual(cases, [])
+        self.assertEqual(len(cases), 1, "cancelled is still a replay case")
+        self.assertEqual(cases[0].label, "")
         self.assertEqual(census.cancelled["plan"], 1)
         self.assertEqual(census.joined["plan"], 0)
+        self.assertEqual(census.replayable["plan"], 1)
         self.assertEqual(census.report()["kinds"]["plan"]["cancelled"], 1)
         # The census must still account for the plan exactly once. Without this
         # the cancelled plan is ALSO counted as no_label, and the three buckets
@@ -110,10 +125,12 @@ class JoinTests(unittest.TestCase):
         cases, _ = extract.build_cases(recs)
         self.assertEqual(cases[0].label, "complete")
 
-    def test_unjoined_plan_is_counted_not_scored(self):
+    def test_unjoined_plan_is_replayable_but_unlabelled(self):
         cases, census = extract.build_cases([call("c1", "plan"), plan_close("other")])
-        self.assertEqual(cases, [])
+        self.assertEqual(len(cases), 1, "replay does not need the plan_close join")
+        self.assertEqual(cases[0].label, "")
         self.assertEqual(census.no_label["plan"], 1)
+        self.assertEqual(census.replayable["plan"], 1)
 
 
 class CensusTests(unittest.TestCase):
@@ -132,10 +149,31 @@ class CensusTests(unittest.TestCase):
     def test_report_states_shortfall(self):
         recs = [call(f"c{i}", "replan", plan_ref=f"p{i}") for i in range(21)]
         recs += [plan_close(f"p{i}") for i in range(21)]
-        _, census = extract.build_cases(recs)
+        _, census = extract.build_cases(recs, current_era=CURRENT)
         rep = census.report()
         self.assertEqual(rep["kinds"]["replan"]["labelled"], 21)
         self.assertEqual(rep["kinds"]["replan"]["short_of_30"], 9)
+
+    def test_shortfall_is_measured_against_the_current_era_not_all_eras(self):
+        """replan: 21 today, 50 older. The spec's shortfall is the CURRENT era's.
+
+        An all-era measure prints 0 here and hides the shortfall the precedence
+        paragraph is about -- the number the owner reads Friday.
+        """
+        recs = [call(f"c{i}", "replan", plan_ref=f"p{i}") for i in range(21)]
+        recs += [call(f"o{i}", "replan", model=OLD, plan_ref=f"q{i}") for i in range(50)]
+        _, census = extract.build_cases(recs, current_era=CURRENT)
+        rep = census.report()["kinds"]["replan"]
+        self.assertEqual(rep["short_of_30"], 9, "current era: 21 -> 9 short")
+        self.assertEqual(rep["short_of_30_all_era"], 0, "all eras: 71 -> not short")
+
+    def test_shortfall_without_a_named_era_counts_nothing_as_current(self):
+        """No current_era -> the era measure is unknown, not silently all-era."""
+        recs = [call(f"c{i}", "replan", plan_ref=f"p{i}") for i in range(21)]
+        _, census = extract.build_cases(recs)
+        rep = census.report()["kinds"]["replan"]
+        self.assertEqual(rep["short_of_30"], 30)
+        self.assertEqual(rep["short_of_30_all_era"], 9)
 
     def test_distinct_days(self):
         recs = [call("c1", "exec")]
