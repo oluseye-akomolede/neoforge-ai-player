@@ -394,13 +394,45 @@ class RunnerRecordTranslationTest(unittest.TestCase):
         self.assertEqual([r["seq"] for r in refusals], [2])
 
     def test_the_seq_survives_to_the_bound_actions_in_order(self):
-        _h, actions, refusals, _d = ScriptTick(
+        st = ScriptTick(
             _FakeApi(), "Scout", "x",
             post=_poster(actions=[_do("MINE", {"target": "a"}, seq=11),
                                   _do("MINE", {"target": "b"}, seq=12),
-                                  _do("MINE", {"target": "c"}, seq=13)])).tick()
+                                  _do("MINE", {"target": "c"}, seq=13)]))
+        _h, actions, refusals, _d = st.tick()
         self.assertEqual(refusals, [])
-        self.assertEqual(len(actions), 3)
+        self.assertEqual([a["kind"] for a in actions], ["MINE"] * 3)
+        self.assertEqual(st._last_action_seqs, [11, 12, 13])
+
+    def test_seqs_stay_with_their_actions_when_a_middle_one_is_refused(self):
+        # The alignment is index-based against bind_actions' output, which is
+        # only sound if bound actions come back in input order. This is the
+        # case that would expose a slide: record 1 binds, record 2 is refused
+        # by the BINDER (unknown kind), record 3 binds. If the seq list were
+        # built from position-in-bound rather than position-in-pairs, record 3
+        # would be reported as seq 12.
+        st = ScriptTick(
+            _FakeApi(), "Scout", "x",
+            post=_poster(actions=[_do("MINE", {"target": "a"}, seq=11),
+                                  _do("WORLD_EDIT", {}, seq=12),
+                                  _do("DROP", {"target": "stone"}, seq=13)]))
+        _h, actions, refusals, _d = st.tick()
+        self.assertEqual([a["kind"] for a in actions], ["MINE", "DROP"])
+        self.assertEqual(st._last_action_seqs, [11, 13])
+        self.assertEqual([r["seq"] for r in refusals], [12])
+
+    def test_a_translation_refusal_does_not_shift_the_bind_seqs(self):
+        # Translation refuses record 1 before binding ever sees it; the seqs
+        # for the survivors must still be 11 and 13, not 11 and 12.
+        st = ScriptTick(
+            _FakeApi(), "Scout", "x",
+            post=_poster(actions=[_do("MINE", {"target": "a"}, seq=11),
+                                  {"seq": 12, "call": "say", "text": "hi"},
+                                  _do("DROP", {"target": "stone"}, seq=13)]))
+        _h, actions, refusals, _d = st.tick()
+        self.assertEqual([a["kind"] for a in actions], ["MINE", "DROP"])
+        self.assertEqual(st._last_action_seqs, [11, 13])
+        self.assertEqual([r["seq"] for r in refusals], [12])
 
 
 if __name__ == "__main__":
