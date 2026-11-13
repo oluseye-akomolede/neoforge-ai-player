@@ -1,0 +1,11 @@
+# Copy to evals/config.yaml and edit. This file IS the yardstick: the same case
+# set re-run against another model or endpoint by changing these lines only.
+#
+# Never put a credential here. The endpoint is a plain URL; if one is ever
+# needed it comes from the environment and the report names the variable, never
+# its value.
+
+endpoint: http://localhost:11434      # the local model; from config, never assumed
+model: qwen3-coder:30b                # what the bots plan with today
+timeout: 120                          # seconds per call; a timeout is a result
+concurrency: 1                        # fixed: the local model is shared with the fleet

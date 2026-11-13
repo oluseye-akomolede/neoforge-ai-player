@@ -1,0 +1,247 @@
+"""Extract eval cases from the agent's own trajectory JSONL.
+
+Source format is `agent/trajectory_log.py`: append-only `trajectory-YYYY-MM-
+DD.jsonl`, three record types -- `call`, `outcome` (joined to its call by
+`call_id`), `plan_close` (joined to plan/replan calls by `plan_ref`).
+
+Rules that come from experience, not taste:
+
+  - **Never pad.** A kind that the corpus cannot supply 30 cases for is
+    reported with the count it has. Constructed cases would score the eval
+    harness, not the model.
+  - **An unlabelled call is not a success and not a failure.** It is counted
+    in a `no_label` bucket and left out of the rate.
+  - **Redact before writing.** The prompts carry tool output and chat text; a
+    case file is committed-adjacent evidence and must not carry a credential.
+  - **Era comes from the record.** `call.model` is the model that actually
+    answered, so it is the only honest source for the sentence "only the input
+    has an era".
+"""
+from __future__ import annotations
+
+import datetime
+import json
+import os
+import pathlib
+import re
+from collections import defaultdict
+from dataclasses import dataclass, field
+
+SCORABLE = ("plan", "exec", "replan")
+MIN_PER_KIND = 30
+
+# Secret-shaped text that must never reach a case file or a report.
+_SECRET_PATTERNS = [
+    (re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._\-]{12,}"), r"\1<redacted>"),
+    (re.compile(r"(?i)\b(rcon[\w.]*password|AIBOT_RCON_PASSWORD|[A-Z_]*(?:TOKEN|SECRET|PASSWORD|API_KEY))"
+                r"\s*[=:]\s*\S+"), r"\1=<redacted>"),
+    (re.compile(r"\b[A-Za-z0-9+/]{40,}={0,2}\b"), "<redacted-blob>"),
+]
+
+
+def redact(text):
+    if not isinstance(text, str):
+        return text
+    out = text
+    for pat, repl in _SECRET_PATTERNS:
+        out = pat.sub(repl, out)
+    return out
+
+
+# -- reading ---------------------------------------------------------------
+
+def trajectory_dir(explicit=None):
+    """Where the recordings live. Config/env first, never hardcoded."""
+    if explicit:
+        return pathlib.Path(explicit)
+    env = os.environ.get("AIBOT_TRAJECTORY_DIR")
+    if env:
+        return pathlib.Path(env)
+    raise FileNotFoundError(
+        "no trajectory directory: pass --trajectory-dir or set AIBOT_TRAJECTORY_DIR"
+    )
+
+
+def read_records(directory):
+    """All records, in file order (one file per UTC day)."""
+    d = pathlib.Path(directory)
+    if not d.is_dir():
+        raise FileNotFoundError(f"trajectory directory not found: {d}")
+    records, bad = [], 0
+    for path in sorted(d.glob("trajectory-*.jsonl")):
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    bad += 1
+                    continue
+                if isinstance(rec, dict):
+                    records.append(rec)
+                else:
+                    bad += 1
+    return records, bad
+
+
+# -- joining ---------------------------------------------------------------
+
+@dataclass
+class Case:
+    kind: str
+    call_id: str
+    bot: str
+    model: str
+    prompt_system: str
+    prompt_user: str
+    world_state_summary: str
+    recorded_output: str
+    label: str            # "satisfied" | "unsatisfied" | "complete" | "incomplete" | ""
+    label_source: str     # "outcome" | "plan_close" | ""
+
+
+@dataclass
+class Census:
+    total_calls: dict = field(default_factory=lambda: defaultdict(int))
+    outcomes: int = 0
+    plan_closes: int = 0
+    joined: dict = field(default_factory=lambda: defaultdict(int))
+    no_label: dict = field(default_factory=lambda: defaultdict(int))
+    by_era: dict = field(default_factory=dict)   # kind -> {model: {calls, joined}}
+    days: set = field(default_factory=set)
+    bad_lines: int = 0
+
+    def report(self):
+        kinds = {}
+        for kind in SCORABLE:
+            eras = self.by_era.get(kind, {})
+            kinds[kind] = {
+                "calls": self.total_calls.get(kind, 0),
+                "labelled": self.joined.get(kind, 0),
+                "no_label": self.no_label.get(kind, 0),
+                "by_era": {m: dict(v) for m, v in sorted(eras.items())},
+                "short_of_" + str(MIN_PER_KIND): max(0, MIN_PER_KIND - self.joined.get(kind, 0)),
+            }
+        return {
+            "kinds": kinds,
+            "outcomes": self.outcomes,
+            "plan_closes": self.plan_closes,
+            "distinct_days": len(self.days),
+            "bad_lines": self.bad_lines,
+        }
+
+
+def build_cases(records):
+    """(cases, census). Pure function of the records -- easy to test."""
+    outcomes_by_call, close_by_plan = {}, {}
+    calls = []
+    census = Census()
+
+    for rec in records:
+        t = rec.get("type")
+        if t == "outcome":
+            cid = rec.get("call_id")
+            if cid:
+                outcomes_by_call[cid] = rec
+                census.outcomes += 1
+        elif t == "plan_close":
+            ref = rec.get("plan_ref")
+            if ref:
+                close_by_plan[ref] = rec
+                census.plan_closes += 1
+        elif t == "call":
+            calls.append(rec)
+
+    cases = []
+    for rec in calls:
+        kind = rec.get("phase")
+        if kind not in SCORABLE:
+            continue
+        model = str(rec.get("model") or "unknown")
+        census.total_calls[kind] += 1
+        census.by_era.setdefault(kind, {}).setdefault(model, {"calls": 0, "labelled": 0})
+        census.by_era[kind][model]["calls"] += 1
+        ts = str(rec.get("ts") or "")
+        if len(ts) >= 10:
+            census.days.add(ts[:10])
+
+        label, source = "", ""
+        outcome = outcomes_by_call.get(rec.get("call_id"))
+        if kind == "exec" and outcome is not None:
+            label = "satisfied" if outcome.get("satisfied") else "unsatisfied"
+            source = "outcome"
+        elif kind in ("plan", "replan"):
+            close = close_by_plan.get(rec.get("plan_ref"))
+            if close is not None:
+                status = str(close.get("status") or "")
+                label = "complete" if status == "complete" else "incomplete"
+                source = "plan_close"
+
+        if not label:
+            census.no_label[kind] += 1
+            continue
+        census.joined[kind] += 1
+        census.by_era[kind][model]["labelled"] += 1
+
+        cases.append(Case(
+            kind=kind,
+            call_id=str(rec.get("call_id") or ""),
+            bot=str(rec.get("bot") or ""),
+            model=model,
+            prompt_system=redact(rec.get("prompt_system") or ""),
+            prompt_user=redact(rec.get("prompt_user") or ""),
+            world_state_summary=redact(rec.get("world_state_summary") or ""),
+            recorded_output=redact(rec.get("response_raw") or ""),
+            label=label,
+            label_source=source,
+        ))
+    return cases, census
+
+
+def take_era_first(cases, current_era, n=MIN_PER_KIND, seed=0):
+    """Take up to `n` cases for one kind: current-era inputs first, then older.
+
+    Stratified across bots by round-robin so one busy bot cannot supply the
+    whole sample. Deterministic for a given (cases, seed) so a report can be
+    reproduced. Returns (taken, {era: k}).
+    """
+    current = [c for c in cases if c.model == current_era]
+    older = [c for c in cases if c.model != current_era]
+
+    def stratify(pool):
+        by_bot = defaultdict(list)
+        for c in pool:
+            by_bot[c.bot or "?"].append(c)
+        for lst in by_bot.values():
+            lst.sort(key=lambda c: (c.call_id, c.bot))
+        out, bots = [], sorted(by_bot)
+        i = 0
+        while any(by_bot.values()):
+            b = bots[i % len(bots)]
+            if by_bot[b]:
+                out.append(by_bot[b].pop(0))
+            i += 1
+        return out
+
+    picked = stratify(current)[:n]
+    if len(picked) < n:
+        picked += stratify(older)[:n - len(picked)]
+    tally = defaultdict(int)
+    for c in picked:
+        tally[c.model] += 1
+    return picked, dict(tally)
+
+
+def write_cases(cases_by_kind, out_dir):
+    out = pathlib.Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    written = {}
+    for kind, cases in cases_by_kind.items():
+        path = out / f"{kind}.jsonl"
+        with open(path, "w", encoding="utf-8") as f:
+            for c in cases:
+                f.write(json.dumps(c.__dict__, sort_keys=True) + "\n")
+        written[kind] = str(path)
+    return written

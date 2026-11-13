@@ -58,17 +58,17 @@ lead OKs step 2.
 
 ## Step 2 — build (after reviewer PASS and the lead's OK; not started)
 
-- [ ] 2.0 Re-count the corpus at build time (the lead's counts are the
+- [ ] 2.0 Re-count the corpus (runs on the pod / in a Job: needs the PVC) at build time (the lead's counts are the
       sizing evidence; the extractor prints its own), and report per kind and
       per model era. If a kind is short of 30, say so with the number.
 
-- [ ] 2.1 Eval-set extractor: read the trajectory dir from
+- [x] 2.1 Eval-set extractor: read the trajectory dir from
       `AIBOT_TRAJECTORY_DIR`,
       join `exec` `call` → `outcome` on `call_id`, and `plan`/`replan` `call` →
       `plan_close` on `plan_ref`; redact secret-like values, write
       `evals/cases/<kind>.jsonl`. Exclude, and count separately, calls with no
       label.
-- [ ] 2.2 Scorer with unit tests, for the three kinds the corpus can score:
+- [x] 2.2 Scorer with unit tests, for the three kinds the corpus can score:
       `plan` = JSON parses, `validate_plan_dict` accepts it, every
       `directive.kind` is in `DIRECTIVE_KINDS` in the mod's copied tuple, and
       `action_binding` accepts its params; `exec` = same kind/param surface on a
@@ -76,12 +76,12 @@ lead OKs step 2.
       Each check FAILS CLOSED: a guest table that could not be read is an error,
       never a pass. `classify`, `partition`, `skill_refine`, `regenerate` are
       scored only if inputs are sourced (L2); otherwise deferred with the reason.
-- [ ] 2.3 Runner CLI + `evals/config.yaml` (`endpoint`, `model`, `timeout`,
+- [x] 2.3 Runner CLI + `evals/config.yaml` (`endpoint`, `model`, `timeout`,
       `concurrency: 1`); refuses to write a report when the case set is empty or
       the endpoint does not answer.
-- [ ] 2.4 Report writer: endpoint/model from the config actually read, counts,
+- [x] 2.4 Report writer: endpoint/model from the config actually read, counts,
       per-kind rates, deferred kinds, failure examples.
-- [ ] 2.5 Baseline run against the live local model as a bounded k8s Job the
+- [ ] 2.5 Baseline run (blocked on L1: needs a read of the trajectory dir) against the live local model as a bounded k8s Job the
       lead runs (one call at a time). Post the baseline numbers to the parent
       row `qitem-20261112065806-631db84f03dba1d7`.
 
