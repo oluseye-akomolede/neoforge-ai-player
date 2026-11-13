@@ -32,9 +32,22 @@ covers both and the row's "restart ONCE" is achievable for the runner.
 64 bytes each, fingerprints `67e11daedad1c013` (`cardgame`) and `92a0dd82e0748559`
 (`minecraft`). A `--type=merge` patch on `.data.minecraft` is key-scoped and leaves
 `cardgame` alone; an `apply` of a whole `.data` object would **silently drop it**, and the
-runner would then refuse to start (`tokensFromEnv` throws when a configured game's token
-is missing — `agent-script-runner/src/main.js:118`). Step 2 uses `merge` and step 3 proves
-`cardgame` unchanged by fingerprint.
+runner would then fail to start.
+
+**The mechanism, corrected (reviewer, 11-13 — my first draft said "throws at
+`main.js:118`", which is wrong).** There are two layers and only the first fires:
+
+1. **The kubelet refuses to create the container.** Neither `secretKeyRef` is `optional`
+   (measured on the live Deployment: both absent), so with `cardgame` gone the container
+   comes up as `CreateContainerConfigError` and **never runs**.
+2. **`tokensFromEnv` would NOT have caught it** (`agent-script-runner/src/main.js:113-126`).
+   The loop iterates `process.env` entries matching `RUNNER_TOKEN_*`, so a dropped key is
+   simply never seen: `size === 0` is false while `minecraft` remains, and the function
+   returns a one-game map. Had the key been `optional`, the runner would have started
+   silently without cardgame and refused its every call at request time.
+
+So the failure is loud because of the kubelet, not because of the code. That makes
+`--type=merge` scoping the thing to get right — nothing downstream would have caught it.
 
 **Trap 2 — `cardgame`'s own copy is a DIFFERENT object and is out of scope.** The row
 names it as `cardgame/match-server`, key `token`. Measured 11-13: `cardgame` namespace
@@ -212,8 +225,9 @@ n=$(printf %s "$NEW" | wc -c)
 printf '%s' "$NEW" | grep -Eq '^[0-9a-f]{64}$' || { echo "ABORT: new token is not 64 lowercase hex"; unset NEW; exit 1; }
 
 # --type=merge on ONE key. Do NOT use apply with a whole .data object: that would
-# REPLACE data and silently drop 'cardgame', after which the runner throws at start
-# (main.js:118) and cardgame's calls into our runner are refused.
+# REPLACE data and silently drop 'cardgame'. Neither secretKeyRef is optional, so the
+# container would then never be created -- the pod sits in CreateContainerConfigError.
+# (tokensFromEnv would NOT catch it: it only iterates env vars that exist.)
 printf '%s' "$NEW" | kubectl -n $NS patch secret agent-script-runner-token --type=merge -p \
   "{\"data\":{\"minecraft\":\"$(base64 -w0)\"}}"
 
@@ -280,23 +294,34 @@ rather than planning as though the cutover were seamless:
   `a8e7d98d` rollout** so the runner restarts once rather than twice (row instruction).
 
 ```bash
-# runner: combine the token change with the reviewed image rollout -- ONE restart
+# runner: combine the token change with the reviewed image rollout -- ONE restart.
+# a8e7d98d is the image built from a5d726a, the fail-safe trap fix (review PASS at
+# 360295f). Recorded here because it matters for ROLLBACK: going back to 342c10e1
+# would silently drop that fix, so a rollback of this rotation must decide about the
+# image separately rather than reverting the pin as part of it.
 ssh controlplane "kubectl -n minecraft-test set image deploy/agent-script-runner \
   runner=harbor.arcadia-ecs.local/aiplayermod/agent-script-runner@sha256:a8e7d98d5adfce45364094796da68d3a3dc7c940ce356a54ffbb6193cd2854ab"
 ssh controlplane "kubectl -n minecraft-test rollout status deploy/agent-script-runner --timeout=180s"
 
-# agent: pod delete, because the Deployment is PAUSED and `rollout restart` is refused.
-# Re-read the pause state at run time; do not assume it is still paused.
-ssh controlplane "kubectl -n minecraft-test get deploy aibot-agent-test -o jsonpath='{.spec.paused}{\"\\n\"}'"
+# agent: pod delete, because `rollout restart` is REFUSED when the Deployment is paused.
+# Read the pause state of BOTH Deployments at run time; do not assume either. Both are
+# read for the same reason: a paused Deployment that is "restarted" silently does nothing.
+# Note the deployment name is interpolated by the SHELL, outside the jsonpath: putting a
+# shell variable inside '{...}' makes it a JSONPath identifier and kubectl errors.
+for d in agent-script-runner aibot-agent-test; do
+  echo "$d paused=$(ssh controlplane "kubectl -n minecraft-test get deploy $d -o jsonpath='{.spec.paused}'")  # 'true' = paused, empty = resumed"
+done
 ssh controlplane "kubectl -n minecraft-test get rs -l app=aibot-agent,tier=test -o jsonpath='{range .items[*]}{.metadata.name}{\" \"}{.status.readyReplicas}{\"\\n\"}{end}'" | awk '$2==1 {print $1}'
 ssh controlplane "kubectl -n minecraft-test delete pod -l app=aibot-agent,tier=test"
 ssh controlplane "kubectl -n minecraft-test rollout status deploy/aibot-agent-test --timeout=180s"
 ```
 
-**If the Deployment is resumed at run time**, `rollout restart` is available and the pod
+**If `aibot-agent-test` is resumed at run time**, `rollout restart` is available and the pod
 delete is not needed — check the `paused` value above and use the command that fits. Either
-way, a new pod must be **proved**, not assumed: record the new pod name and its `startTime`
-and confirm it is not the pod that was there before.
+way a new pod must be **proved**, not assumed: record the new pod name and its `startTime`
+and confirm it is not the pod that was there before. The runner's `paused` state is read for
+the symmetric reason: `rollout status` on a paused Deployment can report success without a
+new ReplicaSet, so the image change would not actually take effect.
 
 ### Step 5 — the pass criterion: new token works, OLD token is rejected, `cardgame` unchanged
 
