@@ -48,6 +48,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -71,18 +72,12 @@ def _runner_root() -> str | None:
         candidates.append(override)
     # This file: <root>/<repo>/agent/test_scout_script.py
     candidates.append(str(Path(_HERE).parents[1] / "agent-script-runner"))
-    # In a worktree the repo is <root>/<repo>-wt-<seat>/<repo>, so the sibling
-    # is not next door. Walk up to the directory that HOLDS the checkouts and
-    # look for a plain `agent-script-runner` there. Without this, every test in
-    # this file skips in a worktree and unittest still prints OK -- measured
-    # 2026-11-13: "Ran 9 tests in 0.002s / OK (skipped=9)", a green that ran
-    # nothing, on the file written to prevent exactly that.
-    # ...and, for a worktree, a SIBLING of any of those directories. A worktree
-    # is <root>/<repo>-wt-<seat>/<repo>, so the runner is reachable as
-    # <root>/agent-script-runner -- one level ACROSS, never up. Walking up only
-    # finds it for a plain checkout. Measured 2026-11-13 before this branch
-    # existed: "Ran 9 tests in 0.002s / OK (skipped=9)" -- a green that ran
-    # nothing, on the file written to prevent exactly that.
+    # A worktree is <root>/<repo>-wt-<seat>/<repo>, so the runner is not next
+    # door and not up from here: it is a SIBLING of the worktree directory --
+    # one level ACROSS. Walking up alone finds it only for a plain checkout.
+    # Measured 2026-11-13 before this branch existed: "Ran 9 tests in 0.002s /
+    # OK (skipped=9)" -- a green that ran nothing, on the file written to
+    # prevent exactly that.
     for parent in Path(_HERE).parents:
         candidates.append(str(parent / "agent-script-runner"))
         candidates.extend(str(s) for s in sorted(parent.parent.glob("*/agent-script-runner")))
@@ -417,5 +412,29 @@ class NoSilentSkipTest(unittest.TestCase):
             "correct outcome: an unverified green is the bug.")
 
 
+class _SkipRecorder(unittest.TextTestResult):
+    """Turn any skip in this module into a failure.
+
+    NoSilentSkipTest above only catches the ONE cause it knows about: no runner
+    on disk. Any other SkipTest -- a missing fixture, an unsupported Node, a
+    future guard -- leaves _runner_root() returning a path, that test green, and
+    the suite printing `OK (skipped=N)` again. That is the same hole one level
+    in, so this keys on the SKIP ITSELF rather than on one reason for it.
+    """
+
+    def addSkip(self, test, reason):
+        super().addSkip(test, reason)
+        exc = AssertionError(
+            f"test skipped instead of running: {reason}. "
+            "A skip is not evidence; red is the correct outcome.")
+        self.addFailure(test, (AssertionError, exc, exc.__traceback__))
+
+
+class _SkipRecorderRunner(unittest.TextTestRunner):
+    resultclass = _SkipRecorder
+
+
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    result = _SkipRecorderRunner(verbosity=2).run(
+        unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__]))
+    sys.exit(0 if result.wasSuccessful() else 1)
