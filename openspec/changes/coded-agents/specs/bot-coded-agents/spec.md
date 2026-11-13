@@ -430,6 +430,45 @@ stubbed `api.do`, so it asserted on a contract the runner does not implement.
 - **AND** it asserts against the actions that engine collected, not against a
   return value and not through a stubbed `api.do`
 
+### Requirement: A Runner Action Record Is Translated At The Agent Boundary
+The runner's action record and the agent's binder input MUST NOT be assumed to
+be the same shape. A tick's runner record carries `{seq, call, directive, args}`
+and is the shared contract, consumed by other callers as well as the agent; the
+agent MUST translate each record into its binder's input shape at the single
+point where the runner's output enters the agent, rather than widening the
+binder to read the runner's field names.
+
+Translation MUST map a `do` record to `kind = directive` with `args` flattened
+into the same object, treating `args` that are absent or null as no arguments.
+It MUST refuse, visibly and with the record's `seq`, each of: a record whose
+`call` is not `do`; a `directive` that is missing or not a non-empty string;
+`args` that are not an object; and an `args` key named `kind` or `action`, which
+the binder would read as the action name and so lose the real directive.
+
+A refusal MUST NOT be silent and MUST NOT discard the other records in the same
+tick. The `seq` MUST appear on both the refusal and the dispatch log line, so
+the agent log can be matched to the script's own call.
+
+This is a contract, not an implementation detail. `bind_action` reads `kind`
+(or `action`) and refuses every key outside its argument allow-list, so a
+runner record was refused three ways at once (`seq`, `call`, `args`) and the
+`directive` never read. Measured on TEST 2026-11-13: after the script was fixed
+to call `api.do`, every tick was refused with
+`"action has no 'kind': {'seq': 1, 'call': 'do', 'directive': 'STORE_ALL', 'args': {}}"`.
+`test_action_binding.py` fed only `{"kind": ...}` fixtures, so the binder's
+tests agreed with the binder and nothing compared them to the producer.
+
+#### Scenario: A runner record is bound as the directive it names
+- **WHEN** a tick's runner record is `{seq, call: "do", directive, args}`
+- **THEN** the agent binds it as `kind = directive` with `args` flattened in
+- **AND** the bound action's dispatch log line carries the record's `seq`
+
+#### Scenario: A malformed runner record is refused visibly
+- **WHEN** a runner record has a `call` other than `do`, no usable `directive`,
+  non-object `args`, or an `args` key named `kind` or `action`
+- **THEN** that record is refused with a reason naming the fault and its `seq`
+- **AND** the other records in the same tick are still bound and dispatched
+
 ### Requirement: Per-Tick Snapshot Is Read-Only
 Each tick the script MUST receive a read-only snapshot of the bot's state,
 including health, food, position, inventory, nearby blocks and mobs, task

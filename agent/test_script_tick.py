@@ -38,6 +38,16 @@ _rc = _load("script_client_for_tick", "script_client.py")
 _st = _load("script_tick_under_test", "script_tick.py")
 
 ScriptTick = _st.ScriptTick
+translate_runner_actions = _st.translate_runner_actions
+
+
+def _do(directive, args, *, seq):
+    """One runner `api.do` record, in the shape src/binding.js actually pushes.
+
+    Written as a helper so no test can quietly drift back to the binder's
+    `{kind, ...}` shape: the record has `call` and `directive` and no `kind`.
+    """
+    return {"seq": seq, "call": "do", "directive": directive, "args": args}
 
 
 class _FakeApi:
@@ -266,9 +276,15 @@ class FallbackTest(unittest.TestCase):
 class BindingTest(unittest.TestCase):
 
     def test_bound_actions_come_back_as_directives(self):
+        # The fixture is the RUNNER's record -- `{seq, call, directive, args}`
+        # -- not the binder's `{kind, ...}`. Feeding the binder's shape here is
+        # what let every action be refused in production while these tests
+        # stayed green: the fixture agreed with the consumer, and nothing in
+        # the suite held the producer's side of the contract.
         handled, actions, refusals, detail = ScriptTick(
             _FakeApi(), "Scout", "x",
-            post=_poster(actions=[{"kind": "mine", "target": "iron_ore"}])).tick()
+            post=_poster(actions=[_do("MINE", {"target": "iron_ore"},
+                                      seq=1)])).tick()
         self.assertTrue(handled)
         self.assertEqual(actions, [{"kind": "MINE", "target": "iron_ore"}])
         self.assertEqual(refusals, [])
@@ -286,17 +302,105 @@ class BindingTest(unittest.TestCase):
         # did not manage a legal action), but it must be visible, not silent.
         handled, actions, refusals, detail = ScriptTick(
             _FakeApi(), "Scout", "x",
-            post=_poster(actions=[{"kind": "WORLD_EDIT"}])).tick()
+            post=_poster(actions=[_do("WORLD_EDIT", {}, seq=1)])).tick()
         self.assertFalse(handled)
-        self.assertEqual(refusals[0]["kind"], "WORLD_EDIT")
+        self.assertEqual(len(refusals), 1)
+        self.assertIn("WORLD_EDIT", refusals[0]["error"])
+        self.assertEqual(refusals[0]["seq"], 1)
 
     def test_partial_refusal_runs_the_good_ones(self):
         handled, actions, refusals, _ = ScriptTick(
             _FakeApi(), "Scout", "x",
-            post=_poster(actions=[{"kind": "MINE"}, {"kind": "WORLD_EDIT"}])).tick()
+            post=_poster(actions=[_do("MINE", {"target": "stone"}, seq=1),
+                                  _do("WORLD_EDIT", {}, seq=2)])).tick()
         self.assertTrue(handled)
-        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions, [{"kind": "MINE", "target": "stone"}])
         self.assertEqual(len(refusals), 1)
+        self.assertEqual(refusals[0]["seq"], 2)
+
+
+class RunnerRecordTranslationTest(unittest.TestCase):
+    """The boundary where the runner's record meets the binder's input.
+
+    Every case here uses the record the runner actually emits
+    (agent-script-runner src/binding.js pushes `{seq, call, directive, args}`),
+    never a hand-written binder-shaped fixture.
+    """
+
+    def test_a_do_record_becomes_kind_plus_flat_args(self):
+        pairs, refusals = translate_runner_actions(
+            [_do("STORE_ALL", {}, seq=7)])
+        self.assertEqual(refusals, [])
+        self.assertEqual(pairs, [({"kind": "STORE_ALL"}, 7)])
+
+    def test_null_args_are_treated_as_no_arguments(self):
+        # binding.js writes `null` for undefined args so the field always
+        # exists; it means "no arguments", not "arguments are broken".
+        pairs, refusals = translate_runner_actions(
+            [{"seq": 3, "call": "do", "directive": "STORE_ALL", "args": None}])
+        self.assertEqual(refusals, [])
+        self.assertEqual(pairs, [({"kind": "STORE_ALL"}, 3)])
+
+    def test_a_say_record_is_refused_by_name_not_as_a_missing_kind(self):
+        # say/send shares the same actions list. Refusing it as "no 'kind'"
+        # would send a script author looking for a bug that is not there.
+        pairs, refusals = translate_runner_actions(
+            [{"seq": 4, "call": "say", "text": "hi"}])
+        self.assertEqual(pairs, [])
+        self.assertIn("say", refusals[0]["error"])
+        self.assertEqual(refusals[0]["seq"], 4)
+
+    def test_a_send_record_is_refused_by_name(self):
+        pairs, refusals = translate_runner_actions(
+            [{"seq": 5, "call": "send", "to": "S1", "msg": "x"}])
+        self.assertEqual(pairs, [])
+        self.assertIn("send", refusals[0]["error"])
+
+    def test_a_missing_directive_is_refused_with_its_seq(self):
+        pairs, refusals = translate_runner_actions([{"seq": 6, "call": "do"}])
+        self.assertEqual(pairs, [])
+        self.assertEqual(refusals[0]["seq"], 6)
+        self.assertIn("directive", refusals[0]["error"])
+
+    def test_a_non_string_directive_is_refused(self):
+        pairs, refusals = translate_runner_actions(
+            [{"seq": 8, "call": "do", "directive": 42, "args": {}}])
+        self.assertEqual(pairs, [])
+        self.assertEqual(refusals[0]["seq"], 8)
+
+    def test_non_object_args_are_refused_not_coerced(self):
+        pairs, refusals = translate_runner_actions(
+            [_do("STORE_ALL", ["not", "a", "dict"], seq=9)])
+        self.assertEqual(pairs, [])
+        self.assertEqual(refusals[0]["seq"], 9)
+        self.assertIn("args", refusals[0]["error"])
+
+    def test_args_named_kind_or_action_are_refused(self):
+        # bind_action reads kind/action as the action name, so an arg by that
+        # name would silently become the directive and the real one lost.
+        for reserved in ("kind", "action"):
+            pairs, refusals = translate_runner_actions(
+                [_do("MINE", {reserved: "WORLD_EDIT"}, seq=10)])
+            self.assertEqual(pairs, [], reserved)
+            self.assertEqual(len(refusals), 1, reserved)
+            self.assertIn(reserved, refusals[0]["error"])
+
+    def test_one_bad_record_does_not_suppress_the_others(self):
+        pairs, refusals = translate_runner_actions(
+            [_do("STORE_ALL", {}, seq=1),
+             {"seq": 2, "call": "say", "text": "hi"},
+             _do("MINE", {"target": "stone"}, seq=3)])
+        self.assertEqual([p[1] for p in pairs], [1, 3])
+        self.assertEqual([r["seq"] for r in refusals], [2])
+
+    def test_the_seq_survives_to_the_bound_actions_in_order(self):
+        _h, actions, refusals, _d = ScriptTick(
+            _FakeApi(), "Scout", "x",
+            post=_poster(actions=[_do("MINE", {"target": "a"}, seq=11),
+                                  _do("MINE", {"target": "b"}, seq=12),
+                                  _do("MINE", {"target": "c"}, seq=13)])).tick()
+        self.assertEqual(refusals, [])
+        self.assertEqual(len(actions), 3)
 
 
 if __name__ == "__main__":

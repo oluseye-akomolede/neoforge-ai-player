@@ -52,6 +52,119 @@ def runner_token():
     return (RUNNER_TOKEN or "").strip()
 
 
+class RefusedRecord(Exception):
+    """A runner action record that cannot be translated into a directive.
+
+    Carries `seq` so a refusal can be matched to the script's own call, which
+    is the only handle the script author has on which line was rejected.
+    """
+
+    def __init__(self, reason, seq=None):
+        super().__init__(reason)
+        self.reason = reason
+        self.seq = seq
+
+
+def translate_runner_actions(records):
+    """Map the runner's action records onto `action_binding`'s input shape.
+
+    Two shapes exist for the same thing, and this is the single place they
+    meet. The runner emits `{seq, call, directive, args}` (agent-script-runner
+    src/binding.js) and cardgame consumes that same record, so it is the shared
+    contract; `bind_action` owns its own internal shape and its own argument
+    allow-list. Teaching the binder to read `directive` is not enough and not
+    right: `bind_action` walks every key and refuses any outside
+    `_ALLOWED_ARGS`, so `seq`, `call` and `args` would each be refused on their
+    own account. The record has to be translated, not widened.
+
+    Returns `(pairs, refusals)` where each pair is `(bindable, seq)`. The seq is
+    kept BESIDE the translated record rather than inside it: `bind_action`
+    refuses any key outside its argument allow-list, so a `seq` in the dict
+    would be refused, and even if admitted it would be stripped by
+    `_l3_orchestrator_dispatch`'s signature filter before reaching the mod.
+    The seq exists for the log, so it rides alongside -- and pairing here rather
+    than in a parallel list means a later refusal cannot slide the indices out
+    of step with the actions they describe.
+
+    Refusals are collected rather than raised, matching `bind_actions`, so one
+    bad record does not suppress the others. Each refusal carries `seq` and a
+    reason.
+    """
+    if not isinstance(records, list):
+        return [], [{"seq": None,
+                     "error": f"actions must be a list, got {type(records).__name__}"}]
+
+    pairs, refusals = [], []
+    for record in records:
+        try:
+            pairs.append(_translate_one(record))
+        except RefusedRecord as e:
+            refusals.append({"seq": e.seq, "error": e.reason})
+    return pairs, refusals
+
+
+def _translate_one(record):
+    """One record -> `(bindable, seq)`, or `RefusedRecord`.
+
+    Anything ambiguous is refused, not guessed.
+    """
+    if not isinstance(record, dict):
+        raise RefusedRecord(
+            f"action record must be an object, got {type(record).__name__}")
+
+    seq = record.get("seq")
+    call = record.get("call")
+    if call != "do":
+        # The runner also queues `say` and `send` (src/binding.js), and they
+        # arrive in the same list. They are legitimate records with no
+        # dispatchable meaning here, so name that instead of letting
+        # bind_action report a confusing missing 'kind'.
+        raise RefusedRecord(
+            f"action is a {call!r} call, not a dispatchable 'do': "
+            f"only do-calls become directives", seq)
+
+    directive = record.get("directive")
+    if not isinstance(directive, str) or not directive.strip():
+        raise RefusedRecord(
+            f"'directive' must be a non-empty string, got {directive!r}", seq)
+
+    args = record.get("args")
+    if args is None:
+        args = {}
+    if not isinstance(args, dict):
+        raise RefusedRecord(
+            f"'args' must be an object, got {type(args).__name__}", seq)
+
+    for reserved in ("kind", "action"):
+        if reserved in args:
+            # `bind_action` reads kind/action as the action name, so an arg by
+            # that name would silently become the directive and the real one
+            # would be lost.
+            raise RefusedRecord(
+                f"args may not carry {reserved!r}: it would be read as the "
+                f"action name and the directive {directive!r} would be lost", seq)
+
+    return {"kind": directive, **args}, seq
+
+
+def _number_bind_refusals(translate_refusals, bind_refusals, pairs):
+    """Attach the runner's seq to each binder refusal and merge both lists.
+
+    `bind_actions` indexes refusals by position in the list it was given, which
+    is a position in `pairs` because that is what it was handed. Mapping back
+    through `pairs` is what lets a bind refusal name the script's own call
+    instead of an index the script author never sees.
+    """
+    seqs = [seq for _, seq in pairs]
+    merged = list(translate_refusals)
+    for refusal in bind_refusals:
+        out = dict(refusal)
+        idx = out.pop("index", None)
+        out["seq"] = seqs[idx] if isinstance(idx, int) and 0 <= idx < len(seqs) else None
+        merged.append(out)
+    return merged
+
+
 def _default_transport():
     """A `_post(path, data, timeout=...)` bound to SCRIPT_RUNNER_URL, or None.
 
@@ -176,7 +289,17 @@ class ScriptTick:
             # Timeout, refused, error -- every non-script state falls through.
             return False, [], [], f"runner {result.state}: {result.detail}"
 
-        bound, refusals = action_binding.bind_actions(result.actions)
+        # Two shapes meet here: the runner's and the binder's. Translate first,
+        # then bind, keeping the runner's seq beside each bound action so the
+        # dispatch log can carry it (M2 §8.2 evidence wants the matching seq).
+        pairs, refusals = translate_runner_actions(result.actions)
+        bound, bind_refusals = action_binding.bind_actions([b for b, _ in pairs])
+        refusals = _number_bind_refusals(refusals, bind_refusals, pairs)
+        # `bind_actions` returns `bound` in input order and names each refusal's
+        # index, so the surviving seqs are the pairs whose index bind kept.
+        rejected = {r["index"] for r in bind_refusals if "index" in r}
+        self._last_action_seqs = [seq for i, (_, seq) in enumerate(pairs)
+                                  if i not in rejected]
         if not bound:
             # The script ran and proposed nothing bindable. That is still a
             # handled tick *if* the script genuinely said "do nothing"; but if

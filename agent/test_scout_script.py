@@ -53,6 +53,21 @@ import unittest
 from pathlib import Path
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
+
+# The two real modules the end-to-end chain joins. Loaded by path, like the
+# rest of this suite, so the test exercises the committed bytes.
+import importlib.util as _ilu
+
+
+def _load_mod(name, filename):
+    _spec = _ilu.spec_from_file_location(name, os.path.join(_HERE, filename))
+    _mod = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    return _mod
+
+
+_script_tick = _load_mod("script_tick_for_e2e", "script_tick.py")
+_action_binding = _load_mod("action_binding_for_e2e", "action_binding.py")
 _SCRIPT = os.path.join(_HERE, "scripts", "scout.js")
 
 # The runner's real engine. Resolved from the repo layout: this agent and the
@@ -382,6 +397,40 @@ class ScoutScriptTest(unittest.TestCase):
             logs = _run(literal)["logs"]
             self.assertTrue(any(token in line for line in logs),
                             f"{literal} returned [] without explaining: {logs!r}")
+
+
+class EndToEndBindingTest(unittest.TestCase):
+    """The whole chain, with no hand-written fixture anywhere in it.
+
+    scout.js runs in the runner's real engine; what that engine collected is
+    translated by `script_tick.translate_runner_actions`; the translated record
+    is bound by the real `action_binding.bind_actions`; and the result must be
+    a dispatchable STORE_ALL. Each of the three earlier rounds broke a
+    different join in this chain while its own tests stayed green, because the
+    tests substituted a fixture at the join. This one substitutes nothing.
+    """
+
+    def _chain(self):
+        result = _run(_envelope(20.0))
+        self.assertTrue(result["ok"], f"engine rejected the script: {result['error']}")
+        pairs, refusals = _script_tick.translate_runner_actions(result["actions"])
+        self.assertEqual(refusals, [], f"translation refused {refusals!r}")
+        bound, bind_refusals = _action_binding.bind_actions([b for b, _ in pairs])
+        return bound, bind_refusals, pairs, result
+
+    def test_the_engines_own_record_binds_as_store_all(self):
+        bound, bind_refusals, _pairs, result = self._chain()
+        self.assertEqual(bind_refusals, [],
+                         f"binder refused the runner's record {result['actions']!r}")
+        self.assertEqual(bound, [{"kind": "STORE_ALL"}],
+                         f"bound {bound!r} from actions {result['actions']!r}")
+
+    def test_the_binding_uses_the_directive_the_engine_emitted(self):
+        # Not a constant: the expectation is read out of what the engine
+        # actually collected, so this stays honest if scout.js changes.
+        _bound, _ref, pairs, result = self._chain()
+        self.assertEqual(pairs[0][0]["kind"], result["actions"][0]["directive"])
+        self.assertEqual(pairs[0][1], result["actions"][0]["seq"])
 
 
 class NoSilentSkipTest(unittest.TestCase):

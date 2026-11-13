@@ -2698,13 +2698,20 @@ Respond with ONLY a JSON array. Example:
             # raising, so it is also the honest place to learn whether anything
             # actually ran.
             print(f"[{self.name}/script] {len(actions)} action(s) this tick")
+            # The runner's seq for each bound action, in the same order. It is
+            # NOT inside the action dict: bind_action refuses unknown keys and
+            # _l3_orchestrator_dispatch strips anything outside the mod call's
+            # signature. It exists so the log can be matched to the script's
+            # own call, which is M2 §8.2's evidence requirement.
+            seqs = list(getattr(st, "_last_action_seqs", []) or [])
             ran = 0
-            for act in actions:
+            for i, act in enumerate(actions):
                 if not isinstance(act, dict) or not act.get("kind"):
                     continue
                 kind = act["kind"]
                 directive = dict(act)
-                print(f"[{self.name}/script] dispatch: {kind} {directive}")
+                seq = seqs[i] if i < len(seqs) else None
+                print(f"[{self.name}/script] dispatch: {kind} seq={seq} {directive}")
                 result = self._l3_orchestrator_dispatch(directive)
                 if isinstance(result, str) and result.startswith("FAILED"):
                     # Refused or unroutable: this action did not happen. Leave
