@@ -1457,6 +1457,74 @@ Item 4 is the one that makes 1–3 mean anything.
   feature failed — the runner writes no per-tick line, so an empty runner log is
   not evidence either way.
 
+### 8.3.8 Run 4: the boundary translation, image and ConfigMap
+
+Run 3 deployed the `api.do` fix and was refused one layer further on. Run 4
+ships the translation that closes that refusal. Unlike run 3, **this change is
+in agent code, which ships in the image**, so the run moves two things and must
+be able to roll back both.
+
+| What | Before (live, measured 05:32Z) | After |
+|---|---|---|
+| Agent image | `harbor.arcadia-ecs.local/aiplayermod/agent@sha256:d1513fa2d6ecab1b761fe692078e065b27324d8b05e15062380f55ed69da3f41` | the digest this build pushes; taken from Harbor's `Docker-Content-Digest` for the OCI image index, never from a local image ID |
+| `agent-scripts` ConfigMap, key `scout.js` | `838efd89…` (the rolled-back broken bytes) | `1824967e…` — the reviewed bytes at `6f8ad66`, 5852 bytes |
+
+The image digest in the "before" column is confirmed two ways: the Deployment's
+`spec.template.spec.containers[0].image`, and the running pod's
+`status.containerStatuses[0].imageID`, which are equal. That equality is what
+makes it a re-appliable rollback rather than a remembered value.
+
+**Why both are needed.** `scout.js` rides in the ConfigMap and the translation
+rides in the image. Deploying one without the other reproduces run 3's refusal
+exactly: the fixed script emits `{seq, call, directive, args}`, and an image
+without the translation refuses every record with `action has no 'kind'`.
+
+**Steps.**
+
+1. **Build and push.** `docker build -t …/agent:2026-11-13-59f30a5` from
+   `agent/` at `59f30a5`, with `DOCKER_CONFIG=~/.docker-minecraft`. Then read
+   the digest from Harbor for that tag — not from `docker images`.
+2. **Back up both live halves**, and verify each backup holds what it claims:
+   `kubectl -n minecraft-test get deploy aibot-agent-test -o yaml` (expect the
+   digest above) and the `agent-scripts` ConfigMap (expect `838efd89…`).
+   Re-read the backup file's content and hash it; a backup is not a rollback
+   until it has been read back.
+3. **Apply the ConfigMap** from the reviewed rev, namespaced:
+   `git show 6f8ad66:deploy/agent-scripts.yaml | kubectl -n minecraft-test apply -f -`.
+   The file carries no `metadata.namespace`, and the default context's
+   namespace is empty, so an un-namespaced apply lands in `default` and reports
+   success while changing nothing that matters.
+4. **Set the image** to the pushed digest on the Deployment (not `:latest` — the
+   live object is digest-pinned, and leaving a tag there loses the record of
+   what ran).
+5. **One restart** picks up both, since `_script_loaded` caches once and never
+   re-reads. Wait for the rollout, then confirm the pod is `Running` with 0
+   restarts.
+6. **Verify inside the pod, not just in the API:** the mounted
+   `/srv/aibot-scripts/scout.js` hashes to `1824967e…`, and
+   `/opt/aibot-agent/script_tick.py` inside the image contains
+   `translate_runner_actions`. The second is the check that the image actually
+   changed; the ConfigMap digest alone would pass on a stale image.
+7. **Evidence.** The pass criterion is unchanged: a verbatim agent-loop
+   `dispatch:` line for `STORE_ALL` carrying the matching `seq`, plus the
+   mod-side effect. Silence or the absence of errors does not count.
+
+**Rollback, both halves.** `kubectl -n minecraft-test set image
+deploy/aibot-agent-test agent=<the before digest>` and re-apply the ConfigMap
+from the backup. **Do not restore the Deployment from a `-o yaml` backup**: that
+dump carries the `resourceVersion` it was taken at, and applying it later is
+rejected as stale — the cluster keeps the new bytes while the next read still
+looks plausible. That happened in run 3's rollback and was caught only by
+re-reading the digest. `set image` takes a digest directly and carries no
+version, which is why it is the form here.
+
+**What would make this run uninformative rather than failed.** If the script
+returns early on every tick (health below 8, or a task in flight), there is no
+refusal and no dispatch, and the run says nothing about the translation. That is
+not a failure — check the agent log for the guard's own line before concluding
+anything, because a clean log with no dispatch is otherwise indistinguishable
+from a working translation that had nothing to do.
+
 ---
 
 ## 9. Rollback
