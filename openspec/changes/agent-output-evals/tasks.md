@@ -30,22 +30,34 @@ lead OKs step 2.
       the `semantic_memory._embed` miss (`nomic-embed-text`, local endpoint,
       named and scoped out with reasons); and `DIRECTIVE_KINDS` (37, mod) vs
       `_VALID_DIRECTIVE_KINDS` (35, agent — missing `AREA_LOOT`, `SKILL`; a live
-      agent bug, filed separately). Also recorded the corpus durability gap.
-- [ ] 1.5 Hand 2.0 to the reviewer for round 2; put the commit sha on the row
+      agent bug, filed separately). Its durability finding was WRONG -- the
+      reviewer withdrew it at 16:35Z; `AIBOT_TRAJECTORY_DIR` IS set on the live
+      pod and the files are on the Longhorn PVC. What is true is narrower: the
+      Deployment was patched outside the repo, so a worktree grep cannot see it.
+      The premise is deleted from proposal and tasks; step 2.0 now only re-counts.
+- [x] 1.5 Lead direction (16:40Z note) applied, after the reviewer's round 1:
+      the eval is a **replay** eval (recorded input re-sent to the configured
+      model, new output scored automatically), with a **separate** historical
+      outcome-attributed score — exec per call, plan/replan plan-level. Corpus
+      measured live by the lead over every file on the PVC: exec 1545 calls /
+      1530 outcomes; plan 299 calls; replan 271 calls; plan_close 359. Live
+      model is `qwen3-coder:30b`. Durability is not a problem: `AIBOT_TRAJECTORY_DIR`
+      is set in the pod and files are on the longhorn PVC; the spec reads the dir
+      from config/env and does not hardcode it.
+- [ ] 1.6 Hand to the reviewer for round 2; put the commit sha on the row
       (`qitem-20261113162928-37115062c5f6665a`).
-- [ ] 1.6 File the agent's 35-vs-37 directive-kind gap as its own row to the
-      lead (not fixed in this change).
+- [ ] 1.7 File the agent's 35-vs-37 directive-kind gap (`_VALID_DIRECTIVE_KINDS`
+      missing `AREA_LOOT`, `SKILL`) as a separate finding on the row — lead's
+      direction — not fixed in this change.
 
 ## Step 2 — build (after reviewer PASS and the lead's OK; not started)
 
-- [ ] 2.0 **Count the corpus first.** Before promising 30 per kind, count
-      `call` / `outcome` / `plan_close` records per phase in the trajectory
-      files, and report the count. If a kind is short, say so with the number.
-- [ ] 2.0a The corpus is container-local (no PVC covers the trajectory dir, no
-      `AIBOT_TRAJECTORY_DIR` set): a small separate change to make it durable is
-      needed for a repeatable baseline. Not built here.
+- [ ] 2.0 Re-count the corpus at build time (the lead's counts are the
+      sizing evidence; the extractor prints its own), and report per kind and
+      per model era. If a kind is short of 30, say so with the number.
 
-- [ ] 2.1 Eval-set extractor: read `agent_trajectories/trajectory-*.jsonl`,
+- [ ] 2.1 Eval-set extractor: read the trajectory dir from
+      `AIBOT_TRAJECTORY_DIR`,
       join `exec` `call` → `outcome` on `call_id`, and `plan`/`replan` `call` →
       `plan_close` on `plan_ref`; redact secret-like values, write
       `evals/cases/<kind>.jsonl`. Exclude, and count separately, calls with no

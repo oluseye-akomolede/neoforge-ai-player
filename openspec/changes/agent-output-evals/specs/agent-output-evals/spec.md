@@ -22,24 +22,60 @@ skill author and L5) MUST NOT be counted in the local-model baseline.
 - **THEN** it is listed in the report as deferred, with the reason
 - **AND** it is not scored from invented inputs and is not omitted silently
 
+### Requirement: The Primary Measurement Is a Replay of Recorded Inputs
+
+The eval MUST re-send each case's recorded input (`prompt_system` and
+`prompt_user`, verbatim from the trajectory log) to the configured model, and
+score the **new** output. A case that only scores the recorded response is not a
+replay case; the two are reported separately.
+
+The corpus location MUST come from `AIBOT_TRAJECTORY_DIR` (or the agent's own
+config), never from a path hardcoded in the eval.
+
+#### Scenario: A replay case
+- **WHEN** a replay case runs
+- **THEN** the request body carries the recorded `prompt_system` and
+  `prompt_user` unchanged
+- **AND** the score is computed over the model's new response, not the recorded
+  `response_raw`
+
+#### Scenario: The corpus directory is configured
+- **WHEN** the eval locates its inputs
+- **THEN** it resolves the directory from configuration
+- **AND** it does not assume any concrete mount path
+
+### Requirement: A Second, Outcome-Attributed Score Is Reported and Labelled by Strength
+
+Separately from the replay score, the eval MUST report what the recorded
+responses achieved in play, and MUST label each kind's attribution strength.
+
+`exec` is attributed per call: each `call` record joins its `outcome` record on
+`call_id`, and `criteria_eval`'s `satisfied` is the label.
+
+`plan` and `replan` are attributed at **plan level**: `log_outcome` has one call
+site, on `exec_call_id`, so neither has an `outcome` record; a `plan`/`replan`
+call record carries `plan_ref`, and the terminal `plan_close` record for that
+`plan_ref` carries the plan's `status`. That label is weaker — a plan that
+closed `complete` does not mean every subtask it proposed was good — so the
+report MUST present it as a plan-level rate and MUST NOT present it as a
+per-call rate.
+
+A case whose label cannot be derived MUST NOT be counted as a success.
+
+#### Scenario: An exec case is attributed per call
+- **WHEN** an `exec` case's outcome is looked up
+- **THEN** it is joined on `call_id`
+- **AND** the `no_label` bucket counts the `call` records with no `outcome`
+
+#### Scenario: A plan case is attributed at plan level
+- **WHEN** a `plan` or `replan` case's outcome is looked up
+- **THEN** it is joined on `plan_ref` to that plan's `plan_close` `status`
+- **AND** the report labels the resulting rate plan-level, not per-call
+
 ### Requirement: Eval Cases Come From Real Recorded Agent Context
 
-Each eval case MUST consist of a fixed recorded input — the prompt actually
-sent and the game-state snapshot actually supplied — and the properties its
-answer must have. Cases MUST be sourced from data the agent really produced, and
-the report MUST say where each kind's cases came from.
-
-For `plan`, `exec` and `replan` the source is the agent's trajectory log
-(`agent/trajectory_log.py`). `exec` cases join each `call` record to its
-`outcome` record on `call_id`. `plan` and `replan` have no `outcome` record —
-`log_outcome` has one call site, on `exec_call_id` — so their attribution is
-**plan-level**: a `plan`/`replan` call record carries `plan_ref`, and the
-terminal `plan_close` record for that `plan_ref` carries the plan's `status`.
-That attribution is weaker than `exec`'s: a plan that closed `complete` does not
-mean every subtask it proposed was good, so the spec asks for the plan-level
-rate and does not claim a per-call one. The report MUST name which derivation a
-case used, and a case whose label cannot be derived MUST NOT be counted as a
-success.
+Cases MUST be sourced from data the agent really produced, and the report MUST
+say where each kind's cases came from.
 
 Secret-like values in a recorded input (API keys, tokens, DSNs, player names)
 MUST be redacted in the committed eval set, and the redaction MUST be reversible
@@ -51,12 +87,6 @@ only locally — the committed file never carries the raw value.
   from a recorded trajectory call
 - **AND** its expected properties were fixed before the run, not after seeing
   what the model did
-
-#### Scenario: No outcome means no credit
-- **WHEN** an `exec` trajectory `call` record has no matching `outcome` record,
-  or a `plan`/`replan` case's label cannot be derived from the plan archive
-- **THEN** that case is excluded from the pass-rate denominator and counted in
-  a separate `no_label` bucket
 
 ### Requirement: Scoring Is Automatic Where an Automatic Check Exists
 
@@ -94,10 +124,24 @@ promised: a kind whose corpus cannot yield 30 MUST be reported with the count it
 has and the reason, and MUST NOT be filled with constructed cases or padded from
 another bot's unrelated calls.
 
+The corpus this change was sized against holds, per kind: `exec` 1545 `call`
+records with 1530 outcomes, `plan` 299, `replan` 271, and 359 `plan_close`
+records, all on the bot's PVC.
+
+The sample MUST be stratified across the bots and across the corpus's model
+eras, and MUST prefer inputs recorded with the model the agent runs today. The
+report MUST state how many cases come from each era, because a baseline drawn
+from an older model is not a baseline for today's.
+
 #### Scenario: The set is sized
 - **WHEN** the eval set is built
 - **THEN** each of `plan`, `exec` and `replan` carries at least 30 cases counted
   from the corpus, or the report states how many it carries and why that is fewer
+
+#### Scenario: The sample's provenance is stated
+- **WHEN** the report is written
+- **THEN** it gives the number of cases per kind drawn from each model era
+- **AND** it names the model the live agent runs, taken from config
 
 ### Requirement: Rerunning Against Another Model Changes Config Only
 
@@ -125,17 +169,16 @@ A report MUST NOT be produced from a run that could not read its inputs: a
 missing trajectory file, an unreachable endpoint or an empty case set STOPS the
 run with a non-zero exit, rather than reaching a verdict.
 
-The trajectory corpus MUST be counted before the report is written, and the
-corpus's durability MUST be reported with the result: the trajectory directory is
-container-local unless `AIBOT_TRAJECTORY_DIR` points inside the mounted volume,
-so a restart destroys it. A run MUST NOT present a rate over a corpus whose
-survival it has not checked.
+The trajectory corpus MUST be counted before the report is written: per kind,
+the number of `call` records, the number joined to a label, and the distinct
+days the corpus covers.
 
 #### Scenario: The corpus is counted
 - **WHEN** a report is written
-- **THEN** it states the number of `call` records, the number joined to a label,
-  and the number of distinct days the corpus covers
-- **AND** it states whether the trajectory directory is on the persistent volume
+- **THEN** it states, per kind, the `call` record count, the joined count, and
+  the distinct days covered
+- **AND** the replay rate and the outcome-attributed rate are reported as two
+  separate numbers, never blended into one
 
 #### Scenario: A failing case is inspectable
 - **WHEN** a kind has any failing case

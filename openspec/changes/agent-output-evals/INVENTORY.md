@@ -89,46 +89,73 @@ validates against is what the model is steered toward, and it currently cannot
 name two real directive kinds. It belongs in its own queue row, not in this
 change.
 
+## The corpus, measured
+
+Counted by the lead live over every file in the pod's
+`/opt/aibot-agent/data/agent_trajectories` (2026-08-14 .. 2026-11-13):
+
+| phase | `call` records | outcome-attributed | label source |
+|---|---|---|---|
+| exec | 1545 | 1530 | `call_id` -> `outcome` |
+| plan | 299 | 0 | `plan_ref` -> `plan_close.status` (359 plan_close records) |
+| replan | 271 | 0 | `plan_ref` -> `plan_close.status` |
+
+Plan and replan together give 570 recorded inputs, so both are testable as a
+**replay** eval even though neither has an `outcome` record.
+
+By model, the corpus spans two eras, and the split matters for a yardstick of
+today's behaviour: `qwen2.5:32b-instruct` (August) accounts for exec 1395 /
+plan 262 / replan 250, and `qwen3-coder:30b` (September and November) for exec
+148 / plan 37 / replan 21. **The live model is `qwen3-coder:30b`**; the sampling
+prefers its inputs and the report states how many cases come from the August
+model.
+
+The directory is read from `AIBOT_TRAJECTORY_DIR` (env, or config), never
+hardcoded — the layout is the deployment's, not this document's.
+
+Record keys, as measured: call records carry `bot call_id model parse_error
+parsed phase plan_ref prompt_system prompt_user response_raw subtask_id ts`;
+outcome records add `reason satisfied strategy`; plan_close carries `plan_ref
+status subtasks_complete subtasks_total task`.
+
 ## What this means for sourcing inputs
 
-Rows 1–3 (`plan`, `exec`, `replan`) are the main planner. **Only `exec` has a
-joinable ground truth.** `log_outcome` is called once in the whole repo
-(`plan_orchestrator.py:616`), always with `call_id=exec_call_id` and
-`phase="exec"`; `call_plan` returns a `Plan` and `call_replan` a `Subtask`, so
-neither ever surfaces the `call_id` its `call` record was written under. What
-`plan` and `replan` do have is `plan_ref` (= the plan's `created_at`) on both the
-call record and the terminal `plan_close` record (`plan_orchestrator.py:382`),
-whose `status` is the plan-level verdict; per-subtask `status` and `criteria`
-reach the archive through `plan_store`.
+Rows 1–3 (`plan`, `exec`, `replan`) are the main planner and the core of the
+eval set.
 
-So the sourcing is:
+**Replay (primary).** Every one of the 2115 recorded inputs across the three
+kinds can be replayed against the configured model and scored automatically on
+the new output: parse ok, kinds in the mod's accepted set, params valid, a plan
+non-empty and composed only of valid kinds. That measurement needs no outcome
+join, which is why all three kinds are testable even where attribution is thin.
 
-- **`exec` and the 30-per-kind core**: true `(prompt → response → outcome)`
-  joined on `call_id`, with `criteria_eval`'s own verdict as the label.
-- **`plan` and `replan`**: prompt and verbatim response are recorded; the
-  label is derived by joining on `plan_ref` to the archive's per-subtask status
-  and the terminal `plan_close`. That is a chain, not a foreign key, and it is
-  only as good as the archive's coverage of that plan. The report MUST say which
-  derivation produced each case's label.
-- The other nine kinds are logged nowhere, and their inputs have to come from
-  real recorded context another way:
+**Outcome attribution (secondary, and weaker for plan/replan).** `log_outcome`
+is called once in the whole repo (`plan_orchestrator.py:616`), always with
+`call_id=exec_call_id` and `phase="exec"`; `call_plan` returns a `Plan` and
+`call_replan` a `Subtask`, so neither surfaces the `call_id` its record was
+written under. `exec` therefore gets a true per-call label from `criteria_eval`;
+`plan` and `replan` get a plan-level one through `plan_ref` -> `plan_close`'s
+`status`. A plan that closed `complete` does not mean every subtask it proposed
+was good, so that rate is reported as plan-level and never as per-call.
+
+The other kinds are logged nowhere, and their inputs have to come from real
+recorded context another way:
 
 - `converse` and `classify_message` inputs are player chat lines, which the
-  agent already prints and keeps in `chat_history`; the bot's own pod log is the
-  source, and the read command for it belongs in the run plan (the lead runs it;
-  no exec is authorised from here).
+  agent keeps in `chat_history` and prints; the bot's own pod log is the source,
+  and the read command belongs in the run plan (the lead runs it; no exec is
+  authorised from here).
 - `partition_fleet` and `orchestrate` inputs are fleet orders with the bots'
-  `infos` block (`agent.py:3930`), which is assembled from `api` state at call
-  time and not persisted. Sourcing these means recording them through a
-  read-only capture, or deferring those kinds out of the baseline and saying so
-  in the report.
+  `infos` block (`agent.py:3930`), assembled from `api` state at call time and
+  not persisted. Sourcing them means a read-only capture, or deferring those
+  kinds out of the baseline and saying so.
 - `raw_generate` and `brain.think` inputs are a failed step or an observation;
   neither is persisted.
 
-The honest split for the first baseline: **`exec` is scored from recorded
-trajectory data on a real join; `plan` and `replan` are scored from recorded
-prompts and responses with labels derived through the plan archive, stated as
-such; chat and classify need one read-only log read that the lead runs;
-fleet-partition, regenerate and session-think are deferred with a stated
-reason.** Inventing a game state to fill them in is exactly what the owner's
-"sourced from real recorded agent context" rules out.
+The honest split for the first baseline: **plan, exec and replan are replayed
+from recorded inputs and scored automatically; exec additionally carries a
+per-call outcome label and plan/replan a plan-level one, labelled as such; chat
+and classify need one read-only log read that the lead runs; fleet-partition,
+regenerate and session-think are deferred with a stated reason.** Inventing a
+game state to fill them in is exactly what the owner's "sourced from real
+recorded agent context" rules out.
