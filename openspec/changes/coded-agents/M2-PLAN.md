@@ -1466,7 +1466,7 @@ be able to roll back both.
 
 | What | Before (live, measured 05:32Z) | After |
 |---|---|---|
-| Agent image | `harbor.arcadia-ecs.local/aiplayermod/agent@sha256:d1513fa2d6ecab1b761fe692078e065b27324d8b05e15062380f55ed69da3f41` | the digest this build pushes; taken from Harbor's `Docker-Content-Digest` for the OCI image index, never from a local image ID |
+| Agent image | `harbor.arcadia-ecs.local/aiplayermod/agent@sha256:d1513fa2d6ecab1b761fe692078e065b27324d8b05e15062380f55ed69da3f41` | `harbor.arcadia-ecs.local/aiplayermod/agent@sha256:a9e75ad1b1efd22f9cc15f81662aa0865d068e92c555f034a0440bd0c9147c38` (tag `2026-11-13-59f30a5`) — Harbor's `Docker-Content-Digest` for the OCI image index, matching the push output |
 | `agent-scripts` ConfigMap, key `scout.js` | `838efd89…` (the rolled-back broken bytes) | `1824967e…` — the reviewed bytes at `6f8ad66`, 5852 bytes |
 
 The image digest in the "before" column is confirmed two ways: the Deployment's
@@ -1478,6 +1478,14 @@ makes it a re-appliable rollback rather than a remembered value.
 rides in the image. Deploying one without the other reproduces run 3's refusal
 exactly: the fixed script emits `{seq, call, directive, args}`, and an image
 without the translation refuses every record with `action has no 'kind'`.
+
+**The image is proved against its rev before it is used.** Read inside the
+built image, `sha256sum` gives `script_tick.py` `fd212211839f08b0…`, `agent.py`
+`d765915655cf5e5a…` and `action_binding.py` `728825f7ab11351f…`, each equal to
+`git show 513b502:<path> | sha256sum`. Equal hashes are what rule out an image
+built from the wrong rev; a tag alone does not. The image also has no
+`/opt/aibot-agent/scripts/` and no `test_*.py`, so the ConfigMap stays
+authoritative for script content and the tests do not ship.
 
 **Steps.**
 
