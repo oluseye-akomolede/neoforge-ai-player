@@ -1718,3 +1718,148 @@ not carry open items into implementation:
    off agent-side instead. The decision stands on the rebuild cost alone. If a
    later change does bake scripts in, the rebuild cost must be stated, not left
    implicit.
+
+---
+
+## 8.4 The owed controls: run plan (written 2026-11-13, NOT executed)
+
+**Status: proposed. Nothing in this section has run.** It exists because ask 4 of
+`qitem-20261113100843` was answered "not done" — the control arm (§8.3.4 Run 1)
+and the negative control had never been executed as their own evidence, and the
+run-5 result is the script arm, not a control. Cobblestone left in slot 0 is
+script behaviour (the selected-slot trap), not a baseline.
+
+### 8.4.0 What makes this plan necessary
+
+§8.3.1a records a run where both arms were secretly the same code path — every
+tick was refused at the contract gate, the planner took the tick in both arms,
+and a difference was reported anyway. The controls exist so that cannot recur.
+This plan therefore states, for each arm, **the log line that proves the arm is
+the arm it claims to be**, and voids the run if that line is absent.
+
+### 8.4.1 The four arms, and the one line that distinguishes each
+
+| Arm | Configuration | The line that proves it | A run is VOID if |
+|---|---|---|---|
+| **C1 control** | no `bindings.json` (key absent) | `no bindings at /srv/aibot-scripts/bindings.json; this bot runs the planner` (`agent.py`, `FileNotFoundError` branch) → **no `[Scout/script]` action line at all** | any `[Scout/script] dispatch:` line appears |
+| **C2a closed port** | Scout bound, `SCRIPT_RUNNER_URL=http://127.0.0.1:1` | state `fallback_connect_refused`, detail `connect refused: ...` (`script_client.py:169`) | the state is `fallback_timeout` — that is C2b, not C2a |
+| **C2b silent listener** | Scout bound, listener accepts and never replies | state `fallback_timeout`, detail `connect timeout: ...` or `read timeout: ...` (`:165`,`:167`) | no fallback line within the tick bound (a hang — report as a defect) |
+| **C4 script arm** | Scout bound, runner healthy | `dispatch: STORE_ALL seq=1` **and** the mod's accepted POST | no `dispatch:` line (this is what the 05:57Z regression looked like) |
+
+C2's two sub-cases are distinct and §8.3.4 requires both: a **closed port**
+(`127.0.0.1:1`, immediate refusal) tests the error branch; a listener that
+**accepts and never replies** tests the bounded wait. A refused connection
+cannot exercise a missing timeout, so passing only the closed port proves
+nothing about 4.3.
+
+### 8.4.2 The constraint that shapes every step
+
+Per §6's ruled decision (2026-11-11), **the agent caches both the bindings and
+the script source for the life of the pod** — `self._script_loaded` at
+`agent.py:2804`, and `self._source` captured at `script_tick.py:236` and resent
+every tick at `:282`. Measured 2026-11-12: a ConfigMap patch on a running pod
+changed nothing for six minutes.
+
+Therefore **every arm transition requires a pod restart.** This is not a
+convenience detail: a plan that edits the ConfigMap and reads the log without
+restarting will observe the *previous* arm and record it as the new one — a
+false pass in the exact shape §8.3.1a warns about.
+
+The restart is agent-side only. **The shared runner is never stopped or
+restarted** (lead, 11:37Z): cardgame calls it from their own test account.
+
+### 8.4.3 Preconditions (read-only; abort if any fails)
+
+1. `agent-scripts` is `1824967e…` (scout.js) and `bindings.json` is
+   `{"Scout": "scout.js"}` — the C4 state. Read both with a hash, never by
+   printing the script.
+2. Scout's inventory is stocked enough to make a store observable (the run-5
+   method: two stacks, the non-selected one must be the one that moves).
+3. The runner answers `ready:true` **and** a real tick — `ready` alone is not
+   enough; it stayed true through the entire 05:57–10:15Z outage.
+
+### 8.4.4 C2 — dead runner, closed port (no restart of the shared runner)
+
+The cut is agent-side. Set `SCRIPT_RUNNER_URL` to a closed port **for the agent
+Deployment only**, restart the agent pod, observe, then restore and restart.
+
+1. Capture pre-state: `kubectl -n minecraft-test get deploy aibot-agent-test -o
+   jsonpath='{.spec.template.spec.containers[0].env}'` → save to a file on
+   controlplane, and **read it back**.
+2. Patch `SCRIPT_RUNNER_URL=http://127.0.0.1:1`, restart, wait for
+   `All 5 bots started`.
+3. Drive the goal via `inject_chat` (below). **Expected:** for every tick,
+   `falling back to planner: runner fallback_connect_refused: connect refused: ...`
+   — the state is `STATE_FALLBACK_REFUSED` (`script_client.py:115`, set at `:169`).
+   Record the exact reason text as emitted, not as expected.
+4. **Void if:** the reason is a timeout (that is C2b, not C2a), or the bot logs
+   no `[Scout/script]` line (means the binding was lost, not that the runner was
+   unreachable).
+
+### 8.4.5 C2b — accept and never reply (the bounded wait)
+
+Same shape, pointing `SCRIPT_RUNNER_URL` at a listener that accepts and holds
+the connection. The distinguishing evidence is the state is
+`STATE_FALLBACK_TIMEOUT` (`script_client.py:116`) with detail `connect timeout:`
+or `read timeout:` (`:165`,`:167`) — **not** `fallback_connect_refused`. The two
+states are why both cases are required: a refused connection returns
+immediately and cannot exercise a missing timeout. §4.4's accept-and-never-reply test covers
+the unit; this is the same branch on TEST.
+
+**Void if** the bot hangs (no fallback line within the documented tick bound).
+That is a real defect and is reported as one, not worked around.
+
+### 8.4.6 C1 — control arm, bindings absent
+
+1. Save the current `bindings.json` (`{"Scout": "scout.js"}`) to a file on
+   controlplane; read it back.
+2. Apply a ConfigMap with `bindings.json` **absent** (not empty-object — absent,
+   so the "no bindings at" branch is exercised rather than an empty map).
+3. **Restart the agent pod** — mandatory per §8.4.2.
+4. Drive the same goal. **Expected:** no `[Scout/script]` action line for Scout
+   at all; the planner may still act, and that is the baseline to compare
+   against, not a failure.
+5. **Void if** any `[Scout/script] dispatch:` line appears — the arm is not the
+   arm.
+
+### 8.4.7 C4 — script arm (already evidenced by run 5; re-run only if C1–C2 void)
+
+Restore `bindings.json`, restart, drive the same goal, confirm
+`dispatch: STORE_ALL seq=1` **and** the mod's accepted POST with a destination
+read-back (the run-5 method at `01655d8`). This is the arm run 5 already
+supplied; it is listed so the four arms are compared under one method.
+
+### 8.4.8 Acceptance, and what each arm is allowed to prove
+
+- The proof is the **contrast**, not any single arm: C1 produces no script line,
+  C4 produces a dispatch, under the same goal and the same method.
+- Each arm must show its distinguishing line (§8.4.1). A missing line voids the
+  arm rather than counting as a negative.
+- The negative control is satisfied only when the log shows the full
+  **script → fallback (with reason) → script** transition, which requires C2 or
+  C2b followed by C4 with no restart in between that changes other variables.
+- ⚠ **Known limit:** the fallback reason for a *trap* (`wasm_trap`, the 05:57Z
+  regression) was in the past misreported as `script_error`; the runner fix
+  `aa7b00a` corrects the classification but is **not deployed**. Until it is,
+  C2's reason text on a trap-shaped failure is unreliable. The controls do not
+  depend on trap classification (they cut the connection, not the sandbox), but
+  a run that *also* observes a trap must treat the reason as suspect.
+
+### 8.4.9 Rollback
+
+Restore the saved `env` patch and the saved `bindings.json`, restart the agent
+pod, and re-read both back. The shared runner is untouched at every step, so it
+has no rollback. Verified-by-re-read, not by `apply` returning 0.
+
+### 8.4.10 Driving the goal
+
+`inject_chat` from inside the agent container, per §8.3.4 — never rcon, never
+`/api/directive`. The key is read from the in-pod `api` module and never printed
+or placed on a command line:
+
+```
+kubectl exec -n minecraft-test deploy/aibot-agent-test -c agent -- \
+  python3 -c 'import api; print(api.inject_chat("Scout","OperatorTest","Scout, please store all your items in the nearby chest."))'
+```
+
+Include the bot's name in the text — that is what routes it.
