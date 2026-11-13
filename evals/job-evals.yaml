@@ -21,6 +21,8 @@
 #
 # Model calls are serial: evalconfig refuses concurrency != 1, because the
 # local model is shared with the live fleet.
+x-agent-image: &agent_image "harbor.arcadia-ecs.local/aiplayermod/agent@sha256:a9e75ad1b1efd22f9cc15f81662aa0865d068e92c555f034a0440bd0c9147c38"
+
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -46,7 +48,7 @@ spec:
           type: RuntimeDefault
       initContainers:
         - name: unpack-code
-          image: python:3.12-slim
+          image: *agent_image
           imagePullPolicy: IfNotPresent
           command: ["sh", "-c", "tar xf /opt/code-tar/code.tar -C /opt/evals && ls /opt/evals/output_evals"]
           securityContext:
@@ -73,7 +75,7 @@ spec:
           # Pulling needs harbor-creds, which the `ci` default ServiceAccount
           # already carries as an imagePullSecret -- so this Job still declares
           # no Secret of its own.
-          image: harbor.arcadia-ecs.local/aiplayermod/agent@sha256:a9e75ad1b1efd22f9cc15f81662aa0865d068e92c555f034a0440bd0c9147c38
+          image: *agent_image
           imagePullPolicy: IfNotPresent
           command: ["python", "/opt/evals/output_evals/run.py"]
           args:
