@@ -1,0 +1,133 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    deployment.kubernetes.io/revision: "208"
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"annotations":{},"labels":{"app":"aibot-agent","app.kubernetes.io/part-of":"aiplayermod","tier":"test"},"name":"aibot-agent-test","namespace":"minecraft-test"},"spec":{"replicas":1,"selector":{"matchLabels":{"app":"aibot-agent","tier":"test"}},"strategy":{"type":"Recreate"},"template":{"metadata":{"labels":{"app":"aibot-agent","tier":"test"}},"spec":{"containers":[{"envFrom":[{"secretRef":{"name":"agent-config"}}],"image":"harbor.arcadia-ecs.local/aiplayermod/agent:latest","imagePullPolicy":"Always","name":"agent","ports":[{"containerPort":5000,"name":"dashboard"}],"resources":{"limits":{"cpu":"1","memory":"512Mi"},"requests":{"cpu":"250m","memory":"256Mi"}},"volumeMounts":[{"mountPath":"/opt/aibot-agent/data","name":"agent-data"}]}],"imagePullSecrets":[{"name":"harbor-creds"}],"volumes":[{"name":"agent-data","persistentVolumeClaim":{"claimName":"agent-data"}}]}}}}
+  creationTimestamp: "2026-04-24T04:00:43Z"
+  generation: 232
+  labels:
+    app: aibot-agent
+    app.kubernetes.io/part-of: aiplayermod
+    tier: test
+  name: aibot-agent-test
+  namespace: minecraft-test
+  resourceVersion: "264879800"
+  uid: e58ea8a2-274b-487f-be27-aee40a926faf
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: aibot-agent
+      tier: test
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/restartedAt: "2026-11-13T05:16:47Z"
+        m2-step4: step1-inert
+      creationTimestamp: null
+      labels:
+        app: aibot-agent
+        tier: test
+    spec:
+      containers:
+      - env:
+        - name: NN_COMPRESSOR_URL
+          value: http://nn-compressor.nn-compressor.svc.cluster.local
+        - name: SCRIPT_RUNNER_URL
+          value: http://agent-script-runner.minecraft-test.svc.cluster.local:8080
+        - name: SCRIPTS_DIR
+          value: /srv/aibot-scripts
+        - name: RUNNER_TOKEN
+          valueFrom:
+            secretKeyRef:
+              key: minecraft
+              name: agent-script-runner-token
+        envFrom:
+        - secretRef:
+            name: agent-config
+        image: harbor.arcadia-ecs.local/aiplayermod/agent@sha256:d1513fa2d6ecab1b761fe692078e065b27324d8b05e15062380f55ed69da3f41
+        imagePullPolicy: Always
+        name: agent
+        ports:
+        - containerPort: 5000
+          name: dashboard
+          protocol: TCP
+        resources:
+          limits:
+            cpu: "1"
+            memory: 512Mi
+          requests:
+            cpu: 250m
+            memory: 256Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /srv/aibot-scripts
+          name: scripts
+          readOnly: true
+        - mountPath: /srv/aibot-profiles
+          name: aibot-profiles
+        - mountPath: /opt/aibot-agent/data
+          name: agent-data
+      dnsPolicy: ClusterFirst
+      imagePullSecrets:
+      - name: harbor-creds
+      initContainers:
+      - command:
+        - sh
+        - -c
+        - cp -an /opt/aibot-agent/profiles/. /srv/aibot-profiles/
+        image: harbor.arcadia-ecs.local/aiplayermod/agent:2026-11-05-c193f76
+        imagePullPolicy: IfNotPresent
+        name: seed-profiles
+        resources:
+          limits:
+            cpu: 200m
+            memory: 128Mi
+          requests:
+            cpu: 10m
+            memory: 32Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /srv/aibot-profiles
+          name: aibot-profiles
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: agent-scripts
+        name: scripts
+      - emptyDir: {}
+        name: aibot-profiles
+      - name: agent-data
+        persistentVolumeClaim:
+          claimName: agent-data
+status:
+  availableReplicas: 1
+  conditions:
+  - lastTransitionTime: "2026-11-13T05:17:30Z"
+    lastUpdateTime: "2026-11-13T05:17:30Z"
+    message: Deployment has minimum availability.
+    reason: MinimumReplicasAvailable
+    status: "True"
+    type: Available
+  - lastTransitionTime: "2026-04-24T04:00:43Z"
+    lastUpdateTime: "2026-11-13T05:17:30Z"
+    message: ReplicaSet "aibot-agent-test-7554db5447" has successfully progressed.
+    reason: NewReplicaSetAvailable
+    status: "True"
+    type: Progressing
+  observedGeneration: 232
+  readyReplicas: 1
+  replicas: 1
+  updatedReplicas: 1

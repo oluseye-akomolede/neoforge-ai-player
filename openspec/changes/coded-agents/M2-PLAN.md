@@ -1500,11 +1500,21 @@ authoritative for script content and the tests do not ship.
    `script_tick.py`, `agent.py`, `action_binding.py`, `test_scout_script.py`
    between `59f30a5` and `513b502` is empty). The image was additionally
    verified to have been built from this tree: unzipped and hashed, its three
-   files `/opt/aibot-agent/script_tick.py`, `agent.py` and
-   `action_binding.py` match `git show 513b502:<path>` exactly (recorded with
-   the digest row in the table above). So the shipped tree is `513b502` for
-   every purpose that matters, and the tag's `59f30a5` names the build moment
-   of the same bytes.
+   files match `git show 513b502:<path>` exactly. The three hashes, so the
+   check is re-runnable by someone who was not in the session:
+
+   ```
+   agent/script_tick.py      fd212211839f08b08f59962796afe1dc28f74cb18827a12e3879463229229443
+   agent/agent.py            d765915655cf5e5ac52154009f3b81bfbe3a646f1692a5c34afe1c30a2e9d93d
+   agent/action_binding.py   728825f7ab11351f3880b3c6cae10a0db00a11ac2bed6fa0626e5e800c5c7d89
+   ```
+
+   Each is `sha256sum` of the file at `513b502`; the same command run on the
+   file inside the image gives the same three. Computed twice independently
+   (builder and reviewer) and agreeing. That is what `:1485`'s rule asks for:
+   equal hashes rule out an image built from the wrong rev, where a tag alone
+   does not. So the shipped tree is `513b502` for every purpose that matters,
+   and the tag's `59f30a5` names the build moment of the same bytes.
 2. **Back up both live halves**, and verify each backup holds what it claims:
    `kubectl -n minecraft-test get deploy aibot-agent-test -o yaml` (expect the
    digest above) and the `agent-scripts` ConfigMap (expect `838efd89…`).
