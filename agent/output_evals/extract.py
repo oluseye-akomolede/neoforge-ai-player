@@ -109,6 +109,7 @@ class Census:
     plan_closes: int = 0
     joined: dict = field(default_factory=lambda: defaultdict(int))
     no_label: dict = field(default_factory=lambda: defaultdict(int))
+    cancelled: dict = field(default_factory=lambda: defaultdict(int))
     by_era: dict = field(default_factory=dict)   # kind -> {model: {calls, joined}}
     days: set = field(default_factory=set)
     bad_lines: int = 0
@@ -121,6 +122,7 @@ class Census:
                 "calls": self.total_calls.get(kind, 0),
                 "labelled": self.joined.get(kind, 0),
                 "no_label": self.no_label.get(kind, 0),
+                "cancelled": self.cancelled.get(kind, 0),
                 "by_era": {m: dict(v) for m, v in sorted(eras.items())},
                 "short_of_" + str(MIN_PER_KIND): max(0, MIN_PER_KIND - self.joined.get(kind, 0)),
             }
@@ -168,6 +170,7 @@ def build_cases(records):
             census.days.add(ts[:10])
 
         label, source = "", ""
+        cancelled = False
         outcome = outcomes_by_call.get(rec.get("call_id"))
         if kind == "exec" and outcome is not None:
             label = "satisfied" if outcome.get("satisfied") else "unsatisfied"
@@ -176,9 +179,20 @@ def build_cases(records):
             close = close_by_plan.get(rec.get("plan_ref"))
             if close is not None:
                 status = str(close.get("status") or "")
-                label = "complete" if status == "complete" else "incomplete"
-                source = "plan_close"
+                # `cancelled` is an abandoned run, not a failed plan. Scoring it
+                # as incomplete charges the model for a decision it did not
+                # make; it is dropped from the rate and counted on its own.
+                # It must also NOT fall through to no_label, or the census
+                # counts one plan twice and stops summing to its call count.
+                if status == "cancelled":
+                    cancelled = True
+                    census.cancelled[kind] += 1
+                elif status:
+                    label = "complete" if status == "complete" else "incomplete"
+                    source = "plan_close"
 
+        if cancelled:
+            continue
         if not label:
             census.no_label[kind] += 1
             continue
@@ -245,3 +259,27 @@ def write_cases(cases_by_kind, out_dir):
                 f.write(json.dumps(c.__dict__, sort_keys=True) + "\n")
         written[kind] = str(path)
     return written
+
+
+def read_cases_dir(directory):
+    """Load a case set previously written by `write_cases`.
+
+    The scoring Job gets its cases through a ConfigMap and has no corpus and no
+    PVC, so this is the inverse of `write_cases` and must stay field-for-field
+    compatible with it. A missing kind is not an error: a kind the corpus could
+    not supply simply is not scored, which the report states.
+    """
+    d = pathlib.Path(directory)
+    if not d.is_dir():
+        raise FileNotFoundError(f"cases directory not found: {d}")
+    by_kind = {}
+    for path in sorted(d.glob("*.jsonl")):
+        cases = []
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                cases.append(Case(**json.loads(line)))
+        by_kind[path.stem] = cases
+    return by_kind

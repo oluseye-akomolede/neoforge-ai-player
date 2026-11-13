@@ -42,6 +42,7 @@ class Config:
     concurrency: int
     path: str
     raw: dict
+    endpoint_from_env: bool = False
 
     def describe(self) -> str:
         """What the report cites: the values actually read, and from where."""
@@ -63,6 +64,17 @@ def load_config(path):
 
     merged = dict(DEFAULTS)
     merged.update({k: v for k, v in raw.items() if v is not None})
+    # EVALS_ENDPOINT lets one image run against a different address without
+    # editing the file that signs the report. It sets an ADDRESS only; a
+    # credential is never read from the environment here, so a stray variable
+    # cannot become a secret in a report.
+    env_endpoint = os.environ.get("EVALS_ENDPOINT", "").strip()
+    if env_endpoint:
+        merged["endpoint"] = env_endpoint
+    # Record WHETHER the env supplied the address, so the report can say the run
+    # was signed against something other than the file it names. A reader must
+    # not have to infer provenance from a comparison.
+    merged["endpoint_from_env"] = bool(env_endpoint)
     for key in ("endpoint", "model"):
         if not isinstance(merged[key], str) or not merged[key].strip():
             raise ConfigError(f"config `{key}` must be a non-empty string")
@@ -78,7 +90,8 @@ def load_config(path):
         # time slows the fleet down.
         raise ConfigError("config `concurrency` must be 1 (shared local model)")
     return Config(merged["endpoint"].rstrip("/"), merged["model"],
-                  merged["timeout"], merged["concurrency"], path, raw)
+                  merged["timeout"], merged["concurrency"], path, raw,
+                  merged["endpoint_from_env"])
 
 
 def check_endpoint(cfg):

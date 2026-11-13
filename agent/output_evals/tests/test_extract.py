@@ -66,8 +66,44 @@ class JoinTests(unittest.TestCase):
         self.assertEqual(census.joined["plan"], 1)
 
     def test_incomplete_plan_close_labels_incomplete(self):
-        cases, _ = extract.build_cases([call("c1", "plan"), plan_close("p1", "abandoned")])
+        cases, _ = extract.build_cases([call("c1", "plan"), plan_close("p1", "failed")])
         self.assertEqual(cases[0].label, "incomplete")
+
+    def test_cancelled_plan_is_not_a_model_failure(self):
+        # The corpus carries statuses complete/failed/cancelled. A cancelled
+        # run was abandoned, not failed; scoring it incomplete charges the
+        # model for a decision it did not make. It gets its own counter and
+        # no case, so it cannot reach a rate in either direction.
+        cases, census = extract.build_cases([call("c1", "plan"), plan_close("p1", "cancelled")])
+        self.assertEqual(cases, [])
+        self.assertEqual(census.cancelled["plan"], 1)
+        self.assertEqual(census.joined["plan"], 0)
+        self.assertEqual(census.report()["kinds"]["plan"]["cancelled"], 1)
+        # The census must still account for the plan exactly once. Without this
+        # the cancelled plan is ALSO counted as no_label, and the three buckets
+        # stop summing to the call count -- which is how the double count would
+        # otherwise reach a report unnoticed.
+        self.assertEqual(census.no_label["plan"], 0)
+        row = census.report()["kinds"]["plan"]
+        self.assertEqual(row["labelled"] + row["no_label"] + row["cancelled"],
+                         row["calls"])
+
+    def test_census_buckets_sum_to_calls_for_every_kind(self):
+        """labelled + no_label + cancelled == calls, per kind, on mixed input."""
+        recs = []
+        for i in range(4):                      # exec: 2 labelled, 2 not
+            recs.append(call(f"e{i}", "exec"))
+            if i < 2:
+                recs.append({"type": "outcome", "call_id": f"e{i}", "satisfied": True})
+        for i in range(3):                      # plan: 1 complete, 1 cancelled, 1 none
+            recs.append(call(f"p{i}", "plan", plan_ref=f"P{i}"))
+        recs.append(plan_close("P0", "complete"))
+        recs.append(plan_close("P1", "cancelled"))
+        _, census = extract.build_cases(recs)
+        for kind, row in census.report()["kinds"].items():
+            self.assertEqual(
+                row["labelled"] + row["no_label"] + row["cancelled"], row["calls"],
+                f"{kind}: buckets do not sum to calls ({row})")
 
     def test_replan_uses_its_own_plan_ref(self):
         recs = [call("c1", "replan", plan_ref="p7"), plan_close("p7")]
@@ -196,6 +232,36 @@ class DirTests(unittest.TestCase):
         finally:
             if old is not None:
                 os.environ["AIBOT_TRAJECTORY_DIR"] = old
+
+
+class CaseSetRoundTripTests(unittest.TestCase):
+    """write_cases -> read_cases_dir must preserve every field.
+
+    The scoring Job reads its cases through a ConfigMap and never sees the
+    corpus, so a field dropped in the round trip is a field the scorer silently
+    loses. Written and read in the same test so the pair cannot drift.
+    """
+
+    def test_round_trip_preserves_every_field(self):
+        cases, _ = extract.build_cases([call("c1", "plan"), plan_close("p1")])
+        with tempfile.TemporaryDirectory() as d:
+            extract.write_cases({"plan": cases}, d)
+            back = extract.read_cases_dir(d)
+        self.assertEqual(back["plan"], cases)
+
+    def test_missing_kind_is_absent_not_invented(self):
+        # A kind the corpus could not supply must not appear as an empty list
+        # that a report could read as "scored zero".
+        cases, _ = extract.build_cases([call("c1", "plan"), plan_close("p1")])
+        with tempfile.TemporaryDirectory() as d:
+            extract.write_cases({"plan": cases}, d)
+            back = extract.read_cases_dir(d)
+        self.assertIn("plan", back)
+        self.assertNotIn("exec", back)
+
+    def test_unknown_dir_refuses(self):
+        with self.assertRaises(FileNotFoundError):
+            extract.read_cases_dir("/nonexistent-cases-dir")
 
 
 if __name__ == "__main__":

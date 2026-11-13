@@ -143,7 +143,8 @@ def flag_drift(era_rows):
 def build_report(cfg, census, results, n_cases):
     return {
         "config": {"endpoint": cfg.endpoint, "model": cfg.model,
-                   "config_path": cfg.path, "timeout": cfg.timeout},
+                   "config_path": cfg.path, "timeout": cfg.timeout,
+                   "endpoint_from_env": cfg.endpoint_from_env},
         "corpus": census,
         "cases_per_kind": n_cases,
         "results": results,
@@ -160,10 +161,18 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", required=True)
     ap.add_argument("--trajectory-dir", default=None)
+    ap.add_argument("--cases-in", default=None,
+                    help="score a case set written by write_cases (ConfigMap); "
+                         "no corpus read, no --trajectory-dir needed")
     ap.add_argument("--out", required=True, help="report path (.json)")
+    ap.add_argument("--emit", action="store_true",
+                    help="also print the report to stdout (for a Job's pod log)")
     ap.add_argument("--cases-out", default=None)
     ap.add_argument("--dry-run", action="store_true",
                     help="extract and report the corpus only; no model calls")
+    ap.add_argument("--per-kind", type=int, default=None,
+                    help=f"cases per kind (default {extract.MIN_PER_KIND}); lower it "
+                         "when the case set must fit a 1MiB ConfigMap")
     args = ap.parse_args(argv)
 
     try:
@@ -172,27 +181,43 @@ def main(argv=None):
         print(f"refused: {e}", file=sys.stderr)
         return 2
 
-    ok, why = evalconfig.check_endpoint(cfg)
-    print(f"endpoint: {'ok' if ok else 'REFUSED'} - {why}")
-    if not ok and not args.dry_run:
-        print("refused: not writing a report from an endpoint that does not "
-              "answer for the configured model", file=sys.stderr)
-        return 2
+    # A dry run extracts and reports the CASE SET; it makes no model calls, so
+    # it does not probe the endpoint. Probing here and then continuing would
+    # print a refusal the run did not honour -- a verdict the run never reached.
+    if args.dry_run:
+        print("endpoint: not probed (dry run: no model calls)")
+    else:
+        ok, why = evalconfig.check_endpoint(cfg)
+        print(f"endpoint: {'ok' if ok else 'REFUSED'} - {why}")
+        if not ok:
+            print("refused: not writing a report from an endpoint that does "
+                  "not answer for the configured model", file=sys.stderr)
+            return 2
 
-    directory = extract.trajectory_dir(args.trajectory_dir)
-    records, bad = extract.read_records(directory)
-    cases, census = extract.build_cases(records)
-    census.bad_lines = bad
-    corpus = census.report()
-    print(json.dumps({"corpus": corpus}, indent=2))
+    if args.cases_in:
+        try:
+            by_kind = extract.read_cases_dir(args.cases_in)
+        except FileNotFoundError as e:
+            print(f"refused: {e}", file=sys.stderr)
+            return 4
+        corpus = {"source": "case-set", "cases_dir": args.cases_in}
+        tally = {}
+    else:
+        directory = extract.trajectory_dir(args.trajectory_dir)
+        records, bad = extract.read_records(directory)
+        cases, census = extract.build_cases(records)
+        census.bad_lines = bad
+        corpus = census.report()
+        print(json.dumps({"corpus": corpus}, indent=2))
 
-    current = cfg.model
-    by_kind, tally = {}, {}
-    for kind in extract.SCORABLE:
-        pool = [c for c in cases if c.kind == kind]
-        picked, t = extract.take_era_first(pool, current)
-        by_kind[kind] = picked
-        tally[kind] = t
+        current = cfg.model
+        per_kind = args.per_kind or extract.MIN_PER_KIND
+        by_kind, tally = {}, {}
+        for kind in extract.SCORABLE:
+            pool = [c for c in cases if c.kind == kind]
+            picked, t = extract.take_era_first(pool, current, n=per_kind)
+            by_kind[kind] = picked
+            tally[kind] = t
     if args.cases_out:
         print("wrote:", extract.write_cases(by_kind, args.cases_out))
 
@@ -203,9 +228,11 @@ def main(argv=None):
 
     if args.dry_run:
         report = {"config": {"endpoint": cfg.endpoint, "model": cfg.model,
-                             "config_path": cfg.path},
+                             "config_path": cfg.path,
+                             "endpoint_from_env": cfg.endpoint_from_env},
                   "corpus": corpus, "cases_per_kind": n_cases,
                   "results": {}, "dry_run": True,
+                  "endpoint_probed": False,
                   "era_tally": tally}
     else:
         results = run(cfg, by_kind)
@@ -215,6 +242,12 @@ def main(argv=None):
     out = pathlib.Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    # Also to stdout. In the Job, --out is an emptyDir that dies with the pod,
+    # so the pod log is the durable surface; a report that exists only on a
+    # dead volume is a report nobody can read.
+    if args.emit:
+        print("--- report (json) ---")
+        print(json.dumps(report, indent=2, sort_keys=True))
     print(f"report: {out}")
     return 0
 

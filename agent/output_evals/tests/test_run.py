@@ -3,6 +3,8 @@
 Every test here asserts a way the runner must NOT behave: writing a report from
 a dead endpoint, scoring zero cases, calling a model on a dry run.
 """
+import contextlib
+import io
 import json
 import os
 import sys
@@ -68,6 +70,30 @@ class RunnerTests(unittest.TestCase):
         self.assertTrue(rep.get("dry_run"))
         self.assertEqual(rep["results"], {})
         self.assertEqual(rep["cases_per_kind"]["exec"], 1)
+
+    def test_dry_run_does_not_probe_the_endpoint(self):
+        """A dry run reports the case set, so a dead endpoint must not gate it.
+
+        It also must not PRINT a refusal it does not honour: an earlier version
+        probed, printed REFUSED, and then exited 0 with a report. Both halves
+        are asserted -- rc 0 with a report, and no REFUSED in the output.
+        """
+        self._write([_record_call("c1", "exec"),
+                     {"type": "outcome", "call_id": "c1", "satisfied": True}])
+        with open(self.cfg, "w") as f:
+            # A port nothing listens on, so a probe would fail loudly if made.
+            f.write("endpoint: http://127.0.0.1:9\nmodel: qwen3-coder:30b\n")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = run.main(["--config", self.cfg, "--trajectory-dir", self.dir,
+                           "--out", self.out, "--dry-run"])
+        self.assertEqual(rc, 0, "a dry run must not be gated on the endpoint")
+        self.assertTrue(os.path.exists(self.out))
+        self.assertNotIn("REFUSED", buf.getvalue(),
+                         "printed a refusal the run did not honour")
+        with open(self.out) as f:
+            rep = json.load(f)
+        self.assertFalse(rep.get("endpoint_probed"))
 
     def test_no_labelled_cases_exits_3(self):
         self._write([_record_call("c1", "exec")])   # no outcome
