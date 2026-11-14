@@ -36,6 +36,31 @@ is silently ignored.
 - **THEN** a test enumerates the agent's `/api/chat` request bodies and fails if
   any of them lacks a top-level `think` boolean
 
+### Requirement: The eval runner states its own think value, independently
+
+The output-eval runner SHALL send a top-level `think` boolean on its
+`/api/chat` request. The value SHALL come from the eval config
+(`evalconfig`), NOT from `AIBOT_LLM_THINK`: the runner is packaged standalone by
+`evals/make-evals-configmap.sh`, which copies `output_evals` and its generated
+config into a ConfigMap, so the agent's config module and environment are absent
+from that pod. The runner is also the site that measures a candidate model, so it
+must be able to enable thinking deliberately while the fleet keeps it off.
+
+#### Scenario: The runner sends think from its own key
+
+- **WHEN** the eval runner posts to `/api/chat`
+- **THEN** the request body contains a top-level boolean `think` taken from the
+  eval config
+- **AND** changing `AIBOT_LLM_THINK` does not change the runner's request body
+
+#### Scenario: A think-on run is refused before it starts, not after every case
+
+- **WHEN** the runner is configured to think and the endpoint rejects a request
+  carrying `think`
+- **THEN** the endpoint precheck fails and the run exits non-zero with no report
+- **AND** the failure is reported before the first case is scored, not as a run
+  in which every case is unscorable
+
 ### Requirement: Thinking tokens do not consume the answer budget
 
 A request that returns an empty `content` because thinking consumed the entire

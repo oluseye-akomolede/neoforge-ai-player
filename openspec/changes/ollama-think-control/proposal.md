@@ -50,13 +50,31 @@ happens to have — which is exactly the assumption that just produced empty
 content. Sending `think: false` explicitly is a property of the request, not of
 the deployment, and it is testable without a thinking model to hand.
 
+## Probing the shape, not just the presence
+
+`evalconfig.check_endpoint` asks `/api/tags` and looks for the model name. That
+proves the endpoint is up and serves that model; it says nothing about whether a
+`think`-on request is accepted. A run configured to think would pass the gate and
+then fail every case, which is the "dead instrument still prints a verdict"
+failure `run.py` exists to prevent. When thinking is enabled the precheck must
+also send one minimal `/api/chat` request carrying `think`, and refuse before the
+first case if that request errors.
+
 ## Impact
 
 - Affected specs: `agent-llm-transport` (new), and the gateway's Ollama-compat
   contract.
-- Affected code: `agent/config.py`, every `agent` call site that posts to
-  `/api/chat` (`brain.py`, `criteria_eval.py`, `planner.py`, `l3_planner.py`),
-  `llm-gateway` `app/main.py`.
+- Affected code: `agent/config.py`, every call site that posts to `/api/chat`
+  — **14 in total**: 13 in the agent (`brain.py` 2, `criteria_eval.py` 1,
+  `planner.py` 2, `l3_planner.py` 7, counted by `grep -c 'api/chat'`) plus
+  `agent/output_evals/run.py:54`, which posts from the eval runner rather than
+  the agent — and `llm-gateway` `app/main.py`.
+- `run.py` carries its **own** `think` key in `evalconfig`, not `AIBOT_LLM_THINK`.
+  `evals/make-evals-configmap.sh` packs `output_evals` and its config into the
+  Job standalone, so the runner never reads `agent/config.py` and the agent's
+  environment is not present in that pod. It is also the site that would measure
+  `qwen3.8` in exactly the failing shape, so it has to be able to think on
+  deliberately, independent of the fleet's setting.
 - No behaviour changes while `AIBOT_LLM_THINK` stays at its default `false` and
   the served model is not a thinking model: Ollama ignores `think` for models
   with no thinking capability.
