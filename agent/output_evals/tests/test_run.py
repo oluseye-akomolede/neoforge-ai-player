@@ -203,6 +203,58 @@ class RunnerTests(unittest.TestCase):
         finally:
             srv.shutdown()
 
+    def test_unscorable_only_kind_reports_no_adherence_rate(self):
+        """Nothing measured is None, not a rate that looks like a bad one.
+
+        The reviewer's residual: pinning 0.0 proves a measured zero, but says
+        nothing about the empty case, so an "unmeasured" sentinel such as -1.0
+        would stay green. A kind whose only case was unscorable has no
+        directives to count, and 0.0 there would read as total non-adherence.
+        """
+
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                body = json.dumps({"models": [{"name": CURRENT}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self):  # noqa: N802
+                self.send_response(500)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+
+        srv = HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            with open(self.cfg, "w") as f:
+                f.write("model: %s\nendpoint: http://127.0.0.1:%d\n"
+                        % (CURRENT, srv.server_port))
+            d = os.path.join(self.tmp.name, "cases")
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "exec.jsonl"), "w") as f:
+                f.write(json.dumps({"kind": "exec", "call_id": "c1",
+                                    "bot": "scout", "model": CURRENT,
+                                    "prompt_system": "s", "prompt_user": "u",
+                                    "world_state_summary": "w",
+                                    "recorded_output": "{}", "label": "",
+                                    "label_source": ""}) + "\n")
+            rc = run.main(["--config", self.cfg, "--cases-in", d,
+                           "--out", self.out])
+            self.assertEqual(rc, 0)
+            with open(self.out) as f:
+                ex = json.load(f)["results"]["exec"]
+            self.assertEqual(ex["unscorable"], 1, "the case must not score")
+            self.assertIsNone(ex["single_directive_rate"],
+                              "no directives were read, so there is no rate; "
+                              "a number here is a claim nothing measured")
+        finally:
+            srv.shutdown()
+
     def test_single_directive_adherence_is_reported(self):
         """A SKILL-plus-noise answer must not look like a clean one.
 
@@ -275,6 +327,12 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(ex_res["single_directive_rate"], 0.0,
                              "a 3-directive answer is not adherence to "
                              "'exactly ONE directive'")
+            # 0.0 must be a MEASURED zero: a value arrived at by dividing, not
+            # a "nothing measured" sentinel. An unmeasured branch returning
+            # -1.0, or a string, would satisfy a truthiness check and no one
+            # would notice. Pin the type, and pin the empty-case separately so
+            # the two are distinguishable by assertion, not by consequence.
+            self.assertIs(type(ex_res["single_directive_rate"]), float)
         finally:
             srv.shutdown()
 
