@@ -107,7 +107,19 @@ def score_exec(output):
 
 
 def score_replan(output):
-    """A replacement subtask: parses to an object carrying the subtask fields."""
+    """A replacement subtask: the fields a Subtask needs, and its directives
+    inside the same surface exec is held to.
+
+    The surface check is the point. This scorer once read only id/description/
+    criteria, so a replan carrying a directive of a kind the mod cannot dispatch
+    -- or one with params outside the kind's published list -- scored a clean
+    pass. That made replan's 25/25 say nothing about the thing replan exists to
+    produce, and a reader would have taken it as evidence the replans were
+    dispatchable.
+    """
+    surface, err = _load_surface()
+    if err:
+        return _unscorable(err)
     value, perr = parse_json(output)
     if perr:
         return Result(FAIL, perr)
@@ -123,7 +135,11 @@ def score_replan(output):
     missing = [f for f in ("id", "description", "criteria") if f not in body]
     if missing:
         return Result(FAIL, f"subtask missing {missing}")
-    return Result(PASS, "")
+    directives = _plan_directives(body)
+    problems = check_kind_surface(directives, surface)
+    if problems:
+        return Result(FAIL, "; ".join(problems), {"n": len(directives)})
+    return Result(PASS, "", {"n": len(directives)})
 
 
 def _plan_directives(subtask):
@@ -150,9 +166,14 @@ def score_plan(output):
 
     kind = value.get("kind")
     if kind in ("clarify", "refuse"):
-        # Correct-on-purpose only when the case is labelled so; the scorer's
-        # job is the surface, the caller supplies the label.
-        return Result(PASS, f"{kind} response", {"shape": kind})
+        # NOT a pass. A clarify/refuse may be the right answer, but only the
+        # case label can say so, and the scorer never sees the label. Counting
+        # it as a pass let any degenerate answer -- an empty plan, a refusal to
+        # plan at all -- score the same as a well-formed one, so plan's 25/25
+        # could not distinguish a model that planned from one that declined.
+        # The verdict is FAIL so it can never inflate a rate; run.py counts
+        # these separately and reports the count, which is the honest figure.
+        return Result(FAIL, f"{kind} instead of a plan", {"shape": kind})
 
     if "task" not in value or not isinstance(value.get("subtasks"), list):
         return Result(FAIL, "plan needs `task` and a `subtasks` list")

@@ -96,6 +96,11 @@ def run(cfg, cases_by_kind, log=print):
         # clean one, so without this the report cannot tell an answer that
         # obeyed "emit exactly ONE directive" from one that did not.
         directive_counts = defaultdict(int)
+        # Answers that were a clarify or a refuse instead of the thing asked
+        # for. These are neither silently passed nor merged into the fail
+        # count: a refusal is a different result from a malformed plan, and a
+        # report that lumps them together cannot say which the model did.
+        declined = defaultdict(int)
         t0 = time.time()
         for i, c in enumerate(cases, 1):
             text, err = ask(cfg, c.prompt_system, c.prompt_user)
@@ -107,6 +112,9 @@ def run(cfg, cases_by_kind, log=print):
                 n_dirs = (r.detail or {}).get("n")
                 if isinstance(n_dirs, int):
                     directive_counts[n_dirs] += 1
+                shape = (r.detail or {}).get("shape")
+                if shape in ("clarify", "refuse"):
+                    declined[shape] += 1
                 if verdict == scenum.FAIL:
                     fail_reasons[reason or "(no reason given)"] += 1
                     if len(examples) < 5:
@@ -141,6 +149,10 @@ def run(cfg, cases_by_kind, log=print):
             "era_drift_flag": drift,
             "fail_reasons": dict(sorted(fail_reasons.items(),
                                         key=lambda kv: (-kv[1], kv[0]))),
+            # Clarify/refuse counts, separate from fail and from pass. Present
+            # and empty when none occurred -- an absent key is indistinguishable
+            # from a report written by older code.
+            "declined": dict(sorted(declined.items())),
             # How many directives each answer carried. "1" is adherence to the
             # prompt's "exactly ONE directive"; anything above it is a model
             # that obeyed in kind but not in count, and would otherwise score

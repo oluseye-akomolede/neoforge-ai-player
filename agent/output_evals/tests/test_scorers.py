@@ -142,10 +142,22 @@ class PlanTests(unittest.TestCase):
         r = planner.score_plan(j(plan))
         self.assertTrue(r.ok, r.reason)
 
-    def test_clarify_is_a_shape_not_a_pass_on_quality(self):
+    def test_clarify_is_a_shape_not_a_pass(self):
+        """A clarify is a distinct outcome, not a pass.
+
+        This test once asserted `r.ok` -- a clarify scored PASS because the
+        scorer cannot know whether clarifying was warranted. That reasoning is
+        right about QUALITY and wrong about RATE: the verdict is what the rate
+        is computed from, so passing every clarify let a model that never
+        planned score the same as one that did, and plan's rate could not tell
+        them apart. The verdict is FAIL (it never inflates a rate) and the shape
+        is still carried in detail, which is how run.py counts it separately
+        from a malformed plan.
+        """
         r = planner.score_plan(j({"kind": "clarify", "reason": "which?"}))
-        self.assertTrue(r.ok)
-        self.assertEqual(r.detail.get("shape"), "clarify")
+        self.assertFalse(r.ok, "a clarify must not count toward the pass rate")
+        self.assertEqual(r.detail.get("shape"), "clarify",
+                         "the shape is still reported, so the count is visible")
 
     def test_missing_criteria_fails(self):
         plan = {"task": "t", "subtasks": [{"id": 1, "description": "d"}]}
@@ -181,6 +193,34 @@ class ReplanTests(unittest.TestCase):
         r = planner.score_replan(j({"id": 2, "criteria": "c"}))
         self.assertFalse(r.ok)
         self.assertIn("description", r.reason)
+
+    def test_undispatchable_directive_kind_fails(self):
+        """A replan's directives are held to the same surface as exec's.
+
+        Before this, the scorer read only id/description/criteria and never
+        looked at the directives -- so a replan carrying a kind the mod cannot
+        dispatch scored a clean pass, and replan's 25/25 said nothing about
+        whether the replans could actually be executed.
+        """
+        r = planner.score_replan(j({"id": 2, "description": "d", "criteria": "c",
+                                    "directives": [{"kind": "FROBNICATE"}]}))
+        self.assertFalse(r.ok, "an undispatchable kind must not pass on replan")
+        self.assertIn("FROBNICATE", r.reason)
+
+    def test_directive_params_outside_surface_fail(self):
+        """A known kind with params the surface does not publish also fails."""
+        r = planner.score_replan(j({"id": 2, "description": "d", "criteria": "c",
+                                    "directives": [{"kind": "GOTO",
+                                                    "bogus_param": 1}]}))
+        self.assertFalse(r.ok, "params outside the kind's surface must not pass")
+        self.assertIn("bogus_param", r.reason)
+
+    def test_replan_directive_count_is_reported(self):
+        r = planner.score_replan(j({"id": 2, "description": "d", "criteria": "c",
+                                    "directives": [{"kind": "GOTO",
+                                                    "x": 1, "y": 64, "z": 1}]}))
+        self.assertTrue(r.ok, r.reason)
+        self.assertEqual(r.detail.get("n"), 1)
 
 
 class KindSurfaceTests(unittest.TestCase):
