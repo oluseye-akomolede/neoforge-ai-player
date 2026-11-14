@@ -53,13 +53,29 @@ must be able to enable thinking deliberately while the fleet keeps it off.
   eval config
 - **AND** changing `AIBOT_LLM_THINK` does not change the runner's request body
 
+#### Scenario: An omitted key takes the default and says so
+
+- **WHEN** the generated eval config carries no `think` line
+- **THEN** the runner sends `think: false`
+- **AND** the report records that the value came from the default rather than
+  the file, the way `endpoint_from_env` already records endpoint provenance, so
+  a reader is not left to infer it from a comparison
+
+#### Scenario: A string cannot pass for a boolean
+
+- **WHEN** the config carries `think: "false"` (a YAML string, not a boolean)
+- **THEN** loading fails with a config error
+- **AND** the run does not proceed treating the truthy string as `think: true`
+
 #### Scenario: A think-on run is refused before it starts, not after every case
 
-- **WHEN** the runner is configured to think and the endpoint rejects a request
-  carrying `think`
+- **WHEN** the runner's resolved `think` is `true` and the endpoint rejects a
+  request carrying `think`
 - **THEN** the endpoint precheck fails and the run exits non-zero with no report
 - **AND** the failure is reported before the first case is scored, not as a run
   in which every case is unscorable
+- **AND** the probe fires on the resolved value being `true`, whether that value
+  came from the file or from the default
 
 ### Requirement: Thinking tokens do not consume the answer budget
 

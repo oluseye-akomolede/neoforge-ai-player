@@ -75,6 +75,14 @@ first case if that request errors.
   environment is not present in that pod. It is also the site that would measure
   `qwen3.8` in exactly the failing shape, so it has to be able to think on
   deliberately, independent of the fleet's setting.
+- That same generator is edited, because it is what *writes* the runner's config:
+  `evals/make-evals-configmap.sh:70-77` currently emits only endpoint, model,
+  timeout and concurrency. It must emit `think` too, or a think-on leg would
+  silently take a default and the report would look honest while measuring
+  think-off.
+- `evalconfig` type-checks `think` as a real boolean. The loader already checks
+  the other four keys' types; without the same check a YAML `think: "false"` is
+  a truthy string and the run thinks when the file says it does not.
 - No behaviour changes while `AIBOT_LLM_THINK` stays at its default `false` and
   the served model is not a thinking model: Ollama ignores `think` for models
   with no thinking capability.
