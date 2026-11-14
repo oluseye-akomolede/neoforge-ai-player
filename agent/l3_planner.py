@@ -22,7 +22,7 @@ import requests
 import api
 import trajectory_log
 from brain import ollama_lock
-from config import OLLAMA_URL
+from config import OLLAMA_URL, answer_text, think_field
 from plan_schema import Plan, PlanValidationError, Subtask, validate_plan_dict, validate_subtask_dict
 
 log = logging.getLogger("aibot.l3-planner")
@@ -410,6 +410,7 @@ def call_plan(model: str, bot_name: str, task: str,
         resp = requests.post(
             f"{OLLAMA_URL}/api/chat",
             json={
+                **think_field(),
                 "model": model,
                 "messages": [
                     {"role": "system", "content": sys_prompt},
@@ -422,7 +423,7 @@ def call_plan(model: str, bot_name: str, task: str,
             timeout=_OLLAMA_TIMEOUT,
         )
     resp.raise_for_status()
-    raw = _strip_codefence(resp.json()["message"]["content"])
+    raw = _strip_codefence(answer_text(resp.json()))
     created_at = datetime.datetime.utcnow().isoformat()
     try:
         data = json.loads(raw)
@@ -770,6 +771,7 @@ def partition_fleet(model: str, task: str, bots_info: str, bot_names: list) -> d
         resp = requests.post(
             f"{OLLAMA_URL}/api/chat",
             json={
+                **think_field(),
                 "model": model,
                 "messages": [
                     {"role": "system", "content": sys_prompt},
@@ -782,7 +784,7 @@ def partition_fleet(model: str, task: str, bots_info: str, bot_names: list) -> d
             timeout=_OLLAMA_TIMEOUT,
         )
     resp.raise_for_status()
-    out = json.loads(resp.json().get("message", {}).get("content", "{}"))
+    out = json.loads(answer_text(resp.json()) or "{}")
     return {k: str(v) for k, v in out.items() if k in bot_names}
 
 
@@ -819,6 +821,7 @@ def classify_message(model: str, bot_name: str, text: str) -> str:
             resp = requests.post(
                 f"{OLLAMA_URL}/api/chat",
                 json={
+                    **think_field(),
                     "model": model,
                     "messages": [
                         {"role": "system", "content": sys_prompt},
@@ -831,7 +834,7 @@ def classify_message(model: str, bot_name: str, text: str) -> str:
                 timeout=60,
             )
         resp.raise_for_status()
-        data = json.loads(_strip_codefence(resp.json()["message"]["content"]))
+        data = json.loads(_strip_codefence(answer_text(resp.json())))
         kind = str(data.get("kind", "")).strip().lower()
         if kind in ("chat", "task"):
             return kind
@@ -874,6 +877,7 @@ def converse(model: str, bot_name: str, persona: str, text: str,
         resp = requests.post(
             f"{OLLAMA_URL}/api/chat",
             json={
+                **think_field(),
                 "model": model,
                 "messages": messages,
                 "stream": False,
@@ -882,7 +886,7 @@ def converse(model: str, bot_name: str, persona: str, text: str,
             timeout=60,
         )
     resp.raise_for_status()
-    return (resp.json().get("message", {}).get("content") or "").strip()
+    return answer_text(resp.json()).strip()
 
 
 def call_exec(model: str, plan: Plan, subtask: Subtask,
@@ -905,6 +909,7 @@ def call_exec(model: str, plan: Plan, subtask: Subtask,
         resp = requests.post(
             f"{OLLAMA_URL}/api/chat",
             json={
+                **think_field(),
                 "model": model,
                 "messages": [
                     {"role": "system", "content": sys_prompt},
@@ -917,7 +922,7 @@ def call_exec(model: str, plan: Plan, subtask: Subtask,
             timeout=_OLLAMA_TIMEOUT,
         )
     resp.raise_for_status()
-    raw = _strip_codefence(resp.json()["message"]["content"])
+    raw = _strip_codefence(answer_text(resp.json()))
     plan_ref = getattr(plan, "created_at", None)
     try:
         data = json.loads(raw)
@@ -998,6 +1003,7 @@ def call_replan(model: str, plan: Plan, failed_subtask: Subtask) -> Subtask:
         resp = requests.post(
             f"{OLLAMA_URL}/api/chat",
             json={
+                **think_field(),
                 "model": model,
                 "messages": [
                     {"role": "system", "content": sys_prompt},
@@ -1010,7 +1016,7 @@ def call_replan(model: str, plan: Plan, failed_subtask: Subtask) -> Subtask:
             timeout=_OLLAMA_TIMEOUT,
         )
     resp.raise_for_status()
-    raw = _strip_codefence(resp.json()["message"]["content"])
+    raw = _strip_codefence(answer_text(resp.json()))
     plan_ref = getattr(plan, "created_at", None)
     sid = failed_subtask.id
     try:
@@ -1111,6 +1117,7 @@ def refine_skill(model: str, bot_name: str, spec: str, error: str) -> dict | Non
             resp = requests.post(
                 f"{OLLAMA_URL}/api/chat",
                 json={
+                    **think_field(),
                     "model": model,
                     "messages": [
                         {"role": "system", "content": sys_prompt},
@@ -1126,7 +1133,7 @@ def refine_skill(model: str, bot_name: str, spec: str, error: str) -> dict | Non
     except Exception as e:
         log.warning("[%s] refine_skill call failed: %s", bot_name, e)
         return None
-    raw = _strip_codefence(resp.json()["message"]["content"])
+    raw = _strip_codefence(answer_text(resp.json()))
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as e:

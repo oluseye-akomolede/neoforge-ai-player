@@ -110,3 +110,55 @@ class CredentialNameTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ThinkConfigTests(unittest.TestCase):
+    """`think` in the eval config: typed, defaulted, and provenance-recorded.
+
+    The failure this guards against is silent: a string "false" is truthy, so a
+    run configured not to think would think, and the report would look honest
+    while measuring the wrong thing.
+    """
+
+    def setUp(self):
+        self._paths = []
+
+    def tearDown(self):
+        for p in self._paths:
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+
+    def load(self, text):
+        p = write(text)
+        self._paths.append(p)
+        return evalconfig.load_config(p)
+
+    def test_omitted_key_defaults_false_and_records_default(self):
+        cfg = self.load("endpoint: http://x:11434\nmodel: m\n")
+        self.assertIs(cfg.think, False)
+        self.assertFalse(cfg.think_from_file,
+                         "provenance must say the value came from the default")
+
+    def test_file_value_records_file(self):
+        cfg = self.load("model: m\nthink: true\n")
+        self.assertIs(cfg.think, True)
+        self.assertTrue(cfg.think_from_file)
+
+    def test_quoted_string_is_refused(self):
+        # PyYAML safe_load gives str here, and bool("false") is True.
+        with self.assertRaises(evalconfig.ConfigError) as cm:
+            self.load('model: m\nthink: "false"\n')
+        self.assertIn("think", str(cm.exception).lower())
+
+    def test_integer_is_refused(self):
+        # safe_load gives int for think: 1; isinstance(x, bool) is the only
+        # check that rejects it, bool() would accept it.
+        with self.assertRaises(evalconfig.ConfigError):
+            self.load("model: m\nthink: 1\n")
+
+    def test_yaml_false_is_a_real_bool(self):
+        cfg = self.load("model: m\nthink: false\n")
+        self.assertIs(cfg.think, False)
+        self.assertTrue(cfg.think_from_file)

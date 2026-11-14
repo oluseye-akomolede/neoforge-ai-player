@@ -8,7 +8,7 @@ one at a time.
 
 import json
 import requests
-from config import OLLAMA_URL
+from config import OLLAMA_URL, answer_text, think_field
 import brain
 import openai_brain
 
@@ -125,6 +125,7 @@ def decompose(model, instruction, memory_context="", transmute_context="", inven
         resp = requests.post(
             f"{OLLAMA_URL}/api/chat",
             json={
+                **think_field(),
                 "model": model,
                 "messages": [
                     {"role": "system", "content": prompt},
@@ -140,7 +141,7 @@ def decompose(model, instruction, memory_context="", transmute_context="", inven
             timeout=60,
         )
     resp.raise_for_status()
-    content = resp.json()["message"]["content"]
+    content = answer_text(resp.json())
 
     try:
         parsed = json.loads(content)
@@ -282,6 +283,7 @@ def orchestrate(model, instruction, bot_profiles, memory_context="", transmute_c
         resp = requests.post(
             f"{OLLAMA_URL}/api/chat",
             json={
+                **think_field(),
                 "model": model,
                 "messages": [
                     {"role": "system", "content": prompt},
@@ -297,7 +299,7 @@ def orchestrate(model, instruction, bot_profiles, memory_context="", transmute_c
             timeout=60,
         )
     resp.raise_for_status()
-    content = resp.json()["message"]["content"]
+    content = answer_text(resp.json())
 
     try:
         parsed = json.loads(content)

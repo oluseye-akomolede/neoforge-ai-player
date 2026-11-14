@@ -18,7 +18,7 @@ import requests
 
 import api
 from brain import ollama_lock
-from config import MOD_API_URL, OLLAMA_URL
+from config import MOD_API_URL, OLLAMA_URL, answer_text, think_field
 from plan_schema import Subtask
 
 log = logging.getLogger("aibot.criteria")
@@ -286,6 +286,7 @@ def _strategy_l3_fallback(model: str, bot_name: str, subtask: Subtask,
             r = requests.post(
                 f"{OLLAMA_URL}/api/chat",
                 json={
+                    **think_field(),
                     "model": model,
                     "messages": [
                         {"role": "system", "content": prompt},
@@ -297,7 +298,7 @@ def _strategy_l3_fallback(model: str, bot_name: str, subtask: Subtask,
                 timeout=60,
             )
         r.raise_for_status()
-        raw = r.json()["message"]["content"].strip()
+        raw = answer_text(r.json()).strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
             if raw.rstrip().endswith("```"):

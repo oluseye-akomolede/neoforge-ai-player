@@ -121,6 +121,51 @@ DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "5000"))
 # test agent (minecraft-test ns) to exercise the new flow.
 USE_L3_PLAN_LAYER = os.getenv("USE_L3_PLAN_LAYER", "false").lower() in ("true", "1", "yes")
 
+# Whether the served model may spend tokens thinking before it answers.
+# Default off: a thinking model served with the small num_predict these call
+# sites use will spend the whole budget thinking and return empty content, which
+# parses as "the model had no opinion". Sent explicitly, never omitted -- see
+# openspec/changes/ollama-think-control. The value is a top-level field of the
+# /api/chat body, not a key inside `options`; a nested value is silently ignored.
+LLM_THINK = os.getenv("AIBOT_LLM_THINK", "false").lower() in ("true", "1", "yes")
+
+
+def think_field():
+    """The `think` entry for a /api/chat body. One source for every call site.
+
+    Returned as a dict so each site can splat it into the body it already
+    builds; no site supplies its own literal, so they cannot disagree.
+    """
+    return {"think": LLM_THINK}
+
+
+class TruncatedAnswer(RuntimeError):
+    """The model stopped at the token limit with nothing to parse.
+
+    Distinct from an empty answer: the model had a budget and spent it, so the
+    call failed rather than returning "no opinion". Callers let this propagate
+    -- a truncated call is a failed call, not an empty result.
+    """
+
+
+def answer_text(body):
+    """The answer text from an Ollama /api/chat response body.
+
+    Raises TruncatedAnswer when the content is empty AND the response says it
+    stopped for length. Without that check an empty string reaches a parser,
+    fails to parse, and reads as a model with nothing to say -- which is how a
+    thinking model on a small num_predict budget disappears silently.
+    """
+    msg = body.get("message") if isinstance(body, dict) else None
+    content = (msg or {}).get("content") or ""
+    done = body.get("done_reason") if isinstance(body, dict) else None
+    if not content.strip() and done == "length":
+        raise TruncatedAnswer(
+            "model hit the token limit before answering (done_reason=length, "
+            "eval_count=%s); this is a failed call, not an empty answer"
+            % (body.get("eval_count") if isinstance(body, dict) else None))
+    return content
+
 
 def load_profile():
     with open(PROFILE_PATH) as f:

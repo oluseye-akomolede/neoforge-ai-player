@@ -47,6 +47,12 @@ def ask(cfg, system, user):
         "model": cfg.model,
         "stream": False,
         "format": "json",
+        # Top level, not inside `options`: Ollama reads it there, and a nested
+        # value is silently ignored. From the eval config, not AIBOT_LLM_THINK:
+        # the Job packs output_evals standalone and has no agent config or
+        # environment. This is the site that measures a candidate model, so it
+        # must be able to think on deliberately while the fleet keeps it off.
+        "think": cfg.think,
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user}],
     }
@@ -144,7 +150,9 @@ def build_report(cfg, census, results, n_cases, run_params=None):
     return {
         "config": {"endpoint": cfg.endpoint, "model": cfg.model,
                    "config_path": cfg.path, "timeout": cfg.timeout,
-                   "endpoint_from_env": cfg.endpoint_from_env},
+                   "endpoint_from_env": cfg.endpoint_from_env,
+                   "think": cfg.think,
+                   "think_source": "file" if cfg.think_from_file else "default"},
         # Stated on the face of the report, not left to be inferred: what n was
         # run, how many cases that produced, and how big the set is. The lead
         # requires these three, and a shortfall is only meaningful against the
@@ -254,7 +262,10 @@ def main(argv=None):
     if args.dry_run:
         report = {"config": {"endpoint": cfg.endpoint, "model": cfg.model,
                              "config_path": cfg.path,
-                             "endpoint_from_env": cfg.endpoint_from_env},
+                             "endpoint_from_env": cfg.endpoint_from_env,
+                             "think": cfg.think,
+                             "think_source": ("file" if cfg.think_from_file
+                                              else "default")},
                   "run_parameters": run_params,
                   "corpus": corpus, "cases_per_kind": n_cases,
                   "results": {}, "dry_run": True,

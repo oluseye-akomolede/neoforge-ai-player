@@ -27,6 +27,7 @@ DEFAULTS = {
     "model": "qwen3-coder:30b",
     "timeout": 120,
     "concurrency": 1,
+    "think": False,
 }
 
 
@@ -43,6 +44,8 @@ class Config:
     path: str
     raw: dict
     endpoint_from_env: bool = False
+    think: bool = False
+    think_from_file: bool = False
 
     def describe(self) -> str:
         """What the report cites: the values actually read, and from where."""
@@ -89,9 +92,21 @@ def load_config(path):
         # The local model is shared with the live bots; more than one call at a
         # time slows the fleet down.
         raise ConfigError("config `concurrency` must be 1 (shared local model)")
+    # `think` must be a real boolean. PyYAML safe_load gives str for a quoted
+    # `think: "false"` -- a truthy string -- and bool("false") is True, so a
+    # plain bool() would think when the file says not to. Measured on
+    # PyYAML 6.0.1: safe_load('think: "false"') -> str, safe_load('think: 1')
+    # -> int. isinstance(x, bool) rejects both.
+    think_from_file = "think" in raw and raw["think"] is not None
+    if think_from_file and not isinstance(raw["think"], bool):
+        raise ConfigError(
+            "config `think` must be a boolean (true/false), got %s %r -- a "
+            "quoted string or a number would read as thinking on"
+            % (type(raw["think"]).__name__, raw["think"]))
     return Config(merged["endpoint"].rstrip("/"), merged["model"],
                   merged["timeout"], merged["concurrency"], path, raw,
-                  merged["endpoint_from_env"])
+                  merged["endpoint_from_env"], bool(merged["think"]),
+                  think_from_file)
 
 
 def check_endpoint(cfg):
@@ -115,12 +130,45 @@ def check_endpoint(cfg):
     names = {m.get("name") or m.get("model") for m in models if isinstance(m, dict)}
     base = cfg.model.split(":")[0]
     if cfg.model in names:
-        return True, f"{cfg.model} present ({len(names)} models on the endpoint)"
-    same_family = sorted(n for n in names if n and n.split(":")[0] == base)
-    if same_family:
-        return False, (f"{cfg.model} not present; endpoint has {same_family}"
-                       " -- tag drift, not a dead endpoint")
-    return False, f"{cfg.model} not on the endpoint ({sorted(n for n in names if n)})"
+        detail = f"{cfg.model} present ({len(names)} models on the endpoint)"
+    else:
+        same_family = sorted(n for n in names if n and n.split(":")[0] == base)
+        if same_family:
+            return False, (f"{cfg.model} not present; endpoint has {same_family}"
+                           " -- tag drift, not a dead endpoint")
+        return False, f"{cfg.model} not on the endpoint ({sorted(n for n in names if n)})"
+    # Presence is not shape. /api/tags proves the model is served; it says
+    # nothing about whether a request carrying `think` is accepted. A run that
+    # thinks would pass that gate and then fail every case -- a dead instrument
+    # printing a verdict. Fires on the RESOLVED value, so a default-supplied
+    # true is probed exactly like one read from the file.
+    if cfg.think:
+        ok, why = _probe_think(cfg)
+        if not ok:
+            return False, f"{detail}; think=true probe FAILED: {why}"
+        detail += "; think=true probe ok"
+    return True, detail
+
+
+def _probe_think(cfg):
+    """One minimal /api/chat carrying think=true. (ok, detail)."""
+    payload = {"model": cfg.model, "stream": False, "think": True,
+               "options": {"num_predict": 1},
+               "messages": [{"role": "user", "content": "ok"}]}
+    req = urllib.request.Request(
+        f"{cfg.endpoint}/api/chat",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=min(60, cfg.timeout)) as resp:
+            body = json.loads(resp.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        return False, f"endpoint answered {e.code} to a think request"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+    if not isinstance(body, dict) or "message" not in body:
+        return False, "think request answered without a message body"
+    return True, "accepted"
 
 
 def env_credential_names():
