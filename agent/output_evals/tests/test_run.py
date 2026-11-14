@@ -479,14 +479,17 @@ class ScorerSurfaceTests(unittest.TestCase):
         asserted below -- the import still works, and the precheck still fails.
         """
         from output_evals.scorers import planner
+        # Remove the surface modules unconditionally and do NOT restore
+        # whatever was there before: restoring a previously-imported object
+        # makes this test's outcome depend on what an earlier test left in
+        # sys.modules (reviewer finding T1). After the block the cache is
+        # reset and the real module is left to re-import lazily.
+        surface_keys = ("agent.action_binding", "action_binding")
+        for k in surface_keys:
+            sys.modules.pop(k, None)
         planner.reset_surface_cache()
-        hidden = {k: v for k, v in sys.modules.items()
-                  if k == "agent.action_binding" or k == "action_binding"}
-        for k in hidden:
-            del sys.modules[k]
         blocked = unittest.mock.patch.dict(sys.modules,
-                                            {"agent.action_binding": None,
-                                             "action_binding": None})
+                                            {k: None for k in surface_keys})
         try:
             with blocked:
                 planner.reset_surface_cache()
@@ -499,8 +502,9 @@ class ScorerSurfaceTests(unittest.TestCase):
             self.assertFalse(ok, "an unloadable surface must be refused")
             self.assertIn("surface", why)
         finally:
+            for k in surface_keys:
+                sys.modules.pop(k, None)
             planner.reset_surface_cache()
-            sys.modules.update(hidden)
 
     def test_a_registry_missing_a_kind_is_refused(self):
         """Importing is not enough: a registry that registers nothing measures
