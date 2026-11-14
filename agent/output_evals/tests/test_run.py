@@ -195,6 +195,70 @@ class RunnerTests(unittest.TestCase):
             self.assertTrue(ex["rate_withheld"], "a rate over 3 cases is withheld")
             self.assertEqual(len(seen), 3)
             self.assertEqual(seen[0]["model"], CURRENT)
+            # Every fail is counted by reason, so a reader can tell six shapes
+            # of wrong from one repeated six times. Present and empty when
+            # nothing failed -- an absent key would be indistinguishable from a
+            # report written by older code.
+            self.assertEqual(ex["fail_reasons"], {})
+        finally:
+            srv.shutdown()
+
+    def test_think_reaches_the_request_and_both_report_paths(self):
+        """think is sent on the wire and reported by a real run and a dry run.
+
+        The reviewer's finding: build_report and the dry-run path each list
+        config fields explicitly, so a field added to one and not the other
+        reports nothing precisely on the dry run the lead uses to check a
+        config before spending 75 cases.
+        """
+        seen = []
+
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                body = json.dumps({"models": [{"name": CURRENT}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self):  # noqa: N802
+                n = int(self.headers.get("Content-Length", 0))
+                seen.append(json.loads(self.rfile.read(n)))
+                body = json.dumps({"message": {"content": "{}"}}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        srv = HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            with open(self.cfg, "w") as f:
+                f.write("model: %s\nendpoint: http://127.0.0.1:%d\nthink: true\n"
+                        % (CURRENT, srv.server_port))
+            self._write([_record_call("c0", "exec"),
+                         {"type": "outcome", "call_id": "c0", "satisfied": True}])
+            rc = run.main(["--config", self.cfg, "--trajectory-dir", self.dir,
+                           "--out", self.out])
+            self.assertEqual(rc, 0)
+            self.assertIs(seen[0].get("think"), True,
+                          "think must be a real bool on the wire, not omitted")
+            with open(self.out) as f:
+                run_cfg = json.load(f)["config"]
+            self.assertIs(run_cfg["think"], True)
+            self.assertEqual(run_cfg["think_source"], "file")
+
+            dry = os.path.join(self.tmp.name, "dry.json")
+            rc = run.main(["--config", self.cfg, "--trajectory-dir", self.dir,
+                           "--out", dry, "--dry-run"])
+            self.assertEqual(rc, 0)
+            with open(dry) as f:
+                dry_cfg = json.load(f)["config"]
+            self.assertIs(dry_cfg["think"], True, "a dry run must report think too")
+            self.assertEqual(dry_cfg["think_source"], "file")
         finally:
             srv.shutdown()
 

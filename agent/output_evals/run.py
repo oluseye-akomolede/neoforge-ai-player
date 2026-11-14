@@ -85,6 +85,11 @@ def run(cfg, cases_by_kind, log=print):
         counted = defaultdict(int)
         by_era = defaultdict(lambda: defaultdict(int))
         examples = []
+        # Every fail is counted by reason, not just the first five shown. A
+        # rate alone cannot say whether six fails are six shapes of wrong or one
+        # repeated; the counts can, and they make a kind's passes (e.g. SKILL)
+        # visible instead of hidden behind an aggregate.
+        fail_reasons = defaultdict(int)
         t0 = time.time()
         for i, c in enumerate(cases, 1):
             text, err = ask(cfg, c.prompt_system, c.prompt_user)
@@ -93,10 +98,12 @@ def run(cfg, cases_by_kind, log=print):
             else:
                 r = scorer(text)
                 verdict, reason = r.verdict, r.reason
-                if verdict == scenum.FAIL and len(examples) < 5:
-                    examples.append({"call_id": c.call_id, "bot": c.bot,
-                                     "reason": reason,
-                                     "output_head": (text or "")[:300]})
+                if verdict == scenum.FAIL:
+                    fail_reasons[reason or "(no reason given)"] += 1
+                    if len(examples) < 5:
+                        examples.append({"call_id": c.call_id, "bot": c.bot,
+                                         "reason": reason,
+                                         "output_head": (text or "")[:300]})
             counted[verdict] += 1
             by_era[c.model][verdict] += 1
             by_era[c.model]["n"] += 1
@@ -123,6 +130,8 @@ def run(cfg, cases_by_kind, log=print):
             "rate_withheld": n < MIN_N_FOR_RATE,
             "by_era": era_rows,
             "era_drift_flag": drift,
+            "fail_reasons": dict(sorted(fail_reasons.items(),
+                                        key=lambda kv: (-kv[1], kv[0]))),
             "examples": examples,
             "seconds": round(time.time() - t0, 1),
         }

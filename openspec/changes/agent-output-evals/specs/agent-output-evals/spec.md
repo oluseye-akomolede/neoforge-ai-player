@@ -106,9 +106,30 @@ The directive surface an `exec` case is scored against MUST be the **mod's**
 executes: a directive the mod accepts is valid whether or not the agent's own
 list names it.
 
+A directive of kind `SKILL` MUST PASS when it names a non-empty skill id, and
+MUST FAIL when it does not. The model is explicitly asked for it — the EXEC
+prompt says "emit exactly ONE directive of kind SKILL" (`l3_planner.py:517`),
+its worked example is that shape (`l3_planner.py:534`), and the prompt calls a
+matching skill "always the better choice" — so a model-emitted SKILL is the
+preferred answer, not an off-surface kind. `plan_orchestrator.py:1056` executes
+one and `DirectiveType.java:33` declares it.
+
+This is a scorer exception, not a widening of `action_binding.BINDABLE_KINDS`:
+whether the binder can bind a kind is a different question from whether the
+model was asked for it, and the binder's own `SKILL`/`AREA_LOOT` gap is a
+separate finding.
+
+Each result MUST report its failures counted by reason, so a kind's passes are
+visible rather than hidden inside an aggregate rate.
+
 #### Scenario: A check exists
 - **WHEN** a case's kind has an automatic check
 - **THEN** it is scored by that check and the judge is not consulted
+
+#### Scenario: The model's SKILL answer is scored as the preferred answer
+- **WHEN** an `exec` case answers with `{"kind":"SKILL","target":"mine_and_smelt"}`
+- **THEN** the case PASSES, and the SKILL pass count appears in the result's detail
+- **AND** a SKILL with an absent, empty or non-string `target` FAILS
 
 #### Scenario: The judge is used
 - **WHEN** a case is judged

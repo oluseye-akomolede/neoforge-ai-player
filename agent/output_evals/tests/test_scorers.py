@@ -89,6 +89,50 @@ class ExecTests(unittest.TestCase):
                                                   "count": 3, "extra": {}}]}))
         self.assertTrue(r.ok, r.reason)
 
+    def test_skill_is_the_preferred_answer_not_an_off_surface_kind(self):
+        """The model is ASKED for SKILL, so passing it is correct scoring.
+
+        l3_planner.py:517 (EXEC prompt): "emit exactly ONE directive of kind
+        SKILL". Its worked example at :534 is this exact shape, and the prompt
+        calls a matching skill "always the better choice". plan_orchestrator.py
+        :1056 executes a model-emitted SKILL and mod DirectiveType.java:33
+        declares it. SKILL is absent from BINDABLE_KINDS on purpose -- whether
+        the binder accepts it is a separate question from whether the model was
+        right to say it, and this scorer answers the second.
+        """
+        r = planner.score_exec(j({"directives": [
+            {"kind": "SKILL", "target": "mine_and_smelt",
+             "extra": {"target": "minecraft:iron_ore", "count": "8"}}]}))
+        self.assertTrue(r.ok, r.reason)
+        self.assertEqual(r.detail.get("skill"), 1)
+
+    def test_skill_without_a_skill_id_fails(self):
+        """Accepting the kind must not mean accepting an empty one."""
+        for bad in ({"kind": "SKILL"}, {"kind": "SKILL", "target": ""},
+                    {"kind": "SKILL", "target": "   "},
+                    {"kind": "SKILL", "target": 7}):
+            with self.subTest(bad=bad):
+                r = planner.score_exec(j({"directives": [bad]}))
+                self.assertEqual(r.verdict, common.FAIL)
+                self.assertIn("skill id", r.reason)
+
+    def test_skill_does_not_excuse_a_bad_sibling(self):
+        """SKILL passing must not carry an off-surface kind along with it."""
+        r = planner.score_exec(j({"directives": [
+            {"kind": "SKILL", "target": "mine_and_smelt"},
+            {"kind": "TELEPORT_HOME"}]}))
+        self.assertEqual(r.verdict, common.FAIL)
+        self.assertIn("TELEPORT_HOME", r.reason)
+
+    def test_skill_passes_are_counted_in_the_detail(self):
+        """Passes are visible per kind, not hidden inside an aggregate rate."""
+        r = planner.score_exec(j({"directives": [
+            {"kind": "SKILL", "target": "mine_and_smelt"},
+            {"kind": "MINE", "count": 3}]}))
+        self.assertTrue(r.ok, r.reason)
+        self.assertEqual(r.detail.get("skill"), 1)
+        self.assertEqual(r.detail.get("n"), 2)
+
 
 class PlanTests(unittest.TestCase):
     def test_valid_plan_passes(self):

@@ -84,6 +84,14 @@ lead OKs step 2.
 - [ ] 2.5 Baseline run (blocked on L1: needs a read of the trajectory dir) against the live local model as a bounded k8s Job the
       lead runs (one call at a time). Post the baseline numbers to the parent
       row `qitem-20261112065806-631db84f03dba1d7`.
+- [x] 2.6 `score_exec` accepts a model-emitted `SKILL` naming a non-empty skill
+      id, and fails one that does not. The model is asked for it
+      (`l3_planner.py:517`, example `:534`), so failing it was a scorer bug:
+      tests cite `:517` and cover pass, empty/missing/non-string id, a bad
+      sibling directive, and the pass being visible in the detail. `BINDABLE_KINDS`
+      is deliberately unchanged -- the binder's own gap is a separate finding.
+- [x] 2.7 Every result carries `fail_reasons`, all fails counted by reason, so a
+      kind's passes are visible instead of hidden inside an aggregate rate.
 
 ## Inputs this change needs from the lead (no exec from the builder)
 

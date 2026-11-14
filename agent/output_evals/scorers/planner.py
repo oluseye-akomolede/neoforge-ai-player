@@ -45,8 +45,38 @@ def _unscorable(why):
     return Result(UNSCORABLE, why)
 
 
+# The model IS asked for SKILL: the EXEC prompt says "emit exactly ONE directive
+# of kind SKILL" (l3_planner.py:517) and its worked example is that shape (:534),
+# plan_orchestrator.py:1056 executes a model-emitted SKILL, and mod
+# DirectiveType.java:33 declares it. So a SKILL directive is the PREFERRED answer,
+# not an off-surface kind -- scoring it as a fail was a scorer bug.
+#
+# BINDABLE_KINDS is deliberately left alone here: whether the *action binder* can
+# bind SKILL/AREA_LOOT is a separate agent finding. This exception exists in the
+# scorer because the model is asked for it, which is a different question from
+# whether the binder accepts it.
+SKILL_KIND = "SKILL"
+
+
+def _check_skill_directive(item):
+    """A model-emitted SKILL must name a non-empty skill id.
+
+    The id rides in `target` (l3_planner.py:534). `extra` may carry the skill's
+    own slots, which are skill-defined rather than part of BINDABLE_KINDS'
+    parameter lists, so they are not checked against the surface.
+    """
+    target = item.get("target")
+    if not isinstance(target, str) or not target.strip():
+        return "SKILL has no skill id in `target`"
+    return None
+
+
 def score_exec(output):
-    """`{"directives":[{kind, ...}]}` -- non-empty, every kind allowed."""
+    """`{"directives":[{kind, ...}]}` -- non-empty, every kind allowed.
+
+    SKILL is allowed even though it is outside BINDABLE_KINDS: the model is
+    asked to prefer it (see SKILL_KIND above).
+    """
     surface, err = _load_surface()
     if err:
         return _unscorable(err)
@@ -60,10 +90,20 @@ def score_exec(output):
         return Result(FAIL, "no `directives` list")
     if not directives:
         return Result(FAIL, "`directives` is empty")
-    problems = check_kind_surface(directives, surface)
+    surface_going, skill_going = [], []
+    for item in directives:
+        if isinstance(item, dict) and str(item.get("kind", "")).upper() == SKILL_KIND:
+            skill_going.append(item)
+        else:
+            surface_going.append(item)
+    problems = check_kind_surface(surface_going, surface)
+    for i, item in enumerate(skill_going):
+        bad = _check_skill_directive(item)
+        if bad:
+            problems.append(f"SKILL item {i}: {bad}")
     if problems:
         return Result(FAIL, "; ".join(problems), {"n": len(directives)})
-    return Result(PASS, "", {"n": len(directives)})
+    return Result(PASS, "", {"n": len(directives), "skill": len(skill_going)})
 
 
 def score_replan(output):
