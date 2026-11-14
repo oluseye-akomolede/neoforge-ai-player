@@ -13,7 +13,8 @@ The three ways this can lie, and what stops each:
     `n`, and a rate is withheld below `min_n` rather than printed with a note
     nobody reads.
 
-Exit codes: 0 ok, 2 config/endpoint refused (no report written), 3 no cases.
+Exit codes: 0 ok, 2 config/endpoint refused (no report written), 3 no cases,
+9 the scorer surface did not load (no report written).
 """
 from __future__ import annotations
 
@@ -198,6 +199,41 @@ def build_report(cfg, census, results, n_cases, run_params=None):
     }
 
 
+def precheck_scorers():
+    """Prove the scorer surface loads, or say why not. (ok, why).
+
+    The Job packs `output_evals` standalone, but the scorers import from the
+    AGENT package (`action_binding`, for the directive surface). If that import
+    fails inside the Job, every case is scored `unscorable` and the run still
+    exits 0 -- an instrument that measured nothing, printing a verdict. That
+    happened at 18:38Z: 25/25 unscorable and a report that looked like a result.
+
+    So the surface is loaded here, before any report can be written, and the
+    caller exits 9 on failure. Checking the import is not enough on its own:
+    `SCORERS` is asserted non-empty and keyed by the kinds the run will score,
+    because a module that imports but registers nothing would pass an
+    import-only check and still measure nothing.
+    """
+    try:
+        from output_evals.scorers import planner as _p   # noqa: F401
+    except Exception as e:
+        return False, f"scorer surface failed to import: {type(e).__name__}: {e}"
+    missing = [k for k in extract.SCORABLE if k not in planner.SCORERS]
+    if missing:
+        return False, f"scorer registry is missing {missing} (has {sorted(planner.SCORERS)})"
+    # The decisive check, and the one an import-only version misses entirely:
+    # _load_surface() SWALLOWS the action_binding failure and caches it, so the
+    # module imports, SCORERS is fully populated, and every case then scores
+    # unscorable while the run exits 0. That is the 18:38Z shape exactly. The
+    # import succeeding proves nothing; the surface loading does.
+    surface, err = planner._load_surface()
+    if err:
+        return False, f"scorer surface did not load: {err}"
+    if not surface:
+        return False, "scorer surface loaded empty"
+    return True, "scorers load, register every kind, and resolve the action surface"
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", required=True)
@@ -215,6 +251,16 @@ def main(argv=None):
                     help=f"cases per kind (default {extract.MIN_PER_KIND}); lower it "
                          "when the case set must fit a 1MiB ConfigMap")
     args = ap.parse_args(argv)
+
+    # Before config, before any model call, before any report: an instrument
+    # that cannot load its scorers must not produce a verdict. Exit 9, distinct
+    # from 2 (config/endpoint) and 3 (no cases), so a Job failure names which.
+    ok, why = precheck_scorers()
+    if not ok:
+        print(f"refused: {why}", file=sys.stderr)
+        print("refused: not scoring with a scorer surface that did not load",
+              file=sys.stderr)
+        return 9
 
     try:
         cfg = evalconfig.load_config(args.config)

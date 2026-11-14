@@ -107,6 +107,14 @@ spec:
               value: "2"
             - name: OPENBLAS_NUM_THREADS
               value: "2"
+            # The scorers import `action_binding` from the agent package, which
+            # is NOT among the files the code ConfigMap ships (it is only the
+            # output_evals tree). Without this the import fails inside the Job
+            # and every case comes back unscorable while the run still exits 0:
+            # an instrument that reads nothing, reporting a verdict. The agent
+            # image carries the package at this path.
+            - name: PYTHONPATH
+              value: "/opt/aibot-agent"
           volumeMounts:
             - name: cases
               mountPath: /opt/cases

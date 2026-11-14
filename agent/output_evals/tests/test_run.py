@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import unittest.mock
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -434,6 +435,80 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(ex["pass"], 0)
         finally:
             srv.shutdown()
+
+
+class ScorerSurfaceTests(unittest.TestCase):
+    """A surface that will not load must refuse, not report.
+
+    The 18:38Z run: the Job packed output_evals standalone, the scorers could
+    not import `action_binding` from the agent package, and every case came back
+    unscorable -- while the run exited 0 and wrote a report. A reader cannot
+    tell that from a model that genuinely answers nothing.
+    """
+
+    def test_the_real_surface_loads(self):
+        ok, why = run.precheck_scorers()
+        self.assertTrue(ok, why)
+
+    def test_a_failed_import_is_refused_and_writes_no_report(self):
+        """Exit 9, no report -- proven on main(), not on the helper alone."""
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            cfg = os.path.join(tmp.name, "config.yaml")
+            with open(cfg, "w") as f:
+                f.write("model: %s\nendpoint: http://127.0.0.1:9\n" % CURRENT)
+            out = os.path.join(tmp.name, "report.json")
+            boom = ImportError("No module named 'action_binding'")
+            with unittest.mock.patch.object(run, "precheck_scorers",
+                                            return_value=(False, str(boom))):
+                rc = run.main(["--config", cfg, "--out", out])
+            self.assertEqual(rc, 9, "a dead scorer surface is its own exit code")
+            self.assertFalse(os.path.exists(out),
+                             "a report from a surface that did not load is the "
+                             "18:38Z defect")
+        finally:
+            tmp.cleanup()
+
+    def test_an_unloadable_action_surface_is_refused(self):
+        """The 18:38Z shape, reproduced for real rather than mocked.
+
+        planner._load_surface() swallows the action_binding failure and caches
+        it, so the MODULE imports cleanly and SCORERS stays populated: an
+        import-only check returns True here and the run then scores every case
+        unscorable. Only reading the surface's own error catches it. Both are
+        asserted below -- the import still works, and the precheck still fails.
+        """
+        from output_evals.scorers import planner
+        planner.reset_surface_cache()
+        hidden = {k: v for k, v in sys.modules.items()
+                  if k == "agent.action_binding" or k == "action_binding"}
+        for k in hidden:
+            del sys.modules[k]
+        blocked = unittest.mock.patch.dict(sys.modules,
+                                            {"agent.action_binding": None,
+                                             "action_binding": None})
+        try:
+            with blocked:
+                planner.reset_surface_cache()
+                ok, why = run.precheck_scorers()
+            # The module itself imported fine, which is why an import-only
+            # precheck would have passed and the defect survived.
+            self.assertIn("output_evals.scorers.planner", sys.modules,
+                          "the MODULE still imports -- that is the whole trap")
+            self.assertTrue(planner.SCORERS, "SCORERS is populated regardless")
+            self.assertFalse(ok, "an unloadable surface must be refused")
+            self.assertIn("surface", why)
+        finally:
+            planner.reset_surface_cache()
+            sys.modules.update(hidden)
+
+    def test_a_registry_missing_a_kind_is_refused(self):
+        """Importing is not enough: a registry that registers nothing measures
+        nothing, and an import-only check would pass it."""
+        with unittest.mock.patch.dict(run.planner.SCORERS, clear=True):
+            ok, why = run.precheck_scorers()
+        self.assertFalse(ok)
+        self.assertIn("missing", why)
 
 
 class DriftTests(unittest.TestCase):
