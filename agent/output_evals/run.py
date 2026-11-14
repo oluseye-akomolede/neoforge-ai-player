@@ -211,7 +211,7 @@ def build_report(cfg, census, results, n_cases, run_params=None):
     }
 
 
-def precheck_scorers():
+def precheck_scorers(planner_module=None):
     """Prove the scorer surface loads, or say why not. (ok, why).
 
     The Job packs `output_evals` standalone, but the scorers import from the
@@ -225,11 +225,21 @@ def precheck_scorers():
     `SCORERS` is asserted non-empty and keyed by the kinds the run will score,
     because a module that imports but registers nothing would pass an
     import-only check and still measure nothing.
+
+    `planner_module` is injectable so the test can supply a stub whose surface
+    fails to load, instead of blocking imports in `sys.modules`. Manipulating
+    global import state made this test's outcome depend on how the module was
+    first imported (discover `-s` vs `-t .`): the blocked names are not the
+    only route to `action_binding`, so a real import could succeed inside a
+    block that set them to None. Injection removes that from the test.
     """
-    try:
-        from output_evals.scorers import planner as _p   # noqa: F401
-    except Exception as e:
-        return False, f"scorer surface failed to import: {type(e).__name__}: {e}"
+    if planner_module is not None:
+        planner = planner_module
+    else:
+        try:
+            from output_evals.scorers import planner
+        except Exception as e:
+            return False, f"scorer surface failed to import: {type(e).__name__}: {e}"
     missing = [k for k in extract.SCORABLE if k not in planner.SCORERS]
     if missing:
         return False, f"scorer registry is missing {missing} (has {sorted(planner.SCORERS)})"

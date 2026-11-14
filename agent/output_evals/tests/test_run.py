@@ -479,32 +479,27 @@ class ScorerSurfaceTests(unittest.TestCase):
         asserted below -- the import still works, and the precheck still fails.
         """
         from output_evals.scorers import planner
-        # Remove the surface modules unconditionally and do NOT restore
-        # whatever was there before: restoring a previously-imported object
-        # makes this test's outcome depend on what an earlier test left in
-        # sys.modules (reviewer finding T1). After the block the cache is
-        # reset and the real module is left to re-import lazily.
-        surface_keys = ("agent.action_binding", "action_binding")
-        for k in surface_keys:
-            sys.modules.pop(k, None)
-        planner.reset_surface_cache()
-        blocked = unittest.mock.patch.dict(sys.modules,
-                                            {k: None for k in surface_keys})
-        try:
-            with blocked:
-                planner.reset_surface_cache()
-                ok, why = run.precheck_scorers()
-            # The module itself imported fine, which is why an import-only
-            # precheck would have passed and the defect survived.
-            self.assertIn("output_evals.scorers.planner", sys.modules,
-                          "the MODULE still imports -- that is the whole trap")
-            self.assertTrue(planner.SCORERS, "SCORERS is populated regardless")
-            self.assertFalse(ok, "an unloadable surface must be refused")
-            self.assertIn("surface", why)
-        finally:
-            for k in surface_keys:
-                sys.modules.pop(k, None)
-            planner.reset_surface_cache()
+
+        # Inject a planner whose surface reports the swallowed failure. The
+        # test no longer touches sys.modules at all (reviewer T1, option b):
+        # under `discover -t .` a real import could still succeed inside a
+        # block that set the surface names to None, so blocking imports was
+        # never the property under test -- the property is "precheck refuses
+        # when the surface reports an error", and a stub states it directly.
+        class _SwallowedFailure:
+            SCORERS = dict(planner.SCORERS)   # populated: the whole trap
+
+            @staticmethod
+            def _load_surface():
+                return None, "action_binding did not import"
+
+        ok, why = run.precheck_scorers(planner_module=_SwallowedFailure)
+        # The registry is populated and the module is importable, which is
+        # exactly why an import-only precheck passed while the defect survived.
+        self.assertTrue(_SwallowedFailure.SCORERS,
+                        "SCORERS is populated regardless -- that is the trap")
+        self.assertFalse(ok, "an unloadable surface must be refused")
+        self.assertIn("surface", why)
 
     def test_a_registry_missing_a_kind_is_refused(self):
         """Importing is not enough: a registry that registers nothing measures
