@@ -31,6 +31,22 @@ if HERE not in sys.path:
 import config  # noqa: E402
 
 
+def agent_modules():
+    """Every agent module the guards must cover: agent/*.py, tests excluded.
+
+    Discovered, not listed. A hardcoded four-name tuple made the guards' real
+    reach "these four files" while their docstrings promised "every call site":
+    a new module posting to /api/chat with no think_field() passed green.
+    test_the_guard_reaches_a_new_module pins this so a silent narrowing of the
+    glob (say, a future subpackage) fails rather than quietly weakening both
+    guards at once.
+    """
+    skip = {"test_llm_think.py", "conftest.py"}
+    return sorted(n for n in os.listdir(HERE)
+                  if n.endswith(".py") and not n.startswith("test_")
+                  and n not in skip)
+
+
 def chat_sites():
     """Every function in the agent that posts to an Ollama /api/chat URL.
 
@@ -38,7 +54,7 @@ def chat_sites():
     from a list, so a site added later is counted without anyone updating this.
     """
     found = []
-    for name in ("brain.py", "criteria_eval.py", "planner.py", "l3_planner.py"):
+    for name in agent_modules():
         path = os.path.join(HERE, name)
         with open(path, encoding="utf-8") as f:
             tree = ast.parse(f.read(), path)
@@ -91,7 +107,26 @@ def body_of_call(module, fn, **kwargs):
     return captured.get("json")
 
 
-class ThinkFieldTests(unittest.TestCase):
+class GuardReachTests(unittest.TestCase):
+    def test_the_guards_walk_discovered_modules_not_a_list(self):
+        """The two AST guards must cover agent/*.py, not four named files.
+
+        Both guards once iterated ("brain.py", "criteria_eval.py", "planner.py",
+        "l3_planner.py"). A reviewer planted a /api/chat site with no
+        think_field() in agent/agent.py and the guard passed GREEN -- so the
+        docstring's "a new site fails it" was false. This pins the discovery:
+        the set must include every non-test module, so a new file is covered on
+        the day it lands and a narrowed glob fails here instead of quietly
+        shrinking both guards.
+        """
+        mods = agent_modules()
+        for expected in ("brain.py", "criteria_eval.py", "planner.py",
+                         "l3_planner.py", "agent.py"):
+            self.assertIn(expected, mods,
+                          "guard does not reach %s: %s" % (expected, mods))
+        self.assertFalse([m for m in mods if m.startswith("test_")],
+                         "guards must not parse test modules: %s" % mods)
+
     def test_every_chat_site_is_counted(self):
         sites = chat_sites()
         self.assertGreaterEqual(
@@ -108,7 +143,7 @@ class ThinkFieldTests(unittest.TestCase):
         """
         import ast
         missing = []
-        for name in ("brain.py", "criteria_eval.py", "planner.py", "l3_planner.py"):
+        for name in agent_modules():
             path = os.path.join(HERE, name)
             with open(path, encoding="utf-8") as f:
                 tree = ast.parse(f.read(), path)
@@ -136,9 +171,23 @@ class ThinkFieldTests(unittest.TestCase):
         self.assertIsInstance(field["think"], bool)
 
     def test_default_is_off(self):
-        self.assertIs(config.LLM_THINK, False,
-                      "thinking must default off: on a thinking model with a "
-                      "small num_predict it returns empty content")
+        """With AIBOT_LLM_THINK unset, thinking must be off.
+
+        config reads the variable at import, so a developer who has it exported
+        would see this fail for a reason that is not about the default. Patch
+        the environment AND reload, so the assertion is about the code's
+        default rather than about whoever is running the suite.
+        """
+        import importlib
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AIBOT_LLM_THINK", None)
+            importlib.reload(config)
+            try:
+                self.assertIs(config.LLM_THINK, False,
+                              "thinking must default off: on a thinking model "
+                              "with a small num_predict it returns empty content")
+            finally:
+                importlib.reload(config)
 
     def test_brain_request_carries_think(self):
         import brain
@@ -147,42 +196,6 @@ class ThinkFieldTests(unittest.TestCase):
         self.assertIn("think", body, "the body sent to /api/chat has no think")
         self.assertIsInstance(body["think"], bool)
         self.assertNotIn("options_think", body)
-
-
-class TruncatedAnswerTests(unittest.TestCase):
-    def test_empty_content_with_done_reason_length_raises(self):
-        with self.assertRaises(config.TruncatedAnswer):
-            config.answer_text({"message": {"content": ""},
-                                "done_reason": "length", "eval_count": 24})
-
-    def test_whitespace_only_with_length_also_raises(self):
-        # A thinking model can stop having emitted only whitespace.
-        with self.assertRaises(config.TruncatedAnswer):
-            config.answer_text({"message": {"content": "  \n "},
-                                "done_reason": "length"})
-
-    def test_empty_content_without_length_is_still_an_empty_answer(self):
-        # The distinction must not collapse: a model that genuinely said nothing
-        # is not a truncation, and turning that into an error would hide it.
-        self.assertEqual(
-            config.answer_text({"message": {"content": ""},
-                                "done_reason": "stop"}), "")
-
-    def test_normal_answer_is_returned_unchanged(self):
-        self.assertEqual(
-            config.answer_text({"message": {"content": '{"a": 1}'},
-                                "done_reason": "length"}),
-            '{"a": 1}',
-            "a truncated but non-empty answer is still usable -- only an empty "
-            "one is a failed call")
-
-    def test_missing_body_does_not_raise(self):
-        self.assertEqual(config.answer_text({}), "")
-        self.assertEqual(config.answer_text(None), "")
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class TruncatedAnswerTests(unittest.TestCase):
@@ -222,11 +235,14 @@ class TruncatedAnswerTests(unittest.TestCase):
         reads the body some other way and bypasses the truncation predicate.
 
         The post and the read are on different lines, so the check is the
-        enclosing function, not the call node.
+        enclosing function, not the call node. The *trigger* is still a real
+        post call node: matching the string anywhere in the function would flag
+        helpers that only mention /api/chat in a docstring (config.think_field
+        did exactly that when this guard's glob widened to every module).
         """
         import ast
         missing = []
-        for name in ("brain.py", "criteria_eval.py", "planner.py", "l3_planner.py"):
+        for name in agent_modules():
             path = os.path.join(HERE, name)
             with open(path, encoding="utf-8") as f:
                 src = f.read()
@@ -234,12 +250,21 @@ class TruncatedAnswerTests(unittest.TestCase):
             for fn in ast.walk(tree):
                 if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
-                dump = ast.dump(fn)
-                if "api/chat" not in dump:
+                posts = [n for n in ast.walk(fn)
+                         if isinstance(n, ast.Call)
+                         and "api/chat" in ast.dump(n)
+                         and getattr(n.func, "attr",
+                                     getattr(n.func, "id", "?"))
+                         in ("post", "urlopen", "Request")]
+                if not posts:
                     continue
-                if "answer_text" not in dump:
+                if "answer_text" not in ast.dump(fn):
                     missing.append((name, fn.name, fn.lineno))
         self.assertEqual(
             missing, [],
             "these functions post to /api/chat but never call answer_text(): %s"
             % missing)
+
+
+if __name__ == "__main__":
+    unittest.main()
