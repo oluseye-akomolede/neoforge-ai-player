@@ -203,6 +203,81 @@ class RunnerTests(unittest.TestCase):
         finally:
             srv.shutdown()
 
+    def test_single_directive_adherence_is_reported(self):
+        """A SKILL-plus-noise answer must not look like a clean one.
+
+        The prompt asks for exactly ONE directive. {"directives":[SKILL,
+        GOTO...]} passes the scorer, and detail carries n=6 -- but nothing in
+        the report read detail, so it scored identically to a clean answer and
+        the baseline could not show how often the model disobeyed in count.
+        """
+        seen = []
+        reply = {"directives": [
+            {"kind": "SKILL", "target": "mine_and_smelt"},
+            {"kind": "GOTO", "target": "chest"},
+            {"kind": "GOTO", "target": "chest"},
+        ]}
+
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                body = json.dumps({"models": [{"name": CURRENT}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self):  # noqa: N802
+                n = int(self.headers.get("Content-Length", 0))
+                seen.append(json.loads(self.rfile.read(n)))
+                body = json.dumps({"message": {"content": json.dumps(reply)}}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        srv = HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            with open(self.cfg, "w") as f:
+                f.write("model: %s\nendpoint: http://127.0.0.1:%d\n"
+                        % (CURRENT, srv.server_port))
+            import output_evals.extract as ex
+            self._write([
+                {"type": "call", "call_id": "k1", "phase": "exec", "bot": "scout",
+                 "model": CURRENT, "prompt_system": "s", "prompt_user": "u",
+                 "response_raw": json.dumps(reply),
+                 "world_state_summary": "w"},
+                {"type": "outcome", "call_id": "k1", "satisfied": True},
+            ])
+            d = os.path.join(self.dir, "cases")
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "exec.jsonl"), "w") as f:
+                f.write(json.dumps({"kind": "exec", "call_id": "k1", "bot": "scout",
+                                    "model": CURRENT, "prompt_system": "s",
+                                    "prompt_user": "u", "world_state_summary": "w",
+                                    "recorded_output": json.dumps(reply),
+                                    "label": "", "label_source": ""}) + "\n")
+            rc = run.main(["--config", self.cfg, "--cases-in", d,
+                           "--out", self.out])
+            self.assertEqual(rc, 0)
+            with open(self.out) as f:
+                ex_res = json.load(f)["results"]["exec"]
+            self.assertEqual(ex_res["n"], 1)
+            self.assertEqual(ex_res["pass"], 1, "a noisy SKILL still passes")
+            # The point: the report says the answer carried 3 directives and
+            # that it was not a single-directive answer.
+            self.assertEqual(ex_res["directives_per_answer"], {"3": 1},
+                             "the report must record how many directives the "
+                             "model actually emitted")
+            self.assertEqual(ex_res["single_directive_rate"], 0.0,
+                             "a 3-directive answer is not adherence to "
+                             "'exactly ONE directive'")
+        finally:
+            srv.shutdown()
+
     def test_think_reaches_the_request_and_both_report_paths(self):
         """think is sent on the wire and reported by a real run and a dry run.
 

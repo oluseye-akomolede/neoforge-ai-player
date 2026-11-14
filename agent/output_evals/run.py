@@ -90,6 +90,11 @@ def run(cfg, cases_by_kind, log=print):
         # repeated; the counts can, and they make a kind's passes (e.g. SKILL)
         # visible instead of hidden behind an aggregate.
         fail_reasons = defaultdict(int)
+        # Directive counts by adherence, on every result and not only failures.
+        # A SKILL answer with five extra directives scores identically to a
+        # clean one, so without this the report cannot tell an answer that
+        # obeyed "emit exactly ONE directive" from one that did not.
+        directive_counts = defaultdict(int)
         t0 = time.time()
         for i, c in enumerate(cases, 1):
             text, err = ask(cfg, c.prompt_system, c.prompt_user)
@@ -98,6 +103,9 @@ def run(cfg, cases_by_kind, log=print):
             else:
                 r = scorer(text)
                 verdict, reason = r.verdict, r.reason
+                n_dirs = (r.detail or {}).get("n")
+                if isinstance(n_dirs, int):
+                    directive_counts[n_dirs] += 1
                 if verdict == scenum.FAIL:
                     fail_reasons[reason or "(no reason given)"] += 1
                     if len(examples) < 5:
@@ -132,6 +140,14 @@ def run(cfg, cases_by_kind, log=print):
             "era_drift_flag": drift,
             "fail_reasons": dict(sorted(fail_reasons.items(),
                                         key=lambda kv: (-kv[1], kv[0]))),
+            # How many directives each answer carried. "1" is adherence to the
+            # prompt's "exactly ONE directive"; anything above it is a model
+            # that obeyed in kind but not in count, and would otherwise score
+            # identically to a clean answer.
+            "directives_per_answer": dict(sorted(directive_counts.items())),
+            "single_directive_rate": (
+                directive_counts.get(1, 0) / sum(directive_counts.values())
+                if directive_counts else None),
             "examples": examples,
             "seconds": round(time.time() - t0, 1),
         }
