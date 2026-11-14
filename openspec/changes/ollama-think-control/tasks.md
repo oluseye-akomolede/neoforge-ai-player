@@ -6,39 +6,39 @@ control thinking at all.
 
 ## 1. Agent: one setting, sent everywhere
 
-- [ ] 1.1 Add `AIBOT_LLM_THINK` to `agent/config.py`, default `false`, parsed
+- [x] 1.1 Add `AIBOT_LLM_THINK` to `agent/config.py`, default `false`, parsed
       with the file's existing bool-env idiom.
-- [ ] 1.2 Put the value on every `/api/chat` request body in `agent/brain.py`,
+- [x] 1.2 Put the value on every `/api/chat` request body in `agent/brain.py`,
       `agent/criteria_eval.py`, `agent/planner.py` and `agent/l3_planner.py` as
       a top-level `think`.
-- [ ] 1.3 Make the setting the only source: no call site may pass its own
+- [x] 1.3 Make the setting the only source: no call site may pass its own
       literal. Prefer one small helper over thirteen copies of the key.
-- [ ] 1.4 Test: enumerate the agent's `/api/chat` request bodies (patch
+- [x] 1.4 Test: enumerate the agent's `/api/chat` request bodies (patch
       `requests.post`, assert on each body) and fail if any lacks a top-level
       boolean `think`. The test must fail against today's code.
-- [ ] 1.5 Eval runner, separately: `agent/output_evals/run.py:54` is the 14th
+- [x] 1.5 Eval runner, separately: `agent/output_evals/run.py:54` is the 14th
       `/api/chat` site and takes its own `think` key from `evalconfig`, not
       `AIBOT_LLM_THINK` — the Job packs `output_evals` standalone and has no
       agent config or environment. Send it top-level on that request.
-- [ ] 1.6 Test: the eval runner's request body carries `think` from its own key,
+- [x] 1.6 Test: the eval runner's request body carries `think` from its own key,
       and does not consult `AIBOT_LLM_THINK`.
-- [ ] 1.7 `evalconfig.check_endpoint` gains a `think`-on probe: when the
+- [x] 1.7 `evalconfig.check_endpoint` gains a `think`-on probe: when the
       **resolved** `think` is `true` (from the file or the default), send one
       minimal `/api/chat` request carrying `think` and refuse the run (non-zero,
       no report) if it errors. `/api/tags` alone proves the model is present,
       not that the shape is accepted. The probe keys on the resolved value being
       true, not on a key being present in the file.
-- [ ] 1.8 `evals/make-evals-configmap.sh` emits `think:` beside endpoint/model,
+- [x] 1.8 `evals/make-evals-configmap.sh` emits `think:` beside endpoint/model,
       from an env var, so the yardstick records it instead of leaving the runner
       to a default it never states.
-- [ ] 1.9 `evalconfig`: add a typed `think: False` to `DEFAULTS` and
+- [x] 1.9 `evalconfig`: add a typed `think: False` to `DEFAULTS` and
       **type-check it** like the other keys. Without the check a YAML
       `think: "false"` is a truthy string and the run thinks when the file says
       it does not — a silent wrong answer, which is the failure this change
       exists to prevent. Accept only a real bool (or the YAML booleans), and
       record whether the value came from the file or the default, the way
       `endpoint_from_env` records endpoint provenance.
-- [ ] 1.10 Test: a config with no `think` line runs with `false` and the report
+- [x] 1.10 Test: a config with no `think` line runs with `false` and the report
       says "default"; a config with `think: "false"` as a string is REFUSED; a
       config with `think: true` fires the endpoint probe.
 
