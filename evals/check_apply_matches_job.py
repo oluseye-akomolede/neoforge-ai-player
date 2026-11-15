@@ -61,6 +61,37 @@ def actionable_commands(text):
     return out
 
 
+def ordered_ops(cmds, defaults=None):
+    """(verb, resolved-name) for every kubectl create/apply/delete configmap.
+
+    A delete and a create name their ConfigMaps differently in the script: the
+    delete lists several in one command, a create names one. Everything is
+    expanded through `defaults` so the two are comparable by name rather than
+    by token position, which is what makes G1 (one-of-three deleted) visible.
+    """
+    defaults = defaults or {}
+
+    def expand(name):
+        m = re.fullmatch(r"\$\{?([A-Z_]+)\}?", name)
+        return defaults.get(m.group(1), name) if m else name
+
+    ops = []
+    for cmd in cmds:
+        m = re.search(
+            r"kubectl\s+(create|apply|delete)\s+configmap\s+(.*?)(?:\s+-n\s|\s+--|$)",
+            cmd,
+        )
+        if not m:
+            continue
+        verb, names = m.group(1), m.group(2)
+        for tok in names.split():
+            tok = tok.strip("'\"")
+            if not tok or tok.startswith("-"):
+                continue
+            ops.append((verb, expand(tok)))
+    return ops
+
+
 def printed_creates(text):
     """ConfigMap names the script tells the operator to `kubectl create`.
 
@@ -73,9 +104,29 @@ def printed_creates(text):
     return names
 
 
+def name_defaults(script):
+    """The literal each $NAME-like ConfigMap variable resolves to.
+
+    Declarations are shell parameter expansion: NAME=${NAME:-evals-scout-cases}
+    or a plain literal. Take the default arm; a literal is its own default.
+    REBUILD_NAME's default is itself an expansion of NAME, so resolve twice.
+    """
+    raw = dict(re.findall(r'^(NAME|REBUILD_NAME|CODE_NAME)=(.*)$', script, re.M))
+    defaults = {}
+    for key, val in raw.items():
+        val = val.strip().strip('"')
+        m = re.fullmatch(r"\$\{%s:-(.*)\}" % key, val)
+        defaults[key] = m.group(1) if m else val
+    for key, val in list(defaults.items()):
+        defaults[key] = re.sub(r"\$\{?([A-Z_]+)\}?",
+                               lambda m: defaults.get(m.group(1), m.group(0)), val)
+    return defaults
+
+
 def main():
     job = (HERE / "job-evals.yaml").read_text()
     script = (HERE / "make-evals-configmap.sh").read_text()
+    defaults = name_defaults(script)
 
     # A second, kubectl-gated branch is how the last drift happened: it created
     # a different shape than the branch we can run here, so no local check could
@@ -119,37 +170,40 @@ def main():
               "delete-then-create.")
         return 1
 
-    # `apply` merges: keys absent from the new manifest survive. The split left
-    # plan.jsonl/replan.jsonl inside the exec ConfigMap that way. If anything
-    # applies rather than creates, a delete must be present in the commands
-    # themselves -- a comment saying to delete is not a delete.
-    applies = [c for c in kubectl if " apply " in f" {c} "]
-    deletes = [c for c in kubectl if "delete configmap" in c]
-    creates = [c for c in kubectl if "create configmap" in c]
-    if (applies or creates) and not deletes:
-        print("FAIL: the script creates/applies ConfigMaps but never deletes "
-              "them (checked executable commands only).")
-        print("`kubectl apply` is a merge and leaves stale keys in place -- the "
-              "11-14 unsplit map kept plan.jsonl/replan.jsonl in the exec "
-              "ConfigMap this way. Use delete-then-create.")
+    # `apply` merges and `create` lacks --ignore-not-found: keys absent from the
+    # new manifest survive a merge, and a create over an existing map fails with
+    # AlreadyExists. So every ConfigMap that is written to must first be deleted,
+    # BY NAME, and the delete must come BEFORE the write.
+    #
+    # Checking that a delete merely EXISTS is not enough -- the reviewer showed a
+    # delete of only $NAME passing while $REBUILD_NAME and $CODE_NAME kept their
+    # stale keys (G1), and the delete moved after the creates passing while every
+    # create would then fail AlreadyExists or delete what it just made (G2).
+    # That is F7 one level down: verify the sequence, not the presence of verbs.
+    ops = ordered_ops(kubectl, defaults)
+    delete_names = {n for verb, n in ops if verb == "delete"}
+    write_names = {n for verb, n in ops if verb in ("create", "apply")}
+
+    undeleted = sorted(write_names - delete_names)
+    if undeleted:
+        print(f"FAIL: these ConfigMaps are created but never deleted: "
+              f"{', '.join(undeleted)}")
+        print("A create over an existing map fails AlreadyExists; an apply "
+              "merges and leaves stale keys. Delete each by name first.")
+        return 1
+
+    first_write = next((i for i, (v, _) in enumerate(ops)
+                        if v in ("create", "apply")), None)
+    last_delete = max((i for i, (v, _) in enumerate(ops) if v == "delete"),
+                      default=None)
+    if first_write is not None and last_delete is not None and last_delete > first_write:
+        print("FAIL: a `kubectl delete configmap` appears AFTER a create/apply.")
+        print("Order must be delete-then-create: deleting after the create "
+              "removes the map that was just made, and on a re-run the create "
+              "fails AlreadyExists before it.")
         return 1
 
     mounted = job_mounts(job)
-    # The script prints shell variables ($NAME, $REBUILD_NAME, $CODE_NAME).
-    # Resolve them to the literal defaults declared at the top of the script,
-    # since that is what the lead will get when they run it unmodified.
-    # Declarations are shell parameter expansion: NAME=${NAME:-evals-scout-cases}
-    # or a literal. Take the default arm; a literal is its own default.
-    raw = dict(re.findall(r'^(NAME|REBUILD_NAME|CODE_NAME)=(.*)$', script, re.M))
-    defaults = {}
-    for key, val in raw.items():
-        val = val.strip().strip('"')
-        m = re.fullmatch(r"\$\{%s:-(.*)\}" % key, val)
-        defaults[key] = m.group(1) if m else val
-    # REBUILD_NAME's default is itself an expansion of NAME.
-    for key, val in list(defaults.items()):
-        defaults[key] = re.sub(r"\$\{?([A-Z_]+)\}?",
-                               lambda m: defaults.get(m.group(1), m.group(0)), val)
     creates = {defaults.get(n, n) for n in printed_creates(script)}
 
     if not mounted:
