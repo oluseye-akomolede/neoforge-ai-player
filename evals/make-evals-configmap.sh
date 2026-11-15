@@ -11,12 +11,11 @@
 set -euo pipefail
 
 CORPUS=${CORPUS:-$HOME/minecraft-evals-corpus}
-# 19, not 30: with --rebuild-from-source the case set carries BOTH the
-# recorded prompt and the rebuilt one, which roughly doubles it. Measured over
-# the 11-14 corpus, N=19 is 991052 B and N=20 is 1042935 B, so 20 fits today
-# with under 6 KB of slack -- too little to survive a case gaining a sentence.
-# 19 keeps ~57 KB of headroom under the 1MiB ConfigMap cap.
-N=${N:-14}
+# 25, matching the 11-14 baseline the before/after report is signed against.
+# Affordable only because the set ships as TWO ConfigMaps: at N=25 all three
+# kinds in one map are 1312167 B encoded (over the 1MiB cap) but split they
+# are 845323 B (exec) and 466844 B (plan+replan).
+N=${N:-25}
 OUT=${OUT:-$(mktemp -d)}
 NAMESPACE=${NAMESPACE:-ci}
 NAME=${NAME:-evals-scout-cases}
@@ -41,25 +40,34 @@ python3 agent/output_evals/run.py \
 echo "case counts:"
 wc -l "$OUT"/cases/*.jsonl
 
-BYTES=$(cat "$OUT"/cases/*.jsonl | wc -c)
-# The 1MiB cap is on the ConfigMap's encoded DATA, and kubectl base64-encodes
-# every value: 4/3 the raw bytes, plus a newline per 76-char chunk. Measuring
-# the raw bytes undercounts by a third -- at N=25 the raw set was 1.23 MB so
-# the old check passed it, while the ConfigMap was 1.32 MB and the apply would
-# have been rejected on controlplane. Measured the way the API server counts.
-ENCODED=$(python3 - "$OUT/cases" <<'EOF'
-import base64, glob, os, sys
-total = sum(len(base64.encodebytes(open(f, "rb").read()))
-            for f in glob.glob(os.path.join(sys.argv[1], "*")))
-print(total)
+# Two ConfigMaps: exec on its own, plan+replan on theirs.
+#
+# The cap is per ConfigMap, on the base64-encoded DATA -- 4/3 the raw bytes
+# plus a newline per 76-char chunk. At N=25 all three kinds together are
+# 1312167 B encoded and the apply would be rejected on controlplane after
+# this script printed success; split, exec is 845323 B and plan+replan are
+# 466844 B, both under. Exec is the larger half only because its recorded
+# prompts are longer -- the rebuild never touches those cases, so keeping them
+# here bought nothing but budget.
+check_cm() {   # check_cm <label> <files...>
+  local label=$1; shift
+  local enc raw
+  raw=$(cat "$@" | wc -c)
+  enc=$(python3 - "$@" <<'EOF'
+import base64, sys
+print(sum(len(base64.encodebytes(open(f, "rb").read())) for f in sys.argv[1:]))
 EOF
 )
-echo "case-set bytes: $BYTES raw, $ENCODED encoded (cap 1048576)"
-if [ "$ENCODED" -gt 1048576 ]; then
-  echo "REFUSED: encoded case set is $ENCODED B, over the 1MiB ConfigMap limit." >&2
-  echo "Lower N (currently $N) and re-run: N=14 fits, N=15 leaves under 10KB." >&2
-  exit 1
-fi
+  echo "  $label: $raw raw, $enc encoded"
+  if [ "$enc" -gt 1048576 ]; then
+    echo "REFUSED: $label is $enc B encoded, over the 1MiB ConfigMap limit." >&2
+    echo "Lower N (currently $N) and re-run." >&2
+    exit 1
+  fi
+}
+echo "case-set sizes (cap 1048576 each):"
+check_cm "$NAME (exec)"             "$OUT/cases/exec.jsonl"
+check_cm "$NAME-rebuild (plan+replan)" "$OUT/cases/plan.jsonl" "$OUT/cases/replan.jsonl"
 
 # Code ConfigMap. A ConfigMap flattens paths to single keys, so a nested
 # package cannot be mounted as a directory of directories. Ship one tar key and
@@ -134,9 +142,10 @@ else
   # controlplane). The case set and code tar are complete and verified against
   # the size cap; only the manifest wrap is left, and it is one command there.
   echo "kubectl not found here (expected; it runs on controlplane)."
-  echo "artifacts ready under $OUT (cases $BYTES B, code.tar $(wc -c <"$OUT/code.tar") B)."
+  echo "artifacts ready under $OUT (code.tar $(wc -c <"$OUT/code.tar") B)."
   echo "Build and apply both ConfigMaps on controlplane:"
   echo "  scp -r $OUT/cases $OUT/code.tar controlplane:/tmp/evals-artifacts/"
-  echo "  ssh controlplane 'kubectl create configmap $NAME -n $NAMESPACE --from-file=/tmp/evals-artifacts/cases --dry-run=client -o yaml | kubectl apply -f -'"
+  echo "  ssh controlplane 'kubectl create configmap $NAME -n $NAMESPACE --from-file=exec.jsonl=/tmp/evals-artifacts/cases/exec.jsonl --dry-run=client -o yaml | kubectl apply -f -'"
+  echo "  ssh controlplane 'kubectl create configmap $NAME-rebuild -n $NAMESPACE --from-file=plan.jsonl=/tmp/evals-artifacts/cases/plan.jsonl --from-file=replan.jsonl=/tmp/evals-artifacts/cases/replan.jsonl --dry-run=client -o yaml | kubectl apply -f -'"
   echo "  ssh controlplane 'kubectl create configmap $CODE_NAME -n $NAMESPACE --from-file=/tmp/evals-artifacts/code.tar --dry-run=client -o yaml | kubectl apply -f -'"
 fi

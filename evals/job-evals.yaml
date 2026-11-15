@@ -116,7 +116,10 @@ spec:
               value: "/opt/aibot-agent"
           volumeMounts:
             - name: cases
-              mountPath: /opt/cases
+              mountPath: /opt/cases/exec
+              readOnly: true
+            - name: cases-rebuild
+              mountPath: /opt/cases/rebuild
               readOnly: true
             - name: code
               mountPath: /opt/evals
@@ -124,9 +127,28 @@ spec:
             - name: tmp
               mountPath: /tmp
       volumes:
+        # Two ConfigMaps, one directory. The 1MiB limit is per ConfigMap, and
+        # at N=25 the three kinds together are 1312167 B encoded -- over it --
+        # while exec alone is 845323 B and plan+replan are 466844 B. Splitting
+        # by kind is not about the rebuild: exec cases carry the largest
+        # recorded prompts and the rebuild never touches them, so keeping them
+        # in the same ConfigMap spent 27% of the budget on cases that cannot
+        # be unscorable. Both keys project into /opt/cases by filename, which
+        # is the flat *.jsonl layout read_cases_dir expects.
         - name: cases
           configMap:
             name: evals-scout-cases
+            items:
+              - key: exec.jsonl
+                path: exec.jsonl
+        - name: cases-rebuild
+          configMap:
+            name: evals-scout-cases-rebuild
+            items:
+              - key: plan.jsonl
+                path: plan.jsonl
+              - key: replan.jsonl
+                path: replan.jsonl
         - name: code-tar
           configMap:
             name: evals-code

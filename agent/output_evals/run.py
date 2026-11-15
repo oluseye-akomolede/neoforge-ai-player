@@ -332,6 +332,29 @@ def main(argv=None):
             return 4
         corpus = {"source": "case-set", "cases_dir": args.cases_in}
         tally = {}
+        # Rebuild HERE, in the Job, from the l3_planner this code ConfigMap
+        # carries. The case set is the same artifact for the before and after
+        # legs; only the code ConfigMap changes, which is what makes the two
+        # runs comparable. `sysprompt.rebuild` returns the case untouched for
+        # kinds it does not own, so exec is unaffected.
+        if args.rebuild_from_source:
+            import l3_planner  # noqa: E402 - from the code ConfigMap, not the image
+            print(json.dumps({"l3_planner": getattr(l3_planner, "__file__", "?")},
+                             indent=2))
+            skills = sysprompt.skills_from_env() or None
+            counts = defaultdict(int)
+            for kind, cases_in_kind in by_kind.items():
+                for c in cases_in_kind:
+                    try:
+                        sysprompt.rebuild(c, l3_planner, skills=skills)
+                        key = "rebuilt"
+                    except sysprompt.Unscorable as e:
+                        c.prompt_differs, c.prompt_diff = None, f"unscorable: {e}"
+                        key = "unscorable"
+                    counts[(kind, key)] += 1
+            print(json.dumps({"rebuild_in_job": {f"{k}|{v}": n
+                                                 for (k, v), n in counts.items()}},
+                             indent=2))
     else:
         directory = extract.trajectory_dir(args.trajectory_dir)
         records, bad = extract.read_records(directory)
@@ -351,33 +374,29 @@ def main(argv=None):
             picked, t = extract.take_era_first(pool, current, n=per_kind)
             by_kind[kind] = picked
             tally[kind] = t
-    # The rebuild leg. Done BEFORE write_cases so the case file the Job reads
-    # carries the rebuilt prompt and the comparison; done before any model call
-    # so a case that cannot be rebuilt is marked, not discovered at scoring time.
+    # The rebuild happens in the JOB, not here.
+    #
+    # The case ConfigMap is the before/after pair's SHARED input: both legs
+    # read the same cases and differ only in the code ConfigMap, which is what
+    # makes the comparison a controlled one. So extract time puts each case's
+    # recorded prompt into `recorded_prompt_system` (the rebuild's input) and
+    # leaves `prompt_system` empty for the Job to fill. Rendering the prompt
+    # here instead would bake one commit's l3_planner into the shared artifact
+    # and the "before" leg would silently run against "after" text.
     rebuild = None
-    if args.rebuild_from_source:
-        import l3_planner  # noqa: E402 - the agent's own module, shipped here on purpose
-        # None, not "", when no file is supplied: an empty string would
-        # override the catalog recovered from each record and rebuild the
-        # prompt with no skills at all -- a prompt the model was never shown.
-        skills = sysprompt.skills_from_env() or None
-        per_kind_rebuild = {}
+    # Extract time only. With --cases-in the set is ALREADY the shared
+    # artifact, and the rebuild above has just filled `prompt_system` from this
+    # code ConfigMap. Deferring here as well would move the rebuilt text back
+    # into `recorded_prompt_system` and blank `prompt_system`, so the Job would
+    # rebuild the cases and then send "" to the model: a whole run of empty
+    # prompts, reported as scored.
+    if args.rebuild_from_source and not args.cases_in:
         for kind, picked in by_kind.items():
-            counts = defaultdict(int)
             for c in picked:
-                try:
-                    sysprompt.rebuild(c, l3_planner, skills=skills)
-                except sysprompt.Unscorable as e:
-                    c.prompt_differs, c.prompt_diff = None, f"unscorable: {e}"
-                key = (c.prompt_diff or "").split(":")[0] or "not-run"
-                counts[key] += 1
-            per_kind_rebuild[kind] = dict(counts)
-        # `skills` is None unless a file was supplied; when it is None each
-        # case's catalog comes from its own recorded prompt. Reporting that as
-        # "empty" would describe a different prompt from the one rebuilt.
-        rebuild = {"skills_section": "supplied" if skills is not None else "from-record",
-                   "by_kind": per_kind_rebuild}
-        print(json.dumps({"rebuild_from_source": rebuild}, indent=2))
+                if c.kind in ("plan", "replan") and c.prompt_system:
+                    c.recorded_prompt_system = c.prompt_system
+                    c.prompt_system = ""
+        rebuild = {"applied": "deferred-to-job"}
 
     case_sizes = {}
     if args.cases_out:

@@ -8,6 +8,7 @@ the result to itself, which would pass even if run.py never used it.
 import json
 import pathlib
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -215,3 +216,69 @@ class RebuildIsOptIn(unittest.TestCase):
         runmod.run(_cfg(), {"plan": [case]}, log=lambda *_: None)
         self.assertEqual(case.prompt_system, before)
         self.assertEqual(case.recorded_prompt_system, "")
+
+
+class TheJobRebuildsFromItsOwnCodeConfigMap(unittest.TestCase):
+    """The lead's condition: both legs share ONE case ConfigMap.
+
+    So the case set must not contain a rendered prompt -- if it did, the
+    "before" leg would replay the "after" leg's text and the comparison would
+    be of the code ConfigMap against itself. The rebuild has to happen inside
+    the Job. These drive main(), which is the path the Job actually runs.
+    """
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        (self.tmp / "cases" / "rebuild").mkdir(parents=True)
+        (self.tmp / "cfg.yaml").write_text("endpoint: http://unused\nmodel: m\n"
+                                           "timeout: 1\n", encoding="utf-8")
+        # A case as the case ConfigMap would carry it: the recorded prompt is
+        # present as the rebuild's INPUT, and prompt_system is empty.
+        row = plan_case().__dict__.copy()
+        row["recorded_prompt_system"] = RECORDED_PLAN_PROMPT.format(bot="scout")
+        row["prompt_system"] = ""
+        (self.tmp / "cases" / "rebuild" / "plan.jsonl").write_text(
+            json.dumps(row) + "\n", encoding="utf-8")
+
+    def _main(self, argv):
+        # main() loads the config from disk and checks the endpoint; both are
+        # replaced so the test drives the CASES path, not the network.
+        with mock.patch.object(runmod, "ask", return_value=('{"ok":1}', None)) as sent, \
+             mock.patch.object(runmod.evalconfig, "load_config", return_value=_cfg()), \
+             mock.patch.object(runmod.evalconfig, "check_endpoint",
+                        return_value=(True, "stubbed")):
+            with mock.patch.object(sys, "argv", ["run.py"] + argv):
+                rc = runmod.main()
+        return rc, sent
+
+    def test_an_empty_prompt_in_the_case_set_is_rebuilt_from_the_imported_module(self):
+        # NOT --dry-run: dry-run returns before run(), so it makes no model
+        # calls and there is no `ask` invocation to inspect. The endpoint is
+        # stubbed in _main, so the real scoring path runs with no network.
+        rc, sent = self._main([
+            "--config", str(self.tmp / "cfg.yaml"),
+            "--cases-in", str(self.tmp / "cases"),
+            "--rebuild-from-source",
+            "--out", str(self.tmp / "r.json"),
+        ])
+        self.assertEqual(rc, 0)
+        system = sent.call_args[0][1]
+        self.assertIn(norm("If no prerequisite path can deliver the stated goal"),
+                      norm(system))
+
+    def test_without_the_flag_the_case_is_not_asked_at_all(self):
+        """Opt-in: a flag-built case set scored without the flag must not
+        quietly send an empty system prompt.
+
+        The case's prompt is empty until the rebuild fills it, so scoring it
+        unrebuilt would measure the model against nothing and record a verdict.
+        What actually happens is the case is skipped, which is the safe
+        failure; this pins it so a later change cannot turn the skip into a
+        silent empty-prompt call.
+        """
+        rc, sent = self._main([
+            "--config", str(self.tmp / "cfg.yaml"),
+            "--cases-in", str(self.tmp / "cases"),
+            "--dry-run", "--out", str(self.tmp / "r.json"),
+        ])
+        self.assertIsNone(sent.call_args)

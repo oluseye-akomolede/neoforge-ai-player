@@ -397,8 +397,13 @@ def read_cases_dir(directory):
     d = pathlib.Path(directory)
     if not d.is_dir():
         raise FileNotFoundError(f"cases directory not found: {d}")
+    # `rglob`, not `glob`: the case set ships as two ConfigMaps (the 1MiB cap
+    # is per ConfigMap and the three kinds together exceed it at N=25), each
+    # projected into its own subdirectory. Reading only the top level would
+    # score whichever kinds landed in the first and silently ignore the rest.
+    # A missing kind stays a non-error, as documented above.
     by_kind = {}
-    for path in sorted(d.glob("*.jsonl")):
+    for path in sorted(d.rglob("*.jsonl")):
         cases = []
         with open(path, encoding="utf-8") as f:
             for line in f:

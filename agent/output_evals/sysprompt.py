@@ -120,11 +120,18 @@ def rebuild(case, planner, skills=None):
     `recorded_prompt_system` keeps the original, so the case file sent to the
     Job carries both and the report can compare them without the corpus.
     """
-    recorded = case.prompt_system or ""
+    # The INPUT is whichever field holds the recorded prompt. A case set built
+    # without `--rebuild-from-source` carries it in `prompt_system`; one built
+    # WITH it parks it in `recorded_prompt_system` and leaves `prompt_system`
+    # empty, precisely so the Job -- not the extract -- decides the text. Read
+    # `prompt_system` unconditionally and a deferred set rebuilds every case
+    # from "" and marks it unscorable: the Job would score nothing and say so
+    # only in a per-kind count.
+    recorded = (case.prompt_system or case.recorded_prompt_system or "")
     if case.kind == "plan":
-        case.prompt_system = _rebuild_plan(case, planner, skills)
+        case.prompt_system = _rebuild_plan(case, planner, skills, recorded)
     elif case.kind == "replan":
-        case.prompt_system = _rebuild_replan(case, planner)
+        case.prompt_system = _rebuild_replan(case, planner, recorded)
     else:
         # exec has no system prompt of this shape; nothing to rebuild.
         return case
@@ -157,7 +164,7 @@ def dimensions_from_prompt(text):
     return ids or None
 
 
-def _rebuild_plan(case, planner, skills):
+def _rebuild_plan(case, planner, skills, recorded=None):
     if not (case.bot or "").strip():
         raise Unscorable("plan: no bot in the record, so no persona")
     if not (case.prompt_user or "").strip():
@@ -165,11 +172,12 @@ def _rebuild_plan(case, planner, skills):
     # The model saw the server's real dimension list, and the recorded prompt
     # is where it survives. Checked before formatting: an empty list would be
     # a prompt section the product never sends.
-    dims = dimensions_from_prompt(case.prompt_system)
+    recorded = case.prompt_system if recorded is None else recorded
+    dims = dimensions_from_prompt(recorded)
     if not dims:
         raise Unscorable("plan: no dimension list in the recorded prompt")
     if skills is None:
-        skills = skills_from_prompt(case.prompt_system)
+        skills = skills_from_prompt(recorded)
         if skills is None:
             raise Unscorable("plan: no skills section in the recorded prompt")
     return planner._PLAN_SYSTEM_PROMPT.format(
@@ -180,7 +188,7 @@ def _rebuild_plan(case, planner, skills):
     )
 
 
-def _rebuild_replan(case, planner):
+def _rebuild_replan(case, planner, recorded=None):
     """Rebuild from the subtask the model was ACTUALLY shown.
 
     Not from the plan the case scored: the replan prompt embeds the failed
@@ -207,8 +215,8 @@ def _rebuild_replan(case, planner):
     plan = getattr(case, "recorded_plan", None) or {}
     subtask = getattr(case, "recorded_subtask", None) or {}
     if not plan or not subtask:
-        plan, subtask = _from_recorded_prompt(case, need_plan=not plan,
-                                              need_subtask=not subtask)
+        plan, subtask = _from_recorded_prompt(
+            case, need_plan=not plan, need_subtask=not subtask, recorded=recorded)
     if not isinstance(plan, dict) or not isinstance(subtask, dict):
         raise Unscorable("replan: recorded plan/subtask are not objects")
     if "id" not in subtask:
@@ -282,12 +290,16 @@ def _embedded(text, head):
     return parsed if isinstance(parsed, dict) else None
 
 
-def _from_recorded_prompt(case, need_plan, need_subtask):
+def _from_recorded_prompt(case, need_plan, need_subtask, recorded=None):
     """Recover the plan and/or the failed subtask from the recorded prompt.
 
     Raises Unscorable naming what is missing and where the case came from.
     """
-    text = case.prompt_system or ""
+    # Same two-field rule as rebuild(): a deferred case set leaves
+    # `prompt_system` empty and parks the recorded prompt in
+    # `recorded_prompt_system`.
+    text = recorded if recorded is not None else (case.prompt_system or "")
+    text = text or ""
     plan = _embedded(text, _PLAN_HEAD) if need_plan else {}
     subtask = _embedded(text, _SUBTASK_HEAD) if need_subtask else {}
     if not plan or not subtask:
