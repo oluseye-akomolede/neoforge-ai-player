@@ -16,38 +16,15 @@ def _norm(text):
 
 
 class PlanPromptDeclineRules(unittest.TestCase):
-    def test_transient_state_is_planned_around(self):
-        text = _norm(_PLAN_SYSTEM_PROMPT)
-        self.assertIn("precondition that does not hold YET", text)
-        self.assertIn("empty inventory", text)
-        self.assertIn("plan the prerequisite steps", text)
+    """The plan prompt's decline rules are unchanged in this rev.
 
-    def test_planning_around_is_not_substitution(self):
-        """The distinction the requirement turns on.
-
-        'Plan around an empty inventory' must mean fetch-then-deposit, not
-        'find a nearby goal'. Without this the narrowed decline predicate
-        licenses exactly the substitution spec.md:506 forbids.
-        """
-        text = _norm(_PLAN_SYSTEM_PROMPT)
-        self.assertIn("adding prerequisite steps that still deliver the exact "
-                      "goal asked for", text)
-        self.assertIn("never swapping in a nearby goal", text)
-        self.assertIn("If no prerequisite path can deliver the stated goal, "
-                      "decline", text)
-
-    def test_no_prerequisite_path_means_decline(self):
-        """The rule must not become 'never refuse'.
-
-        A world fact still refuses; the escape is only for states that can be
-        changed. Pin the whole clause, not the phrase "you MUST decline": that
-        phrase already exists at l3_planner.py:363 in the substitution
-        paragraph, so asserting on it alone leaves this sentence deletable
-        with every test still green (reviewer, 494854c).
-        """
-        text = _norm(_PLAN_SYSTEM_PROMPT)
-        self.assertIn("If no prerequisite path can deliver the stated goal, "
-                      "decline rather than substituting.", text)
+    The decline-precision rules from 5ee0406 are NOT here: the 11-15 eval run
+    showed them turning bot state into world facts (plan 15 -> 12), so they
+    were pulled back out to be reworked separately. What ships here is the
+    replan fix alone, so the plan prompt is byte-identical to 9e656b3 and the
+    only prompt that changed is the replan one. The remaining tests below pin
+    the pre-existing clauses so the revert cannot quietly lose them either.
+    """
 
     def test_correct_refusal_examples_survive(self):
         text = _norm(_PLAN_SYSTEM_PROMPT)
@@ -59,10 +36,20 @@ class PlanPromptDeclineRules(unittest.TestCase):
         self.assertIn("go get some stuff", text)
         self.assertIn('"kind": "clarify"', text)
 
-    def test_speech_is_not_a_directive(self):
+    def test_substitution_is_still_forbidden(self):
         text = _norm(_PLAN_SYSTEM_PROMPT)
-        self.assertIn("The bot can speak to the player", text)
-        self.assertIn("NOT proof the bot cannot report an outcome", text)
+        self.assertIn("a plausible substitution is still a lie", text)
+
+    def test_the_reworked_rules_are_absent_from_this_rev(self):
+        """Guards the split itself.
+
+        If the plan rules creep back in without the rework that the 11-15 run
+        showed is needed, this rev stops being 'replan alone' and becomes the
+        regressing combination again.
+        """
+        text = _norm(_PLAN_SYSTEM_PROMPT)
+        self.assertNotIn("Bot state is ALWAYS a precondition", text)
+        self.assertNotIn("precondition that does not hold YET", text)
 
 
 class ReplanPromptContract(unittest.TestCase):

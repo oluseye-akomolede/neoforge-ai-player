@@ -73,7 +73,7 @@ class RebuiltTextIsWhatGetsSent(unittest.TestCase):
             skills="  - mine: Dig a block.  [params: x:int]",
         )
         self.assertEqual(norm(system), norm(expected))
-        self.assertIn(norm("If no prerequisite path can deliver the stated goal"),
+        self.assertIn(norm("a plausible substitution is still a lie"),
                       norm(system))
 
     def test_the_rebuilt_text_is_the_CURRENT_prompt_not_a_frozen_one(self):
@@ -311,7 +311,7 @@ class TheJobRebuildsFromItsOwnCodeConfigMap(unittest.TestCase):
         ])
         self.assertEqual(rc, 0)
         system = sent.call_args[0][1]
-        self.assertIn(norm("If no prerequisite path can deliver the stated goal"),
+        self.assertIn(norm("a plausible substitution is still a lie"),
                       norm(system))
 
     def test_without_the_flag_the_run_fails_closed(self):
