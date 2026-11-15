@@ -138,23 +138,17 @@ echo "  $(find "$OUT/code" -name '*.py' | wc -l) python files, $(du -sb "$OUT/co
 ( cd "$OUT/code" && tar cf "$OUT/code.tar" output_evals )
 echo "  code.tar $(wc -c <"$OUT/code.tar") B"
 
-if command -v kubectl >/dev/null 2>&1; then
-  kubectl create configmap "$NAME" \
-    --namespace "$NAMESPACE" \
-    --from-file="$OUT/cases" \
-    --dry-run=client -o yaml >"$OUT/$NAME.yaml"
-  echo "wrote $OUT/$NAME.yaml"
-  echo "apply on controlplane:"
-  echo "  scp $OUT/$NAME.yaml controlplane:/tmp/ && ssh controlplane 'kubectl apply -f /tmp/$NAME.yaml'"
-else
-  # kubectl is not installed on this VM by design (kubectl runs on
-  # controlplane). The case set and code tar are complete and verified against
-  # the size cap; only the manifest wrap is left, and it is one command there.
-  echo "kubectl not found here (expected; it runs on controlplane)."
-  echo "artifacts ready under $OUT (code.tar $(wc -c <"$OUT/code.tar") B)."
-  echo "Build and apply both ConfigMaps on controlplane:"
-  echo "  scp -r $OUT/cases $OUT/code.tar controlplane:/tmp/evals-artifacts/"
-  echo "  ssh controlplane 'kubectl create configmap $NAME -n $NAMESPACE --from-file=exec.jsonl=/tmp/evals-artifacts/cases/exec.jsonl --dry-run=client -o yaml | kubectl apply -f -'"
-  echo "  ssh controlplane 'kubectl create configmap $REBUILD_NAME -n $NAMESPACE --from-file=plan.jsonl=/tmp/evals-artifacts/cases/plan.jsonl --from-file=replan.jsonl=/tmp/evals-artifacts/cases/replan.jsonl --dry-run=client -o yaml | kubectl apply -f -'"
-  echo "  ssh controlplane 'kubectl create configmap $CODE_NAME -n $NAMESPACE --from-file=/tmp/evals-artifacts/code.tar --dry-run=client -o yaml | kubectl apply -f -'"
-fi
+# There is deliberately NO kubectl branch here. kubectl is not installed on this
+# VM by design, so a branch gated on `command -v kubectl` is a branch that only
+# ever fires where nobody can read this script -- and it drifted: it created ONE
+# ConfigMap from the whole cases directory (the unsplit 1312167 B set the guard
+# refuses) and never created $REBUILD_NAME at all. Printing the commands instead
+# means the one shape we can inspect here is the only shape that exists.
+echo "artifacts ready under $OUT (code.tar $(wc -c <"$OUT/code.tar") B)."
+echo "Build and apply all three ConfigMaps on controlplane:"
+echo "  ssh controlplane 'mkdir -p /tmp/evals-artifacts/cases'"
+echo "  scp $OUT/cases/exec.jsonl $OUT/cases/plan.jsonl $OUT/cases/replan.jsonl controlplane:/tmp/evals-artifacts/cases/"
+echo "  scp $OUT/code.tar controlplane:/tmp/evals-artifacts/"
+echo "  ssh controlplane 'kubectl create configmap $NAME -n $NAMESPACE --from-file=exec.jsonl=/tmp/evals-artifacts/cases/exec.jsonl --dry-run=client -o yaml | kubectl apply -f -'"
+echo "  ssh controlplane 'kubectl create configmap $REBUILD_NAME -n $NAMESPACE --from-file=plan.jsonl=/tmp/evals-artifacts/cases/plan.jsonl --from-file=replan.jsonl=/tmp/evals-artifacts/cases/replan.jsonl --dry-run=client -o yaml | kubectl apply -f -'"
+echo "  ssh controlplane 'kubectl create configmap $CODE_NAME -n $NAMESPACE --from-file=code.tar=/tmp/evals-artifacts/code.tar --dry-run=client -o yaml | kubectl apply -f -'"
