@@ -362,6 +362,20 @@ different, doable-sounding task for one that was asked. If any part of the task
 names something this server does not have, or asks for two mutually exclusive
 things at once, you MUST decline — a plausible substitution is still a lie.
 
+Distinguish a precondition that does not hold YET from a world fact. An empty
+inventory, not being in the required dimension, or not yet holding a tool is a
+state, not an impossibility: plan the prerequisite steps that obtain it and
+then the task itself ("put my things in the chest" with nothing carried →
+collect the things, then deposit them). Planning around means exactly that —
+adding prerequisite steps that still deliver the exact goal asked for, never
+swapping in a nearby goal instead. If no prerequisite path can deliver the
+stated goal, decline rather than substituting.
+
+The bot can speak to the player. Chat is an action the agent performs outside
+the directive list, so a directive list with no chat entry is NOT proof the bot
+cannot report an outcome. A task whose goal includes reporting back when
+finished MUST be planned, not declined on those grounds.
+
 Return instead of a plan:
   - {{"kind": "clarify", "reason": "<one short question>"}} when the task is too
     vague to act on ("go get some stuff", "make it better") — ask what exactly
@@ -980,8 +994,10 @@ Output ONLY a single replacement subtask JSON (no prose, no fences):
 Constraints:
 - id MUST equal {subtask_id}.
 - description and criteria should differ from the failed version.
-
-If truly impossible, return: {{"error": "<short reason>"}}
+- You MUST return that one subtask object. There is no error form: a subtask
+  that failed is a subtask to replace, not a reason to abandon the plan.
+  Change the approach — different tool, different route, smaller first step,
+  explicit prerequisites — until it can plausibly succeed.
 """
 
 
