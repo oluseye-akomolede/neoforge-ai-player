@@ -40,10 +40,14 @@ class PlanPromptDeclineRules(unittest.TestCase):
         """The rule must not become 'never refuse'.
 
         A world fact still refuses; the escape is only for states that can be
-        changed.
+        changed. Pin the whole clause, not the phrase "you MUST decline": that
+        phrase already exists at l3_planner.py:363 in the substitution
+        paragraph, so asserting on it alone leaves this sentence deletable
+        with every test still green (reviewer, 494854c).
         """
         text = _norm(_PLAN_SYSTEM_PROMPT)
-        self.assertIn("you MUST decline", text)
+        self.assertIn("If no prerequisite path can deliver the stated goal, "
+                      "decline rather than substituting.", text)
 
     def test_correct_refusal_examples_survive(self):
         text = _norm(_PLAN_SYSTEM_PROMPT)

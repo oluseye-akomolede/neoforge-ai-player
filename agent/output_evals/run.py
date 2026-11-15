@@ -30,7 +30,7 @@ from collections import defaultdict
 if __package__ in (None, ""):        # run as a file, not a module
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from output_evals import evalconfig, extract           # noqa: E402
+from output_evals import evalconfig, extract, sysprompt   # noqa: E402
 from output_evals.scorers import common as scenum      # noqa: E402
 from output_evals.scorers import planner               # noqa: E402
 
@@ -76,7 +76,7 @@ def ask(cfg, system, user):
     return msg["content"], None
 
 
-def run(cfg, cases_by_kind, log=print):
+def run(cfg, cases_by_kind, log=print, rebuild_applied=False):
     results = {}
     for kind, cases in cases_by_kind.items():
         scorer = planner.SCORERS.get(kind)
@@ -103,6 +103,15 @@ def run(cfg, cases_by_kind, log=print):
         declined = defaultdict(int)
         t0 = time.time()
         for i, c in enumerate(cases, 1):
+            if rebuild_applied and (c.prompt_diff or "").startswith("unscorable"):
+                # Not sent and not scored: replaying the RECORDED prompt here
+                # would answer a different question from every other case in
+                # the run and print its result under the same heading.
+                verdict, reason = "unscorable", c.prompt_diff
+                counted[verdict] += 1
+                by_era[c.model][verdict] += 1
+                by_era[c.model]["n"] += 1
+                continue
             text, err = ask(cfg, c.prompt_system, c.prompt_user)
             if err:
                 verdict, reason = "unscorable", f"replay error: {err}"
@@ -196,6 +205,11 @@ def build_report(cfg, census, results, n_cases, run_params=None):
         # requires these three, and a shortfall is only meaningful against the
         # n actually run.
         "run_parameters": run_params or {},
+        # Present only on a rebuild run. It is the difference between "today's
+        # model on yesterday's prompt" and "today's prompt", and a report that
+        # did not say which would make the two incomparable numbers look like
+        # a trend.
+        "rebuild_from_source": (run_params or {}).get("rebuild_from_source"),
         "corpus": census,
         "cases_per_kind": n_cases,
         "results": results,
@@ -269,6 +283,13 @@ def main(argv=None):
     ap.add_argument("--cases-out", default=None)
     ap.add_argument("--dry-run", action="store_true",
                     help="extract and report the corpus only; no model calls")
+    ap.add_argument("--rebuild-from-source", action="store_true",
+                    help="send the CURRENT l3_planner system prompt instead of "
+                         "the recorded one, for plan and replan cases. Without "
+                         "it a replay measures the model against the prompt it "
+                         "already answered, so no prompt edit can ever move a "
+                         "number. A case whose values cannot be recovered from "
+                         "the record is scored unscorable, never guessed.")
     ap.add_argument("--per-kind", type=int, default=None,
                     help=f"cases per kind (default {extract.MIN_PER_KIND}); lower it "
                          "when the case set must fit a 1MiB ConfigMap")
@@ -330,6 +351,34 @@ def main(argv=None):
             picked, t = extract.take_era_first(pool, current, n=per_kind)
             by_kind[kind] = picked
             tally[kind] = t
+    # The rebuild leg. Done BEFORE write_cases so the case file the Job reads
+    # carries the rebuilt prompt and the comparison; done before any model call
+    # so a case that cannot be rebuilt is marked, not discovered at scoring time.
+    rebuild = None
+    if args.rebuild_from_source:
+        import l3_planner  # noqa: E402 - the agent's own module, shipped here on purpose
+        # None, not "", when no file is supplied: an empty string would
+        # override the catalog recovered from each record and rebuild the
+        # prompt with no skills at all -- a prompt the model was never shown.
+        skills = sysprompt.skills_from_env() or None
+        per_kind_rebuild = {}
+        for kind, picked in by_kind.items():
+            counts = defaultdict(int)
+            for c in picked:
+                try:
+                    sysprompt.rebuild(c, l3_planner, skills=skills)
+                except sysprompt.Unscorable as e:
+                    c.prompt_differs, c.prompt_diff = None, f"unscorable: {e}"
+                key = (c.prompt_diff or "").split(":")[0] or "not-run"
+                counts[key] += 1
+            per_kind_rebuild[kind] = dict(counts)
+        # `skills` is None unless a file was supplied; when it is None each
+        # case's catalog comes from its own recorded prompt. Reporting that as
+        # "empty" would describe a different prompt from the one rebuilt.
+        rebuild = {"skills_section": "supplied" if skills is not None else "from-record",
+                   "by_kind": per_kind_rebuild}
+        print(json.dumps({"rebuild_from_source": rebuild}, indent=2))
+
     case_sizes = {}
     if args.cases_out:
         written = extract.write_cases(by_kind, args.cases_out)
@@ -351,6 +400,7 @@ def main(argv=None):
         "cases_total": sum(n_cases.values()),
         "cases_bytes": sum(case_sizes.values()) if case_sizes else None,
         "cases_bytes_by_kind": case_sizes or None,
+        "rebuild_from_source": rebuild,
     }
     if args.dry_run:
         report = {"config": {"endpoint": cfg.endpoint, "model": cfg.model,
@@ -365,7 +415,7 @@ def main(argv=None):
                   "endpoint_probed": False,
                   "era_tally": tally}
     else:
-        results = run(cfg, by_kind)
+        results = run(cfg, by_kind, rebuild_applied=bool(rebuild))
         report = build_report(cfg, corpus, results, n_cases, run_params)
         report["era_tally"] = tally
 

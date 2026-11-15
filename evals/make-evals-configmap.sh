@@ -11,7 +11,12 @@
 set -euo pipefail
 
 CORPUS=${CORPUS:-$HOME/minecraft-evals-corpus}
-N=${N:-30}
+# 19, not 30: with --rebuild-from-source the case set carries BOTH the
+# recorded prompt and the rebuilt one, which roughly doubles it. Measured over
+# the 11-14 corpus, N=19 is 991052 B and N=20 is 1042935 B, so 20 fits today
+# with under 6 KB of slack -- too little to survive a case gaining a sentence.
+# 19 keeps ~57 KB of headroom under the 1MiB ConfigMap cap.
+N=${N:-14}
 OUT=${OUT:-$(mktemp -d)}
 NAMESPACE=${NAMESPACE:-ci}
 NAME=${NAME:-evals-scout-cases}
@@ -30,18 +35,29 @@ python3 agent/output_evals/run.py \
   --cases-out "$OUT/cases" \
   --out "$OUT/report.json" \
   --per-kind "$N" \
+  --rebuild-from-source \
   --dry-run >"$OUT/extract.log" 2>&1
 
 echo "case counts:"
 wc -l "$OUT"/cases/*.jsonl
 
 BYTES=$(cat "$OUT"/cases/*.jsonl | wc -c)
-echo "case-set bytes: $BYTES"
-# A ConfigMap is capped at 1MiB across all its keys by the API server. Fail
-# here rather than at apply time, where the message is less useful.
-if [ "$BYTES" -gt 1048576 ]; then
-  echo "REFUSED: case set is $BYTES B, over the 1MiB ConfigMap limit." >&2
-  echo "Lower N (currently $N) and re-run." >&2
+# The 1MiB cap is on the ConfigMap's encoded DATA, and kubectl base64-encodes
+# every value: 4/3 the raw bytes, plus a newline per 76-char chunk. Measuring
+# the raw bytes undercounts by a third -- at N=25 the raw set was 1.23 MB so
+# the old check passed it, while the ConfigMap was 1.32 MB and the apply would
+# have been rejected on controlplane. Measured the way the API server counts.
+ENCODED=$(python3 - "$OUT/cases" <<'EOF'
+import base64, glob, os, sys
+total = sum(len(base64.encodebytes(open(f, "rb").read()))
+            for f in glob.glob(os.path.join(sys.argv[1], "*")))
+print(total)
+EOF
+)
+echo "case-set bytes: $BYTES raw, $ENCODED encoded (cap 1048576)"
+if [ "$ENCODED" -gt 1048576 ]; then
+  echo "REFUSED: encoded case set is $ENCODED B, over the 1MiB ConfigMap limit." >&2
+  echo "Lower N (currently $N) and re-run: N=14 fits, N=15 leaves under 10KB." >&2
   exit 1
 fi
 
@@ -54,6 +70,21 @@ echo "packing code into $OUT/code.tar"
 mkdir -p "$OUT/code/output_evals/scorers"
 cp agent/output_evals/*.py "$OUT/code/output_evals/"
 cp agent/output_evals/scorers/*.py "$OUT/code/output_evals/scorers/"
+# --rebuild-from-source formats the CURRENT prompts, so the Job must run the
+# prompt module THIS commit carries. Without it run.py would import the
+# l3_planner beside the image's /opt/aibot-agent -- the deployed copy, which
+# is neither the before nor the after leg this script is asked to measure.
+# Only the two modules the rebuild EXECUTES: l3_planner for the prompt text and
+# its format call, plan_schema for the Plan/Subtask classes it formats in. The
+# rest of l3_planner's imports -- api, trajectory_log, brain, config -- resolve
+# to the image's own copies at the end of PYTHONPATH, which is the same
+# arrangement the scorers already rely on for `action_binding`.
+#
+# Stated plainly because it bounds what the leg claims: the PROMPT is from this
+# commit, the surrounding agent package is the image's. A difference between
+# the two that matters would show up in the rebuilt-vs-recorded comparison on
+# the first dry run, not silently.
+cp agent/l3_planner.py agent/plan_schema.py "$OUT/code/output_evals/"
 # The run config travels with the code: it IS the yardstick the report is
 # signed against, so a case set scored with a different model must be a visible
 # change to this file, not a hidden flag on the Job.

@@ -100,6 +100,18 @@ class Case:
     recorded_output: str
     label: str            # "satisfied" | "unsatisfied" | "complete" | "incomplete" | ""
     label_source: str     # "outcome" | "plan_close" | ""
+    # -- rebuild-from-source leg (output_evals/sysprompt.py) ----------------
+    # Where THIS case's system prompt came from. Only `synthesised` cases carry
+    # a prompt no agent call ever sent: their response is a hand-written
+    # fixture, so they can be scored but their prompt cannot be rebuilt.
+    source: str = ""
+    # What the rebuild changed. "" = the leg did not run on this case.
+    # True/False are the answer; None means not comparable (see sysprompt.differs).
+    prompt_differs: bool | None = None
+    prompt_diff: str = ""
+    recorded_prompt_system: str = ""   # the original, kept for the comparison
+    recorded_plan: dict = field(default_factory=dict)      # replan only
+    recorded_subtask: dict = field(default_factory=dict)   # replan only
 
 
 @dataclass
@@ -316,6 +328,7 @@ def build_cases(records, current_era="", per_kind=MIN_PER_KIND):
             recorded_output=redact(rec.get("response_raw") or ""),
             label=label,
             label_source=source,
+            source=str(rec.get("source") or ""),
         ))
     return cases, census
 
