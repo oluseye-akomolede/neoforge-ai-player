@@ -155,6 +155,15 @@ spec:
         # in the same ConfigMap spent 27% of the budget on cases that cannot
         # be unscorable. Both keys project into /opt/cases by filename, which
         # is the flat *.jsonl layout read_cases_dir expects.
+        # `items` is load-bearing, not tidiness. kubectl apply does not remove
+        # keys absent from the manifest, so evals-scout-cases still carries
+        # plan.jsonl/replan.jsonl from the 11-14 unsplit map. Those keys are
+        # over the size budget and belong to the other ConfigMap; listing only
+        # exec.jsonl here is what keeps them out of the pod. If you ever drop
+        # this `items` block, the stale keys reappear at /opt/cases/exec and
+        # read_cases_dir starts scoring plan cases twice. (The script now does
+        # delete-then-create, so a fresh apply is clean -- but a redeploy from
+        # this YAML against an existing map must not depend on that.)
         - name: cases
           configMap:
             name: evals-scout-cases

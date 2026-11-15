@@ -52,6 +52,27 @@ def main():
         print("Delete the branch and always print the operator commands.")
         return 1
 
+    # Client-side apply embeds the manifest in a last-applied annotation capped
+    # at 262144 B, so a ~600 KB ConfigMap cannot be applied that way. Reject it
+    # unless it is explicitly server-side.
+    if "apply -f -" in script and "--server-side" not in script:
+        print("FAIL: the script prints a client-side `kubectl apply -f -` "
+              "without --server-side.")
+        print("A ~600 KB ConfigMap exceeds the 262144 B last-applied annotation "
+              "cap and the apply fails on controlplane.")
+        return 1
+
+    # `apply` merges: keys absent from the new manifest survive. The split left
+    # plan.jsonl/replan.jsonl inside the exec ConfigMap that way. Recreating
+    # needs a delete, or the ConfigMap is not what the script built.
+    if "kubectl create configmap" in script and \
+            "kubectl delete configmap" not in script:
+        print("FAIL: the script creates ConfigMaps but never deletes them.")
+        print("`kubectl apply` is a merge and leaves stale keys in place -- "
+              "the 11-14 unsplit map kept plan.jsonl/replan.jsonl in the exec "
+              "ConfigMap this way. Use delete-then-create, or --server-side.")
+        return 1
+
     mounted = job_mounts(job)
     # The script prints shell variables ($NAME, $REBUILD_NAME, $CODE_NAME).
     # Resolve them to the literal defaults declared at the top of the script,

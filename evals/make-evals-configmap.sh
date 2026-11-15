@@ -149,6 +149,20 @@ echo "Build and apply all three ConfigMaps on controlplane:"
 echo "  ssh controlplane 'mkdir -p /tmp/evals-artifacts/cases'"
 echo "  scp $OUT/cases/exec.jsonl $OUT/cases/plan.jsonl $OUT/cases/replan.jsonl controlplane:/tmp/evals-artifacts/cases/"
 echo "  scp $OUT/code.tar controlplane:/tmp/evals-artifacts/"
-echo "  ssh controlplane 'kubectl create configmap $NAME -n $NAMESPACE --from-file=exec.jsonl=/tmp/evals-artifacts/cases/exec.jsonl --dry-run=client -o yaml | kubectl apply -f -'"
-echo "  ssh controlplane 'kubectl create configmap $REBUILD_NAME -n $NAMESPACE --from-file=plan.jsonl=/tmp/evals-artifacts/cases/plan.jsonl --from-file=replan.jsonl=/tmp/evals-artifacts/cases/replan.jsonl --dry-run=client -o yaml | kubectl apply -f -'"
-echo "  ssh controlplane 'kubectl create configmap $CODE_NAME -n $NAMESPACE --from-file=code.tar=/tmp/evals-artifacts/code.tar --dry-run=client -o yaml | kubectl apply -f -'"
+# The create/replace below is deliberately NOT `create --dry-run | kubectl apply`.
+# Two reasons, both hit on the 11-14 run:
+#  1. client-side apply stores the whole manifest in a last-applied annotation
+#     capped at 262144 B, so a ~600 KB ConfigMap dies with "metadata.annotations:
+#     Too long". --server-side stores no such annotation.
+#  2. apply is a merge: it never removes keys absent from the new manifest, so
+#     the 11-14 unsplit map kept its plan.jsonl/replan.jsonl keys inside $NAME
+#     after the split. The Job survives that only because its volume lists
+#     items: [exec.jsonl]; anything reading the whole map would not.
+# delete-then-create makes the ConfigMap exactly what we just built, which is
+# what the before/after comparison assumes.
+echo "  ssh controlplane 'kubectl delete configmap $NAME $REBUILD_NAME $CODE_NAME -n $NAMESPACE --ignore-not-found'"
+echo "  ssh controlplane 'kubectl create configmap $NAME -n $NAMESPACE --from-file=exec.jsonl=/tmp/evals-artifacts/cases/exec.jsonl'"
+echo "  ssh controlplane 'kubectl create configmap $REBUILD_NAME -n $NAMESPACE --from-file=plan.jsonl=/tmp/evals-artifacts/cases/plan.jsonl --from-file=replan.jsonl=/tmp/evals-artifacts/cases/replan.jsonl'"
+echo "  ssh controlplane 'kubectl create configmap $CODE_NAME -n $NAMESPACE --from-file=code.tar=/tmp/evals-artifacts/code.tar'"
+echo "  # if you must re-apply over an existing map instead, use --server-side --force-conflicts"
+echo "  # (client-side apply fails over 262144 B on the last-applied annotation)."
