@@ -18,7 +18,16 @@ CORPUS=${CORPUS:-$HOME/minecraft-evals-corpus}
 N=${N:-25}
 OUT=${OUT:-$(mktemp -d)}
 NAMESPACE=${NAMESPACE:-ci}
+# Names are all overridable so the before/after legs can coexist. The lead
+# runs two: the SAME case ConfigMaps for both legs (they are the shared
+# artifact) and a DIFFERENT code ConfigMap per leg (that is the variable under
+# test). Defaults reproduce a single baseline run.
+#
+#   exec   ConfigMap -> $NAME          (default evals-scout-cases)
+#   plan+replan      -> $REBUILD_NAME  (default $NAME-rebuild)
+#   code tar         -> $CODE_NAME     (default evals-code)
 NAME=${NAME:-evals-scout-cases}
+REBUILD_NAME=${REBUILD_NAME:-$NAME-rebuild}
 CODE_NAME=${CODE_NAME:-evals-code}
 
 if [ ! -d "$CORPUS" ]; then
@@ -67,7 +76,7 @@ EOF
 }
 echo "case-set sizes (cap 1048576 each):"
 check_cm "$NAME (exec)"             "$OUT/cases/exec.jsonl"
-check_cm "$NAME-rebuild (plan+replan)" "$OUT/cases/plan.jsonl" "$OUT/cases/replan.jsonl"
+check_cm "$REBUILD_NAME (plan+replan)" "$OUT/cases/plan.jsonl" "$OUT/cases/replan.jsonl"
 
 # Code ConfigMap. A ConfigMap flattens paths to single keys, so a nested
 # package cannot be mounted as a directory of directories. Ship one tar key and
@@ -146,6 +155,6 @@ else
   echo "Build and apply both ConfigMaps on controlplane:"
   echo "  scp -r $OUT/cases $OUT/code.tar controlplane:/tmp/evals-artifacts/"
   echo "  ssh controlplane 'kubectl create configmap $NAME -n $NAMESPACE --from-file=exec.jsonl=/tmp/evals-artifacts/cases/exec.jsonl --dry-run=client -o yaml | kubectl apply -f -'"
-  echo "  ssh controlplane 'kubectl create configmap $NAME-rebuild -n $NAMESPACE --from-file=plan.jsonl=/tmp/evals-artifacts/cases/plan.jsonl --from-file=replan.jsonl=/tmp/evals-artifacts/cases/replan.jsonl --dry-run=client -o yaml | kubectl apply -f -'"
+  echo "  ssh controlplane 'kubectl create configmap $REBUILD_NAME -n $NAMESPACE --from-file=plan.jsonl=/tmp/evals-artifacts/cases/plan.jsonl --from-file=replan.jsonl=/tmp/evals-artifacts/cases/replan.jsonl --dry-run=client -o yaml | kubectl apply -f -'"
   echo "  ssh controlplane 'kubectl create configmap $CODE_NAME -n $NAMESPACE --from-file=/tmp/evals-artifacts/code.tar --dry-run=client -o yaml | kubectl apply -f -'"
 fi

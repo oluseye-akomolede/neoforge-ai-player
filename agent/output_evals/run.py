@@ -76,6 +76,15 @@ def ask(cfg, system, user):
     return msg["content"], None
 
 
+class EmptyPrompt(RuntimeError):
+    """A plan/replan case reached the model without a system prompt.
+
+    Raised rather than counted: there is no verdict to record, because no
+    question was asked. `main` turns it into a non-zero exit so a run that
+    would have measured nothing is a visible failure instead of a report.
+    """
+
+
 def run(cfg, cases_by_kind, log=print, rebuild_applied=False):
     results = {}
     for kind, cases in cases_by_kind.items():
@@ -112,6 +121,22 @@ def run(cfg, cases_by_kind, log=print, rebuild_applied=False):
                 by_era[c.model][verdict] += 1
                 by_era[c.model]["n"] += 1
                 continue
+            # Fail closed. A plan or replan case whose system prompt is empty
+            # was never rebuilt, and sending it asks the model a question with
+            # no instructions at all: the answer is scored as if the prompt had
+            # been there. This is silent by construction -- an empty string is
+            # a legal prompt_system -- so refuse the whole run instead of
+            # recording verdicts nobody can interpret.
+            #
+            # recorded_prompt_system set + empty prompt_system is the deferred
+            # shape: it means the case set expected the Job to rebuild and the
+            # Job did not.
+            if c.kind in ("plan", "replan") and not (c.prompt_system or "").strip():
+                raise EmptyPrompt(
+                    f"{c.kind} case {c.call_id} has an empty system prompt "
+                    f"(recorded_prompt_system={'set' if c.recorded_prompt_system else 'empty'}"
+                    f", rebuild_applied={rebuild_applied}). The case set ships "
+                    f"without a rendered prompt; run with --rebuild-from-source.")
             text, err = ask(cfg, c.prompt_system, c.prompt_user)
             if err:
                 verdict, reason = "unscorable", f"replay error: {err}"
@@ -434,7 +459,14 @@ def main(argv=None):
                   "endpoint_probed": False,
                   "era_tally": tally}
     else:
-        results = run(cfg, by_kind, rebuild_applied=bool(rebuild))
+        try:
+            results = run(cfg, by_kind, rebuild_applied=bool(rebuild))
+        except EmptyPrompt as e:
+            # Nothing has been scored at this point, so there is no report to
+            # write: a non-zero exit is the whole signal. Printed to stderr so
+            # it survives even if a caller only keeps stdout.
+            print(f"refused: {e}", file=sys.stderr)
+            return 5
         report = build_report(cfg, corpus, results, n_cases, run_params)
         report["era_tally"] = tally
 

@@ -136,6 +136,54 @@ class ValuesComeFromTheRecord(unittest.TestCase):
         self.assertIn('"attempts": 2', case.prompt_system)
         self.assertNotIn('"error": "<short reason>"', case.prompt_system)
 
+    def test_a_brace_inside_a_criteria_does_not_truncate_the_plan(self):
+        """F2: `criteria` is free text and can contain a brace.
+
+        Every other fixture here uses "c", so a mutant that returns at the
+        first `}` instead of counting braces passes all of them. That mutant
+        truncates the recovered plan at the first brace in a string and the
+        case silently rebuilds against a fragment.
+
+        A criteria like "chest holds {16} wheat" is not exotic: item counts in
+        braces are how a bot is told to check an inventory.
+
+        The plan must come ONLY from the prompt text: passing recorded_plan
+        takes the shortcut and never reaches the scanner, which is how this
+        went untested through 14 fixtures.
+        """
+        plan = {"task": "store my stuff", "bot": "scout",
+                "created_at": "2026-11-15T00:00:00", "status": "executing",
+                "subtasks": [{"id": 1, "description": "fill the chest",
+                              "criteria": "chest has {16} wheat",
+                              "status": "failed", "attempts": 2, "error": "full"}],
+                "current_subtask_id": 1}
+        # The heads _from_recorded_prompt scans for, spelled as it spells them.
+        recorded = ("Full plan: " + json.dumps(plan) + "\n"
+                    "Failed subtask: " + json.dumps(plan["subtasks"][0]))
+        case = extract.Case(kind="replan", call_id="r3", bot="scout", model="m",
+                            prompt_system="",
+                            prompt_user="Revise the failed subtask.",
+                            world_state_summary="",
+                            recorded_output=json.dumps({"id": 1, "description": "d",
+                                                        "criteria": "chest has {16} wheat"}),
+                            label="", label_source="", source="iface")
+        case.recorded_prompt_system = recorded
+        sysprompt.rebuild(case, l3_planner)
+        # The marker AFTER the brace is what a first-`}` mutant loses.
+        self.assertIn("attempts", case.prompt_system)
+        self.assertIn("full", case.prompt_system)
+
+    def test_balanced_object_counts_braces_inside_strings(self):
+        """Direct unit test of the scanner, not through a rebuild.
+
+        Pins the property the module docstring claims: a greedy or
+        first-brace cut is wrong on nested objects and on braces in strings.
+        """
+        text = 'noise {"a": {"inner": 1}, "b": "has } and { braces"} tail'
+        start = text.index("{")
+        self.assertEqual(json.loads(sysprompt._balanced_object(text, start)),
+                         {"a": {"inner": 1}, "b": "has } and { braces"})
+
 
 class UnscorableIsNotAPass(unittest.TestCase):
     def test_an_unscorable_case_is_never_sent(self):
@@ -266,19 +314,37 @@ class TheJobRebuildsFromItsOwnCodeConfigMap(unittest.TestCase):
         self.assertIn(norm("If no prerequisite path can deliver the stated goal"),
                       norm(system))
 
-    def test_without_the_flag_the_case_is_not_asked_at_all(self):
-        """Opt-in: a flag-built case set scored without the flag must not
-        quietly send an empty system prompt.
+    def test_without_the_flag_the_run_fails_closed(self):
+        """Fail closed: no rebuild means no prompt, and that must not score.
 
-        The case's prompt is empty until the rebuild fills it, so scoring it
-        unrebuilt would measure the model against nothing and record a verdict.
-        What actually happens is the case is skipped, which is the safe
-        failure; this pins it so a later change cannot turn the skip into a
-        silent empty-prompt call.
+        The case's prompt is empty until the rebuild fills it. Scoring it
+        unrebuilt measures the model against nothing and records a verdict,
+        and nothing in the report would show it -- `rebuild_applied` is False
+        precisely when the skip guard is off.
+
+        NOT --dry-run: dry-run returns before run(), so an earlier version of
+        this test asserted on a call that never happened and passed while
+        proving nothing.
         """
         rc, sent = self._main([
             "--config", str(self.tmp / "cfg.yaml"),
             "--cases-in", str(self.tmp / "cases"),
-            "--dry-run", "--out", str(self.tmp / "r.json"),
+            "--out", str(self.tmp / "r.json"),
         ])
-        self.assertIsNone(sent.call_args)
+        self.assertEqual(rc, 5, "an unrebuilt plan case must exit non-zero")
+        self.assertIsNone(sent.call_args,
+                          "the empty prompt must never reach the model")
+        self.assertFalse((self.tmp / "r.json").exists(),
+                         "a refused run must not leave a report behind")
+
+    def test_the_flag_makes_the_same_case_scoreable(self):
+        """The other direction: same case set, flag on, it runs."""
+        rc, sent = self._main([
+            "--config", str(self.tmp / "cfg.yaml"),
+            "--cases-in", str(self.tmp / "cases"),
+            "--rebuild-from-source",
+            "--out", str(self.tmp / "r.json"),
+        ])
+        self.assertEqual(rc, 0)
+        self.assertIsNotNone(sent.call_args)
+        self.assertGreater(len(sent.call_args[0][1]), 1000)

@@ -22,6 +22,18 @@
 # Model calls are serial: evalconfig refuses concurrency != 1, because the
 # local model is shared with the live fleet.
 
+# Two legs run against the SAME case ConfigMaps and differ only in the code
+# ConfigMap. The names below are the defaults; for the second leg, render this
+# file with them substituted, for example:
+#
+#   sed -e 's/evals-scout-baseline/evals-scout-after/'
+#       -e 's/^\(\s*\)name: evals-code$/\1name: evals-code-after/'
+#       evals/job-evals.yaml | ssh controlplane 'kubectl apply -f -'
+#
+# Case ConfigMap names (evals-scout-cases, evals-scout-cases-rebuild) stay the
+# same on both legs on purpose: changing them would make the two legs read
+# different cases and the comparison would no longer be controlled.
+
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -84,6 +96,14 @@ spec:
             - /opt/cases
             - --out
             - /tmp/report.json
+            # The case set ships WITHOUT a rendered prompt: extract parks the
+            # recorded prompt in recorded_prompt_system and leaves
+            # prompt_system empty so the before and after legs can share one
+            # case ConfigMap. Without this flag the Job skips the rebuild and
+            # sends "" as the system prompt for every plan and replan case --
+            # a whole run scored against nothing. run.py also fails closed on
+            # that now, but the flag is what makes the run mean anything.
+            - --rebuild-from-source
             # The pod's log is the durable copy: /tmp dies with the pod.
             - --emit
           securityContext:
