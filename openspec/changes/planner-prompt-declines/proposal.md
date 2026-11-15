@@ -101,3 +101,8 @@ planning the moon fails a test.
   the lead runs after the prompt edit will either confirm the class or surface a
   new one; the before/after report is per-kind from that Job log.
 - LoRA/DPO work — owner default A is "fix the prompt before any LoRA."
+- `_REFINE_SKILL_PROMPT` (`l3_planner.py:1097`), whose final instruction is a
+  structurally identical error invitation (`{"error": "<why it cannot be
+  fixed>"}`). Different contract, so it stays out of this change — but a future
+  error-shaped skill-refine answer will NOT be found by grepping for the replan
+  text, so it needs its own row rather than being rediscovered from scratch.

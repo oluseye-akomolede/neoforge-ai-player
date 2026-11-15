@@ -19,7 +19,9 @@ L2 MUST call L3 once at task receipt with a planning prompt. The prompt MUST ins
   MUST be planned around, not declined. Only world facts — a dimension the
   server does not have, an item that cannot be crafted or placed, a block that
   cannot be broken, two actions that cannot happen simultaneously — justify a
-  `refuse`.
+  `refuse`. Planning around means obtaining the missing precondition and then
+  completing the stated task; it MUST NOT mean substituting a different,
+  doable-sounding task, which the clarify-or-refuse requirement forbids.
 - Treat the bot's ability to speak to the player as available even though speech
   is not a plan directive kind. A task whose goal includes reporting an outcome
   MUST NOT be declined on the grounds that the directive list contains no chat

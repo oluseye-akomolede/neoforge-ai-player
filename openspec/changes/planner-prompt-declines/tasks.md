@@ -25,6 +25,10 @@
       dimension, tool not held) is planned around; only world facts (missing
       dimension, uncraftable item, unbreakable block, two mutually exclusive
       simultaneous actions) justify `refuse`.
+- [ ] 2.2a In the same rule, state that planning around means obtaining the
+      missing precondition and then completing the stated task — never
+      substituting a different, doable-sounding task, which the
+      clarify-or-refuse requirement already forbids.
 - [ ] 2.3 Keep both existing decline examples (moon; simultaneity) and both
       clarify examples in the prompt. Do not reword them into softness.
 - [ ] 2.4 Add tests pinning the two added rules' presence in
