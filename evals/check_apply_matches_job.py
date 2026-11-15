@@ -33,9 +33,44 @@ def job_mounts(text):
     return names
 
 
+def actionable_commands(text):
+    """Command strings the script will actually print for the operator to run.
+
+    The script prints them as  echo "  ssh controlplane '<kubectl ...>'". Take
+    the argument of each echo that carries a kubectl, and drop anything whose
+    payload is itself a comment or a note. This is deliberately narrow: a guard
+    that reads prose instead of commands can be satisfied by prose, which is
+    exactly the bug this function exists to prevent.
+    """
+    out = []
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if not stripped.startswith("echo "):
+            continue
+        # Take the double-quoted argument of the echo.
+        m = re.search(r'echo\s+"(.*)"\s*$', stripped)
+        if not m:
+            continue
+        payload = m.group(1)
+        # A payload that begins with '#' is a note we print, not a command.
+        if payload.lstrip().startswith("#"):
+            continue
+        if "kubectl" not in payload:
+            continue
+        out.append(payload)
+    return out
+
+
 def printed_creates(text):
-    """ConfigMap names the script tells the operator to `kubectl create`."""
-    return re.findall(r"kubectl create configmap \$?([A-Za-z0-9_-]+)", text)
+    """ConfigMap names the script tells the operator to `kubectl create`.
+
+    Uses the same actionable-command extractor as the guards: a `kubectl create`
+    mentioned in a comment creates nothing.
+    """
+    names = []
+    for cmd in actionable_commands(text):
+        names.extend(re.findall(r"kubectl create configmap \$?([A-Za-z0-9_-]+)", cmd))
+    return names
 
 
 def main():
@@ -52,25 +87,51 @@ def main():
         print("Delete the branch and always print the operator commands.")
         return 1
 
-    # Client-side apply embeds the manifest in a last-applied annotation capped
-    # at 262144 B, so a ~600 KB ConfigMap cannot be applied that way. Reject it
-    # unless it is explicitly server-side.
-    if "apply -f -" in script and "--server-side" not in script:
-        print("FAIL: the script prints a client-side `kubectl apply -f -` "
-              "without --server-side.")
+    # Every guard below must scan ONLY what will actually execute. The first
+    # version of these guards searched the whole file, and the script's own
+    # comments mention "--server-side" and "kubectl delete configmap" -- so the
+    # server-side guard was permanently False and the delete guard was fooled
+    # by a comment that merely said to delete. Both were green on the very bugs
+    # they existed to catch. Read the commands, never the prose.
+    cmds = actionable_commands(script)
+    kubectl = [c for c in cmds if "kubectl" in c]
+
+    if not kubectl:
+        print("FAIL: parsed no executable kubectl commands from the script. "
+              "The regex is wrong, not the script -- a guard over an empty "
+              "list passes everything.")
+        return 2
+
+    bad = []
+    for cmd in kubectl:
+        # Client-side apply embeds the manifest in a last-applied annotation
+        # capped at 262144 B; a ~600 KB ConfigMap cannot be applied that way.
+        # The test is per-command: an --server-side elsewhere in the file does
+        # not licence a client-side apply here.
+        if "apply -f -" in cmd and "--server-side" not in cmd:
+            bad.append(("client-side apply", cmd))
+
+    if bad:
+        for why, cmd in bad:
+            print(f"FAIL ({why}): {cmd.strip()}")
         print("A ~600 KB ConfigMap exceeds the 262144 B last-applied annotation "
-              "cap and the apply fails on controlplane.")
+              "cap, so this apply fails on controlplane. Use --server-side, or "
+              "delete-then-create.")
         return 1
 
     # `apply` merges: keys absent from the new manifest survive. The split left
-    # plan.jsonl/replan.jsonl inside the exec ConfigMap that way. Recreating
-    # needs a delete, or the ConfigMap is not what the script built.
-    if "kubectl create configmap" in script and \
-            "kubectl delete configmap" not in script:
-        print("FAIL: the script creates ConfigMaps but never deletes them.")
-        print("`kubectl apply` is a merge and leaves stale keys in place -- "
-              "the 11-14 unsplit map kept plan.jsonl/replan.jsonl in the exec "
-              "ConfigMap this way. Use delete-then-create, or --server-side.")
+    # plan.jsonl/replan.jsonl inside the exec ConfigMap that way. If anything
+    # applies rather than creates, a delete must be present in the commands
+    # themselves -- a comment saying to delete is not a delete.
+    applies = [c for c in kubectl if " apply " in f" {c} "]
+    deletes = [c for c in kubectl if "delete configmap" in c]
+    creates = [c for c in kubectl if "create configmap" in c]
+    if (applies or creates) and not deletes:
+        print("FAIL: the script creates/applies ConfigMaps but never deletes "
+              "them (checked executable commands only).")
+        print("`kubectl apply` is a merge and leaves stale keys in place -- the "
+              "11-14 unsplit map kept plan.jsonl/replan.jsonl in the exec "
+              "ConfigMap this way. Use delete-then-create.")
         return 1
 
     mounted = job_mounts(job)
