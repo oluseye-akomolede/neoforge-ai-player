@@ -73,12 +73,16 @@ Two instrument notes, since both produced plausible-looking output first:
   form "prints help text and exits 0". That is wrong, and the error was mine,
   not the tool's: I had the command piped through `tail`, and in a pipeline the
   shell reports `tail`'s status, not `openspec`'s. Re-run without the pipe on
-  this rev, bare `--strict` prints 184 bytes to **stderr**, 0 to stdout, and
-  `rc=1`. The builder separately reported that `openspec validate --check`
-  exits 0 on an unknown option; on this rev it prints
-  `error: unknown option '--check'` (32 bytes) and exits **1**. So the
-  exit-0-on-error path is real elsewhere, but not on that flag here, and every
-  rc I quote below was taken with `${PIPESTATUS[0]}` or without a pipe.
+  this rev (openspec 1.13.2), bare `--strict` prints 184 bytes to **stderr**,
+  0 to stdout, and `rc=1`. Every rc quoted below was taken with
+  `${PIPESTATUS[0]}` or without a pipe.
+
+  A related claim that `openspec validate --check` exits 0 on an unknown
+  option was withdrawn by its author after the same defect was found: they had
+  measured it through a pipe to `head`. Re-measured without one, `--check`
+  prints `error: unknown option '--check'` (32 bytes, stderr) and exits
+  **1**. No exit-0-on-error path is known on this install, and nothing in this
+  review rests on the existence of one.
 - `python3 -m unittest discover -s agent/tests` fails with
   `Start directory is not importable` — `agent/tests/` has no `__init__.py`.
   Ran the file directly with `PYTHONPATH=agent`, which is the correct shape.
