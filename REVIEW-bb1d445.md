@@ -108,8 +108,32 @@ not caused by this change.
   split. Flagged, not a blocker.
 - `bb1d445` — the delta fix, this review.
 
-## Not covered here
+## The `a9e75ad1` pin flag — withdrawn, plus a real merge risk
 
-The still-unowned pin: `evals/job-evals.yaml` pins `a9e75ad1` while the test
-deployment runs `2914fb85`. A green eval Job is evidence about a different
-image until that is reconciled. Unchanged by this commit.
+I had flagged, four times, that `evals/job-evals.yaml` pins `a9e75ad1` while
+the test deployment runs `2914fb85`. **That flag is wrong at this rev and I
+withdraw it.** At `bb1d445` both pins (`:62`, `:89`) are `2914fb85ff22…`, one
+distinct digest, count 2 (verified by extracting the archive and grepping). My
+reading came from `ca27b6e` and earlier — the value I was quoting is genuinely
+there at `ca27b6e:62` and `:89`, so it was a stale reading of an older rev, not
+an invented one. The lesson is mine: a `file:line` in a review is a claim about
+a rev.
+
+**But the attribution given for the fix is not what the history says.**
+I was told `807b6f1` replaced `a9e75ad1`. `807b6f1` *does* carry that exact
+change and is titled for it — however **`807b6f1` is not an ancestor of
+`bb1d445` or of `fee4e53`** (`git merge-base --is-ancestor` → no). It sits on
+the reviewer branch above `1885d4c`. The repin that reached this branch is the
+one `fee4e53` made itself: `git diff ca27b6e fee4e53 -- evals/job-evals.yaml`
+shows both lines moving `a9e75ad1` → `2914fb85`. So the same two-line edit
+exists independently on two branches.
+
+**Live risk for the merge:** `807b6f1` and `fee4e53` both edit `:62` and `:89`
+from the same base `ca27b6e`. When the lead merges both, those lines conflict.
+It resolves trivially — the target value is identical on both sides — but a
+conflict resolved the wrong way silently reverts the pin, and this is precisely
+the field whose drift cost a run earlier. Whoever merges should expect the
+conflict and take `2914fb85` explicitly rather than blanket-`--ours`.
+
+The lead's earlier claim that `job-evals.yaml:62` and `:89` carry `2914fb85`
+was correct; my repeated dissent was the stale part.
