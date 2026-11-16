@@ -95,10 +95,12 @@
       (exec/plan/replan): replan-only 25/16/25, plan-rule rework 24/17/25.
       Image 2914fb85 to test 11-15 18:06Z, prod 11-16 04:13Z. These are the
       lead's recorded numbers; the builder did not re-measure them.
-- [x] 4.4 If exec drops below 25/25, say so plainly and propose a revert rather
+- [~] 4.4 N/A If exec drops below 25/25, say so plainly and propose a revert rather
       than defending the change.
-      Exec 24/25 is below the 25 baseline, so the plan-rule rework was not
-      shipped. Tasks 2.1-2.4 and 3.1 above record that. The reading of which
-      figure is exec is the builder's; the figures are the lead's.
+      NOT EXERCISED, so not ticked: exec 24/25 is below the 25 baseline, but the
+      rework was never shipped. The lead measured it (66/75 vs 66/75) and decided
+      not to ship before any revert question arose; a revert would have reverted
+      nothing. No revert was proposed by the builder, and none was needed. The
+      reading of which figure is exec is the builder's; the figures are the lead's.
 - [x] 4.5 No image build until the lead asks.
       No image was built by the builder.
