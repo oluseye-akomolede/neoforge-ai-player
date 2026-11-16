@@ -66,11 +66,30 @@ commit's own, untouched by this one.
 - `evals/check_apply_matches_job.py` — **rc=0**
 
 Two instrument notes, since both produced plausible-looking output first:
-- `openspec validate --strict` with no item prints **help text and exits 0**.
-  Validated by name instead: `Change 'planner-prompt-declines' is valid`.
+- `openspec validate --strict` with no item validates **nothing**. Validated
+  by name instead: `Change 'planner-prompt-declines' is valid`.
+
+  **Correction (16 10:2xZ).** An earlier version of this file said that bare
+  form "prints help text and exits 0". That is wrong, and the error was mine,
+  not the tool's: I had the command piped through `tail`, and in a pipeline the
+  shell reports `tail`'s status, not `openspec`'s. Re-run without the pipe on
+  this rev, bare `--strict` prints 184 bytes to **stderr**, 0 to stdout, and
+  `rc=1`. The builder separately reported that `openspec validate --check`
+  exits 0 on an unknown option; on this rev it prints
+  `error: unknown option '--check'` (32 bytes) and exits **1**. So the
+  exit-0-on-error path is real elsewhere, but not on that flag here, and every
+  rc I quote below was taken with `${PIPESTATUS[0]}` or without a pipe.
 - `python3 -m unittest discover -s agent/tests` fails with
   `Start directory is not importable` — `agent/tests/` has no `__init__.py`.
   Ran the file directly with `PYTHONPATH=agent`, which is the correct shape.
+
+Repo-wide, for the merge: `openspec validate --all --strict` is
+**23 passed, 7 failed (30 items), rc=1**. The seven are `store-all-ae2-bettercombat`,
+`v11-rl-planner-tuning`, `v4-bot-vault`, `v5-locate-recon`, `v6-tempad-waypoints`,
+`v7-player-in-the-network`, `v8-inventory-menu-directives` — all "No deltas
+found", all pre-existing. `planner-prompt-declines` is **not** among them; it
+passes. A repo-wide validate is therefore not clean on this branch, and that is
+not caused by this change.
 
 ## Commits on ca27b6e..ship-ca27-harness for the merge
 
