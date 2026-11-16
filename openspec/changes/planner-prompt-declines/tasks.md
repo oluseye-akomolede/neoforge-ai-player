@@ -91,8 +91,10 @@
       The lead ran it; the builder ran nothing on the cluster.
 - [x] 4.3 Report before/after per kind **from the Job log only**, against the
       11-14 baseline: exec 25/25, plan 19/25, replan 21/25.
-      The lead's 11-16 figures, in the order the lead gave them
-      (exec/plan/replan): replan-only 25/16/25, plan-rule rework 24/17/25.
+      The lead's 11-16 figures, quoted in the order given and unlabelled by the
+      lead: replan-only 25/16/25, plan-rule rework 24/17/25. Reading them as
+      exec/plan/replan is the builder's inference from the baseline listed at
+      the top of this same 4.3 entry; the lead did not label them.
       Image 2914fb85 to test 11-15 18:06Z, prod 11-16 04:13Z. These are the
       lead's recorded numbers; the builder did not re-measure them.
 - [~] 4.4 N/A If exec drops below 25/25, say so plainly and propose a revert rather
