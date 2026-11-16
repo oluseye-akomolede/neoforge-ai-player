@@ -30,6 +30,29 @@ NAME=${NAME:-evals-scout-cases}
 REBUILD_NAME=${REBUILD_NAME:-$NAME-rebuild}
 CODE_NAME=${CODE_NAME:-evals-code}
 
+# Required inputs are checked HERE, before the extraction, not next to the
+# line that consumes them. A check placed after the expensive step makes an
+# operator pay minutes of extraction to be told an input was missing -- and it
+# makes the check untestable against a stand-in corpus, because extraction fails
+# first and the refusal is never reached.
+#
+# MODEL has NO default, deliberately. It used to default to qwen3-coder:30b, and
+# a run that forgot to set it silently measured that model while the report --
+# which is signed against this yardstick -- said nothing about which model it
+# meant. A wrong default turns a missing input into a plausible number, and the
+# number looks as good as a right one. Naming the model is a required step, so
+# "which model was this scored on" is answerable from what was typed, never from
+# a fallback. ${MODEL:-} because `set -u` above would otherwise kill the script
+# with "unbound variable" before this message could explain why.
+MODEL=${MODEL:-}
+if [ -z "$MODEL" ]; then
+  echo "REFUSED: MODEL is unset." >&2
+  echo "The model IS the yardstick: set it explicitly, e.g." >&2
+  echo "  MODEL=qwen3.8:27b-q4_K_M $0" >&2
+  echo "There is deliberately no default -- a wrong model measures nothing." >&2
+  exit 1
+fi
+
 if [ ! -d "$CORPUS" ]; then
   echo "no corpus at $CORPUS (set CORPUS=...)" >&2
   exit 1
@@ -87,6 +110,12 @@ echo "packing code into $OUT/code.tar"
 mkdir -p "$OUT/code/output_evals/scorers"
 cp agent/output_evals/*.py "$OUT/code/output_evals/"
 cp agent/output_evals/scorers/*.py "$OUT/code/output_evals/scorers/"
+# The decline labels are DATA, not code, so no *.py glob reaches them. Without
+# this line load_decline_labels() sees an absent path and returns {} BY DESIGN,
+# and the after-leg reports decline_cases n=0 -- which reads as "there were no
+# declines" rather than "the labels never shipped". A silent zero in the one
+# number this row exists to produce is the failure this file is built to avoid.
+cp agent/output_evals/case_labels.json "$OUT/code/output_evals/"
 # --rebuild-from-source formats the CURRENT prompts, so the Job must run the
 # prompt module THIS commit carries. Without it run.py would import the
 # l3_planner beside the image's /opt/aibot-agent -- the deployed copy, which
@@ -112,7 +141,7 @@ cp agent/l3_planner.py agent/plan_schema.py "$OUT/code/output_evals/"
 # signed against something the artifact does not describe. The in-cluster
 # address below is a service name, not a credential.
 ENDPOINT=${ENDPOINT:-http://ollama-l3.minecraft-test.svc.cluster.local:11434}
-MODEL=${MODEL:-qwen3-coder:30b}
+MODEL=${MODEL:-}
 # Whether the runner lets the served model think. Emitted HERE, into the file,
 # for the same reason as endpoint and model: the generated config IS the
 # yardstick, so a think-on leg must be a visible change to this file rather than

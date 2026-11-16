@@ -337,6 +337,128 @@ class RunnerTests(unittest.TestCase):
         finally:
             srv.shutdown()
 
+    def test_every_case_appears_in_the_report_not_just_five(self):
+        """The 11-15 review was argued from 5 captured examples.
+
+        Eight named cases changed verdict; only five were visible. The report
+        must carry a row per case so the next before/after diff is mechanical.
+        Uses a real (stubbed) model: --dry-run returns before run() and writes
+        an empty results block, so it cannot exercise this at all.
+        """
+        reply = {"directives": [{"kind": "MINE", "count": 1}]}
+
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                body = json.dumps({"models": [{"name": CURRENT}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self):  # noqa: N802
+                n = int(self.headers.get("Content-Length", 0))
+                self.rfile.read(n)
+                body = json.dumps(
+                    {"message": {"content": json.dumps(reply)}}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        srv = HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            with open(self.cfg, "w") as f:
+                f.write("model: %s\nendpoint: http://127.0.0.1:%d\n"
+                        % (CURRENT, srv.server_port))
+            d = os.path.join(self.dir, "cases")
+            os.makedirs(d, exist_ok=True)
+            ids = [f"c{i}" for i in range(7)]
+            with open(os.path.join(d, "exec.jsonl"), "w") as f:
+                for cid in ids:
+                    f.write(json.dumps({
+                        "kind": "exec", "call_id": cid, "bot": "scout",
+                        "model": CURRENT, "prompt_system": "s",
+                        "prompt_user": "u", "world_state_summary": "w",
+                        "recorded_output": json.dumps(reply),
+                        "label": "", "label_source": ""}) + "\n")
+            rc = run.main(["--config", self.cfg, "--cases-in", d,
+                           "--out", self.out])
+            self.assertEqual(rc, 0)
+            with open(self.out) as f:
+                rows = json.load(f)["results"]["exec"]["cases"]
+            self.assertEqual(len(rows), 7,
+                             "all 7 cases, not a 5-row sample")
+            self.assertEqual([r["call_id"] for r in rows], sorted(ids),
+                             "sorted by call_id so two reports diff cleanly")
+            for r in rows:
+                for key in ("call_id", "bot", "model", "verdict", "shape",
+                            "reason"):
+                    self.assertIn(key, r)
+        finally:
+            srv.shutdown()
+
+    def test_diff_reports_names_who_moved(self):
+        """The diff is the product: which cases changed, and how.
+
+        A count-only comparison would have reported 'plan 15 -> 12' and left
+        the cause to be guessed from five examples.
+        """
+        before = {"results": {"exec": {"cases": [
+            {"call_id": "a", "verdict": "pass", "shape": None},
+            {"call_id": "b", "verdict": "pass", "shape": None},
+            {"call_id": "c", "verdict": "fail", "shape": "refuse"},
+        ]}}}
+        after = {"results": {"exec": {"cases": [
+            {"call_id": "a", "verdict": "pass", "shape": None},
+            {"call_id": "b", "verdict": "fail", "shape": "refuse"},
+            {"call_id": "c", "verdict": "pass", "shape": None},
+        ]}}}
+        d = run.diff_reports(before, after)
+        self.assertEqual(d["n_moved"], 2)
+        moved = {m["call_id"]: m for m in d["moved"]}
+        self.assertEqual(moved["b"]["before"], "pass")
+        self.assertEqual(moved["b"]["after_shape"], "refuse",
+                         "a pass turning into a refusal must name the shape")
+        self.assertEqual(moved["c"]["before_shape"], "refuse")
+        self.assertTrue(d["case_sets_identical"])
+        self.assertNotIn("a", moved, "unchanged cases are not noise")
+
+    def test_diff_reports_flags_a_shape_change_at_the_same_verdict(self):
+        """pass->pass with a different shape is still a movement.
+
+        The 11-15 regression was partly this: cases moved between clarify and
+        refuse without either being a 'pass'. A verdict-only comparison calls
+        them unchanged and hides the whole finding. Caught by mutation: a
+        diff that compares only verdict left every other test green.
+        """
+        before = {"results": {"plan": {"cases": [
+            {"call_id": "x", "verdict": "fail", "shape": "clarify"}]}}}
+        after = {"results": {"plan": {"cases": [
+            {"call_id": "x", "verdict": "fail", "shape": "refuse"}]}}}
+        d = run.diff_reports(before, after)
+        self.assertEqual(d["n_moved"], 1,
+                         "clarify -> refuse is a change even though neither "
+                         "verdict moved")
+        self.assertEqual(d["moved"][0]["before_shape"], "clarify")
+        self.assertEqual(d["moved"][0]["after_shape"], "refuse")
+
+    def test_diff_reports_flags_a_changed_case_set(self):
+        """Comparing different case sets must say so, not compare anyway."""
+        before = {"results": {"exec": {"cases": [
+            {"call_id": "a", "verdict": "pass", "shape": None}]}}}
+        after = {"results": {"exec": {"cases": [
+            {"call_id": "a", "verdict": "pass", "shape": None},
+            {"call_id": "z", "verdict": "fail", "shape": "refuse"}]}}}
+        d = run.diff_reports(before, after)
+        self.assertFalse(d["case_sets_identical"])
+        self.assertEqual(d["only_after"], ["z"])
+        self.assertEqual(d["n_moved"], 0,
+                         "a case present in one side is not a 'movement'")
+
     def test_think_reaches_the_request_and_both_report_paths(self):
         """think is sent on the wire and reported by a real run and a dry run.
 
@@ -527,6 +649,73 @@ class DriftTests(unittest.TestCase):
         res = run.flag_drift({"a": self.row(9, 0.10), "b": self.row(50, 0.90)})
         self.assertFalse(res["flagged"])
         self.assertIn("fewer than two eras", res["reason"])
+
+
+class DeclineLabelTests(unittest.TestCase):
+    """The labels make a correct refusal visible. Untested until now.
+
+    The counters were proven to move by hand, through a stub endpoint, but a
+    mechanism only verified by hand is one refactor from silently reporting
+    zero -- and a zero here reads as "no declines", which is the opposite of
+    what a run full of refusals means.
+    """
+
+    def write(self, labels):
+        fh = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        json.dump({"labels": labels}, fh)
+        fh.close()
+        self.addCleanup(os.unlink, fh.name)
+        return fh.name
+
+    def test_all_three_verdicts_are_accepted(self):
+        """'plan' is the one that matters: it marks a decline as WRONG."""
+        got = run.load_decline_labels(self.write([
+            {"call_id": "a", "verdict": "refuse", "why": "impossible"},
+            {"call_id": "b", "verdict": "clarify", "why": "vague"},
+            {"call_id": "c", "verdict": "plan", "why": "achievable"},
+        ]))
+        self.assertEqual(got["a"]["wanted"], "refuse")
+        self.assertEqual(got["c"]["wanted"], "plan")
+
+    def test_absent_file_is_empty_not_an_error(self):
+        """An unlabelled run must still run: it simply cannot judge declines."""
+        self.assertEqual(run.load_decline_labels(None), {})
+        self.assertEqual(run.load_decline_labels(""), {})
+
+    def test_refuse_may_not_be_the_alternative(self):
+        """Refusing an ask with a defensible non-refusal answer is the defect.
+
+        Letting 'refuse' sit in alt_verdict would score exactly the behaviour
+        this file exists to catch as correct.
+        """
+        with self.assertRaises(ValueError):
+            run.load_decline_labels(self.write([
+                {"call_id": "a", "verdict": "plan", "alt_verdict": "refuse"}]))
+
+    def test_unknown_verdict_and_duplicates_are_refused(self):
+        with self.assertRaises(ValueError):
+            run.load_decline_labels(self.write([
+                {"call_id": "a", "verdict": "shrug"}]))
+        with self.assertRaises(ValueError):
+            run.load_decline_labels(self.write([
+                {"call_id": "a", "verdict": "refuse"},
+                {"call_id": "a", "verdict": "plan"}]))
+
+    def test_the_shipped_file_loads_and_keeps_its_alternative(self):
+        """The real file, not a fixture: it must stay parseable in the bundle."""
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        path = os.path.join(here, "case_labels.json")
+        got = run.load_decline_labels(path)
+        self.assertTrue(got, "shipped case_labels.json loaded empty")
+        for cid, label in got.items():
+            self.assertIn(label["wanted"], ("plan", "refuse", "clarify"))
+            self.assertNotIn("refuse", label["alt"],
+                             f"{cid}: refuse cannot be an alternative verdict")
+        # 187451a0 is the bot-state case: 'plan' is the reading taken, but an
+        # honest clarify is also defensible, so it is recorded and scored.
+        amb = [l for l in got.values() if l["alt"]]
+        for label in amb:
+            self.assertTrue(label["why"], "an alternative without a why is a guess")
 
 
 if __name__ == "__main__":

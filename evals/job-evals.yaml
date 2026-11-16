@@ -59,7 +59,7 @@ spec:
           type: RuntimeDefault
       initContainers:
         - name: unpack-code
-          image: harbor.arcadia-ecs.local/aiplayermod/agent@sha256:a9e75ad1b1efd22f9cc15f81662aa0865d068e92c555f034a0440bd0c9147c38
+          image: harbor.arcadia-ecs.local/aiplayermod/agent@sha256:2914fb85ff2220aefb63422767835eb71cb9c9710217105d8ed6d1d9c4880083
           imagePullPolicy: IfNotPresent
           command: ["sh", "-c", "tar xf /opt/code-tar/code.tar -C /opt/evals && ls /opt/evals/output_evals"]
           securityContext:
@@ -86,7 +86,7 @@ spec:
           # Pulling needs harbor-creds, which the `ci` default ServiceAccount
           # already carries as an imagePullSecret -- so this Job still declares
           # no Secret of its own.
-          image: harbor.arcadia-ecs.local/aiplayermod/agent@sha256:a9e75ad1b1efd22f9cc15f81662aa0865d068e92c555f034a0440bd0c9147c38
+          image: harbor.arcadia-ecs.local/aiplayermod/agent@sha256:2914fb85ff2220aefb63422767835eb71cb9c9710217105d8ed6d1d9c4880083
           imagePullPolicy: IfNotPresent
           command: ["python", "/opt/evals/output_evals/run.py"]
           args:
@@ -104,6 +104,14 @@ spec:
             # a whole run scored against nothing. run.py also fails closed on
             # that now, but the flag is what makes the run mean anything.
             - --rebuild-from-source
+            # Human decline verdicts, shipped in the CODE bundle
+            # (output_evals/case_labels.json) so the case ConfigMap stays
+            # byte-identical between the before and after legs. Without this
+            # the report says decline_cases n=0 and a correct refusal is
+            # indistinguishable from a false one -- which is how the 15->12
+            # plan regression first read as a plain count.
+            - --decline-labels
+            - /opt/evals/output_evals/case_labels.json
             # The pod's log is the durable copy: /tmp dies with the pod.
             - --emit
           securityContext:

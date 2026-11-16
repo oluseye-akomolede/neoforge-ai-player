@@ -15,8 +15,11 @@ the sets to match. Run it after any edit to either file.
 Exit 0 = the Job's volumes are all created by the printed commands and nothing
 extra is created. Anything else is a defect, and the message names it.
 """
+import os
 import re
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -144,6 +147,66 @@ def main():
     # server-side guard was permanently False and the delete guard was fooled
     # by a comment that merely said to delete. Both were green on the very bugs
     # they existed to catch. Read the commands, never the prose.
+    # Job args have gone missing twice (--rebuild-from-source, then
+    # --decline-labels): the code path existed, was reviewed, and the Job never
+    # passed the flag that reaches it. Nothing checked args at all, so neither
+    # miss could fail a local check. Two directions, both required:
+    #   - every flag the Job passes must be one run.py actually parses, so a
+    #     typo'd flag fails here instead of silently in a pod;
+    #   - the two flags the reported numbers depend on must be present.
+    run_py = (HERE.parent / "agent" / "output_evals" / "run.py").read_text()
+    job_args = re.findall(r"^\s+-\s+(--[A-Za-z0-9-]+)\s*$", job, re.M)
+    if not job_args:
+        print("FAIL: parsed no --flags out of job-evals.yaml args. The regex is "
+              "wrong, not the Job -- a guard over an empty list passes anything.")
+        return 2
+
+    # Parse the argument SET, do not substring-search the file. A search over
+    # the whole source is satisfied by a flag named in a comment, a docstring,
+    # or a comment-out declaration left behind after a rename -- so a Job flag
+    # that the pod would reject ('unrecognized arguments') passes here. That is
+    # the same shape as the server-side guard that matched its own comment.
+    #
+    # And it has to be the EXECUTING source, not the file text. The first
+    # version of this line regexed run_py directly and so matched a commented
+    # line as readily as a live one: the reviewer commented out one
+    # add_argument, left the call intact, and got rc=0 while the pod would
+    # have rejected the flag. A rename mutant missed it because a rename also
+    # removes the add_argument( token -- the mutant tested the rename and never
+    # reached the comment. Strip comment lines first; match the live lines only.
+    live = "\n".join(l for l in run_py.splitlines()
+                     if not l.lstrip().startswith("#"))
+    declared = set(re.findall(r'\badd_argument\(\s*"(--[A-Za-z0-9-]+)"', live))
+    if not declared:
+        print("FAIL: parsed no add_argument flags out of run.py. The regex is "
+              "wrong, not run.py -- a guard over an empty set passes anything.")
+        return 2
+
+    unknown = [a for a in job_args if a not in declared]
+    if unknown:
+        print("FAIL: the Job passes flags run.py does not parse: "
+              + ", ".join(sorted(set(unknown))))
+        return 1
+
+    # Each of these turns a silently-wrong number into a correct one, so a run
+    # without them is not a cheaper run -- it is a different measurement.
+    for required, why in (
+        ("--rebuild-from-source",
+         "without it every plan and replan case sends '' as its system prompt"),
+        ("--decline-labels",
+         "without it decline_cases is n=0 and a correct refusal looks like a fail"),
+    ):
+        if required not in job_args:
+            print(f"FAIL: Job does not pass {required} -- {why}.")
+            return 1
+        if required not in run_py:
+            print(f"FAIL: {required} is in the Job but run.py no longer parses it.")
+            return 1
+        if required not in declared:
+            print(f"FAIL: Job passes {required} but run.py has no add_argument "
+                  f"for it -- the pod would reject it.")
+            return 1
+
     cmds = actionable_commands(script)
     kubectl = [c for c in cmds if "kubectl" in c]
 
@@ -226,6 +289,104 @@ def main():
     if extra:
         print(f"\nWARN: the script creates ConfigMaps the Job never mounts: "
               f"{', '.join(extra)}")
+
+    # The decline labels are DATA, so unlike run.py and l3_planner NO *.py glob
+    # stages them. If they do not reach code.tar, load_decline_labels() returns
+    # {} by design and the report says decline_cases n=0 -- a silent zero where
+    # the number should be, reading as "no declines happened" rather than "the
+    # labels never shipped". Nothing else in this file can see that: the args
+    # guard checks flags and the ConfigMap guards check names. So read the
+    # staging rules themselves and require a copy that matches the label file.
+    staged = re.findall(r"^cp\s+(.+?)\s+\"?\$OUT/code[^\n]*", script, re.M)
+    if not staged:
+        print("\nFAIL: found no `cp ... $OUT/code` staging lines. The regex is "
+              "wrong, not the script -- a guard over an empty list passes "
+              "everything, and this is the only check that can see a missing "
+              "data file.")
+        return 2
+    # MODEL must not have a default. It had one (qwen3-coder:30b) and a run
+    # that forgot to set it silently measured the wrong model -- the lead's
+    # first rework leg did exactly that. The report is signed against this
+    # yardstick, so a fallback model makes a missing input look like a sound
+    # number.
+    #
+    # The SOURCE check runs FIRST, deliberately, and the behavioural probe runs
+    # after it. Both diagnose the same script, and a mutant that breaks both
+    # would otherwise only ever prove whichever ran first -- the earlier order
+    # made every ordering mutant report "has a default", so the ordering check
+    # was unprovable-by-mutant. Structure first, behaviour second.
+    #
+    # Anchor on the GUARD, not on the message text, and anchor on the FIRST
+    # live one. Three wrong versions preceded this:
+    #  - find("REFUSED: MODEL is unset") returned the first occurrence, so any
+    #    earlier copy of the string satisfied it;
+    #  - refuse_blocks[-1] took the LAST match, so a leftover guard sitting
+    #    after a real early one got blamed and the ordering check fired on a
+    #    script whose live check was in the right place;
+    #  - neither filtered comments, so a commented-out guard counted as live.
+    # Match the EXECUTING lines only (the same strip as the H1 arg guard above)
+    # and take the first, which is the guard that actually runs. No live match
+    # at all is rc=2: that is this check failing to parse, not the script
+    # failing the rule, and a zero-width match on an empty list passes anything.
+    live_script = "\n".join(l for l in script.splitlines()
+                            if not l.lstrip().startswith("#"))
+    refuse_blocks = [m.start() for m in
+                     re.finditer(r'if \[ -z "\$\{?MODEL', live_script)]
+    if not refuse_blocks:
+        print("\nFAIL: no live `if [ -z \"$MODEL\" ]` guard in the script -- "
+              "MODEL is unguarded again (or every guard is commented out).")
+        return 2
+    src_refuse = refuse_blocks[0]
+    src_extract = live_script.find("python3 agent/output_evals/run.py")
+    if src_extract < 0:
+        print("\nFAIL: could not locate the extraction call in the script -- "
+              "the ordering check cannot run. Fix the pattern, not the script.")
+        return 2
+    if src_refuse > src_extract:
+        print("\nFAIL: the MODEL refusal sits AFTER the extraction call. "
+              "Required inputs must be checked before the expensive step, or "
+              "an operator waits minutes to be told an input was missing.")
+        return 1
+
+    # Now the behavioural probe: does the script actually refuse when run with
+    # MODEL unset? A static pattern over the source is satisfiable by prose,
+    # which is the trap this file has already been caught by. The stand-in
+    # CORPUS is fine here because ordering is settled above; this probe is only
+    # asking whether the refusal is produced at all.
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus = Path(tmp) / "corpus"
+        corpus.mkdir()
+        env = {k: v for k, v in os.environ.items() if k != "MODEL"}
+        env.update(CORPUS=str(corpus), OUT=str(Path(tmp) / "out"))
+        # cwd must be the repo root: the script resolves agent/output_evals
+        # relatively and documents that it is run from there. From evals/ it
+        # fails on a missing path BEFORE any check, which reads as "refused for
+        # another reason" and makes the probe test its own harness, not the
+        # script. (This is the stale-harness failure again, caught once.)
+        proc = subprocess.run(
+            ["bash", str(HERE / "make-evals-configmap.sh")],
+            capture_output=True, text=True, env=env, cwd=str(HERE.parent),
+        )
+        # Judge on the REFUSAL, not on rc. Extraction on a stand-in corpus
+        # fails too (rc=3), so "non-zero" does not prove the MODEL check ran --
+        # a script with a default and an empty corpus also exits non-zero, for
+        # an unrelated reason. The only sound signal is the message itself.
+        if "MODEL is unset" not in proc.stderr:
+            print("\nFAIL: with MODEL unset the script did not refuse for that "
+                  "reason -- it has a default model again, so a run that forgets "
+                  "MODEL measures a model nobody chose. rc="
+                  f"{proc.returncode}, stderr tail:")
+            print("\n".join(proc.stderr.strip().splitlines()[-5:]) or "  <empty>")
+            return 1
+
+    label_src = "agent/output_evals/case_labels.json"
+    if not any(label_src in line for line in staged):
+        print(f"\nFAIL: {label_src} is never staged into $OUT/code, so it "
+              f"cannot reach code.tar.")
+        print("The after-leg would report decline_cases n=0 and read as 'there "
+              "were no declines'. Add the cp line.")
+        return 1
+
     return 1 if missing else 0
 
 

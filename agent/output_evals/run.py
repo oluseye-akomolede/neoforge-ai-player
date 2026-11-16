@@ -76,6 +76,55 @@ def ask(cfg, system, user):
     return msg["content"], None
 
 
+def load_decline_labels(path):
+    """Read the side file naming cases where a decline is the right answer.
+
+    Shape: {"labels": [{"call_id": ...,
+                        "verdict": "refuse"|"clarify"|"plan",
+                        "alt_verdict": optional "refuse"|"clarify"|"plan",
+                        "why": "..."}]}. All three verdicts are accepted and
+    "plan" matters most: it marks a case where a decline is the WRONG answer,
+    so the run can count false declines rather than only expected ones.
+    "alt_verdict" records a second defensible answer for an ask that is
+    genuinely ambiguous; both then score as correct, because scoring an honest
+    clarify as a failure would punish the behaviour the spec asks for. A
+    "clarify" case with alt "plan" is legitimate; "refuse" is never an
+    alternative, because refusing an ambiguous or achievable ask is the defect.
+    Kept OUT of the scorer and OUT of the
+    case set on purpose: the case ConfigMap must stay byte-identical between
+    the before and after legs, and a label is a judgement about the TASK, not
+    a property of the model being measured. A scorer that decided which
+    refusals were correct would be scoring its own opinion.
+
+    Returns {} when the file is absent, which is the honest default: an
+    unlabelled run simply cannot say whether a decline was correct.
+    """
+    if not path:
+        return {}
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    out = {}
+    for entry in doc.get("labels", []):
+        cid, verdict = entry.get("call_id"), entry.get("verdict")
+        # "plan" is the verdict that makes a decline a FALSE decline, which is
+        # the whole reason this file exists: without it the run can only see
+        # declines it expected, never one it should not have made.
+        if not cid or verdict not in ("plan", "refuse", "clarify"):
+            raise ValueError(f"bad decline label entry: {entry!r}")
+        alt = entry.get("alt_verdict")
+        if alt is not None and alt not in ("plan", "refuse", "clarify"):
+            raise ValueError(f"bad alt_verdict in {entry!r}")
+        if alt == "refuse":
+            # Refusing an ask that has a defensible non-refusal answer is the
+            # exact defect these labels exist to count, so it can never be the
+            # alternative that makes a refusal "correct".
+            raise ValueError(f"alt_verdict may not be 'refuse' for {cid}")
+        if cid in out:
+            raise ValueError(f"duplicate decline label for {cid}")
+        out[cid] = {"wanted": verdict, "alt": [alt] if alt else [], "why": entry.get("why", "")}
+    return out
+
+
 class EmptyPrompt(RuntimeError):
     """A plan/replan case reached the model without a system prompt.
 
@@ -85,7 +134,8 @@ class EmptyPrompt(RuntimeError):
     """
 
 
-def run(cfg, cases_by_kind, log=print, rebuild_applied=False):
+def run(cfg, cases_by_kind, log=print, rebuild_applied=False, decline_labels=None):
+    decline_labels = decline_labels or {}
     results = {}
     for kind, cases in cases_by_kind.items():
         scorer = planner.SCORERS.get(kind)
@@ -110,6 +160,22 @@ def run(cfg, cases_by_kind, log=print, rebuild_applied=False):
         # count: a refusal is a different result from a malformed plan, and a
         # report that lumps them together cannot say which the model did.
         declined = defaultdict(int)
+        # Cases where a decline is the RIGHT answer, scored on their own. The
+        # plan rate cannot see these: an unlabelled decline is scored FAIL so
+        # it cannot inflate the rate, which means a prompt that turns correct
+        # refusals into fabricated plans scores HIGHER than one that refuses
+        # properly. That is the wrong direction to optimise, so the labelled
+        # cases are counted separately: 'declined correctly' and 'declined
+        # wrongly' are different outcomes and a single rate hides which.
+        correct_declines = 0
+        wrong_declines = 0
+        missed_declines = 0
+        decline_rows = []
+        # One row per case, ALWAYS -- including the ones that are skipped below
+        # and never sent. A per-case list that silently omits unscorable cases
+        # would look like a complete diff while hiding exactly the cases the
+        # run could not judge.
+        cases_out = []
         t0 = time.time()
         for i, c in enumerate(cases, 1):
             if rebuild_applied and (c.prompt_diff or "").startswith("unscorable"):
@@ -117,6 +183,10 @@ def run(cfg, cases_by_kind, log=print, rebuild_applied=False):
                 # would answer a different question from every other case in
                 # the run and print its result under the same heading.
                 verdict, reason = "unscorable", c.prompt_diff
+                cases_out.append({
+                    "call_id": c.call_id, "bot": c.bot, "model": c.model,
+                    "verdict": verdict, "shape": None, "reason": reason,
+                })
                 counted[verdict] += 1
                 by_era[c.model][verdict] += 1
                 by_era[c.model]["n"] += 1
@@ -138,6 +208,10 @@ def run(cfg, cases_by_kind, log=print, rebuild_applied=False):
                     f", rebuild_applied={rebuild_applied}). The case set ships "
                     f"without a rendered prompt; run with --rebuild-from-source.")
             text, err = ask(cfg, c.prompt_system, c.prompt_user)
+            # Bound unconditionally: the per-case row below is written for both
+            # branches, and a replay error must not depend on `shape` existing.
+            shape = None
+            reason = ""
             if err:
                 verdict, reason = "unscorable", f"replay error: {err}"
             else:
@@ -149,12 +223,47 @@ def run(cfg, cases_by_kind, log=print, rebuild_applied=False):
                 shape = (r.detail or {}).get("shape")
                 if shape in ("clarify", "refuse"):
                     declined[shape] += 1
+                label = decline_labels.get(c.call_id)
+                if label:
+                    # A label may record a second defensible verdict: some asks
+                    # are genuinely ambiguous, and pinning one answer would
+                    # score an honest clarify as a failure. `refuse` is the only
+                    # outcome these labels exist to catch, and it is never an
+                    # alternative.
+                    want = label["wanted"]
+                    alts = label.get("alt") or []
+                    ok = shape == want or shape in alts
+                    if ok:
+                        correct_declines += 1
+                    elif shape in ("clarify", "refuse"):
+                        wrong_declines += 1
+                    else:
+                        # Labelled as a decline but the model planned anyway:
+                        # the failure mode this counter exists to expose.
+                        missed_declines += 1
+                    decline_rows.append({
+                        "call_id": c.call_id, "kind": kind,
+                        "wanted": want, "alt": alts, "got": shape,
+                        "correct": ok,
+                    })
                 if verdict == scenum.FAIL:
                     fail_reasons[reason or "(no reason given)"] += 1
                     if len(examples) < 5:
                         examples.append({"call_id": c.call_id, "bot": c.bot,
                                          "reason": reason,
                                          "output_head": (text or "")[:300]})
+            # Every case, not just the first five failures. The 11-15 review of
+            # a prompt change was argued from 5 examples when the movement was
+            # between pass/refuse/clarify on named cases; a per-case list makes
+            # the next before/after diff mechanical instead of prose.
+            cases_out.append({
+                "call_id": c.call_id,
+                "bot": c.bot,
+                "model": c.model,
+                "verdict": verdict,
+                "shape": shape,
+                "reason": reason,
+            })
             counted[verdict] += 1
             by_era[c.model][verdict] += 1
             by_era[c.model]["n"] += 1
@@ -187,6 +296,17 @@ def run(cfg, cases_by_kind, log=print, rebuild_applied=False):
             # and empty when none occurred -- an absent key is indistinguishable
             # from a report written by older code.
             "declined": dict(sorted(declined.items())),
+            # Labelled declines, scored as their own outcome. `n_decline_cases`
+            # is how many cases carry a label; the three counts say what the
+            # model did with them. A kind with no labels reports zeros and an
+            # empty list, which is "not measured", not "got them all right".
+            "decline_cases": {
+                "n": len(decline_rows),
+                "declined_correctly": correct_declines,
+                "declined_wrongly": wrong_declines,
+                "missed": missed_declines,
+                "cases": decline_rows,
+            },
             # How many directives each answer carried. "1" is adherence to the
             # prompt's "exactly ONE directive"; anything above it is a model
             # that obeyed in kind but not in count, and would otherwise score
@@ -196,6 +316,9 @@ def run(cfg, cases_by_kind, log=print, rebuild_applied=False):
                 directive_counts.get(1, 0) / sum(directive_counts.values())
                 if directive_counts else None),
             "examples": examples,
+            # The full per-case verdict list, not a sample. Sorted by call_id so
+            # two runs diff line-for-line without needing the corpus.
+            "cases": sorted(cases_out, key=lambda r: r["call_id"]),
             "seconds": round(time.time() - t0, 1),
         }
         log(f"{kind}: n={n} pass={counted['pass']} "
@@ -308,6 +431,14 @@ def main(argv=None):
     ap.add_argument("--cases-out", default=None)
     ap.add_argument("--dry-run", action="store_true",
                     help="extract and report the corpus only; no model calls")
+    ap.add_argument("--decline-labels", default=None,
+                    help="JSON side file naming cases where a decline is the "
+                         "CORRECT answer (call_id, verdict, why). Labelled "
+                         "cases are scored separately from the plan rate, "
+                         "because an unlabelled decline scores FAIL and a "
+                         "prompt that fabricates plans therefore outranks one "
+                         "that refuses correctly. Absent file = no decline "
+                         "measurement, which is reported as 'not measured'.")
     ap.add_argument("--rebuild-from-source", action="store_true",
                     help="send the CURRENT l3_planner system prompt instead of "
                          "the recorded one, for plan and replan cases. Without "
@@ -460,7 +591,9 @@ def main(argv=None):
                   "era_tally": tally}
     else:
         try:
-            results = run(cfg, by_kind, rebuild_applied=bool(rebuild))
+            results = run(cfg, by_kind, rebuild_applied=bool(rebuild),
+                          decline_labels=load_decline_labels(
+                              getattr(args, "decline_labels", None)))
         except EmptyPrompt as e:
             # Nothing has been scored at this point, so there is no report to
             # write: a non-zero exit is the whole signal. Printed to stderr so
@@ -481,6 +614,44 @@ def main(argv=None):
         print(json.dumps(report, indent=2, sort_keys=True))
     print(f"report: {out}")
     return 0
+
+
+def diff_reports(before, after):
+    """Per-case verdict movement between two report dicts.
+
+    Exists because the 11-15 prompt review was argued from five captured
+    examples when the real movement was 8 named cases changing verdict. This
+    makes the movement mechanical: same case set, same call_ids, so anything
+    that appears in one report and not the other is a case-set change and is
+    reported as such rather than silently dropped from the comparison.
+    """
+    def index(rep):
+        out = {}
+        for kind, r in (rep.get("results") or {}).items():
+            for row in r.get("cases") or ():
+                out[row["call_id"]] = (kind, row.get("verdict"), row.get("shape"))
+        return out
+    b, a = index(before), index(after)
+    only_b = sorted(set(b) - set(a))
+    only_a = sorted(set(a) - set(b))
+    moved = []
+    for cid in sorted(set(b) & set(a)):
+        kb, vb, sb = b[cid]
+        ka, va, sa = a[cid]
+        if (vb, sb) != (va, sa):
+            moved.append({
+                "call_id": cid, "kind": ka,
+                "before": vb, "after": va,
+                "before_shape": sb, "after_shape": sa,
+                "before_kind": kb, "after_kind": ka,
+            })
+    return {
+        "moved": moved,
+        "n_moved": len(moved),
+        "only_before": only_b,
+        "only_after": only_a,
+        "case_sets_identical": not only_b and not only_a,
+    }
 
 
 if __name__ == "__main__":
