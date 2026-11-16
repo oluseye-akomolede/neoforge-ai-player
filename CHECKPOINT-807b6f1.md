@@ -42,10 +42,15 @@ M-c (comment out the only live guard, so there is no live guard at all) is expec
 to return 2 with "no live `if [ -z "$MODEL" ]` guard". On this mutant the guard process
 did NOT terminate within 300 s, twice. The structural code says it cannot reach its
 own return, so the hang is either (i) the script being executed with MODEL unset
-reaching a prompt or an interactive path, or (ii) my own harness. UNRESOLVED.
-A background run (bk986hb0d) is in flight; its output decides whether the 300 s is a
-real hole in the guard's runtime probe or my mistake, and its evidence is the only
-thing that should settle it.
+reaching a prompt or an interactive path, or (ii) my own harness. UNRESOLVED at the park.
+Both hung runs printed NOTHING — not the guard's own PASS section, not a FAIL — which
+means the guard never reached a verdict at all. That makes (ii) the likelier reading:
+the clean control in the same batch printed a full PASS report first, and this mutant
+differs from it only by my edit. My edit commented out the guard AND the lines inside
+it, and the first thing the script does is the MODEL test that is now gone, so the
+script falls through to the corpus/extraction path with a stand-in corpus. Whatever
+the cause, the guard produced no output and the honest state is "not verified".
+Do NOT read the missing output as a pass.
 
 Also un-run: M-d (default restored, should now report the structure failure rather than
 "has a default" — that is the builder's stated point of the reorder), M-e (message
