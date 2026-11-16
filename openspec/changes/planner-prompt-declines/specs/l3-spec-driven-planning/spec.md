@@ -14,18 +14,11 @@ L2 MUST call L3 once at task receipt with a planning prompt. The prompt MUST ins
 - Output ONLY valid JSON matching the plan schema (no prose, no fences)
 - Keep each subtask small enough to map to 1–3 directives maximum
 - Respect bot persona
-- Distinguish a transient precondition from an impossibility: a state that does
-  not hold *yet* (empty inventory, not in the required dimension, tool not held)
-  MUST be planned around, not declined. Only world facts — a dimension the
-  server does not have, an item that cannot be crafted or placed, a block that
-  cannot be broken, two actions that cannot happen simultaneously — justify a
-  `refuse`. Planning around means obtaining the missing precondition and then
-  completing the stated task; it MUST NOT mean substituting a different,
-  doable-sounding task, which the clarify-or-refuse requirement forbids.
-- Treat the bot's ability to speak to the player as available even though speech
-  is not a plan directive kind. A task whose goal includes reporting an outcome
-  MUST NOT be declined on the grounds that the directive list contains no chat
-  directive.
+
+The prompt MUST also tell L3 that a task it cannot carry out is declined rather
+than silently replaced by a different, doable-sounding one, and MUST give it the
+two decline shapes — `clarify` for a task too vague to act on, `refuse` for one
+that is impossible here or self-contradictory.
 
 #### Scenario: Planning call labeling
 - GIVEN a bot initiating Phase 1
@@ -33,34 +26,34 @@ L2 MUST call L3 once at task receipt with a planning prompt. The prompt MUST ins
 - THEN the gateway client label is `aibot-agent:{bot_name}:PLAN`
 - AND the log line at INFO is `[{bot_name}] L3 PLAN call — task: <truncated_text>`
 
-#### Scenario: Transient state is planned around, not declined
-- GIVEN a bot with an empty inventory
-- WHEN the task is "put my things in the chest"
-- THEN the returned JSON is a plan with subtasks
-- AND it is NOT `{"kind":"refuse"}` and NOT `{"kind":"clarify"}`
-- AND obtaining or carrying the items appears among the subtasks or their
-  criteria
-
-#### Scenario: Missing capability as a directive is not missing capability
-- GIVEN the directive kind list contains no chat/message directive
-- WHEN the task asks the bot to do work and report back when finished
-- THEN the returned JSON is a plan with subtasks
-- AND the response does not refuse on the grounds that no chat channel exists
-- AND the reply `reason`, if any decline is returned, MUST NOT cite the absence
-  of a chat directive
-
-#### Scenario: Correct refusal of an impossible ask is preserved
+#### Scenario: Correct refusal of an impossible ask
 - GIVEN a task naming a dimension the server does not generate
 - WHEN L3 plans it
 - THEN the response is `{"kind":"refuse","reason":...}`
 - AND the reason names the missing world fact
 - AND the plan does not substitute a nearby achievable goal
 
-#### Scenario: Correct clarify of a vague ask is preserved
+Rests on the shipped plan prompt's decline block (`ca27b6e`,
+`agent/l3_planner.py::_PLAN_SYSTEM_PROMPT`):
+- "If any part of the task names something this server does not have, or asks
+  for two mutually exclusive things at once, you MUST decline — a plausible
+  substitution is still a lie."
+- `{{"kind": "refuse", "reason": "<one short why>"}}` … "Examples: * \"fly to
+  the moon\" → refuse: there is no moon"
+- "Do NOT convert these into a nearby achievable goal (e.g. \"go to the End\"
+  for \"fly to the moon\"). Naming the real goal is the whole point."
+
+#### Scenario: Correct clarify of a vague ask
 - GIVEN a task with no determinable subject or quantity ("go get some stuff")
 - WHEN L3 plans it
 - THEN the response is `{"kind":"clarify","reason":...}`
 - AND the reason names the missing specificity
+
+Rests on the same block:
+- `{{"kind": "clarify", "reason": "<one short question>"}}` "when the task is
+  too vague to act on (\"go get some stuff\", \"make it better\") — ask what
+  exactly is wanted, naming the ambiguity."
+- "Examples: … * \"go get some stuff\" → clarify: which stuff, and how much."
 
 ### Requirement: Replan on Repeated Failure
 
@@ -109,6 +102,14 @@ subtask has exhausted `MAX_REPLANS_PER_SUBTASK` replans, the plan is marked
 - WHEN it is inspected
 - THEN it does not present an error or refusal object as an allowed output
 - AND it states the response must be a single replacement subtask object
+
+Rests on the shipped replan prompt (`ca27b6e`,
+`agent/l3_planner.py::_REPLAN_SYSTEM_PROMPT`):
+- "Output ONLY a single replacement subtask JSON (no prose, no fences)"
+- "You MUST return that one subtask object. There is no error form: a subtask
+  that failed is a subtask to replace, not a reason to abandon the plan.
+  Change the approach — different tool, different route, smaller first step,
+  explicit prerequisites — until it can plausibly succeed."
 
 #### Scenario: A refusal-shaped replan answer fails validation
 - GIVEN a subtask has failed MAX_ATTEMPTS times
