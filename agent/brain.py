@@ -1,7 +1,7 @@
 import json
 import threading
 import requests
-from config import OLLAMA_URL
+from config import OLLAMA_URL, answer_text, think_field
 
 # Serialize all ollama requests — single GPU can only serve one at a time.
 # Exported so planner and semantic_memory can use the same lock.
@@ -17,6 +17,7 @@ def think(model, system_prompt, observation, history):
         resp = requests.post(
             f"{OLLAMA_URL}/api/chat",
             json={
+                **think_field(),
                 "model": model,
                 "messages": messages,
                 "stream": False,
@@ -29,7 +30,7 @@ def think(model, system_prompt, observation, history):
             timeout=120,
         )
     resp.raise_for_status()
-    content = resp.json()["message"]["content"]
+    content = answer_text(resp.json())
 
     try:
         parsed = json.loads(content)
@@ -50,6 +51,7 @@ def raw_generate(model, prompt):
         resp = requests.post(
             f"{OLLAMA_URL}/api/chat",
             json={
+                **think_field(),
                 "model": model,
                 "messages": [
                     {"role": "system", "content": "You are a Minecraft bot assistant. Respond ONLY with a valid JSON array of primitives. No explanation, no markdown."},
@@ -64,7 +66,7 @@ def raw_generate(model, prompt):
             timeout=120,
         )
     resp.raise_for_status()
-    return resp.json()["message"]["content"]
+    return answer_text(resp.json())
 
 
 def check_ollama(url):

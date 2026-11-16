@@ -1,0 +1,53 @@
+WEDGE CAPTURE - read-only, 2026-11-13T04:35:07Z
+pod: aibot-agent-test-5fc4449d96-bjsn7  image: harbor.arcadia-ecs.local/aiplayermod/agent@sha256:d1513fa2d6ecab1b761fe692078e065b27324d8b05e15062380f55ed69da3f41
+pod start: 2026-11-12T13:50:31Z   restarts: 0
+last Scout line: 2026-11-13T04:28:34.093461296Z
+
+== (a) thread states / wchan (no py-spy, ss, gdb, netstat in image) ==
+      2 4407 S do_poll.constprop.0
+      1 62 S ep_poll
+     69 10 S futex_wait_queue
+      8 1 S hrtimer_nanosleep
+  all S (sleeping). Counts VARY between two captures a minute apart
+  (68-69 futex_wait_queue, 8-9 hrtimer_nanosleep, 1-2 do_poll, 1 ep_poll),
+  i.e. the threads are moving, not frozen. The numbers below are one sample.
+  futex_wait => lock/condition wait, NOT a socket read; a request blocked on the
+  old runner pod would show a poll/ep_poll socket wait, not largely futex.
+
+== (b) PID 1 ESTABLISHED sockets ==
+3002F40A:E65A B552640A:1538 441078192
+3002F40A:E30A 8DAF670A:1F90 485735050
+3002F40A:E66C B552640A:1538 441063090
+3002F40A:BABC B552640A:1538 441092645
+3002F40A:E668 B552640A:1538 441078196
+3002F40A:E670 B552640A:1538 441063149
+3002F40A:A604 36696F0A:0050 485740503
+3002F40A:C496 B552640A:1538 441115716
+3002F40A:C48A B552640A:1538 441097042
+3002F40A:E672 B552640A:1538 441058181
+3002F40A:BABA B552640A:1538 441063269
+  decoded (little-endian): local 10.244.2.48; remotes 10.100.82.181:5432 (x9), 10.103.175.141:8080
+  10.100.82.181:5432 ANSWERED a TCP connect at capture time -> live Postgres, normal pooled DB conns.
+  NEITHER remote is the new runner (10.244.2.99) nor the server (10.244.2.232).
+  Runner service IP 10.107.105.168 (not present among remotes).
+  => NO held connection to the old runner pod was observed. Hypothesis NOT supported by (b).
+
+== (c) non-worker_died lines before 04:28:34Z (last 30) ==
+2026-11-13T04:01:53.495906440Z [skill-author] pass: {'mined': 4, 'proposed': 0, 'registered': 0, 'rejected': 0, 'error': 0}
+2026-11-13T04:03:24.515391706Z [skill-author] pass: {'mined': 4, 'proposed': 0, 'registered': 0, 'rejected': 0, 'error': 0}
+2026-11-13T04:04:55.407765266Z [skill-author] pass: {'mined': 4, 'proposed': 0, 'registered': 0, 'rejected': 0, 'error': 0}
+2026-11-13T04:06:25.704520090Z [skill-author] pass: {'mined': 4, 'proposed': 0, 'registered': 0, 'rejected': 0, 'error': 0}
+2026-11-13T04:07:55.982396565Z [skill-author] pass: {'mined': 4, 'proposed': 0, 'registered': 0, 'rejected': 0, 'error': 0}
+2026-11-13T04:09:30.781836127Z [skill-author] pass: {'mined': 4, 'proposed': 0, 'registered': 0, 'rejected': 0, 'error': 0}
+2026-11-13T04:11:01.730591227Z [skill-author] pass: {'mined': 4, 'proposed': 0, 'registered': 0, 'rejected': 0, 'error': 0}
+2026-11-13T04:12:32.407975754Z [skill-author] pass: {'mined': 4, 'proposed': 0, 'registered': 0, 'rejected': 0, 'error': 0}
+2026-11-13T04:14:03.072846482Z [skill-author] pass: {'mined': 4, 'proposed': 0, 'registered': 0, 'rejected': 0, 'error': 0}
+2026-11-13T04:15:33.401297088Z [skill-author] pass: {'mined': 4, 'proposed': 0, 'registered': 0, 'rejected': 0, 'error': 0}
+2026-11-13T04:17:03.618723184Z [skill-author] pass: {'mined': 4, 'proposed': 0, 'registered': 0, 'rejected': 0, 'error': 0}
+2026-11-13T04:18:33.828103848Z [skill-author] pass: {'mined': 4, 'proposed': 0, 'registered': 0, 'rejected': 0, 'error': 0}
+2026-11-13T04:20:04.071600980Z [skill-author] pass: {'mined': 4, 'proposed': 0, 'registered': 0, 'rejected': 0, 'error': 0}
+2026-11-13T04:21:34.294280982Z [skill-author] pass: {'mined': 4, 'proposed': 0, 'registered': 0, 'rejected': 0, 'error': 0}
+2026-11-13T04:23:04.590636505Z [skill-author] pass: {'mined': 4, 'proposed': 0, 'registered': 0, 'rejected': 0, 'error': 0}
+2026-11-13T04:24:34.817537763Z [skill-author] pass: {'mined': 4, 'proposed': 0, 'registered': 0, 'rejected': 0, 'error': 0}
+2026-11-13T04:26:05.023803205Z [skill-author] pass: {'mined': 4, 'proposed': 0, 'registered': 0, 'rejected': 0, 'error': 0}
+2026-11-13T04:27:35.260343889Z [skill-author] pass: {'mined': 4, 'proposed': 0, 'registered': 0, 'rejected': 0, 'error': 0}

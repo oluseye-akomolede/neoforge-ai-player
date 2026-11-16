@@ -1,0 +1,202 @@
+﻿# Evals step 2.5: score the extracted case set against the live local model.
+#
+# The case set arrives as a ConfigMap (built by evals/make-evals-configmap.sh),
+# so the Job reads no PVC and needs no pod access. The only thing it talks to
+# is the local model endpoint, from config.
+#
+# Deliberately absent:
+#   - serviceAccountName / automountServiceAccountToken: this Job has no reason
+#     to hold a cluster token. Pods get one by default, so it is denied here.
+#   - secretKeyRef / envFrom / any Secret volume: the endpoint is a plain URL
+#     and the local model needs no credential. A Job that never mounts a Secret
+#     cannot leak one.
+#
+# Code ships as ONE tar key because a ConfigMap flattens nested paths to single
+# keys, which would break `from output_evals import ...`. An init container
+# extracts it into an emptyDir, preserving the package layout.
+#
+# Thread caps: limits.cpu is 2, and a CPU limit does NOT change
+# os.cpu_count(), so OpenMP/BLAS would start one thread per HOST core. Set to
+# the limit (platform hygiene row 3dd5dff8).
+#
+# Model calls are serial: evalconfig refuses concurrency != 1, because the
+# local model is shared with the live fleet.
+
+# Two legs run against the SAME case ConfigMaps and differ only in the code
+# ConfigMap. The names below are the defaults; for the second leg, render this
+# file with them substituted, for example:
+#
+#   sed -e 's/evals-scout-baseline/evals-scout-after/'
+#       -e 's/^\(\s*\)name: evals-code$/\1name: evals-code-after/'
+#       evals/job-evals.yaml | ssh controlplane 'kubectl apply -f -'
+#
+# Case ConfigMap names (evals-scout-cases, evals-scout-cases-rebuild) stay the
+# same on both legs on purpose: changing them would make the two legs read
+# different cases and the comparison would no longer be controlled.
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: evals-scout-baseline
+  namespace: ci
+  labels:
+    app: evals-scout-baseline
+spec:
+  backoffLimit: 0          # one attempt: a failure is a result to read, not to retry
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: evals-scout-baseline
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: unpack-code
+          image: harbor.arcadia-ecs.local/aiplayermod/agent@sha256:2914fb85ff2220aefb63422767835eb71cb9c9710217105d8ed6d1d9c4880083
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "tar xf /opt/code-tar/code.tar -C /opt/evals && ls /opt/evals/output_evals"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          volumeMounts:
+            - name: code-tar
+              mountPath: /opt/code-tar
+              readOnly: true
+            - name: code
+              mountPath: /opt/evals
+      containers:
+        - name: evals
+          # The agent's own image: it already carries PyYAML, which run.py needs
+          # to read config.yaml. python:3.12-slim does not, and there is no pip
+          # step, so the Job would have died at config load with exit 2.
+          # Pinned to the digest the live agent runs (read off the Deployment).
+          # Pulling needs harbor-creds, which the `ci` default ServiceAccount
+          # already carries as an imagePullSecret -- so this Job still declares
+          # no Secret of its own.
+          image: harbor.arcadia-ecs.local/aiplayermod/agent@sha256:2914fb85ff2220aefb63422767835eb71cb9c9710217105d8ed6d1d9c4880083
+          imagePullPolicy: IfNotPresent
+          command: ["python", "/opt/evals/output_evals/run.py"]
+          args:
+            - --config
+            - /opt/evals/output_evals/config.yaml
+            - --cases-in
+            - /opt/cases
+            - --out
+            - /tmp/report.json
+            # The case set ships WITHOUT a rendered prompt: extract parks the
+            # recorded prompt in recorded_prompt_system and leaves
+            # prompt_system empty so the before and after legs can share one
+            # case ConfigMap. Without this flag the Job skips the rebuild and
+            # sends "" as the system prompt for every plan and replan case --
+            # a whole run scored against nothing. run.py also fails closed on
+            # that now, but the flag is what makes the run mean anything.
+            - --rebuild-from-source
+            # Human decline verdicts, shipped in the CODE bundle
+            # (output_evals/case_labels.json) so the case ConfigMap stays
+            # byte-identical between the before and after legs. Without this
+            # the report says decline_cases n=0 and a correct refusal is
+            # indistinguishable from a false one -- which is how the 15->12
+            # plan regression first read as a plain count.
+            - --decline-labels
+            - /opt/evals/output_evals/case_labels.json
+            # The pod's log is the durable copy: /tmp dies with the pod.
+            - --emit
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          env:
+            - name: OMP_NUM_THREADS
+              value: "2"
+            - name: MKL_NUM_THREADS
+              value: "2"
+            - name: OPENBLAS_NUM_THREADS
+              value: "2"
+            # The scorers import `action_binding` from the agent package, which
+            # is NOT among the files the code ConfigMap ships (it is only the
+            # output_evals tree). Without this the import fails inside the Job
+            # and every case comes back unscorable while the run still exits 0:
+            # an instrument that reads nothing, reporting a verdict. The agent
+            # image carries the package at this path.
+            - name: PYTHONPATH
+              value: "/opt/aibot-agent"
+          volumeMounts:
+            - name: cases
+              mountPath: /opt/cases/exec
+              readOnly: true
+            - name: cases-rebuild
+              mountPath: /opt/cases/rebuild
+              readOnly: true
+            - name: code
+              mountPath: /opt/evals
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # Two ConfigMaps, one directory. The 1MiB limit is per ConfigMap, and
+        # at N=25 the three kinds together are 1312167 B encoded -- over it --
+        # while exec alone is 845323 B and plan+replan are 466844 B. Splitting
+        # by kind is not about the rebuild: exec cases carry the largest
+        # recorded prompts and the rebuild never touches them, so keeping them
+        # in the same ConfigMap spent 27% of the budget on cases that cannot
+        # be unscorable. Both keys project into /opt/cases by filename, which
+        # is the flat *.jsonl layout read_cases_dir expects.
+        # `items` is load-bearing, not tidiness. kubectl apply does not remove
+        # keys absent from the manifest, so evals-scout-cases still carries
+        # plan.jsonl/replan.jsonl from the 11-14 unsplit map. Those keys are
+        # over the size budget and belong to the other ConfigMap; listing only
+        # exec.jsonl here is what keeps them out of the pod.
+        #
+        # Drop this `items` block and the stale keys reappear at
+        # /opt/cases/exec. The damage is silent, not loud: read_cases_dir keys
+        # by filename stem (`by_kind[path.stem] = cases`, extract.py:406), so
+        # the second plan.jsonl OVERWRITES the first and the earlier file is
+        # dropped without a word -- which of the two survives depends on
+        # lexical path order. You would get plan scored on the wrong cases, or
+        # on fewer cases, with a suite that looks green. Keep items.
+        # (The script now does delete-then-create, so a fresh apply is clean --
+        # but a redeploy from this YAML against an existing map must not depend
+        # on that.)
+        - name: cases
+          configMap:
+            name: evals-scout-cases
+            items:
+              - key: exec.jsonl
+                path: exec.jsonl
+        - name: cases-rebuild
+          configMap:
+            name: evals-scout-cases-rebuild
+            items:
+              - key: plan.jsonl
+                path: plan.jsonl
+              - key: replan.jsonl
+                path: replan.jsonl
+        - name: code-tar
+          configMap:
+            name: evals-code
+        - name: code
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

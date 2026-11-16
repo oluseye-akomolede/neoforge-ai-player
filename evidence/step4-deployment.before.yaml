@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    deployment.kubernetes.io/revision: "193"
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"annotations":{},"labels":{"app":"aibot-agent","app.kubernetes.io/part-of":"aiplayermod","tier":"test"},"name":"aibot-agent-test","namespace":"minecraft-test"},"spec":{"replicas":1,"selector":{"matchLabels":{"app":"aibot-agent","tier":"test"}},"strategy":{"type":"Recreate"},"template":{"metadata":{"labels":{"app":"aibot-agent","tier":"test"}},"spec":{"containers":[{"envFrom":[{"secretRef":{"name":"agent-config"}}],"image":"harbor.arcadia-ecs.local/aiplayermod/agent:latest","imagePullPolicy":"Always","name":"agent","ports":[{"containerPort":5000,"name":"dashboard"}],"resources":{"limits":{"cpu":"1","memory":"512Mi"},"requests":{"cpu":"250m","memory":"256Mi"}},"volumeMounts":[{"mountPath":"/opt/aibot-agent/data","name":"agent-data"}]}],"imagePullSecrets":[{"name":"harbor-creds"}],"volumes":[{"name":"agent-data","persistentVolumeClaim":{"claimName":"agent-data"}}]}}}}
+  creationTimestamp: "2026-04-24T04:00:43Z"
+  generation: 213
+  labels:
+    app: aibot-agent
+    app.kubernetes.io/part-of: aiplayermod
+    tier: test
+  name: aibot-agent-test
+  namespace: minecraft-test
+  resourceVersion: "263240019"
+  uid: e58ea8a2-274b-487f-be27-aee40a926faf
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: aibot-agent
+      tier: test
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/restartedAt: "2026-11-11T12:02:01Z"
+      creationTimestamp: null
+      labels:
+        app: aibot-agent
+        tier: test
+    spec:
+      containers:
+      - env:
+        - name: NN_COMPRESSOR_URL
+          value: http://nn-compressor.nn-compressor.svc.cluster.local
+        envFrom:
+        - secretRef:
+            name: agent-config
+        image: harbor.arcadia-ecs.local/aiplayermod/agent@sha256:9de2a68c370f5eafffae77aa8a89e9fdca43dcb840cde35e1bb659b19a142baf
+        imagePullPolicy: Always
+        name: agent
+        ports:
+        - containerPort: 5000
+          name: dashboard
+          protocol: TCP
+        resources:
+          limits:
+            cpu: "1"
+            memory: 512Mi
+          requests:
+            cpu: 250m
+            memory: 256Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /opt/aibot-agent/data
+          name: agent-data
+      dnsPolicy: ClusterFirst
+      imagePullSecrets:
+      - name: harbor-creds
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: agent-data
+        persistentVolumeClaim:
+          claimName: agent-data
+status:
+  availableReplicas: 1
+  conditions:
+  - lastTransitionTime: "2026-11-11T12:02:34Z"
+    lastUpdateTime: "2026-11-11T12:02:34Z"
+    message: Deployment has minimum availability.
+    reason: MinimumReplicasAvailable
+    status: "True"
+    type: Available
+  - lastTransitionTime: "2026-04-24T04:00:43Z"
+    lastUpdateTime: "2026-11-11T12:02:34Z"
+    message: ReplicaSet "aibot-agent-test-6d5b68fb66" has successfully progressed.
+    reason: NewReplicaSetAvailable
+    status: "True"
+    type: Progressing
+  observedGeneration: 213
+  readyReplicas: 1
+  replicas: 1
+  updatedReplicas: 1

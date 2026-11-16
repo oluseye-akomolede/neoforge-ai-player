@@ -1,0 +1,62 @@
+{
+  "_why": [
+    "Human labels for plan cases: what SHAPE is the correct answer?",
+    "",
+    "This is a side file on purpose. It is read at scoring time and never enters",
+    "the case set, so the before and after legs share byte-identical cases and",
+    "differ only in l3_planner. The scorer stays dumb; the judgement lives here",
+    "where a person can review it.",
+    "",
+    "The problem it solves: the plan scorer can only ask 'did the model return a",
+    "plan?'. It cannot ask 'was declining the right call?'. So a bot that",
+    "fabricates a plan for an impossible task scores HIGHER than one that",
+    "correctly refuses, and the 11-15 run's real regression (correct plan 19->12",
+    "while refusals rose 3->7) is invisible in the pass count. With labels the run",
+    "reports 'correct declines kept' as its own number.",
+    "",
+    "verdict values:",
+    "  plan    - a plan is the correct answer; a decline here is a FALSE DECLINE",
+    "  refuse  - refusal is correct (genuinely impossible); a plan here is fabrication",
+    "  clarify - the ask is genuinely vague; declining with clarify is correct",
+    "",
+    "Every entry records why. A label without a reason is unreviewable, and the",
+    "next person cannot tell a considered verdict from a guess.",
+    "",
+    "Labels are keyed by call_id and only name ids; the corpus itself is NOT",
+    "committed. A case with no entry here is unlabelled and scored exactly as",
+    "before, so labels can be added incrementally without changing old reports."
+  ],
+  "labels": [
+    {
+      "call_id": "420efae53b094cc088af6618938e2802",
+      "verdict": "refuse",
+      "task": "Scout, fly to the moon and dig to bedrock",
+      "why": "World fact: the moon does not exist in Minecraft and bedrock cannot be mined. No prerequisite path can reach it. Refusing is correct; a plan here is fabrication."
+    },
+    {
+      "call_id": "b805c929758f49a2b7866b625c2cf7fb",
+      "verdict": "clarify",
+      "task": "Tiller, go get some stuff.",
+      "why": "'some stuff' names no item, quantity or destination. Genuinely vague, not a transient precondition. Clarify is correct."
+    },
+    {
+      "call_id": "45b2bf0453844d2d887ee3ee6ef10fa5",
+      "verdict": "clarify",
+      "task": "Scout, go get some stuff",
+      "why": "Same vague ask as b805c929: nothing to plan against, so clarify is correct."
+    },
+    {
+      "call_id": "187451a0beaa4833b72d1716319dfd9a",
+      "verdict": "plan",
+      "task": "Scout, please store all your items in the nearby chest.",
+      "why": "BOT-STATE precondition, not a world fact: 'your items' are the bot's own, so an empty inventory is not grounds to refuse. This label takes the reading that gathering counts as bot state the bot can change -- world state for this call is inventory 0/36, carried=[], and 'gather' here can only mean obtaining the raw material, so collecting-then-depositing is a defensible plan. The other reading is that a bot owning nothing has no items to store and the ask is unclear, which would make clarify correct. Recorded as plan|clarify-acceptable: either passes; only 'refuse' is the false decline this change targets.",
+      "alt_verdict": "clarify"
+    },
+    {
+      "call_id": "1d045e72963d4298b2f0ff66cad81ebd",
+      "verdict": "plan",
+      "task": "Scout, mine 4 iron ore from the hillside then report back.",
+      "why": "Reachable. Reporting back is an action the agent has (api.chat) even though no chat directive exists, so a decline on 'no message channel' grounds is the capability-blindness FALSE DECLINE this change fixes."
+    }
+  ]
+}

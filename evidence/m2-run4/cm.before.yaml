@@ -1,0 +1,113 @@
+apiVersion: v1
+data:
+  bindings.json: |
+    {
+      "Scout": "scout.js"
+    }
+  scout.js: |
+    // scout.js — the M2 first script (task 8.2). One bot, one action.
+    //
+    // Written against the runner's real surface (agent-script-runner
+    // src/engine.js): a frozen global `snapshot`, and `api.do`, `api.say`,
+    // `api.send`, `api.remember`, `api.recall`, `api.log`. The script runs once
+    // per tick in a disposable sandbox, so it keeps no state between ticks except
+    // through `api.remember` / `api.recall`.
+    //
+    // M2 scope is deliberately one action. The point of 8.2 is not that the bot
+    // does something clever: it is that the SAME action reaches the mod whether a
+    // script or the LLM asked for it. A narrow script keeps the comparison honest.
+
+    var GOAL = "scout_store";
+
+    function tick() {
+      // No snapshot means the agent sent none. Doing anything here would be acting
+      // on a guess, so say so once and propose nothing.
+      if (typeof snapshot === "undefined" || snapshot === null) {
+        api.log("scout: no snapshot this tick, proposing nothing");
+        return [];
+      }
+
+      // The envelope's shape is {tick, server_ms, state, events, task}; the bot
+      // facts live under `state`, not at the top. Reading `snapshot.health` here
+      // gave undefined, so `typeof health === "number"` short-circuited and this
+      // guard NEVER FIRED - a bot at health 3 still proposed an action. Every test
+      // missed it because the fixtures fed the flat object the script wanted
+      // rather than the envelope the cache produces; the guard is now tested
+      // against an envelope built through SnapshotCache.
+      var state = (snapshot.state || {});
+
+      // Only act once we are actually healthy enough to move. A starved or hurt
+      // bot acting on a stale plan is how a bot walks into lava while it is
+      // already fleeing something.
+      var health = state.health;
+      if (typeof health === "number" && health < 8) {
+        api.log("scout: health " + health + " too low, holding");
+        return [];
+      }
+
+      // The task we are on. `snapshot.task` is the directive the agent is
+      // currently running, so a script does not start a second job underneath one
+      // already in flight.
+      //
+      // It is NOT null when idle. Measured on TEST 2026-11-12, api.get_directive
+      // returns, at rest:
+      //   {"state":"Standing by","self_preservation":"ok","progress":{"phase":"idle"}}
+      // and, mid-task:
+      //   {"state":"Wide search ...","directive":{"id":7,"status":"ACTIVE",...},
+      //    "progress":{"phase":"pathing_to_cell","recent_events":[...]}}
+      // So `if (snapshot.task)` was ALWAYS true and this script never acted: an
+      // idle bot looked busy. The discriminator is progress.phase === "idle", not
+      // the presence of the object. The fixtures in test_scout_script.py are copied
+      // from those two real responses, not constructed from what this script
+      // expects -- a hand-built idle `null` would have confirmed the wrong guard,
+      // which is exactly how the snapshot.state bug at line 30 survived every test.
+      // Hold unless the task is PROVABLY idle. "Busy" is everything else,
+      // including a directive that carries no progress block at all -- an older
+      // mod, a shape we have not seen, or a bare test directive. Writing this as
+      // `phase !== "idle" && progress exists` would let a directive we cannot read
+      // through as idle, which is the unsafe direction: the script would start a
+      // second job underneath an unknown one. Only an explicit idle phase opens it.
+      var task = snapshot.task;
+      if (task && !(task.progress && task.progress.phase === "idle")) {
+        return [];
+      }
+
+      // THE ACTION. This is the one 8.2 compares, and its argument form matters:
+      // `STORE_ALL` takes an OPTIONAL coordinate triple (StoreAllBehavior.java:62
+      // `if (directive.hasLocation())`), and when it has one it stores into that
+      // specific container and moves the bot there (:171). Leaving the coordinates
+      // off asks the mod to choose, which is the form the planner's own seed match
+      // produces (agent.py:1888 -- its pattern has no capture groups).
+      //
+      // This script emits the COORDLESS form on purpose, and 8.2 pins that form.
+      // Every producer in this repo emits it coordless: the planner's own seed
+      // match (agent.py:1888) returns a bare object because its pattern has no
+      // capture groups, and the mod's seed specs put the coordinates on AREA_LOOT
+      // with STORE_ALL bare beside it (SkillRegistry.java:154). The coordless form
+      // is therefore the plausible call, and a constructed fixture should
+      // construct that one.
+      //
+      // The directive here comes from THIS script, not from the test harness. If a
+      // future edit returns nothing, the 8.2 parity test must fail rather than
+      // silently compare two empty bodies.
+      return [
+        { kind: "STORE_ALL" }
+      ];
+    }
+
+    // The runner calls the script body per tick; returning the array above is the
+    // whole contract. Kept as a named function and invoked explicitly so a syntax
+    // error surfaces as a script failure rather than as an empty action list.
+    tick();
+kind: ConfigMap
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","data":{"bindings.json":"{\n  \"Scout\": \"scout.js\"\n}\n","scout.js":"// scout.js — the M2 first script (task 8.2). One bot, one action.\n//\n// Written against the runner's real surface (agent-script-runner\n// src/engine.js): a frozen global `snapshot`, and `api.do`, `api.say`,\n// `api.send`, `api.remember`, `api.recall`, `api.log`. The script runs once\n// per tick in a disposable sandbox, so it keeps no state between ticks except\n// through `api.remember` / `api.recall`.\n//\n// M2 scope is deliberately one action. The point of 8.2 is not that the bot\n// does something clever: it is that the SAME action reaches the mod whether a\n// script or the LLM asked for it. A narrow script keeps the comparison honest.\n\nvar GOAL = \"scout_store\";\n\nfunction tick() {\n  // No snapshot means the agent sent none. Doing anything here would be acting\n  // on a guess, so say so once and propose nothing.\n  if (typeof snapshot === \"undefined\" || snapshot === null) {\n    api.log(\"scout: no snapshot this tick, proposing nothing\");\n    return [];\n  }\n\n  // The envelope's shape is {tick, server_ms, state, events, task}; the bot\n  // facts live under `state`, not at the top. Reading `snapshot.health` here\n  // gave undefined, so `typeof health === \"number\"` short-circuited and this\n  // guard NEVER FIRED - a bot at health 3 still proposed an action. Every test\n  // missed it because the fixtures fed the flat object the script wanted\n  // rather than the envelope the cache produces; the guard is now tested\n  // against an envelope built through SnapshotCache.\n  var state = (snapshot.state || {});\n\n  // Only act once we are actually healthy enough to move. A starved or hurt\n  // bot acting on a stale plan is how a bot walks into lava while it is\n  // already fleeing something.\n  var health = state.health;\n  if (typeof health === \"number\" \u0026\u0026 health \u003c 8) {\n    api.log(\"scout: health \" + health + \" too low, holding\");\n    return [];\n  }\n\n  // The task we are on. `snapshot.task` is the directive the agent is\n  // currently running, so a script does not start a second job underneath one\n  // already in flight.\n  //\n  // It is NOT null when idle. Measured on TEST 2026-11-12, api.get_directive\n  // returns, at rest:\n  //   {\"state\":\"Standing by\",\"self_preservation\":\"ok\",\"progress\":{\"phase\":\"idle\"}}\n  // and, mid-task:\n  //   {\"state\":\"Wide search ...\",\"directive\":{\"id\":7,\"status\":\"ACTIVE\",...},\n  //    \"progress\":{\"phase\":\"pathing_to_cell\",\"recent_events\":[...]}}\n  // So `if (snapshot.task)` was ALWAYS true and this script never acted: an\n  // idle bot looked busy. The discriminator is progress.phase === \"idle\", not\n  // the presence of the object. The fixtures in test_scout_script.py are copied\n  // from those two real responses, not constructed from what this script\n  // expects -- a hand-built idle `null` would have confirmed the wrong guard,\n  // which is exactly how the snapshot.state bug at line 30 survived every test.\n  // Hold unless the task is PROVABLY idle. \"Busy\" is everything else,\n  // including a directive that carries no progress block at all -- an older\n  // mod, a shape we have not seen, or a bare test directive. Writing this as\n  // `phase !== \"idle\" \u0026\u0026 progress exists` would let a directive we cannot read\n  // through as idle, which is the unsafe direction: the script would start a\n  // second job underneath an unknown one. Only an explicit idle phase opens it.\n  var task = snapshot.task;\n  if (task \u0026\u0026 !(task.progress \u0026\u0026 task.progress.phase === \"idle\")) {\n    return [];\n  }\n\n  // THE ACTION. This is the one 8.2 compares, and its argument form matters:\n  // `STORE_ALL` takes an OPTIONAL coordinate triple (StoreAllBehavior.java:62\n  // `if (directive.hasLocation())`), and when it has one it stores into that\n  // specific container and moves the bot there (:171). Leaving the coordinates\n  // off asks the mod to choose, which is the form the planner's own seed match\n  // produces (agent.py:1888 -- its pattern has no capture groups).\n  //\n  // This script emits the COORDLESS form on purpose, and 8.2 pins that form.\n  // Every producer in this repo emits it coordless: the planner's own seed\n  // match (agent.py:1888) returns a bare object because its pattern has no\n  // capture groups, and the mod's seed specs put the coordinates on AREA_LOOT\n  // with STORE_ALL bare beside it (SkillRegistry.java:154). The coordless form\n  // is therefore the plausible call, and a constructed fixture should\n  // construct that one.\n  //\n  // The directive here comes from THIS script, not from the test harness. If a\n  // future edit returns nothing, the 8.2 parity test must fail rather than\n  // silently compare two empty bodies.\n  return [\n    { kind: \"STORE_ALL\" }\n  ];\n}\n\n// The runner calls the script body per tick; returning the array above is the\n// whole contract. Kept as a named function and invoked explicitly so a syntax\n// error surfaces as a script failure rather than as an empty action list.\ntick();\n"},"kind":"ConfigMap","metadata":{"annotations":{},"labels":{"app":"aibot-agent"},"name":"agent-scripts","namespace":"minecraft-test"}}
+  creationTimestamp: "2026-11-12T04:16:00Z"
+  labels:
+    app: aibot-agent
+  name: agent-scripts
+  namespace: minecraft-test
+  resourceVersion: "264879216"
+  uid: 6cfcbe1d-efff-4760-868a-eb3c30634047

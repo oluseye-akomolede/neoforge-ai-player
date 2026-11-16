@@ -1,0 +1,22 @@
+# Live api.get_directive shapes from TEST — the producer's own outputs
+#
+# Captured: 2026-11-12 13:50Z
+# Pod:       aibot-agent-test-79ffbd5cd-gkthw (namespace minecraft-test)
+# Image:     sha256:5f34afe403d989a58cbdf8a076415a4d6d5cb35ffa00f5c7a7b349a9444fff5b
+# Method:    kubectl exec into the running agent; api.get_directive("Scout")
+#
+# These are NOT constructed fixtures. They are what the Minecraft binding puts on
+# the envelope's `task` field (snapshot.py:76 -> :144), and they are the basis for
+# the guard in scripts/scout.js and the comment in contract-v1.md section 3.
+#
+# The busy shape was produced by setting a real directive through the same pro-
+# ducer (api.set_directive) and reading it back mid-flight; the directive was
+# then cancelled so no job was left running on TEST.
+
+## IDLE — no directive in flight (never null; this is an OBJECT)
+{"progress": {"phase": "idle"}, "self_preservation": "ok", "state": "Standing by"}
+
+## BUSY — a WIDE_SEARCH directive in flight (id 15; the response below carries it)
+## Note `progress` is an OBJECT with `phase`, NOT a number, and the envelope's
+## `task` additionally carries a `directive` key with its own id and status.
+{"directive": {"id": 15, "radius": 32, "status": "ACTIVE", "target": "minecraft:iron_ore", "type": "WIDE_SEARCH"}, "progress": {"phase": "pathing_to_cell", "recent_events": ["Wide search: target=minecraft:iron_ore type=block center=-100, 40, -33 bot 1/1 cell_size=16"]}, "self_preservation": "ok", "state": "Wide search for minecraft:iron_ore \u2014 moving to cell 1/25 [bot 1/1]"}

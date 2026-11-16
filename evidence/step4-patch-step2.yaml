@@ -1,0 +1,41 @@
+# M2 step 4, part B step 2: mount the scripts ConfigMap + seed a writable
+# profile dir. Applied to the LIVE object with `kubectl patch`, not by
+# `kubectl apply -f deploy/agent-deployment.yaml`, because the repo manifest
+# names PVC `mindcraft-data` while the live deployment uses `agent-data`.
+# Applying the repo file would repoint the running pod's volume.
+#
+# At this step NO profile names a script, so script mode is off and the
+# restart changes no behaviour (plan 8.3.3).
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: seed-profiles
+          image: harbor.arcadia-ecs.local/aiplayermod/agent@sha256:1b74ae7bfb694b4c697049e4fbda7ca0cebda59ab16de26d6406c4e0bf9506a4
+          command: ["sh", "-c", "cp -an /opt/aibot-agent/profiles/. /srv/aibot-profiles/"]
+          volumeMounts:
+            - name: aibot-profiles
+              mountPath: /srv/aibot-profiles
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+      containers:
+        - name: agent
+          image: harbor.arcadia-ecs.local/aiplayermod/agent@sha256:1b74ae7bfb694b4c697049e4fbda7ca0cebda59ab16de26d6406c4e0bf9506a4
+          env:
+            - name: SCRIPT_RUNNER_URL
+              value: "http://agent-script-runner.minecraft-test.svc.cluster.local:8080"
+            - name: PROFILES_DIR
+              value: "/srv/aibot-profiles"
+          volumeMounts:
+            - name: aibot-scripts
+              mountPath: /srv/aibot-scripts
+              readOnly: true
+            - name: aibot-profiles
+              mountPath: /srv/aibot-profiles
+      volumes:
+        - name: aibot-scripts
+          configMap:
+            name: agent-scripts
+        - name: aibot-profiles
+          emptyDir: {}

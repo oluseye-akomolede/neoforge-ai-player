@@ -7,6 +7,20 @@ from urllib.parse import urlsplit, urlunsplit
 MOD_API_URL = os.getenv("MOD_API_URL", "http://localhost:3100")
 MOD_API_KEY = os.getenv("MOD_API_KEY", "")
 
+# The M2 script runner is a SEPARATE service from the mod, and must not share
+# MOD_API_URL. `api._post` prefixes MOD_API_URL, so using it as the runner
+# transport (which `call_runner` does when `post` is None) sends script ticks to
+# the game mod -- silently, because the mod answers JSON too. Empty by default
+# so a pod that has not been given a runner falls through to the planner rather
+# than posting ticks somewhere unintended.
+SCRIPT_RUNNER_URL = os.getenv("SCRIPT_RUNNER_URL", "")
+
+# The runner refuses every contract call that arrives without a bearer token,
+# with a 401 before it reads the body (agent-script-runner src/server.js). The
+# value comes from secret agent-script-runner-token, key `minecraft`; it is
+# never logged and never printed -- only whether it is set.
+RUNNER_TOKEN = os.getenv("RUNNER_TOKEN", "")
+
 # GET /health lives on the mod's own dedicated listener, not on MOD_API_URL: the
 # probe port answers /health and nothing else, so the two cannot share a base.
 # Default ties to the mod's default (3101); a deployment that moves it must set
@@ -106,6 +120,51 @@ DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "5000"))
 # Default off so prod aibot-agent keeps its proven behavior. Enable on the
 # test agent (minecraft-test ns) to exercise the new flow.
 USE_L3_PLAN_LAYER = os.getenv("USE_L3_PLAN_LAYER", "false").lower() in ("true", "1", "yes")
+
+# Whether the served model may spend tokens thinking before it answers.
+# Default off: a thinking model served with the small num_predict these call
+# sites use will spend the whole budget thinking and return empty content, which
+# parses as "the model had no opinion". Sent explicitly, never omitted -- see
+# openspec/changes/ollama-think-control. The value is a top-level field of the
+# /api/chat body, not a key inside `options`; a nested value is silently ignored.
+LLM_THINK = os.getenv("AIBOT_LLM_THINK", "false").lower() in ("true", "1", "yes")
+
+
+def think_field():
+    """The `think` entry for a /api/chat body. One source for every call site.
+
+    Returned as a dict so each site can splat it into the body it already
+    builds; no site supplies its own literal, so they cannot disagree.
+    """
+    return {"think": LLM_THINK}
+
+
+class TruncatedAnswer(RuntimeError):
+    """The model stopped at the token limit with nothing to parse.
+
+    Distinct from an empty answer: the model had a budget and spent it, so the
+    call failed rather than returning "no opinion". Callers let this propagate
+    -- a truncated call is a failed call, not an empty result.
+    """
+
+
+def answer_text(body):
+    """The answer text from an Ollama /api/chat response body.
+
+    Raises TruncatedAnswer when the content is empty AND the response says it
+    stopped for length. Without that check an empty string reaches a parser,
+    fails to parse, and reads as a model with nothing to say -- which is how a
+    thinking model on a small num_predict budget disappears silently.
+    """
+    msg = body.get("message") if isinstance(body, dict) else None
+    content = (msg or {}).get("content") or ""
+    done = body.get("done_reason") if isinstance(body, dict) else None
+    if not content.strip() and done == "length":
+        raise TruncatedAnswer(
+            "model hit the token limit before answering (done_reason=length, "
+            "eval_count=%s); this is a failed call, not an empty answer"
+            % (body.get("eval_count") if isinstance(body, dict) else None))
+    return content
 
 
 def load_profile():

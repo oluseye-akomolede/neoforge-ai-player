@@ -5,6 +5,7 @@ Supports multiple bots from a single process, each with its own
 observe → think → act loop running in a separate thread.
 """
 
+import inspect
 import json
 import os
 import re
@@ -149,6 +150,30 @@ def reset_all():
     return list(_all_runners.keys())
 
 
+# The directive params api.set_directive accepts (everything but the positional
+# `bot`). Computed once from the REAL function object, at import, and not from
+# whatever `api.set_directive` is bound to at call time: a patched or wrapped
+# callee reports *args/**kwargs as its signature, which would make the filter
+# drop every key. Computed at import so the cost is paid once, not per
+# directive.
+def _set_directive_params(fn=None):
+    """Names api.set_directive accepts as keywords, excluding `bot`."""
+    try:
+        sig = inspect.signature(api.set_directive if fn is None else fn)
+    except (TypeError, ValueError):
+        # Unintuitable callee (C function, patched Mock). Fall back to the
+        # documented contract rather than returning an empty set, which would
+        # silently strip every field. Must be the CALLEE's names: api.py:428
+        # takes `directive_type`, not `type`. A fallback carrying `type` would
+        # agree with neither the callee nor the caller (reviewer, 2026-11-12).
+        return {"directive_type", "target", "count", "radius", "x", "y", "z", "extra"}
+    names = {
+        n for n, p in sig.parameters.items()
+        if n != "bot" and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)
+    }
+    return names or {"directive_type", "target", "count", "radius", "x", "y", "z", "extra"}
+
+
 class BotRunner:
     """Runs the observe/think/act loop for a single bot in its own thread."""
 
@@ -173,6 +198,12 @@ class BotRunner:
         self._chat_thread = None
         self._stop_event = threading.Event()
         self._chat_event = threading.Event()
+        # M2 script mode. `_script_tick` stays None unless the profile names a
+        # script AND it loads; every consumer treats None as "no script" and
+        # runs the planner exactly as before (task 7.2). Built lazily rather
+        # than in __init__ so a broken script file cannot stop a bot booting.
+        self._script_tick = None
+        self._script_loaded = False
         self._plan_steps = []
         self._plan_step_idx = 0
         self._plan_instruction = ""
@@ -991,11 +1022,37 @@ class BotRunner:
                 return f"FAILED DROP {e}"
         params = dict(directive)
         params["type"] = params.pop("kind")
+        # Only keys api.set_directive actually accepts may reach it: the call
+        # below splats this dict, so any extra L3 key is a TypeError that kills
+        # the directive before dispatch (run 1, 2026-11-12: L3 emitted
+        # kind=SEARCH_AND_STORE carrying a stray `container` key, l2-mcp flagged
+        # it unknown_kind and passed it through fail-open, and every attempt
+        # died with "set_directive() got an unexpected keyword argument
+        # 'container'"). The accepted set is read from the real signature by
+        # _set_directive_params rather than hard-coded here, so a signature
+        # change cannot silently re-open this.
+        _accepted = _set_directive_params()
+        # api.set_directive names its second parameter `directive_type`
+        # (api.py:428), but this function and _run_directive both call the kind
+        # `type`, and _run_directive pops it to pass positionally. So `type` is
+        # a legitimate key here: admit it explicitly rather than letting the
+        # filter see it as "not in the signature" and drop the field that names
+        # the directive. The rename to the callee's spelling happens in
+        # _run_directive, at the splat, on a copy.
+        _dropped = sorted(set(params) - _accepted - {"type"})
+        if _dropped:
+            # Name them, never drop them silently: a field the planner meant to
+            # send vanishing without a trace is how this class of bug hides.
+            print(f"[{self.name}/L1] dropping non-directive key(s) "
+                  f"{_dropped} for {params.get('type')}: not in "
+                  f"api.set_directive's signature")
+            for _k in _dropped:
+                params.pop(_k)
         # A located structure is only half an answer — the player still has to
         # get there. Default the waypoint recipient to whoever gave the order
         # so "find me an end city" ends with a pin in their TemPad. L3 can
         # override by setting share_with explicitly (including "" to opt out).
-        if params["type"] == "LOCATE":
+        if params.get("directive_type", params.get("type")) == "LOCATE":
             extra = params.get("extra")
             extra = dict(extra) if isinstance(extra, dict) else {}
             if "share_with" not in extra and getattr(self, "_task_sender", ""):
@@ -2022,7 +2079,18 @@ class BotRunner:
 
         while retries <= self.L2_MAX_RETRIES and not self._stop_event.is_set():
             params = dict(directive_params)
-            dtype = params.pop("type")
+            # Callers name the kind `type` (the L3 path renames kind->type, the
+            # L1 parser builds 'type'); api.set_directive names its parameter
+            # `directive_type`. Accept either spelling so a caller may hand over
+            # the callee-shaped dict unchanged.
+            dtype = params.pop("type", None)
+            if dtype is None:
+                dtype = params.pop("directive_type", None)
+            else:
+                # The dict said `type`; the callee's keyword is
+                # `directive_type`. dtype is passed POSITIONALLY, so the splat
+                # must simply not still carry either name.
+                params.pop("directive_type", None)
 
             try:
                 resp = api.set_directive(self.name, dtype, **params)
@@ -2581,6 +2649,179 @@ Respond with ONLY a JSON array. Example:
             print(f"[{self.name}/L4] OpenAI call failed: {e}")
             return None
 
+    def _run_script_tick(self):
+        """Run one script-mode tick. Return True if the script handled it.
+
+        True means this tick is DONE and the caller should skip the planner.
+        False covers every other outcome: no script configured, the script file
+        unreadable, the runner refusing/silent/erroring, the script proposing
+        nothing, or every proposed action being refused. All of those must let
+        the L1/L3 path run exactly as it did before, so this never raises and
+        never returns True without having actually executed something.
+
+        The one asymmetry worth stating: a script that deliberately returns []
+        (it chose not to act) falls through to the planner too. Suppressing the
+        planner on an intentional no-op would turn a quiet script into a dead
+        bot, which is the failure mode task 7.2 exists to prevent.
+        """
+        try:
+            st = self._get_script_tick()
+            if st is None:
+                return False
+            handled, actions, refusals, detail = st.tick()
+            for r in refusals:
+                print(f"[{self.name}/script] refused action: {r}")
+            if not handled:
+                # detail is the reason; it is logged only when a script was
+                # expected, so a bot with no script stays quiet.
+                if detail and detail != "no script":
+                    print(f"[{self.name}/script] falling back to planner: {detail}")
+                return False
+            if not actions:
+                return False
+            # `actions` are BOUND actions: `{"kind": KIND, ...allowed args}`
+            # (action_binding.py:82) -- not `{"directive": {...}}`. An earlier
+            # version read `act["directive"]`, got None for every action, and
+            # `continue`d: the log above counted actions that then ran nothing.
+            # A run would have looked like it applied work while executing none
+            # of it.
+            #
+            # Dispatch goes through _l3_orchestrator_dispatch, NOT _run_directive
+            # directly. BINDABLE_KINDS is the mod's 35 plus the agent's 10, and
+            # the agent-side ones are not mod directives: EQUIP maps to
+            # api.equip_all, DROP resolves an item to inventory slots, VAULT_*,
+            # PROVISION_TERMINAL and ASK_PLAYER are all special-cased in the
+            # orchestrator (agent.py:901). Posting those as mod directives fails
+            # - and since a refusal here used to still return True, the failure
+            # consumed the tick and the planner never ran. The orchestrator
+            # handles both vocabularies and reports COMPLETED/FAILED without
+            # raising, so it is also the honest place to learn whether anything
+            # actually ran.
+            print(f"[{self.name}/script] {len(actions)} action(s) this tick")
+            # The runner's seq for each bound action, in the same order. It is
+            # NOT inside the action dict: bind_action refuses unknown keys and
+            # _l3_orchestrator_dispatch strips anything outside the mod call's
+            # signature. It exists so the log can be matched to the script's
+            # own call, which is M2 §8.2's evidence requirement.
+            seqs = list(getattr(st, "_last_action_seqs", []) or [])
+            ran = 0
+            for i, act in enumerate(actions):
+                if not isinstance(act, dict) or not act.get("kind"):
+                    continue
+                kind = act["kind"]
+                directive = dict(act)
+                seq = seqs[i] if i < len(seqs) else None
+                print(f"[{self.name}/script] dispatch: {kind} seq={seq} {directive}")
+                result = self._l3_orchestrator_dispatch(directive)
+                if isinstance(result, str) and result.startswith("FAILED"):
+                    # Refused or unroutable: this action did not happen. Leave
+                    # `ran` alone so the tick falls through to the planner
+                    # rather than consuming it on work that never occurred.
+                    print(f"[{self.name}/script] not executed: {result}")
+                    continue
+                ran += 1
+                if "interrupted_by_chat" in str(result):
+                    return True
+            if ran == 0:
+                # Every action was refused. Nothing happened, so the planner
+                # gets the tick: a script that asks for impossible work must
+                # not silently become a dead bot.
+                print(f"[{self.name}/script] no action executed, falling back")
+                return False
+            return True
+        except Exception as e:  # noqa: BLE001 — a script must never kill the loop
+            print(f"[{self.name}/script] tick error, using planner: {e}")
+            return False
+
+    def _bound_script_path(self):
+        """The script file bound to this bot, or None.
+
+        Reads `<scripts dir>/bindings.json`, a map of bot name -> script
+        filename. Everything about this is deliberately dull: one small JSON
+        file, read once, no state. The interesting part is only where it lives
+        (a ConfigMap, so it survives pod restarts) and what its absence means
+        (this bot runs the planner, unchanged).
+
+        Every failure returns None with a log line rather than raising: a bad
+        bindings file must not stop the other four bots from running, and a bot
+        that silently loses its script is the failure this whole step exists to
+        make visible.
+        """
+        import os as _os
+        # No baked-in fallback. SCRIPTS_DIR must be set by the deployment
+        # because the bindings live in a ConfigMap, and the image's own
+        # scripts/bindings.json is a build-time artefact that would bind the
+        # WRONG file -- silently -- in exactly the configuration that looks
+        # safest: mount failed AND env unset. Measured on TEST 2026-11-11: with
+        # the env unset, Scout bound the image's copy and every log line read
+        # normal.
+        scripts_dir = (_os.getenv("SCRIPTS_DIR") or "").strip()
+        if not scripts_dir:
+            print(f"[{self.name}/script] SCRIPTS_DIR is not set; script mode "
+                  f"disabled rather than falling back to the image's copy")
+            return None
+        bindings_path = _os.path.join(scripts_dir, "bindings.json")
+        try:
+            with open(bindings_path, encoding="utf-8") as f:
+                bindings = json.load(f)
+        except FileNotFoundError:
+            # Genuinely absent: no ConfigMap mounted here. That is a deployment
+            # fault, not a bot without a script, so say which one it is.
+            print(f"[{self.name}/script] no bindings at {bindings_path}; "
+                  f"this bot runs the planner")
+            return None
+        except (OSError, ValueError) as e:
+            print(f"[{self.name}/script] cannot read {bindings_path}: {e}")
+            return None
+        if not isinstance(bindings, dict):
+            print(f"[{self.name}/script] {bindings_path} is not an object; ignoring")
+            return None
+        name = bindings.get(self.name)
+        if not name:
+            return None
+        if not isinstance(name, str) or "/" in name or name.startswith("."):
+            # A binding names a file inside the scripts dir, not a path. This
+            # keeps a malformed bindings file from reading something arbitrary.
+            print(f"[{self.name}/script] bad binding {name!r}; ignoring")
+            return None
+        return _os.path.join(scripts_dir, name)
+
+    def _get_script_tick(self):
+        """Build the ScriptTick once, or None if this bot has no usable script.
+
+        The bot-to-script map lives in the scripts ConfigMap (`bindings.json`),
+        NOT in the bot's profile. A profile key was tried first and abandoned:
+        the profiles directory is an emptyDir reseeded from the image on every
+        pod start, so a profile edit survived only until the next restart and
+        the plan's rollback story ("restore the saved file") was false. A
+        ConfigMap binding survives restarts, and the rollback is deleting the
+        entry rather than editing a file on a running pod.
+
+        A bot absent from `bindings` has no script and runs the planner exactly
+        as before -- the safe default, and the reason four of the five test
+        bots are unaffected when one is bound.
+        """
+        if self._script_loaded:
+            return self._script_tick
+        self._script_loaded = True
+        source = None
+        path = (self._bound_script_path() or "").strip()
+        if path:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    source = f.read()
+            except OSError as e:
+                print(f"[{self.name}/script] cannot read {path}: {e}")
+        if not source:
+            return None
+        try:
+            import script_tick
+            self._script_tick = script_tick.ScriptTick(api, self.name, source)
+        except Exception as e:  # noqa: BLE001
+            print(f"[{self.name}/script] script mode unavailable: {e}")
+            self._script_tick = None
+        return self._script_tick
+
     def _loop(self):
         while not self._stop_event.is_set():
             try:
@@ -2596,6 +2837,16 @@ Respond with ONLY a JSON array. Example:
                     continue
 
                 self._maybe_plan(new_msgs)
+
+                # ── M2 script path: runs ONLY if a script answered ──
+                # Placed before plan execution and after _maybe_plan, so a new
+                # instruction still reaches the planner first. `handled=False`
+                # on every failure path, so the L1 directive path below runs
+                # untouched -- that is the task 7.2 guarantee, and it is why
+                # this returns rather than `continue`s on an empty action list.
+                if self._run_script_tick():
+                    self._stop_event.wait(TICK_DELAY)
+                    continue
 
                 if not self._plan_steps:
                     self._check_task_board()
@@ -3184,8 +3435,17 @@ def _strip_category_prefix(text):
 
 
 def load_profiles():
-    """Load all profile JSON files from the profiles directory."""
-    profiles_dir = os.path.join(os.path.dirname(__file__), "profiles")
+    """Load all profile JSON files from the profiles directory.
+
+    `PROFILES_DIR` overrides the directory; unset means the image's own
+    `profiles/`, i.e. today's behaviour exactly. This exists because the
+    Deployment mounts the `agent-data` PVC at `/opt/aibot-agent/data`, which is
+    NOT where this function reads: a profile edited on the PVC was invisible to
+    the loader, so a run that "enabled" script mode from there would have proved
+    nothing. Prod sets nothing and is unaffected.
+    """
+    profiles_dir = os.getenv("PROFILES_DIR") or os.path.join(
+        os.path.dirname(__file__), "profiles")
     profiles = []
     for fname in sorted(os.listdir(profiles_dir)):
         if fname.endswith(".json"):
@@ -3587,6 +3847,26 @@ def _drone_adoption_worker():
                         print(f"[agent] re-spawn {n} failed: {e}")
         except Exception as e:
             print(f"[agent/drones] adoption error: {e}")
+
+
+def bound_script_path(bot_name):
+    """The script bound to `bot_name` for the deployment's current config, or None.
+
+    A module-level door onto `BotRunner._bound_script_path`. The run plan needs
+    to answer "does this bot bind a script right now?" in one line, inside the
+    pod, at the moment the answer separates an inert deployment from one that
+    is quietly running the wrong file. Calling the method directly from a
+    one-liner is not possible (`self`), and constructing a real BotRunner for
+    the question would open sockets and start threads for a lookup that reads
+    one small JSON file -- so this builds an uninitialised instance instead,
+    which is exactly what the tests do.
+
+    The resolution itself is *not* reimplemented here. This delegates, so the
+    plan's one-liner and the working tick can never disagree about what binds.
+    """
+    runner = BotRunner.__new__(BotRunner)
+    runner.name = bot_name
+    return runner._bound_script_path()
 
 
 def _squad_cohesion_worker():
