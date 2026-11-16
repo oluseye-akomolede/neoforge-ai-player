@@ -52,6 +52,21 @@ script falls through to the corpus/extraction path with a stand-in corpus. Whate
 the cause, the guard produced no output and the honest state is "not verified".
 Do NOT read the missing output as a pass.
 
+SETTLED at 04:0xZ. The hang was my parallel runs, not the guard. Rerun serial with
+`timeout -k 5` from a clean `git archive` of 807b6f1: clean rc=0, M-c rc=2 in 0.099s
+with the correct message ("no live guard ... or every guard is commented out"). My
+first attempt at this rerun was ALSO wrong in a new way: I commented out the guard and
+then ran `grep -c` against the SAME rewritten file, read the 0 as "the clean tree has
+no guard", and very nearly reported that as a finding. Count against a kept copy of the
+original (`orig.sh`), not the file you just edited.
+
+The lead's hypothesis is falsified on this evidence: no subprocess timeout was needed,
+because the structure check returns 2 BEFORE the behavioural probe runs. The probe is
+unreachable whenever no live guard exists, so it cannot hang on that input. The absent
+`timeout=` on subprocess.run at check_apply_matches_job.py:366 is still worth adding as
+belt-and-braces (the probe is reachable on other inputs), but it is not a demonstrated
+defect and must not be filed as one.
+
 Also un-run: M-d (default restored, should now report the structure failure rather than
 "has a default" — that is the builder's stated point of the reorder), M-e (message
 gutted), M-f (reorder undone), M-g (comment filter dropped again).
