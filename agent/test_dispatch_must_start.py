@@ -272,6 +272,24 @@ def test_every_not_started_shape_is_refused():
     check("dispatch_error: subtask not complete", sub.status != "complete",
           f"status={sub.status}")
 
+    # And the genuine raise: a dispatch_fn that throws, so plan_orchestrator.py:663-665
+    # (the except that builds DISPATCH_ERROR) is actually executed. The case above
+    # only classifies a pre-formed string and would survive that except being gutted.
+    def _boom(d):
+        raise ConnectionRefusedError("Connection refused")
+
+    _, dispatched, sub, ev = _run_step(
+        _plan(), [{"kind": "STORE_ALL"}], _boom,
+        criteria="holdings 0/0 of minecraft:items")
+    check("raise: directive WAS sent", dispatched == ["STORE_ALL"],
+          f"dispatched={dispatched}")
+    check("raise: criteria not consulted", ev.call_count == 0,
+          f"calls={ev.call_count}")
+    check("raise: subtask not complete", sub.status != "complete",
+          f"status={sub.status}")
+    check("raise: error names DISPATCH_ERROR", "DISPATCH_ERROR" in (sub.error or ""),
+          f"error={sub.error!r}")
+
 
 def main():
     for fn in (test_invented_kind_is_not_dispatched,
