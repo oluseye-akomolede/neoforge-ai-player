@@ -614,14 +614,22 @@ def _step(plan: Plan, subtask: Subtask, model: str,
     # already EQUIP_ALL here and still dispatches. A kind only the mod would
     # reject is worse than a wasted L3 call: the mod never starts it, and the
     # criterion for a bot that did nothing can read true ("holdings 0/0").
+    # SKILL is exempt although it is in neither list: the planner emits it
+    # itself (_collapse_to_skill l3_planner.py:951, _synthesize_skill :238),
+    # the prompt tells L3 to prefer it, and _step handles it after dispatch.
+    # It dispatches via api.set_directive(b, "SKILL", ...) at agent.py:4129.
+    # This exemption is NOT added to the planner's raw-kind vocabulary - SKILL
+    # is a dispatch-time shape, not a kind the planner may name freely.
     unknown = [str(d.get("kind", "")).upper() for d in directives
                if isinstance(d, dict)
-               and str(d.get("kind", "")).upper() not in BINDABLE_KINDS]
+               and str(d.get("kind", "")).upper() not in BINDABLE_KINDS
+               and str(d.get("kind", "")).upper() != "SKILL"]
     # A kind l2-mcp flagged is refused even though l2-mcp is fail-open: its
     # fail-open rule covers being UNREACHABLE, never a directive it flagged.
     unknown += [str(f).split(":", 1)[1].upper() for f in flags
                 if str(f).startswith("unknown_kind:")
-                and str(f).split(":", 1)[1].upper() not in BINDABLE_KINDS]
+                and str(f).split(":", 1)[1].upper() not in BINDABLE_KINDS
+                and str(f).split(":", 1)[1].upper() != "SKILL"]
     if unknown:
         bad = unknown[0]
         log.warning("[%s] subtask %d not dispatched, unknown kind %s (kinds=%r)",

@@ -122,6 +122,70 @@ def test_invented_kind_is_not_dispatched():
     check("plan not failed outright on attempt 1", cont is True, f"cont={cont}")
 
 
+def test_skill_is_not_refused_by_the_gate():
+    """SKILL is emitted by the planner itself (_collapse_to_skill, :951).
+
+    It is in neither BINDABLE_KINDS nor l3_planner's raw-kind vocabulary, so
+    the unknown-kind gate must exempt it explicitly. Fails on the unexempted
+    gate: every collapsed subtask would fail unknown_kind:SKILL.
+    """
+    print("1d. a collapsed SKILL subtask still dispatches")
+    plan = _plan()
+    cont, dispatched, sub, ev = _run_step(
+        plan, [{"kind": "SKILL", "extra": {"spec": "gather wood"}}],
+        lambda d: "COMPLETED SKILL {}")
+
+    check("SKILL reached the dispatch path", dispatched == ["SKILL"],
+          f"dispatched={dispatched}")
+    check("SKILL not failed as unknown_kind",
+          "unknown_kind" not in (sub.error or ""), f"error={sub.error!r}")
+    check("criteria were evaluated for a started SKILL", ev.call_count == 1,
+          f"calls={ev.call_count}")
+
+
+def test_skill_with_spec_reaches_refine():
+    """An exempted SKILL must reach its own dispatch path, not just pass the gate.
+
+    _step routes a SKILL carrying an inline spec through
+    _dispatch_skill_with_refine (:664) rather than plain dispatch_fn. Passing
+    the gate is not enough: the directive has to land there.
+    """
+    print("1f. SKILL with a spec reaches _dispatch_skill_with_refine")
+    plan = _plan()
+    seen = []
+
+    def fake_refine(d, dispatch_fn, model, bot, cancel_event=None):
+        seen.append((d.get("kind"), (d.get("extra") or {}).get("spec")))
+        return "COMPLETED SKILL {}"
+
+    with mock.patch.object(plan_orchestrator, "_dispatch_skill_with_refine",
+                           side_effect=fake_refine):
+        _run_step(plan, [{"kind": "SKILL", "extra": {"spec": "gather wood"}}],
+                  lambda d: "COMPLETED SKILL {}")
+
+    check("SKILL was routed to refine, not plain dispatch",
+          seen == [("SKILL", "gather wood")], f"seen={seen}")
+
+
+def test_skill_synthesis_is_still_refused():
+    """The exemption is for SKILL only, not a general hole.
+
+    Guards against over-reach in the other direction: SKILL passing must not
+    let an invented kind through alongside it.
+    """
+    print("1e. SKILL exemption does not admit other kinds")
+    plan = _plan()
+    cont, dispatched, sub, ev = _run_step(
+        plan, [{"kind": "SKILL", "extra": {"spec": "x"}},
+               {"kind": "SEARCH_AND_STORE"}],
+        lambda d: "COMPLETED {}")
+
+    check("mix refused on the unknown kind", dispatched == [],
+          f"dispatched={dispatched}")
+    check("mix failed naming SEARCH_AND_STORE",
+          sub.error == "unknown_kind:SEARCH_AND_STORE", f"error={sub.error!r}")
+
+
 def test_alias_still_dispatches():
     """EQUIP -> EQUIP_ALL is alias resolution, not an unknown kind.
 
@@ -293,6 +357,9 @@ def test_every_not_started_shape_is_refused():
 
 def main():
     for fn in (test_invented_kind_is_not_dispatched,
+               test_skill_is_not_refused_by_the_gate,
+               test_skill_with_spec_reaches_refine,
+               test_skill_synthesis_is_still_refused,
                test_alias_still_dispatches,
                test_known_kind_dispatches,
                test_l2mcp_flag_is_honoured,
