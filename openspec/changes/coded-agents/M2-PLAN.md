@@ -1740,13 +1740,37 @@ not carry open items into implementation:
 
 ---
 
-## 8.4 The owed controls: run plan (written 2026-11-13, NOT executed)
+## 8.4 The owed controls: run plan (written 2026-11-13; C2a and C2b executed 2026-11-13)
 
-**Status: proposed. Nothing in this section has run.** It exists because ask 4 of
-`qitem-20261113100843` was answered "not done" — the control arm (§8.3.4 Run 1)
-and the negative control had never been executed as their own evidence, and the
-run-5 result is the script arm, not a control. Cobblestone left in slot 0 is
-script behaviour (the selected-slot trap), not a baseline.
+**Status (lead, rewritten 2026-11-17 from the primary records):**
+
+| Arm | Status | Primary evidence |
+|---|---|---|
+| **C2a closed port** | **PASS**, 2026-11-13 | pod `vqs44`, agent image `a9e75ad1`: state `fallback_connect_refused`, 0 dispatches; evidence read 11:04:43Z, before the builder's unauthorised listener exec at ~11:11Z perturbed that pod (one stray `read timeout` line at 11:11, outside C2a's evidence window) |
+| **C2b silent listener** | **PASS**, 2026-11-13 | listener accepts first 11:14:17Z, last 11:16:13Z (48 accepts); Scout logged 48 `fallback_timeout: read timeout` lines, 11:14:17.61Z to 11:16:13.82Z, all after the first accept; 0 `dispatch:` lines; the single `connect refused` line (11:14:15.20Z) precedes the first accept, i.e. C2a's window, so it does not void C2b |
+| **C1 control** | **OWED — not executed** | the 2026-11-11 13:2xZ no-script run dispatched `WIDE_SEARCH`, not `STORE_ALL`, so it does not stand in for §8.3.4 Run 1 |
+| **C4 script arm** | live since 2026-11-15 18:06Z | test pod `q49qp`, agent image `2914fb85`, Scout bound to `scout.js` (hashes as §8.4.3) |
+
+C2a + C2b together discharge the negative control at `:841` (runner unreachable
+for Scout only; the shared runner was never stopped). Only **C1** remains, and it
+must follow §8.4.2 and §8.4.3 *as rewritten below*: the Deployment is no longer
+paused.
+
+**Image caveat.** C2a, C2b and run 5 (C4) ran on agent image `a9e75ad1`; C1 will
+run on `2914fb85` (the replan fix). The C1 evidence (a `no bindings` line and
+zero `dispatch:` lines) is a property of the binding resolver, which the replan
+fix does not touch, so the arms remain comparable on what each is allowed to
+prove (§8.4.8). Any comparison of *planner behaviour* across arms must say which
+image each arm ran on.
+
+§8.4.4 and §8.4.5 below are kept as the record of the executed C2 arms. Their
+paused-Deployment steps describe the state on 2026-11-13 and do not apply to C1.
+
+Original motivation (2026-11-13): ask 4 of `qitem-20261113100843` was answered
+"not done" — the control arm (§8.3.4 Run 1) and the negative control had never
+been executed as their own evidence, and the run-5 result is the script arm, not
+a control. Cobblestone left in slot 0 is script behaviour (the selected-slot
+trap), not a baseline.
 
 ### 8.4.0 What makes this plan necessary
 
@@ -1784,13 +1808,18 @@ a convenience detail: a plan that edits the ConfigMap and reads the log without
 recreating the pod will observe the *previous* arm and record it as the new one
 — a false pass in the exact shape §8.3.1a warns about.
 
-**Not by `rollout restart`.** `deploy/aibot-agent-test` is **paused**
-(`spec.paused=true`, annotation `m2-step4=step1-inert`; lead, 10:45Z), and a
-paused Deployment **refuses** `kubectl rollout restart` — it failed during the
-rotation at 10:37Z. A paused Deployment still has its ReplicaSet reconciling
-pod count (`spec.replicas=1` on the RS, independent of the pause), so
-**deleting the pod** lets the same ReplicaSet recreate it from the unchanged
-template. Every transition in §8.4 therefore uses:
+**Not by `rollout restart`.** *(Updated 2026-11-17.)* When this was written,
+`deploy/aibot-agent-test` was paused and refused `rollout restart`. It is **no
+longer paused** (live 2026-11-17 10:2xZ: `spec.paused` unset, strategy
+`Recreate`; the pod template still carries the inert annotation
+`m2-step4: step1-inert` and a `restartedAt` of 2026-11-13T05:16:47Z). Pod deletion
+is still the procedure, for a different reason: `rollout restart` writes a new
+`restartedAt` into the template, which makes a new ReplicaSet, and a later
+server-side apply of the manifest would then own and delete those undeclared
+template annotations and roll the pod again (reviewer, `REVIEW-0c4b52b-gen-bump.md`
+in the manifests repo). **Deleting the pod** recreates it from the *same*
+ReplicaSet and template, so the only thing that changes between arms is the
+ConfigMap. Every transition in §8.4 therefore uses:
 
 ```
 # THE ONLY permitted recreation procedure. Runner untouched.
@@ -1816,10 +1845,12 @@ both conditions, not either:
    change that is not visible in the *new* pod's mount means the ConfigMap patch
    did not land, and the arm is void.
 
-**Do not resume the Deployment to make `rollout restart` work.** Resuming applies
-the pending template change, which is a different deployment than the one being
-measured; if resuming is ever wanted it is a separate lead decision with its own
-plan, not a convenience inside a control run.
+**Do not change the Deployment template during a control run** (no `set image`,
+no `rollout restart`, no manifest apply). Any of these makes a new ReplicaSet and
+measures a different deployment than the one the arms compare; an image or
+manifest change is a separate lead decision with its own plan. *(This replaces
+the 2026-11-13 rule "do not resume the Deployment", which no longer applies: the
+Deployment was unpaused before 2026-11-15 18:06Z, when pod `q49qp` started.)*
 
 ⚠ **`bound_script_path()` is not evidence that an arm took effect.** It does
 `BotRunner.__new__` and reads `bindings.json` **fresh** (`agent.py:3850`), so it
@@ -1839,6 +1870,19 @@ Two things that are *not* required, to keep the blast radius small:
   accepted by the lead's delete-pod ruling.
 
 ### 8.4.3 Preconditions (read-only; abort if any fails)
+
+**Live baseline, measured by the lead 2026-11-17 10:2xZ (read-only):**
+
+| item | value |
+|---|---|
+| test agent pod | `aibot-agent-test-fc9f559cb-q49qp`, started 2026-11-15T18:06:02Z, 0 restarts |
+| test agent image | `agent@sha256:2914fb85ff22…` (template and running pod agree) — the replan fix `ca27b6e`, same as prod |
+| `spec.paused` | unset (not paused); strategy `Recreate` |
+| runner | `agent-script-runner@sha256:e07a90c56537…` (shared with cardgame; never stopped by this plan) |
+| ConfigMap `agent-scripts` | `scout.js` `1824967e200dab94` / 5852 B; `bindings.json` `10cef1b830853225` / 26 B — equals the table below |
+
+Re-measure every row immediately before C1. If the image, pod or hashes differ,
+stop and report; do not adapt the plan in flight.
 
 1. `agent-scripts` holds **both** files at their expected hashes — the C4 state:
 
@@ -1860,7 +1904,7 @@ Two things that are *not* required, to keep the blast radius small:
 3. The runner answers `ready:true` **and** a real tick — `ready` alone is not
    enough; it stayed true through the entire 05:57–10:15Z outage.
 
-### 8.4.4 C2 — dead runner, closed port
+### 8.4.4 C2 — dead runner, closed port (EXECUTED 2026-11-13: PASS; kept as the record)
 
 **Approved as option 2** (lead ruling 10:50Z, row `…1b24fe6e9c67c4c9`). The
 reviewer's BLOCK on `ff3745a` assumed a whole-pod URL cut silences all five
@@ -1931,7 +1975,7 @@ observe, then restore and recreate again.
    state). Record in the evidence whether it was resumed and re-paused, with the
    resume's diff from step 3.
 
-### 8.4.5 C2b — accept and never reply (the bounded wait)
+### 8.4.5 C2b — accept and never reply (the bounded wait) (EXECUTED 2026-11-13 11:14–11:16Z: PASS; kept as the record)
 
 **Revised 11:06Z: this arm reuses the running C2a pod** (lead ruling 11:03Z).
 The URL C2a runs against — `http://127.0.0.1:9` — is a genuinely closed port in
@@ -1958,7 +2002,7 @@ does **not** inherit the paused-Deployment diff or the detail-prefix void rule:
 the Deployment stays resumed for the whole reuse, and the discriminator here is
 the accept record and its timestamp (§8.4.5.1, evidence 2 and 4).
 
-#### 8.4.5.1 The listener (docs only; nothing here has run)
+#### 8.4.5.1 The listener (ran for C2b on 2026-11-13; 48 accepts, 11:14:17–11:16:13Z)
 
 §8.4.5 said "a listener that accepts and holds" without saying how to build one
 or how to know it held. This subsection supplies the missing step. It adds no
@@ -2328,6 +2372,12 @@ shared runner is untouched at every step, so it has no rollback.
 Verified-by-re-read, not by `apply` returning 0. Confirm the pod name changed
 and its `.status.startTime` is later than the restore; a re-read from the old
 pod proves nothing about the restore.
+
+*(Updated 2026-11-17: the Deployment is now unpaused, and C1 changes only the
+ConfigMap, so for C1 the rollback is the ConfigMap restore plus a pod
+recreation, and the check is that `spec.paused` and the template annotations are
+unchanged from the §8.4.3 baseline. The paragraph below applied to the C2 arms
+on 2026-11-13.)*
 
 **Restore the pause state too.** The Deployment's pre-run state is
 `spec.paused=true`; if an arm resumed it, `kubectl -n minecraft-test rollout
