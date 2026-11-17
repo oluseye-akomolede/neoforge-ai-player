@@ -31,6 +31,7 @@ import plan_store
 import skill_matcher
 import telemetry
 import trajectory_log
+from action_binding import BINDABLE_KINDS
 from criteria_eval import evaluate as evaluate_criteria
 from plan_schema import Plan, PlanValidationError, Subtask
 
@@ -480,6 +481,26 @@ def _dispatch_skill_with_refine(d: dict[str, Any], dispatch_fn: DispatchFn,
     return result
 
 
+def _dispatch_started(result: Any) -> bool:
+    """Did the directive this dispatch result describes actually reach the mod?
+
+    Reads what `dispatch_fn` already returns (a result string, see DispatchFn)
+    rather than changing agent.py's contract. The mod's L1 runner reports
+    `directive_never_started` ONLY in the branch where the directive never
+    appeared on the mod; every other failure (directive_timeout, reset,
+    interrupted_by_chat, superseded) means it ran and did not finish, which is
+    a start. A `COMPLETED` prefix is a start by definition.
+    """
+    text = str(result or "")
+    if "directive_never_started" in text:
+        return False
+    if text.startswith("COMPLETED"):
+        return True
+    # A FAILED/DISPATCH_ERROR carrying any other reason: the directive reached
+    # the mod and then went wrong. An empty result has no evidence of a start.
+    return bool(text)
+
+
 def _step(plan: Plan, subtask: Subtask, model: str,
           dispatch_fn: DispatchFn, world_state_fn: WorldStateFn,
           dim_list: list[str] | None = None, cancel_event=None) -> bool:
@@ -521,7 +542,11 @@ def _step(plan: Plan, subtask: Subtask, model: str,
             return True
 
     # Validate / repair directives BEFORE dispatch (TELEPORT especially).
-    directives = [_repair_directive(d, plan.bot, dim_list) for d in directives]
+    # l2-mcp's flags are collected, not just logged: an `unknown_kind:<KIND>`
+    # flag must stop the dispatch below, so the repair pass cannot swallow it.
+    flags: list[str] = []
+    directives = [_repair_directive(d, plan.bot, dim_list, flags=flags)
+                  for d in directives]
 
     # Prepend CHANNEL directives for any material shortfall (BUILD needs
     # and inventory criteria alike).
@@ -561,10 +586,42 @@ def _step(plan: Plan, subtask: Subtask, model: str,
     subtask.directives = list(directives)
     plan_store.write(plan)
 
+    # A kind outside the known vocabulary is not dispatched (spec: Directive
+    # Normalization). The vocabulary is BINDABLE_KINDS — the single source of
+    # truth, pinned against l3_planner._VALID_DIRECTIVE_KINDS by
+    # test_action_binding. This runs AFTER alias resolution, so EQUIP is
+    # already EQUIP_ALL here and still dispatches. A kind only the mod would
+    # reject is worse than a wasted L3 call: the mod never starts it, and the
+    # criterion for a bot that did nothing can read true ("holdings 0/0").
+    unknown = [str(d.get("kind", "")).upper() for d in directives
+               if isinstance(d, dict)
+               and str(d.get("kind", "")).upper() not in BINDABLE_KINDS]
+    # A kind l2-mcp flagged is refused even though l2-mcp is fail-open: its
+    # fail-open rule covers being UNREACHABLE, never a directive it flagged.
+    unknown += [str(f).split(":", 1)[1].upper() for f in flags
+                if str(f).startswith("unknown_kind:")
+                and str(f).split(":", 1)[1].upper() not in BINDABLE_KINDS]
+    if unknown:
+        bad = unknown[0]
+        log.warning("[%s] subtask %d not dispatched, unknown kind %s (kinds=%r)",
+                    plan.bot, subtask.id, bad, [d.get("kind") for d in directives])
+        telemetry.push(plan.bot, "dispatch_never_started",
+                       f"[unknown_kind] {bad}")
+        subtask.attempts += 1
+        subtask.error = f"unknown_kind:{bad}"
+        plan_store.write(plan)
+        if subtask.attempts >= MAX_ATTEMPTS:
+            if not _replan(plan, subtask, model):
+                plan.status = "failed"
+                return False
+        return True
+
     # Dispatch each directive via L1. A SKILL proposal carrying an inline spec
     # goes through the validate→refine loop so a mod-side validator rejection
     # is fed back to L3 and the spec is corrected in place before retrying.
     last_result = ""
+    dispatched = 0
+    started = 0
     for d in directives:
         # Re-check before EVERY dispatch: a stop can land while an earlier
         # directive in this same loop is executing (the mod-side L1 runner
@@ -586,6 +643,9 @@ def _step(plan: Plan, subtask: Subtask, model: str,
         except Exception as e:
             last_result = f"DISPATCH_ERROR: {e}"
             log.warning("[%s] dispatch failed for %s: %s", plan.bot, d.get("kind"), e)
+        dispatched += 1
+        if _dispatch_started(last_result):
+            started += 1
         # A stop can land while this dispatch (incl. an in-flight SKILL refine
         # call) is running. Abort now rather than evaluate criteria on a result
         # produced after the cancel — this is the third P7 seam.
@@ -594,6 +654,26 @@ def _step(plan: Plan, subtask: Subtask, model: str,
                      plan.bot, subtask.id, d.get("kind"))
             plan.status = "cancelled"
             return False
+
+    # A subtask passes only if at least one of its directives actually started
+    # (spec: Directive Normalization). Evaluating criteria on a bot that did
+    # nothing is how the 11-13 plan closed "complete" on "holdings 0/0" — a
+    # criterion that is true precisely because nothing happened. An attempt
+    # with no directives keeps its old behaviour.
+    if dispatched and not started:
+        reason = last_result if last_result else "dispatch did not start"
+        log.warning("[%s] subtask %d: no directive started (%s)",
+                    plan.bot, subtask.id, reason)
+        telemetry.push(plan.bot, "dispatch_never_started",
+                       f"[criteria_skipped] {reason}")
+        subtask.attempts += 1
+        subtask.error = reason
+        plan_store.write(plan)
+        if subtask.attempts >= MAX_ATTEMPTS:
+            if not _replan(plan, subtask, model):
+                plan.status = "failed"
+                return False
+        return True
 
     # Evaluate criteria
     satisfied, strategy, reason = evaluate_criteria(
@@ -1003,7 +1083,8 @@ _MOB_SYNONYMS = {
 }
 
 
-def _repair_directive(d: dict[str, Any], bot_name: str, dim_list: list[str] | None) -> dict[str, Any]:
+def _repair_directive(d: dict[str, Any], bot_name: str, dim_list: list[str] | None,
+                      flags: list[str] | None = None) -> dict[str, Any]:
     """Patch common L3 directive mistakes before dispatch. Idempotent.
 
     Delegates to l2-mcp when L2_MCP_URL is set (authoritative vocabulary
@@ -1022,14 +1103,16 @@ def _repair_directive(d: dict[str, Any], bot_name: str, dim_list: list[str] | No
             rendered = r.json().get("rendered", {})
             nd = rendered.get("directive")
             if isinstance(nd, dict) and nd.get("kind"):
-                flags = rendered.get("flags") or []
-                if flags:
-                    log.info("[%s] l2-mcp flags on %s: %s", bot_name, nd.get("kind"), flags)
+                l2_flags = rendered.get("flags") or []
+                if l2_flags:
+                    log.info("[%s] l2-mcp flags on %s: %s", bot_name, nd.get("kind"), l2_flags)
+                if flags is not None:
+                    flags.extend(str(f) for f in l2_flags)
                 # L4 seam: l2-mcp DETECTS ambiguity and used to guess anyway
                 # — detection without a recipient. The player is the
                 # recipient now: candidates go to the inbox, and the ruling
                 # replaces the guess. Timeout falls back to the old guess.
-                if any(str(f).startswith("ambiguous_item") for f in flags):
+                if any(str(f).startswith("ambiguous_item") for f in l2_flags):
                     candidates = ((nd.get("extra") or {}).get("item_candidates")
                                   or [])[:6]
                     if candidates:

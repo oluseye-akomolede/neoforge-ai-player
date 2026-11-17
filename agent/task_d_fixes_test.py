@@ -290,7 +290,7 @@ def test_stop_during_skill_refine_dispatches_nothing():
          mock.patch.object(l3_planner, "call_exec", side_effect=fake_exec), \
          mock.patch.object(l3_planner, "refine_skill", side_effect=fake_refine), \
          mock.patch.object(plan_orchestrator, "_repair_directive",
-                           side_effect=lambda nd, bn, st: nd), \
+                           side_effect=lambda nd, bn, st, flags=None: nd), \
          mock.patch.object(plan_orchestrator.plan_store, "write"), \
          mock.patch.object(plan_orchestrator.plan_store, "archive"), \
          mock.patch.object(plan_orchestrator.trajectory_log, "log_plan_close"), \
