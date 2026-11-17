@@ -362,9 +362,20 @@ def test_skill_exemption_is_exact_equality_not_prefix():
     (SEARCH_AND_STORE) cannot tell the two apart -- it is refused either way.
     1e therefore passes a prefix hole; this test does not. Verified against a
     real startswith('SKILL') mutant: 0 of the checks below survive it.
+
+    SKILLETY is the second near-miss on that edge: a name that begins with
+    SKILL but not with SKILL followed by a separator, so an exemption written
+    as `startswith("SKILL_")` would still miss it.
+
+    XSKILL / EVIL_SKILL pin the OTHER edge. Without them the test pins the left
+    edge only, and an exemption written as `endswith("SKILL")` or
+    `"SKILL" in kind` stays green while XSKILL dispatches and criteria are
+    evaluated -- the same 11-13 shape from the far end of the string. Together
+    the two families are what makes this a test of equality: no single-sided
+    match satisfies both.
     """
-    print("1g. SKILL exemption is exact equality, not a prefix match")
-    for name in ("SKILL_X", "SKILLETY"):
+    print("1g. SKILL exemption is exact equality, not prefix/suffix/substring")
+    for name in ("SKILL_X", "SKILLETY", "XSKILL", "EVIL_SKILL"):
         # Directive side.
         _, dispatched, sub, ev = _run_step(
             _plan(), [{"kind": name}], lambda d: "COMPLETED %s {}" % name,
