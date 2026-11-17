@@ -27,11 +27,20 @@
       than the code did). Now `_NEVER_STARTED` lists all five, and 2e in
       `test_dispatch_must_start.py` asserts one check per shape plus timeout-is-a-start; each
       marker mutation-killed individually.
+      NOTE (11-17, 11:50Z): 1g was written by hand because qcode produced no patch inside
+      the window I waited for — that was my error, not qcode's: its job was still running and
+      returned a valid patch at 71s. The patch was not applied because it asserted only
+      not-dispatched and unknown_kind, dropping the criteria-not-consulted check; `1g` in
+      the repo is hand-written and asserts all three. Recording it here so the fallback is
+      not later mistaken for a deliberate choice (reviewer, 11:48Z). Verdict corrected to
+      `fixed` in the qcode ledger.
 
 ## 3. Verify and ship
 - [x] 3.1 Run the affected tests only, bounded (nice -n 19, inside the VM rules); paste the
       counts from the output, not from memory.
 - [x] 3.2 `openspec validate dispatch-must-start --strict` valid.
-- [ ] 3.3 Reviewer PASS against this spec's scenarios.
+- [x] 3.3 Reviewer PASS against this spec's scenarios.
+      d1f13dd PASS at f89f2db (11:48Z), cf0360c before it. 27c0956 extends 1g for the
+      reviewer's non-blocking suffix finding (XSKILL/EVIL_SKILL) and is awaiting its verdict.
 - [ ] 3.4 Lead: image build, roll to TEST, live check on TEST that a planner goal still
       completes normally (no regression); then prod after backup. Archive the change when live.
