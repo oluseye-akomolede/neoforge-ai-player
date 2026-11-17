@@ -481,24 +481,45 @@ def _dispatch_skill_with_refine(d: dict[str, Any], dispatch_fn: DispatchFn,
     return result
 
 
+# Result strings that mean the directive never ran. Each is emitted BEFORE the
+# mod's L1 runner touches the directive, so none of them is a start:
+#
+#   directive_never_started   mod never saw it     (agent.py:2244 -> dispatch)
+#   dispatch_error            the mod call raised  (agent.py:1065)
+#   bad_directive             directive unparseable (agent.py:934)
+#   no question given         ASK_PLAYER refused   (agent.py:959)
+#   DISPATCH_ERROR            dispatch_fn raised   (plan_orchestrator.py:644)
+#
+# Every OTHER failure (directive_timeout, reset, interrupted_by_chat,
+# superseded) means the directive started and then failed, which is a start.
+_NEVER_STARTED = (
+    "directive_never_started",
+    "dispatch_error",
+    "bad_directive",
+    "no question given",
+    "DISPATCH_ERROR",
+)
+
+
 def _dispatch_started(result: Any) -> bool:
     """Did the directive this dispatch result describes actually reach the mod?
 
     Reads what `dispatch_fn` already returns (a result string, see DispatchFn)
-    rather than changing agent.py's contract. The mod's L1 runner reports
-    `directive_never_started` ONLY in the branch where the directive never
-    appeared on the mod; every other failure (directive_timeout, reset,
-    interrupted_by_chat, superseded) means it ran and did not finish, which is
-    a start. A `COMPLETED` prefix is a start by definition.
+    rather than changing agent.py's contract. A result is a start unless it is
+    empty or carries one of the `_NEVER_STARTED` markers, all of which are
+    emitted before the directive ran. A `COMPLETED` prefix is a start by
+    definition.
     """
     text = str(result or "")
-    if "directive_never_started" in text:
+    if not text:
+        # No result at all: no evidence of a start.
         return False
-    if text.startswith("COMPLETED"):
-        return True
-    # A FAILED/DISPATCH_ERROR carrying any other reason: the directive reached
-    # the mod and then went wrong. An empty result has no evidence of a start.
-    return bool(text)
+    for marker in _NEVER_STARTED:
+        if marker in text:
+            return False
+    # The directive reached the mod and then went wrong (directive_timeout,
+    # reset, interrupted_by_chat, superseded) or completed. Either way it ran.
+    return True
 
 
 def _step(plan: Plan, subtask: Subtask, model: str,

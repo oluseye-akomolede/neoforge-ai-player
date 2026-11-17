@@ -21,6 +21,12 @@
 - [x] 2.3 Unit tests: the 11-13 shape (criterion "holdings 0/0", only directive
       `directive_never_started` → subtask not complete, plan not `complete`); one-started case
       still evaluates criteria; zero-directive case unchanged.
+      NOTE (11-17): 2.1/2.3 were first ticked against a gate that recognised only
+      `directive_never_started`; `dispatch_error`, `bad_directive`, `no question given` and
+      `DISPATCH_ERROR` still counted as starts. Reviewer caught it (this tick asserted more
+      than the code did). Now `_NEVER_STARTED` lists all five, and 2e in
+      `test_dispatch_must_start.py` asserts one check per shape plus timeout-is-a-start; each
+      marker mutation-killed individually.
 
 ## 3. Verify and ship
 - [x] 3.1 Run the affected tests only, bounded (nice -n 19, inside the VM rules); paste the

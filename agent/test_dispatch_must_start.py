@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import plan_orchestrator
 import l3_planner
+from plan_orchestrator import _dispatch_started
 from plan_schema import Plan, Subtask
 
 failures = 0
@@ -227,6 +228,51 @@ def test_started_but_failed_still_evaluates():
     check("criteria evaluated", ev.call_count == 1, f"calls={ev.call_count}")
 
 
+def test_every_not_started_shape_is_refused():
+    """One check per not-started shape named by the spec and task 2.1.
+
+    The first gate only recognised `directive_never_started`. But agent.py
+    returns three more strings BEFORE anything runs:
+
+        agent.py:1065  f"FAILED dispatch_error {e}"     mod call raised
+        agent.py:934   f"FAILED bad_directive {...}"    directive unparseable
+        agent.py:959    "FAILED ASK_PLAYER no question given"
+        plan_orchestrator.py:644  f"DISPATCH_ERROR: {e}"  dispatch_fn raised
+
+    Each is a directive handed to nothing that came back. Under the old gate
+    every one counted as a start, criteria were evaluated, and "holdings 0/0"
+    could still mark the subtask complete - the 11-13 shape through another
+    door. The last check pins the other side: a timeout DID start.
+    """
+    print("2e. every not-started shape is refused; a timeout is still a start")
+    shapes = [
+        ("FAILED STORE_ALL directive_never_started", False, "never appeared on mod"),
+        ("FAILED STORE_ALL dispatch_error Connection refused", False, "mod call raised"),
+        ("FAILED ASK_PLAYER bad_directive {'kind': 'ASK_PLAYER'}", False, "unparseable"),
+        ("FAILED ASK_PLAYER no question given", False, "refused pre-dispatch"),
+        ("DISPATCH_ERROR: Connection refused", False, "dispatch_fn raised"),
+        ("FAILED MINE directive_timeout after 5m", True, "ran then failed"),
+        ("COMPLETED GOTO {}", True, "ran"),
+    ]
+    for text, should_start, why in shapes:
+        got = _dispatch_started(text)
+        check(f"{'started' if should_start else 'NOT started'}: {why}",
+              got is should_start, f"{text!r} -> {got}")
+
+    # And end to end: a raised mod call must not let criteria pass the attempt.
+    plan = _plan()
+    _, dispatched, sub, ev = _run_step(
+        plan, [{"kind": "STORE_ALL"}],
+        lambda d: "FAILED STORE_ALL dispatch_error Connection refused",
+        criteria="holdings 0/0 of minecraft:items")
+    check("dispatch_error directive WAS sent", dispatched == ["STORE_ALL"],
+          f"dispatched={dispatched}")
+    check("dispatch_error: criteria not consulted", ev.call_count == 0,
+          f"calls={ev.call_count}")
+    check("dispatch_error: subtask not complete", sub.status != "complete",
+          f"status={sub.status}")
+
+
 def main():
     for fn in (test_invented_kind_is_not_dispatched,
                test_alias_still_dispatches,
@@ -235,7 +281,8 @@ def main():
                test_never_started_cannot_satisfy_a_true_criterion,
                test_one_started_directive_still_evaluates_criteria,
                test_zero_directive_attempt_is_unchanged,
-               test_started_but_failed_still_evaluates):
+               test_started_but_failed_still_evaluates,
+               test_every_not_started_shape_is_refused):
         fn()
     print()
     if failures:
