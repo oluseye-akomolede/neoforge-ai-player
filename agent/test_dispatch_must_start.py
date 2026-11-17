@@ -237,7 +237,7 @@ def test_every_not_started_shape_is_refused():
         agent.py:1065  f"FAILED dispatch_error {e}"     mod call raised
         agent.py:934   f"FAILED bad_directive {...}"    directive unparseable
         agent.py:959    "FAILED ASK_PLAYER no question given"
-        plan_orchestrator.py:644  f"DISPATCH_ERROR: {e}"  dispatch_fn raised
+        plan_orchestrator.py:665  f"DISPATCH_ERROR: {e}"  dispatch_fn raised
 
     Each is a directive handed to nothing that came back. Under the old gate
     every one counted as a start, criteria were evaluated, and "holdings 0/0"

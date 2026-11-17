@@ -488,7 +488,7 @@ def _dispatch_skill_with_refine(d: dict[str, Any], dispatch_fn: DispatchFn,
 #   dispatch_error            the mod call raised  (agent.py:1065)
 #   bad_directive             directive unparseable (agent.py:934)
 #   no question given         ASK_PLAYER refused   (agent.py:959)
-#   DISPATCH_ERROR            dispatch_fn raised   (plan_orchestrator.py:644)
+#   DISPATCH_ERROR            dispatch_fn raised   (plan_orchestrator.py:665)
 #
 # Every OTHER failure (directive_timeout, reset, interrupted_by_chat,
 # superseded) means the directive started and then failed, which is a start.

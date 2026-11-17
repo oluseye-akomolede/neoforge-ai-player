@@ -77,3 +77,20 @@ this requirement.
   the second started and completed
 - WHEN the orchestrator finishes the attempt
 - THEN criteria are evaluated as before and may pass the subtask
+
+#### Scenario: A raised dispatch is not a start
+- GIVEN a subtask with criterion "holdings 0/0 of minecraft:items"
+- AND the only directive of the attempt raises, so dispatch reports `DISPATCH_ERROR`
+  (for example the bot's connection is refused)
+- WHEN the orchestrator finishes the attempt
+- THEN the subtask is not `complete`
+- AND criteria are not evaluated
+- AND the attempt fails with the dispatch reason
+
+#### Scenario: A directive refused before dispatch is not a start
+- GIVEN a subtask whose only directive is refused before dispatch because
+  l2-mcp flagged its kind `unknown_kind:<KIND>`
+- WHEN the orchestrator finishes the attempt
+- THEN the subtask is not `complete`
+- AND criteria are not evaluated
+- AND the attempt fails with the refusal reason
