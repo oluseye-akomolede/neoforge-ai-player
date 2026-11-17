@@ -355,8 +355,43 @@ def test_every_not_started_shape_is_refused():
           f"error={sub.error!r}")
 
 
+def test_skill_exemption_is_exact_equality_not_prefix():
+    """A name that merely STARTS WITH "SKILL" must not ride the exemption.
+
+    This is the shape a prefix-match regression takes, and a bare invented kind
+    (SEARCH_AND_STORE) cannot tell the two apart -- it is refused either way.
+    1e therefore passes a prefix hole; this test does not. Verified against a
+    real startswith('SKILL') mutant: 0 of the checks below survive it.
+    """
+    print("1g. SKILL exemption is exact equality, not a prefix match")
+    for name in ("SKILL_X", "SKILLETY"):
+        # Directive side.
+        _, dispatched, sub, ev = _run_step(
+            _plan(), [{"kind": name}], lambda d: "COMPLETED %s {}" % name,
+            criteria="holdings 0/0 of minecraft:items")
+        check("%s: not dispatched" % name, dispatched == [],
+              f"dispatched={dispatched}")
+        check("%s: refused as unknown_kind" % name,
+              (sub.error or "").startswith("unknown_kind:"), f"error={sub.error!r}")
+        check("%s: criteria not consulted" % name, ev.call_count == 0,
+              f"calls={ev.call_count}")
+
+        # Flag side: the directive itself is a valid MINE, so only the flagged
+        # near-miss kind can trigger the refusal.
+        _, dispatched, sub, ev = _run_step(
+            _plan(), [{"kind": "MINE", "target": "iron_ore"}],
+            lambda d: "COMPLETED MINE {}",
+            criteria="holdings 0/0 of minecraft:items",
+            l2_flags=["unknown_kind:%s" % name])
+        check("%s flagged: not dispatched" % name, dispatched == [],
+              f"dispatched={dispatched}")
+        check("%s flagged: refused as unknown_kind" % name,
+              (sub.error or "").startswith("unknown_kind:"), f"error={sub.error!r}")
+
+
 def main():
     for fn in (test_invented_kind_is_not_dispatched,
+               test_skill_exemption_is_exact_equality_not_prefix,
                test_skill_is_not_refused_by_the_gate,
                test_skill_with_spec_reaches_refine,
                test_skill_synthesis_is_still_refused,
