@@ -2270,6 +2270,15 @@ unit test's claim (`test_script_client.py:150`).
 
 ### 8.4.6 C1 — control arm, bindings absent
 
+**EXECUTED 2026-11-18 14:33–14:37Z by the lead: PASS.** Run on agent `b2b274bf`, against the re-baselined §8.4.3.
+- Steps 1–2: saved `bindings.json` (`10cef1b830853225`, 26 B) to `/tmp/c1-bindings-20261118.json` on controlplane, then removed the key with a JSON-patch `remove`. The ConfigMap then held only `scout.js`.
+- Step 3: recreated by the §8.4.2 pod delete. Old pod `cz6tm`, new pod `brdlp`, started 14:33:45Z. In the new pod, `bindings.json` gives "No such file or directory" and `scout.js` hashes to `1824967e200dab94`.
+- Step 4: `inject_chat` at 14:34:47Z, then 150 s of evidence (log `/tmp/c1-agentlog-20261118.txt` on controlplane). All three expectations held:
+  - `[Scout/script] no bindings at /srv/aibot-scripts/bindings.json; this bot runs the planner`: **1** line (14:34:05Z).
+  - `[Scout/script] dispatch:`: **0** lines.
+  - The planner acted. Orchestrator "L3 plan layer accepting" and "starting plan" lines at 14:34:53Z; L1 `search_and_store` found a chest; that directive then failed ("skill failed"). The failure is planner baseline, not part of this arm.
+- Restore: the merge patch put the saved file back, and a second pod delete gave pod `2fpft`, started 14:37:18Z. Its in-pod hashes are `10cef1b830853225` and `1824967e200dab94`.
+
 **Two branches, two different evidences — pick one and state its own.** Verified
 at `agent.py:2767-2781` (reviewer measured both, 10:42Z):
 
@@ -2303,6 +2312,13 @@ contradiction and it would have passed on either branch.
    line separately.
 
 ### 8.4.7 C4 — script arm (already evidenced by run 5; re-run only if C1–C2 void)
+
+**Same-image re-check 2026-11-18 14:38–14:41Z (lead).** Pod `2fpft` (the C1 restore pod, so no extra recreation; agent `b2b274bf`), same `inject_chat` goal at 14:38:25Z. Log: `/tmp/c4-agentlog-20261118.txt` on controlplane.
+- `no bindings at`: **0** lines.
+- `[Scout/script] dispatch: STORE_ALL seq=1`: **77** lines over the pod's life, **59** after the goal.
+- Test mod log: 385 `STORE_ALL` lines in the last 4 min.
+
+Against C1's 0 dispatches, this gives the §8.4.8 contrast on one image and one method. STORE_ALL starts before the goal and fires on idle ticks (the known re-fire follow-up). So C4 proves that the script drives Scout. It does not prove the script responds to the goal.
 
 Restore `bindings.json`, recreate the pod (§8.4.2 procedure), drive the same
 goal, confirm `dispatch: STORE_ALL seq=1` **and** the mod's accepted POST with a
