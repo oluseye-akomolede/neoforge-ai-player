@@ -1871,12 +1871,21 @@ Two things that are *not* required, to keep the blast radius small:
 
 ### 8.4.3 Preconditions (read-only; abort if any fails)
 
-**Live baseline, measured by the lead 2026-11-17 10:2xZ (read-only):**
+**Live baseline, re-measured by the lead 2026-11-18 14:30Z (read-only); re-baselined by lead ruling, option (a):**
 
 | item | value |
 |---|---|
-| test agent pod | `aibot-agent-test-fc9f559cb-q49qp`, started 2026-11-15T18:06:02Z, 0 restarts |
-| test agent image | `agent@sha256:2914fb85ff22…` (template and running pod agree) — the replan fix `ca27b6e`, same as prod |
+| test agent pod | `aibot-agent-test-db7ffc75d-cz6tm`, started 2026-11-18T12:41:15Z, 0 restarts |
+| test agent image | `agent@sha256:b2b274bfb524…` (template and running pod agree) — dispatch-must-start, archived `f148e1e`, same as prod |
+
+*Re-baseline 2026-11-18: the previous baseline (pod `fc9f559cb-q49qp`, image
+`2914fb85`, measured 2026-11-17 10:2xZ) went stale when test moved to `b2b274bf`.
+The reviewer (row `qitem-20261118143100-efb86de21750c13c`) checked that
+`agent/agent.py` is byte-identical between `ea6500f` and `f148e1e`, so the
+§8.4.6 evidence lines (`:2770` no-bindings, `:2714` the only `[Scout/script]
+dispatch:` emitter) are unchanged. The reviewer also confirmed that the in-pod
+`agent.py` and `plan_orchestrator.py` match `f148e1e`. The rows below are
+unchanged.*
 | `spec.paused` | unset (not paused); strategy `Recreate` |
 | runner | `agent-script-runner@sha256:e07a90c56537…` (shared with cardgame; never stopped by this plan) |
 | ConfigMap `agent-scripts` | `scout.js` `1824967e200dab94` / 5852 B; `bindings.json` `10cef1b830853225` / 26 B — equals the table below |
