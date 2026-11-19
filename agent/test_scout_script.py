@@ -212,6 +212,29 @@ BUSY_DIRECTIVE = {
 }
 
 
+# The shape a COMPLETED plan reports, and the one the task gate blocks on.
+#
+# Not hand-written: BotBrain.java:88-99 shows that on SUCCESS the brain captures
+# `lastProgress` from the behaviour WITHOUT resetting it, then swaps in
+# idleBehavior. BotBrain.java:189-191 then reports that captured progress, so the
+# last directive keeps its behaviour's final phase forever. The phase strings here
+# are the ones the behaviours actually set on their success path:
+# "done" at LocateBehavior.java:317, "skill:done" at SkillBehavior.java:365.
+# Directive.complete() (Directive.java:50) only sets status; it never touches
+# progress. So a finished plan reports a NON-IDLE phase indefinitely, which is
+# why the gate holds a bot whose work is done.
+COMPLETED_SKILL_DIRECTIVE = {
+    "state": "Standing by",
+    "self_preservation": "ok",
+    "directive": {"id": 12, "type": "SKILL", "status": "COMPLETED"},
+    "progress": {"phase": "skill:done"},
+}
+
+# A directive carrying no progress block at all: an older mod, or a shape the
+# script has not seen. The gate must hold AND must say it could not read it.
+UNREADABLE_DIRECTIVE = {"state": "Standing by", "self_preservation": "ok"}
+
+
 def _envelope(health=20.0, task=IDLE_DIRECTIVE, inventory=None, **extra):
     """A snapshot in the shape SnapshotCache.get actually produces.
 
@@ -520,6 +543,69 @@ class ActsOnlyWhenThereIsSomethingToDoTest(unittest.TestCase):
         self.assertIsNotNone(blob, "stored without remembering the tick")
         # memoryOut is the runner's JSON string, not a live object.
         self.assertEqual(json.loads(blob).get("lastStoreAllTick"), 7)
+
+
+class HeldTickIsObservableTest(unittest.TestCase):
+    """M3-1b cause B: a held tick leaves evidence.
+
+    On test 2026-11-19 Scout held 16 cobblestone and did not store for at least
+    seven minutes while the log carried ZERO script dispatch lines. A held bot,
+    a bot the caller never invoked, and an unreachable script all looked
+    identical from outside, so no cause could be named from the evidence.
+
+    These tests fail on 69fc324: the gate returned silently, so `logs` carried
+    no line at all. They assert the log line, not the decision - the gate's
+    hold is correct and this change deliberately does not alter it.
+    """
+
+    def test_busy_tick_logs_the_phase_it_saw(self):
+        """A recognised non-idle phase is named in the log."""
+        result = _run(_envelope(20.0, BUSY_DIRECTIVE, inventory=CARRYING))
+        self.assertEqual([], result["actions"],
+                         "a busy bot must not act: %r" % (result["actions"],))
+        joined = " ".join(result["logs"])
+        self.assertIn("pathing_to_cell", joined,
+                      "the log must name the phase it held on; got %r"
+                      % (result["logs"],))
+
+    def test_completed_plan_still_logs_and_holds(self):
+        """A finished plan reports a non-idle phase, so the gate holds - loudly.
+
+        This is the shape that makes the gate's silence dangerous:
+        BotBrain.java:88-99 keeps the completed behaviour's final progress, so
+        `phase` stays "skill:done" and never returns to "idle". The bot's work
+        is over and the gate still holds it; only the log line says so.
+        """
+        result = _run(_envelope(20.0, COMPLETED_SKILL_DIRECTIVE,
+                                inventory=CARRYING))
+        self.assertEqual([], result["actions"],
+                         "the gate holds a completed plan: %r" % (result["actions"],))
+        joined = " ".join(result["logs"])
+        self.assertIn("skill:done", joined,
+                      "the completed phase must appear in the log; got %r"
+                      % (result["logs"],))
+
+    def test_unreadable_directive_is_distinguished_from_a_known_phase(self):
+        """No progress block logs a DISTINCT line, not a blank or a wrong phase.
+
+        The gate holds on an unreadable directive on purpose. It must not look
+        like a recognised phase in the log, or a reader cannot tell "held on
+        pathing_to_cell" from "held on a shape we cannot read".
+        """
+        result = _run(_envelope(20.0, UNREADABLE_DIRECTIVE, inventory=CARRYING))
+        self.assertEqual([], result["actions"])
+        joined = " ".join(result["logs"])
+        self.assertIn("no progress phase", joined,
+                      "an unreadable directive needs its own line; got %r"
+                      % (result["logs"],))
+        self.assertNotIn("pathing_to_cell", joined)
+
+    def test_idle_tick_logs_no_hold(self):
+        """The guard must not fire on an idle bot - no spurious hold line."""
+        result = _run(_envelope(20.0, IDLE_DIRECTIVE, inventory=CARRYING))
+        joined = " ".join(result["logs"])
+        self.assertNotIn("holding", joined,
+                         "an idle bot is not held; got %r" % (result["logs"],))
 
 
 class EndToEndBindingTest(unittest.TestCase):

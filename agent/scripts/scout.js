@@ -121,6 +121,19 @@ function tick() {
   // second job underneath an unknown one. Only an explicit idle phase opens it.
   var task = snapshot.task;
   if (task && !(task.progress && task.progress.phase === "idle")) {
+    // Say WHY we are holding. Returning silently here made a held bot
+    // indistinguishable from a script that was never called: on test
+    // 2026-11-19 the log carried zero dispatch lines for a bot holding 16
+    // cobblestone, and that silence was read as "the script is not running".
+    //
+    // The phase is printed because a completed plan NEVER reports "idle":
+    // BotBrain.java:88-99 captures lastProgress without resetting it, so the
+    // directive keeps its behaviour's final phase ("done", "skill:done")
+    // for as long as it is the last directive. Naming the phase on every held
+    // tick is what makes that visible instead of silent.
+    api.log(task.progress && task.progress.phase
+      ? "scout: task phase " + task.progress.phase + ", holding"
+      : "scout: task has no progress phase, holding");
     return;  // propose nothing: the runner reads api.do, not this value
   }
 

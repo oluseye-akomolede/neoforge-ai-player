@@ -822,3 +822,43 @@ trusting either shape.
 > response shape for this reason — and MUST also cover the degraded case, where a
 > failed read leaves a bare `[]`: a fixture set that only ever builds the wrapper
 > will not exercise it.
+
+
+### Requirement: A held tick MUST be observable in the log
+
+When a script declines to act because the bot is not provably idle, it SHALL emit
+`api.log` on that tick naming the phase it saw. A script that returns silently
+MUST NOT be the only evidence that it ran.
+
+#### Scenario: A busy bot produces a log line every tick
+- **WHEN** the snapshot carries a task whose `progress.phase` is not `"idle"`
+- **THEN** the script proposes no action and logs a line naming that phase
+
+#### Scenario: A directive with no progress block is logged as unreadable
+- **WHEN** the snapshot carries a task with no `progress` block at all
+- **THEN** the script proposes no action and logs a line that says so, distinctly
+  from a recognised non-idle phase
+
+> **Why this requirement exists.** M3-1 added a task gate that holds unless the
+> task is provably idle, which is the safe direction. It held silently. On test
+> 2026-11-19, Scout was observed holding 16 cobblestone with no store for at least
+> seven minutes, and the log carried ZERO script dispatch lines — so a bot being
+> deliberately held, a bot the caller never invoked, and a script that was never
+> reachable were indistinguishable from the outside. The investigation could not
+> name a cause from the evidence because the code emitted no evidence.
+>
+> **The phase never returns to `"idle"` after a plan completes, which is why this
+> matters beyond observability.** On SUCCESS, `BotBrain.java:88-99` captures
+> `lastProgress` from the behaviour *without* resetting it, then sets
+> `activeBehavior = idleBehavior`. `toMap()` (`BotBrain.java:189-191`) then reports
+> that captured `lastProgress`, so the directive keeps the completed behaviour's
+> final phase — `"done"` (`LocateBehavior.java:317`), `"skill:done"`
+> (`SkillBehavior.java:365`). `Directive.complete()` (`Directive.java:50`) only sets
+> the status; it does not touch progress. A completed directive therefore reports a
+> non-idle phase indefinitely, and a gate keyed on `phase === "idle"` blocks a bot
+> whose work is finished. The log line is what makes that visible on the tick it
+> happens instead of requiring a source-reading investigation to suspect it.
+>
+> This requirement deliberately does NOT change the gate's decision. Holding on an
+> unrecognised directive remains correct — the unsafe direction would be to act
+> underneath an unknown job. Only the silence is removed.
