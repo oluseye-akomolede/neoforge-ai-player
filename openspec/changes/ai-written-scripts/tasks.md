@@ -48,12 +48,25 @@ Spec only. No code, no build, no deploy until the lead approves this spec.
       the sandbox discards it, but `script_tick.py:364` adopts the returned
       memory — the dry tick's memory must be discarded too.
 - [ ] 2.6 The decision "script vs plain planner" is conditions, not model
-      preference: (1) planning kind allows scripting; (2) NO script is
-      currently bound to this bot; (3) dry tick passed. Any failure → plain
-      planner. Condition 2 is per BOT because `bindings.get(self.name)`
-      (`agent.py:3027`) is per bot and no goal-to-script association exists;
-      it does not contradict the M3-1g hold, which names the goal that owns a
-      pause, not the script a goal owns.
+      preference: (1) planning kind allows scripting; (2) no HAND-WRITTEN
+      script is currently bound to this bot; (3) dry tick passed. Any failure
+      → plain planner. Condition 2 is per BOT because
+      `bindings.get(self.name)` (`agent.py:3027`) is per bot and no
+      goal-to-script association exists; it does not contradict the M3-1g
+      hold, which names the goal that owns a pause, not the script a goal
+      owns.
+- [ ] 2.7 **Provenance is recorded by the agent, not read from
+      `bindings.json`.** That file is a flat bot-name-to-filename map
+      (`{"Scout": "scout.js"}`) with no provenance field, and
+      `_bound_script_path` (`agent.py:3027-3035`) uses the value only as a
+      filename. So "no hand-written script bound" cannot be evaluated from it.
+      The agent must record in process which script it bound itself; condition
+      2 then asks "did this agent put the bound script here, or did a human?".
+      A hand-written script is a deliberate deployment and a planner must not
+      silently overwrite it; a previously written script is the agent's own
+      prior output and MAY be displaced. This is what keeps the 2.4 latch reset
+      reachable — gating condition 2 on ANY bound script would disable it in
+      the only case it exists for.
 
 ## 3. What is deliberately out of scope
 

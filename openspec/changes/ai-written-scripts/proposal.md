@@ -95,6 +95,18 @@ existing change does not say. Each is the subject of one ADDED requirement.
    association anywhere, so a per-goal condition would be vacuously satisfiable
    and would pretend to an association the code does not have.
 
+   The condition is specifically "no **hand-written** script is bound", not "no
+   script is bound". Two things force that. First, `bindings.json` is a flat
+   bot-name-to-filename map (`{"Scout": "scout.js"}`) with no provenance field,
+   so hand-written cannot be read off it — the agent must record in process
+   which script it bound itself, and condition 2 then asks whether *it* put the
+   bound script there or a human did. Second, and decisively: gating on any
+   bound script would make the B1 latch reset unreachable in the only case it
+   exists for, a bot already running a working script. A hand-written script is
+   a deliberate deployment and a planner must not silently overwrite it; a
+   previously written script is the agent's own prior output and displacing it
+   is the point of step (a).
+
 ## The design tension this change names, and does not hide
 
 The skill layer draws a deliberate boundary

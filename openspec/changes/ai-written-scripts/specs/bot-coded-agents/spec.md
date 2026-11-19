@@ -105,11 +105,12 @@ nothing, interrupts no task, spends no rate budget and carries no memory.
 - **WHEN** it is dry-ticked and then rejected
 - **THEN** the bot's memory is what it was before the dry tick
 
-#### Scenario: A passing dry tick rebinds the script
-- **GIVEN** a bot already bound to a working script
+#### Scenario: A passing dry tick rebinds a previously written script
+- **GIVEN** a bot whose bound script THIS agent wrote and bound in this process
 - **AND** a planner-authored script that returns `ok` and queues at least one action
 - **WHEN** the written script is dry-ticked and passes
-- **THEN** the `_script_loaded` latch is reset by the one writer that clears it
+- **THEN** condition 2 holds, because the bound script is not hand-written
+- **AND** the `_script_loaded` latch is reset by the one writer that clears it
 - **AND** the next real tick runs the written source, not the previous script
 
 #### Scenario: A failed dry tick does not disarm a working bot
@@ -127,8 +128,9 @@ be left to the model's preference:
 
 1. The goal is a planning kind the planner may script — a world goal, not a
    single directive, and not a chat/query the planner answers directly.
-2. No script — hand-written or previously written — is currently bound to this
-   bot.
+2. No **hand-written** script is currently bound to this bot. A script this
+   agent itself wrote and bound in this process is NOT hand-written for this
+   purpose, and a written script that passes its dry tick MAY displace one.
 3. The script passed its dry tick (the preceding requirement).
 
 **Condition 2 is per BOT, not per goal, because that is the binding model.**
@@ -142,6 +144,24 @@ satisfiable. This does not conflict with the M3-1g hold: the hold records a
 owns. Script identity stays per-goal inside the hold; script ownership stays
 per-bot at binding. Those are two different questions and the spec keeps them
 apart deliberately.
+
+**"Hand-written" MUST be decided by provenance the agent records, not by a
+field in `bindings.json`.** The bindings file is a flat bot-name-to-filename
+map (`{"Scout": "scout.js"}`) with no provenance field, and
+`_bound_script_path` (`agent.py:3027-3035`) treats the value only as a
+filename — so a condition reading "no hand-written script is bound" cannot be
+evaluated from `bindings.json` at all, and would be as untestable as the
+per-goal phrasing it replaces. The agent MUST record, in process, which script
+it bound itself. Condition 2 then asks the only question the code can answer:
+*did this agent put the bound script here, or did a human?* A hand-written
+script is a deliberate deployment and a planner MUST NOT silently overwrite it;
+a previously written script is this agent's own prior output and displacing it
+is the purpose of this change.
+
+**This is what makes the rebind reachable.** Condition 2 gating on ANY bound
+script would disable the `_script_loaded` reset in the only case it exists for
+— a bot already running a working script. The reset exists precisely so a
+written script can replace the agent's earlier one.
 
 If any condition fails, the goal MUST proceed through the plain planner. A
 failed or absent script proposal is always a fallback, never a hard error and
@@ -157,11 +177,11 @@ never a reason for the bot to idle.
 - **WHEN** the agent decides script vs plain planner
 - **THEN** condition 3 fails and the goal is driven by the plain planner
 
-#### Scenario: An existing script is not displaced by a new one
-- **GIVEN** a bot with a script currently bound
-- **WHEN** the planner proposes a new script
-- **THEN** condition 2 fails and the bound script keeps driving the bot until
-  it fails by its own outcome classes or is unbound
+#### Scenario: A hand-written script is not displaced by a new one
+- **GIVEN** a bot with a hand-written script currently bound
+- **WHEN** the planner proposes a written script that passes its dry tick
+- **THEN** condition 2 fails and the hand-written script keeps driving the bot
+  until it fails by its own outcome classes or is unbound
 
 #### Scenario: A held script is not resumed by a written-script decision
 - **GIVEN** a bot whose script is held by an active chat goal (M3-1g)
