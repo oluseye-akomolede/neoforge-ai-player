@@ -358,6 +358,18 @@ dependencies, and are not started until this change is approved.
 - [ ] 8.2 First bot running from a script on the test server. Milestone (2).
 - [ ] 8.3 Prod, later and separately reviewed. Milestone (3).
 
+## Step 9 — M3: scripted bots act only when there is work
+
+M3-1 (queue `qitem-20261119102953-ba671057fc5eefe3`). The M2 first script
+proposed `STORE_ALL` on every idle tick — 77 proposals in about three minutes on
+test, 2026-11-18. The guards it already had were all passing; none of them asked
+whether there was anything to do. Requirement added to the spec delta: *A
+Scripted Bot Acts Only When There Is Something To Do*.
+
+- [ ] 9.1 `scout.js` proposes `STORE_ALL` only when inventory holds at least one
+      item, and holds for a named cooldown after proposing. Tests in
+      `test_scout_script.py` with fixtures copied from the real snapshot shape.
+
 ## Milestone reporting
 
 Result rows to `control-operator` at each of: (1) sandbox + tests on test,

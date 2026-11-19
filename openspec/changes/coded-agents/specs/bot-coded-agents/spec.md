@@ -758,3 +758,61 @@ operator to read correctly.
 > `ok` is an outcome and never a reported condition. A condition kind named here
 > MUST NOT be added to the contract's outcome classes, and an outcome class MUST
 > NOT be reported as a condition without appearing in the table above.
+
+### Requirement: A Scripted Bot Acts Only When There Is Something To Do
+
+A script MUST NOT propose an action on a tick where the action would be
+pointless. An idle bot that keeps proposing work does not stand still: its
+proposals are carried out, so it walks to a container, finds nothing to store,
+and repeats on the next tick indefinitely. Acting conditionally is therefore a
+correctness requirement, not an optimisation.
+
+For a store action specifically, a script MUST propose it only when the bot's
+inventory holds at least one item, and after proposing it the script MUST hold
+for a cooldown of at least one tick before proposing it again. The cooldown
+exists so that a store which keeps failing to complete — no reachable container,
+a container that fills mid-store — cannot be re-proposed on every tick.
+
+The inventory a script reads is the one the snapshot envelope carries at
+`state.inventory`: an object whose `inventory` member is the list of carried
+items, each with at least `slot`, `item` and `count`. It is **not** a bare
+array, and it is not absent when the bot carries nothing — it is present with an
+empty list. A script that reads an array-shaped field MUST NOT be relied on to
+detect an empty inventory.
+
+#### Scenario: Empty inventory proposes nothing
+- **WHEN** a bot's snapshot reports an empty inventory and the bot is provably idle
+- **THEN** the script proposes no store action on that tick
+
+#### Scenario: Carried items and an idle bot propose one store
+- **WHEN** a bot's snapshot reports at least one carried item and the bot is provably idle
+- **THEN** the script proposes exactly one store action on that tick
+
+#### Scenario: A repeated store is held off by the cooldown
+- **WHEN** a script proposed a store action on an earlier tick and the cooldown has not yet elapsed
+- **THEN** the script proposes no further store action, even if the bot is idle and still carrying items
+
+> **Why this requirement exists.** The M2 first script proposed a store on every
+> tick it was idle: measured on test 2026-11-18, 77 proposals in about three
+> minutes. Every existing guard passed correctly — the snapshot was present, the
+> health was fine, the task was provably idle — and the guard set simply had no
+> member that asks whether there is anything to do. The bot was not malfunctioning
+> in any way the earlier requirements describe: it was doing exactly what it was
+> told, at a frequency nobody chose.
+>
+> The cooldown is a separate guard from the inventory check and both are needed.
+> The inventory check alone still loops whenever a store fails to complete with
+> the items still carried, which is the normal case for a bot with no reachable
+> container: the condition that stops the first proposal is unchanged on the
+> next tick.
+>
+> **The shape of `state.inventory` is recorded here because it is a trap.** The
+> producer is `BotPlayer.getInventory()`, serialised through
+> `HttpApiServer.java:469` as `Map.of("inventory", ...)`, so the endpoint's body
+> is a wrapper object and `snapshot.state.inventory` is that wrapper — not the
+> item list. A guard written as `state.inventory.length > 0` reads `undefined`
+> on an object, compares false, and proposes nothing forever: the script would
+> appear fixed while never storing anything at all. That is the same failure
+> class as the `snapshot.state` bug this script already carries a comment about,
+> and it fails in the silent direction. Fixtures MUST be copied from the real
+> response shape for this reason.

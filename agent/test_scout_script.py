@@ -111,12 +111,19 @@ _DRIVER = r"""
 import { loadModule, createLimitedRuntime, Sandbox } from "./src/engine.js";
 import { readFileSync } from "node:fs";
 
-const [scriptPath, snapshotJson] = process.argv.slice(2);
+const [scriptPath, snapshotJson, memoryJson] = process.argv.slice(2);
 const source = readFileSync(scriptPath, "utf8");
 // A sentinel, not `undefined`: "undefined" is not valid JSON, and null is a
 // real (different) case the engine distinguishes from an absent snapshot.
 const NO_SNAPSHOT = "__NO_SNAPSHOT__";
 const snapshot = snapshotJson === NO_SNAPSHOT ? undefined : JSON.parse(snapshotJson);
+// Memory is the blob this tick STARTS with. The engine's `decodeMemory`
+// expects BASE64 (engine.js:1056-1062), so the driver encodes the JSON here --
+// passing raw JSON silently decodes to null and recall() would return null,
+// making a cooldown test pass against no memory at all.
+const memory = memoryJson
+  ? Buffer.from(memoryJson, "utf8").toString("base64")
+  : null;
 
 await loadModule();
 const rt = await createLimitedRuntime();
@@ -124,7 +131,7 @@ const rt = await createLimitedRuntime();
 // context, recording into the sandbox's own tick state. That is the collector
 // worker.js serialises as `actions`, so nothing here imitates it.
 const box = new Sandbox(rt, { tickCpuMs: 250, bindApi: true });
-const result = box.evaluate(SOURCE(snapshot), { snapshot });
+const result = box.evaluate(SOURCE(snapshot), { snapshot, memory });
 
 const st = box.tickState;
 process.stdout.write(JSON.stringify({
@@ -133,11 +140,12 @@ process.stdout.write(JSON.stringify({
   actions: st.actions.map((a) => ({ seq: a.seq, call: a.call, directive: a.directive, args: a.args })),
   logs: st.logs.map((l) => String(l.line)),
   host_calls: st.hostCalls,
+  memory: st.memoryOut,
 }));
 """
 
 
-def _run(snapshot, script_path=None):
+def _run(snapshot, script_path=None, memory=None):
     """Evaluate the COMMITTED scout.js bytes in the runner's real engine.
 
     Returns {"ok", "error", "actions", "logs", "host_calls"}. `actions` is the
@@ -165,7 +173,8 @@ def _run(snapshot, script_path=None):
         else:
             snap_json = json.dumps(snapshot)
         out = subprocess.run(
-            ["node", driver, script_path or _SCRIPT, snap_json],
+            ["node", driver, script_path or _SCRIPT, snap_json,
+             json.dumps(memory) if memory is not None else ""],
             cwd=root, capture_output=True, text=True, timeout=120,
         )
     finally:
@@ -203,7 +212,7 @@ BUSY_DIRECTIVE = {
 }
 
 
-def _envelope(health=20.0, task=IDLE_DIRECTIVE, **extra):
+def _envelope(health=20.0, task=IDLE_DIRECTIVE, inventory=None, **extra):
     """A snapshot in the shape SnapshotCache.get actually produces.
 
     The flat {"health": ...} literals these tests used to pass are the shape
@@ -221,7 +230,8 @@ def _envelope(health=20.0, task=IDLE_DIRECTIVE, **extra):
            "state": {"health": health, "food": 18,
                      "position": {"x": 0.0, "y": 64.0, "z": 0.0,
                                   "dim": "minecraft:overworld"},
-                     "inventory": [], "nearby": {"blocks": [], "mobs": []}},
+                     "inventory": {"inventory": []} if inventory is None else inventory,
+                     "nearby": {"blocks": [], "mobs": []}},
            "task": task}
     env.update(extra)
     return env
@@ -232,6 +242,16 @@ def _directives(result):
     return [a["directive"] for a in result["actions"]]
 
 
+# A bot that is actually carrying something, in the wrapper shape the endpoint
+# really sends (HttpApiServer.java:469 -> {"inventory": api.inventory(bot)}).
+# Tests that pin a CHANNEL or the directive's FORM need the bot to act, and
+# since the store is now gated on having something to store, an empty
+# inventory would leave them asserting a silence that has nothing to do with
+# what they are testing.
+CARRYING = {"inventory": [{"slot": 0, "item": "minecraft:torch", "count": 12,
+                          "display_name": "Torch", "max_stack_size": 64}]}
+
+
 @unittest.skipUnless(shutil.which("node"), "node is required to run scout.js")
 class ScoutScriptTest(unittest.TestCase):
 
@@ -240,7 +260,7 @@ class ScoutScriptTest(unittest.TestCase):
         # STORE_ALL and an empty args object. STORE_ALL is emitted BARE here on
         # purpose, and §3 pins that coordless form: it is what every producer in
         # this repo emits (agent.py:1622's pattern has no capture groups).
-        result = _run(_envelope(20.0))
+        result = _run(_envelope(20.0, inventory=CARRYING))
         self.assertTrue(result["ok"], f"engine rejected the script: {result['error']}")
         self.assertEqual(
             result["actions"],
@@ -257,7 +277,7 @@ class ScoutScriptTest(unittest.TestCase):
         # The assertion is not "actions is non-empty" -- a script could populate
         # it any way it liked. It is that the action arrived through the `do`
         # call, which is the only channel the runner reads.
-        result = _run(_envelope(20.0))
+        result = _run(_envelope(20.0, inventory=CARRYING))
         self.assertTrue(result["ok"], f"engine rejected the script: {result['error']}")
         self.assertEqual(len(result["actions"]), 1,
                          f"expected exactly one action, got {result['actions']!r}")
@@ -327,7 +347,7 @@ class ScoutScriptTest(unittest.TestCase):
         # This asserts the script ACTS on the exact bytes an idle bot emits.
         # It fails against `if (snapshot.task)` and passes only when the guard
         # reads progress.phase.
-        result = _run(_envelope(20.0, IDLE_DIRECTIVE))
+        result = _run(_envelope(20.0, IDLE_DIRECTIVE, inventory=CARRYING))
         self.assertEqual(_directives(result), ["STORE_ALL"],
                          "an idle bot was treated as busy; actions="
                          f"{result['actions']!r} logs={result['logs']!r}")
@@ -356,7 +376,13 @@ class ScoutScriptTest(unittest.TestCase):
                 return {"health": self._health, "food": 18,
                         "position": {"x": 0.0, "y": 64.0, "z": 0.0,
                                      "dim": "minecraft:overworld"}}
-            def inventory(self, bot): return []
+            def inventory(self, bot):
+                # One real entry: a bot with nothing carried has nothing to
+                # store, so an empty list here would test the empty branch and
+                # the healthy case below could never act.
+                return {"inventory": [{"slot": 0, "item": "minecraft:torch",
+                                       "count": 12, "display_name": "Torch",
+                                       "max_stack_size": 64}]}
             def blocks(self, bot, radius=8): return []
             def entities(self, bot, radius=24.0): return []
             def get_directive(self, bot): return self._directive
@@ -399,6 +425,103 @@ class ScoutScriptTest(unittest.TestCase):
                             f"{literal} returned [] without explaining: {logs!r}")
 
 
+class ActsOnlyWhenThereIsSomethingToDoTest(unittest.TestCase):
+    """M3-1: a store is proposed only when there is something to store.
+
+    Measured on test 2026-11-18: 77 STORE_ALL proposals in about three minutes,
+    every one of them from an idle bot with an empty inventory. Every guard in
+    scout.js was passing correctly - the snapshot was there, the health was
+    fine, the task was provably idle - so no assertion below could have caught
+    it from the existing suite. The missing guard is the subject here.
+
+    THE FIXTURE SHAPE IS THE POINT OF THIS CLASS. The producer's body is
+    HttpApiServer.java:469 `Map.of("inventory", bot.getCachedInventory())`, so
+    `snapshot.state.inventory` is `{"inventory": [...]}` - an OBJECT. A guard
+    written against a bare array (`state.inventory.length > 0`) reads undefined,
+    compares false, and silently never stores anything, which is the direction
+    that looks like a fix in review and is not one. `test_guard_reads_the_wrapper`
+    below is the one that fails against that mistake; the others would pass
+    because an empty bare array and an empty wrapper both mean "nothing".
+    """
+
+    # One real entry, in the shape BotPlayer.serializeItemStack builds
+    # (BotPlayer.java:994-998): slot, item, count, display_name, max_stack_size.
+    _TORCH = {"slot": 0, "item": "minecraft:torch", "count": 12,
+              "display_name": "Torch", "max_stack_size": 64}
+
+    def test_empty_inventory_proposes_nothing(self):
+        result = _run(_envelope(20.0, inventory={"inventory": []}))
+        self.assertTrue(result["ok"], f"engine rejected: {result['error']}")
+        self.assertEqual(_directives(result), [],
+                         f"empty inventory still proposed: {result['actions']}")
+        self.assertTrue(any("empty" in line for line in result["logs"]),
+                        f"held without saying why: {result['logs']!r}")
+
+    def test_carried_items_and_idle_propose_one_store(self):
+        result = _run(_envelope(20.0, inventory={"inventory": [self._TORCH]}))
+        self.assertTrue(result["ok"], f"engine rejected: {result['error']}")
+        self.assertEqual(_directives(result), ["STORE_ALL"])
+
+    def test_guard_reads_the_wrapper_not_a_bare_array(self):
+        """The wrapper is a dict, so `.length` is undefined on it.
+
+        A bare-array guard is the mistake this pins: `state.inventory.length`
+        is absent on an object, so `> 0` is false and the script stores NOTHING
+        while every other test in this class still passes. Both directions are
+        asserted so a script that ignores inventory entirely cannot pass either.
+        """
+        full = _run(_envelope(20.0, inventory={"inventory": [self._TORCH]}))
+        empty = _run(_envelope(20.0, inventory={"inventory": []}))
+        self.assertEqual(_directives(full), ["STORE_ALL"],
+                         "a non-empty wrapper did not propose a store: the guard "
+                         "is reading the wrapper as if it were the list")
+        self.assertEqual(_directives(empty), [],
+                         "an empty wrapper proposed a store")
+
+    def test_cooldown_holds_a_repeat_store(self):
+        """One store, then nothing until the cooldown has elapsed.
+
+        `api.recall()` returns the blob the tick STARTED with (contract-v1.md
+        :282-285), and a `remember` in the same tick does not change it. So the
+        remembered state is supplied here as the tick's input, exactly as the
+        game would: tick 5 stored at tick 5, and tick 6 is one tick later.
+        """
+        first = _run(_envelope(20.0, tick=5,
+                               inventory={"inventory": [self._TORCH]}))
+        self.assertEqual(_directives(first), ["STORE_ALL"])
+
+        soon = _run(_envelope(20.0, tick=6,
+                              inventory={"inventory": [self._TORCH]}),
+                    memory={"lastStoreAllTick": 5})
+        self.assertEqual(_directives(soon), [],
+                         "stored again one tick later, so a failing store would "
+                         "loop every tick")
+        self.assertTrue(any("cooling down" in line.lower() for line in soon["logs"]),
+                        f"held without saying why: {soon['logs']!r}")
+
+    def test_cooldown_expires(self):
+        """Past the cooldown the bot stores again - otherwise it stores once ever."""
+        later = _run(_envelope(20.0, tick=500,
+                               inventory={"inventory": [self._TORCH]}),
+                     memory={"lastStoreAllTick": 5})
+        self.assertEqual(_directives(later), ["STORE_ALL"],
+                         "cooldown never expired; the bot would store once and stop")
+
+    def test_cooldown_is_measured_from_the_remembered_tick(self):
+        """The remembered tick is what the cooldown is compared against.
+
+        The driver supplies `memory` as the blob the tick started with; this
+        asserts the script writes that blob rather than merely holding a local
+        counter that dies with the disposable sandbox.
+        """
+        result = _run(_envelope(20.0, tick=7,
+                                inventory={"inventory": [self._TORCH]}))
+        blob = result.get("memory")
+        self.assertIsNotNone(blob, "stored without remembering the tick")
+        # memoryOut is the runner's JSON string, not a live object.
+        self.assertEqual(json.loads(blob).get("lastStoreAllTick"), 7)
+
+
 class EndToEndBindingTest(unittest.TestCase):
     """The whole chain, with no hand-written fixture anywhere in it.
 
@@ -411,7 +534,7 @@ class EndToEndBindingTest(unittest.TestCase):
     """
 
     def _chain(self):
-        result = _run(_envelope(20.0))
+        result = _run(_envelope(20.0, inventory=CARRYING))
         self.assertTrue(result["ok"], f"engine rejected the script: {result['error']}")
         pairs, refusals = _script_tick.translate_runner_actions(result["actions"])
         self.assertEqual(refusals, [], f"translation refused {refusals!r}")
