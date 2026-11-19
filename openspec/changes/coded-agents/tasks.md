@@ -759,6 +759,24 @@ Scripted Bot Acts Only When There Is Something To Do*.
       rather than trusting the delta. S3: the "before the developer-test fix"
       post-mortem was moved out of the MUST paragraph into this record.
 
+      TEST PASS on `8a7f10f` (lead-run, 11-19 17:54Z; image `568ec18a`, pod
+      `l7wrf`, pod hashes matched git `8a7f10f`). This is the live-agent-loop
+      evidence the offline suites could not give. Measured, in order: goal
+      17:45:59Z; hold 17:46:02Z; 19 held ticks with 0 STORE_ALL and 0 cancel
+      lines; the planner ran SKILL search_and_store (directive 26044) with NO
+      cancel at start; released 17:46:39Z; the script resumed with its
+      remembered value intact (stored at tick 2, then 102, then 202; dispatches
+      17:44:32 / 17:48:44 / 17:52:18); 0 script errors. Every signature the
+      implementation was built to produce appeared, and the earlier
+      hold-cancels-goal symptom did not. The pre-existing shared-latch hazard
+      (a nav shortcut setting `_orch_stop_pending` for a later separate goal)
+      did not fire and was left unchanged by direction.
+      OUT OF SCOPE, recorded not fixed (lead, same message): the planner's own
+      `search_and_store` reported "skill failed" while the plan finalised
+      "complete". Pre-existing, not caused by this change; the lead explicitly
+      deferred it. The `coded-agents` change is NOT archived — it ships to prod
+      later, per the lead.
+
 ## Milestone reporting
 
 Result rows to `control-operator` at each of: (1) sandbox + tests on test,
