@@ -553,6 +553,19 @@ Scripted Bot Acts Only When There Is Something To Do*.
       "not a fallback" - assert identity of the resumed `ScriptTick` and the
       remembered value on the first post-resume tick, and assert the held
       outcome is neither `True` nor `False`.
+      ORDERING (reviewer 16:59Z, accepted - this is the one that makes the
+      hold real): `_maybe_plan` runs BEFORE `_run_script_tick` and STARTS the
+      planner daemon thread as it accepts the instruction (`agent.py:625-631`;
+      the call order is `:2931` then `:2939`). So a hold that merely declines
+      to tick the script leaves the already-started planner dispatching - the
+      exact double-issue this task exists to stop. The hold MUST abort that
+      run. Use the existing mechanism, do not invent one: `_cancel_orchestrator`
+      (`agent.py:1213-1228`) sets `_orch_stop_pending` for the spawn window,
+      honoured at `agent.py:1412-1415` which lets the plan be born cancelled.
+      The test that catches this is a goal arriving in the SAME iteration as a
+      script tick - the other scenarios all pass on an implementation that
+      still double-issues. Also pin hold ownership: two goals in one batch,
+      last accepted owns the hold, and an earlier run's abort MUST NOT resume.
 
 ## Milestone reporting
 
