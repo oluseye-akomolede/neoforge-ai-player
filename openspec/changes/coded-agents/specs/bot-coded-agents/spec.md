@@ -493,7 +493,11 @@ each tick it sends by adding that tick's period to the bot's usage; it MUST NOT
 count time from any other source, such as a wall clock reading between ticks.
 
 A bot whose script is paused, disabled, deleted or fallen back to the planner
-accrues nothing for the time it is not running one.
+accrues nothing for the time it is not running one. A bot whose script is **held
+for a player goal** accrues nothing for the duration of the hold either: holding
+is one of the ways a script is not active, so no tick is sent and no time is
+counted. That follows the same rule as the other four and is stated here because
+the hold is new.
 
 The converse direction is required too. **Given an active script, the game MUST
 send a tick at the stated cadence** (the per-bot tick rate in the limits table is
@@ -697,6 +701,91 @@ consecutive non-`ok` ticks.
 #### Scenario: A single bad tick does not disable the bot
 - **WHEN** a bot returns one non-`ok` outcome followed by `ok`
 - **THEN** scripting continues and the bot is not disabled
+
+### Requirement: A Player Goal Yields A Running Script
+
+Earlier requirements make the planner and the script alternatives: the planner
+is the fallback when no script runs. They do not say what happens when a player
+addresses a bot that *is* running a script, and the omission is observable —
+measured on 2026-11-19, a chat goal reached the planner while the script ticked,
+and both issued store work for the same intent. (The two are not even sequential
+alternatives at the call site: `_maybe_plan` runs before `_run_script_tick` every
+iteration, so without this requirement both run each pass.)
+
+**A player goal MUST take precedence over a running script.** While a bot's
+script is active and a player instruction is accepted, the game MUST hold the
+script — dispatching no script actions — and MUST run the instruction through
+the planner. When the instruction's directive reaches a terminal state, the game
+MUST resume the script.
+
+Which chat counts as an instruction is the set the planner already admits, and
+that set is fixed here to four gates rather than referred to as a moving target:
+
+| Gate | Where | Effect |
+|---|---|---|
+| not the bot itself | `AIPlayerMod.java:272` | the bot's own chat is not an instruction |
+| not purely a pleasantry | `agent.py:530` (`chat_filter.is_pure_pleasantry`, `chat_filter.py:27-42`) | "k", "ok", "hi <name>" alone are dropped; "Hi <name>! Who are you?" is not |
+| not bot-origin | `agent.py:534` (`sender in _all_runners`) | a message from another bot is not a player instruction |
+| not while following | `agent.py:539`, `agent.py:598`, `agent.py:642` | a bot already following a player does not take a new planner instruction |
+
+This requirement MUST NOT widen or narrow that set: a message that would not
+reach the planner MUST NOT yield a script either. **Any change to those four
+gates MUST either leave this set unchanged or modify this requirement in the
+same change** — the gates are named so that changing one without visiting this
+requirement is a visible omission, not a silent behaviour change.
+
+**A stale or non-goal cancel MUST NOT resume the script.** Chat can interrupt an
+in-flight directive without satisfying any of the four gates: the poll path
+reports `interrupted_by_chat` and the caller cancels on a new player message
+without re-applying the pleasantry filter. A script held for a goal MUST resume
+only when that goal's own directive reaches a terminal state. A cancellation
+caused by chat that did not itself yield a goal MUST leave the script held, not
+resume it.
+
+**Memory MUST survive the hold.** While held, the game MUST NOT advance, clear
+or re-encode the remembered value, and MUST NOT construct a new `ScriptTick`:
+the object that resumes MUST be the object that was held. A hold is not a tick
+and MUST NOT be delivered as one to the runner.
+
+Holding MUST NOT be metered. Time a script is held for a player goal is time it
+is not active, so it accrues nothing under code-time metering — the same reading
+as paused, disabled, deleted or fallen back to the planner.
+
+#### Scenario: A player goal holds the script and the planner acts
+- **WHEN** a bot is running an active script against a reachable runner and a player sends it an instruction
+- **THEN** the planner handles the instruction
+- **AND** no script action is dispatched while the instruction's directive runs
+- **AND** in a control run with the same script, no goal, and the same reachable
+  runner, a script action IS dispatched — so "no action" is attributable to the
+  hold and not to the script being inert
+
+#### Scenario: A script that is held is not ticked
+- **WHEN** a bot with an active script and a reachable runner is held for a player goal
+- **THEN** the runner receives no tick for that bot during the hold
+- **AND** in a control run with the same script and runner but no goal, the runner DOES receive a tick
+
+#### Scenario: The script resumes with its remembered value after a completed goal
+- **WHEN** a script whose remembered value is non-null is held for a player goal
+  that reaches `COMPLETED`
+- **THEN** the script resumes ticking
+- **AND** the tick after the resume carries exactly the value that was remembered
+  before the hold, and the resuming `ScriptTick` is the same object that was held
+
+#### Scenario: The script resumes with its remembered value after a failed goal
+- **WHEN** a script whose remembered value is non-null is held for a player goal
+  that reaches `FAILED`
+- **THEN** the script resumes ticking
+- **AND** the tick after the resume carries exactly the value that was remembered
+  before the hold
+
+#### Scenario: A cancelled goal does not resume the script
+- **WHEN** a script is held for a player goal and that goal's directive is
+  cancelled by chat that did not itself satisfy the four gates
+- **THEN** the script remains held
+
+#### Scenario: Held time is not metered
+- **WHEN** a script is held for a player goal for a duration
+- **THEN** none of that duration is added to the bot's code-time usage
 
 ### Requirement: A Reported Condition Has A Defined Shape
 Several requirements here oblige the system to report a condition in the bot

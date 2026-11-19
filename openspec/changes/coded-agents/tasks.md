@@ -512,6 +512,37 @@ Scripted Bot Acts Only When There Is Something To Do*.
       red on the pre-fix tree. 37/37 in `test_script_tick`, 27/27 in
       `test_scout_script`.
 
+- [ ] 9.8 A player goal takes precedence over a running script (M3-1g; owner
+      ruled 1, 2026-11-19 16:51Z, answer to row e4974776). Before this, the
+      planner and the script were only ever alternatives in the spec (the
+      planner being the fallback), and nothing covered a chat goal arriving
+      while a script ticks. Measured 2026-11-19: a chat goal reached the planner
+      while the script ticked and both issued store work for one intent
+      (directive SKILL 26022 and STORE_ALL 26021/26025 against one goal).
+      Requirement + five scenarios added to the change spec ("A Player Goal
+      Yields A Running Script"), and the metering requirement extended so a
+      hold is a fifth not-active case and accrues nothing.
+      Which chat counts is the EXISTING set, not a new authority rule, and the
+      spec fixes it as four named gates rather than a reference: self
+      (`AIPlayerMod.java:272`), pleasantry (`agent.py:530`), bot-origin
+      (`agent.py:534`), and following (`agent.py:539`, `:598`, `:642`). No
+      permission gate exists and this task does not add one. The follow gate is
+      not inert: a bot following a player skips the planner path entirely, so
+      "MUST NOT widen or narrow" is only true with that gate named.
+      Implementation (after the spec is reviewed): hold the script while the
+      planner runs a player directive, resume on that directive's own terminal
+      state, and send no tick while held. The object that resumes MUST be the
+      object that was held - do NOT build a new `ScriptTick`, and do NOT route
+      the hold through the `handled=False` fallback path (`script_tick.py:286`:
+      "means the planner should run this tick"), which is the hold by
+      definition; either mistake wipes the blob the way 9.7
+      did. A cancel caused by chat that did not itself yield a goal must leave
+      the script held, not resume it (`interrupted_by_chat`, `agent.py:2108`,
+      `:2197`).
+      Test through the real agent loop, not a stubbed tick. Do not assert
+      "not a fallback" - assert identity of the resumed `ScriptTick` and the
+      remembered value on the first post-resume tick.
+
 ## Milestone reporting
 
 Result rows to `control-operator` at each of: (1) sandbox + tests on test,
