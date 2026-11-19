@@ -742,6 +742,20 @@ only when that goal's own directive reaches a terminal state. A cancellation
 caused by chat that did not itself yield a goal MUST leave the script held, not
 resume it.
 
+**A held tick MUST be expressible as its own outcome.** The script-tick call
+returns a bare boolean today (`agent.py:2719`; every path is `True` or `False`),
+and `False` already means "the planner should run this tick" — the fallback the
+memory clause above forbids. A hold is a third outcome: neither "the script
+handled this tick" (`True`) nor "the script did not run, so the planner may"
+(`False`). If the hold cannot be expressed distinctly, the first implementation
+will encode it as `False` and the fallback returns one layer down. While a tick
+is held the script MUST NOT resume and the planner MUST NOT dispatch on account
+of it. The same string must not mean opposite things: `interrupted_by_chat` is
+today both the reason a directive is cancelled (`agent.py:2197`) and, to the
+script's own dispatch loop, a reason to report the tick handled
+(`agent.py:2804`); a cancel that leaves the script held MUST be distinguishable
+from that.
+
 **Memory MUST survive the hold.** While held, the game MUST NOT advance, clear
 or re-encode the remembered value, and MUST NOT construct a new `ScriptTick`:
 the object that resumes MUST be the object that was held. A hold is not a tick
@@ -782,6 +796,9 @@ as paused, disabled, deleted or fallen back to the planner.
 - **WHEN** a script is held for a player goal and that goal's directive is
   cancelled by chat that did not itself satisfy the four gates
 - **THEN** the script remains held
+- **AND** the tick outcome for that iteration is distinct from both `True`
+  (the script handled it) and `False` (the planner may act)
+- **AND** the planner dispatches no directive as a result of that tick
 
 #### Scenario: Held time is not metered
 - **WHEN** a script is held for a player goal for a duration

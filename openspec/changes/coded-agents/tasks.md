@@ -539,9 +539,20 @@ Scripted Bot Acts Only When There Is Something To Do*.
       did. A cancel caused by chat that did not itself yield a goal must leave
       the script held, not resume it (`interrupted_by_chat`, `agent.py:2108`,
       `:2197`).
+      Return shape (reviewer R1, 16:57Z, accepted): `_run_script_tick` returns
+      a bare `bool` (`agent.py:2719`, every path `True`/`False`), so a hold has
+      NO distinct value today. `False` already means "the planner should run
+      this tick". Do not encode a hold as `False` - that is the forbidden
+      fallback one layer down. The hold MUST be a third outcome of the
+      script-tick call, distinguishable from both "handled" (`True`) and "did
+      not run, planner may" (`False`). Note `interrupted_by_chat` currently
+      means opposite things at `agent.py:2197` (cancel reason) and `:2804`
+      (the script's dispatch loop reads it as handled); a held cancel MUST be
+      distinguishable from that.
       Test through the real agent loop, not a stubbed tick. Do not assert
       "not a fallback" - assert identity of the resumed `ScriptTick` and the
-      remembered value on the first post-resume tick.
+      remembered value on the first post-resume tick, and assert the held
+      outcome is neither `True` nor `False`.
 
 ## Milestone reporting
 
