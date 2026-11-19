@@ -610,6 +610,23 @@ Scripted Bot Acts Only When There Is Something To Do*.
       so the generation and the election cannot disagree about who is
       current. Do not add a second lock over the same state. Note `:4370`
       takes no lock today.
+      EVERY GENERATION-CONSUMING RUN MUST TERMINATE (reviewer 17:04Z,
+      accepted; this is a consequence of the entry rule above): the bump is
+      at entry but `self._orch_cancel` is not published until `:1407-1408`,
+      ~100 lines later. `_run_orchestrator`'s own body has exactly two exits
+      between them - `:1305` (plan_orchestrator unimportable) and the
+      `on_finalized` decline at `:1375`. Of these `:1375` is already safe: it
+      is preceded by `_order_status("FAILED", ...)` at `:1366`. `:1305` is
+      not - it returns silently, so a run that consumed a generation reports
+      nothing, and the hold's resume test ("generation matches AND the goal
+      reached COMPLETED or FAILED") WAITS FOREVER. That is not a double-issue
+      but a STUCK hold, which loses the owner's option-1 outcome just as
+      surely. Make `:1305` report FAILED the way `:4360-4366` already does for
+      "L3 plan layer disabled", so every path that consumes a generation also
+      reaches a terminal state. (The other `return`s in this range -
+      `:1448`, `:1480`, `:1484`, `:1496`, `:1500` - belong to the nested
+      helpers `_shadow_plan_write`, `_shadow_plan_finalize` and
+      `_check_task_board`, not to the orchestrator run.)
 
 ## Milestone reporting
 
