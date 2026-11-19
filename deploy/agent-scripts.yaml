@@ -46,6 +46,41 @@ data:
 
     var GOAL = "scout_store";
 
+    // Directive statuses that mean the directive is OVER. Taken from
+    // DirectiveStatus.java (exactly ACTIVE, COMPLETED, FAILED, CANCELLED) and
+    // Directive.toMap() (Directive.java:63 writes `status.name()`), so these are
+    // the literal wire strings, not a guess at the enum's spelling.
+    //
+    // ACTIVE is the only in-flight status; it is deliberately NOT listed. Every
+    // terminal status leaves BotBrain's `activeDirective` null, so a directive in
+    // one of these three is finished and the bot is free to act.
+    var TERMINAL_STATUSES = ["COMPLETED", "FAILED", "CANCELLED"];
+
+    // True only when the payload POSITIVELY says nothing is running.
+    //
+    // Two separate questions, both answered from the producer's own fields:
+    //   - has a directive ever finished, and is it still the retained one
+    //     (`directive.status` terminal), or
+    //   - has one never started (`progress.phase` idle, the never-run shape).
+    //
+    // Anything else - an unknown status, a missing directive, a missing progress
+    // block - returns false and the caller HOLDS. That asymmetry is the point: a
+    // shape we cannot read must not be mistaken for an idle bot.
+    function _noDirectiveInFlight(task) {
+      if (!task || typeof task !== "object") return false;
+      var directive = task.directive;
+      if (directive && typeof directive === "object" &&
+          typeof directive.status === "string" &&
+          TERMINAL_STATUSES.indexOf(directive.status) !== -1) {
+        return true;
+      }
+      var progress = task.progress;
+      if (progress && typeof progress === "object" && progress.phase === "idle") {
+        return true;
+      }
+      return false;
+    }
+
     function tick() {
       // No snapshot means the agent sent none. Doing anything here would be acting
       // on a guess, so say so once and propose nothing.
@@ -147,27 +182,68 @@ data:
       // from those two real responses, not constructed from what this script
       // expects -- a hand-built idle `null` would have confirmed the wrong guard,
       // which is exactly how the snapshot.state bug at line 30 survived every test.
-      // Hold unless the task is PROVABLY idle. "Busy" is everything else,
-      // including a directive that carries no progress block at all -- an older
-      // mod, a shape we have not seen, or a bare test directive. Writing this as
-      // `phase !== "idle" && progress exists` would let a directive we cannot read
+      // Hold unless NO DIRECTIVE IS IN FLIGHT. "In flight" is everything else,
+      // including a directive that carries no status or no progress block --
+      // an older mod, a shape we have not seen, or a bare test directive. Writing
+      // this as `status !== "ACTIVE"` alone would let a directive we cannot read
       // through as idle, which is the unsafe direction: the script would start a
-      // second job underneath an unknown one. Only an explicit idle phase opens it.
+      // second job underneath an unknown one. Both openings below are POSITIVE
+      // evidence, never the absence of a block.
+      //
+      // TWO openings, and the second is the M3-1b fix:
+      //
+      //   1. `progress.phase === "idle"` -- a never-run bot. Measured on TEST
+      //      2026-11-12 (see above).
+      //
+      //   2. `directive.status` is a TERMINAL status. This is the case the phase
+      //      test cannot see. On SUCCESS/FAILED/CANCELLED BotBrain.java:96/:109/
+      //      :121 swap `activeBehavior` to idleBehavior but leave `lastProgress`
+      //      holding the behaviour's final phase, and :190 keeps reporting it for
+      //      as long as `lastDirective` is set -- which is forever. So a bot whose
+      //      plan finished reports phase "done"/"skill:done"/"failed"/"cancelled"
+      //      beside a state of "Standing by", every tick, and the phase test held
+      //      it permanently. The gate was keyed on the wrong field: the question is
+      //      "is a directive in flight", and `status` answers it directly.
+      //
+      // DirectiveStatus (DirectiveStatus.java) is exactly ACTIVE, COMPLETED,
+      // FAILED, CANCELLED, and Directive.toMap() (Directive.java:63) writes
+      // `status.name()`, so the wire values are those four uppercase names. ACTIVE
+      // is the only in-flight one; the other three all leave `activeDirective`
+      // null. An unrecognised status is NOT treated as terminal -- it holds, same
+      // as an unreadable directive.
+      //
+      // NOTE on the state field, because the obvious reading of it is wrong:
+      // `state` is `describeState()`, and IdleBehavior.describeState()
+      // (IdleBehavior.java:24) returns "Standing by", NOT "idle". `activeBehavior`
+      // is never null -- it is constructed to idleBehavior at BotBrain.java:29 and
+      // restored there on every terminal path -- so the literal "idle" at
+      // BotBrain.java:180 is unreachable in the payload. Gating on
+      // `state === "idle"` would never fire. `state` still reads as a person
+      // description of what the bot is doing, so it is logged, never tested.
       var task = snapshot.task;
-      if (task && !(task.progress && task.progress.phase === "idle")) {
+      if (task && !_noDirectiveInFlight(task)) {
         // Say WHY we are holding. Returning silently here made a held bot
         // indistinguishable from a script that was never called: on test
         // 2026-11-19 the log carried zero dispatch lines for a bot holding 16
         // cobblestone, and that silence was read as "the script is not running".
         //
-        // The phase is printed because a completed plan NEVER reports "idle":
-        // BotBrain.java:88-99 captures lastProgress without resetting it, so the
-        // directive keeps its behaviour's final phase ("done", "skill:done")
-        // for as long as it is the last directive. Naming the phase on every held
-        // tick is what makes that visible instead of silent.
-        api.log(task.progress && task.progress.phase
-          ? "scout: task phase " + task.progress.phase + ", holding"
-          : "scout: task has no progress phase, holding");
+        // Name the status when there is one, because since M3-1b that is what the
+        // decision turns on. Three distinguishable cases, because an operator
+        // reads these lines to tell them apart:
+        //   - a status we do not recognise (not terminal, so we held)
+        //   - no status at all (a shape we cannot read)
+        //   - no progress block either (same, and worth saying separately)
+        var heldStatus = (task.directive && typeof task.directive.status === "string")
+          ? task.directive.status : null;
+        var heldPhase = (task.progress && typeof task.progress === "object" &&
+                         typeof task.progress.phase === "string")
+          ? task.progress.phase : null;
+        var why = heldStatus
+          ? "unrecognised directive status " + heldStatus
+          : (heldPhase ? "no directive status" : "no progress phase");
+        api.log("scout: holding, " + why +
+                ", phase " + (heldPhase || "(none)") +
+                ", state " + (task.state || "(none)"));
         return;  // propose nothing: the runner reads api.do, not this value
       }
 

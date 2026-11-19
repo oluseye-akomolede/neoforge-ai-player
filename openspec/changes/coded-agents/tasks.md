@@ -386,26 +386,52 @@ Scripted Bot Acts Only When There Is Something To Do*.
       `inventory empty, not storing` rather than returning at the busy-task
       check — same behaviour, different log line; do not read it as misfiring.
 
-- [x] 9.2 A held tick is visible in the log, naming the phase it saw.
-      Cause B of M3-1b: `scout.js` returned silently when the task was not idle,
+- [x] 9.2 A held tick is visible in the log, naming what it held on.
+      Cause B of M3-1b: `scout.js` returned silently when the task gate held,
       so a busy bot and a bot that was never called printed identically — the
       2026-11-19 test report was zero `[Scout/script]` lines with a bot holding
-      16 cobblestone for ~7 min. `2b52ef1`. The gate's DECISION is unchanged and
-      must stay so: holding on an unreadable directive is the safe direction; it
-      is the silence that was the bug. **A completed plan never reports `idle`**
-      — on SUCCESS `BotBrain.java:94` captures `lastProgress` *before* `:96`
-      swaps `activeBehavior` to idle, and `:190` reports that captured progress
-      whenever `activeDirective` is null and `lastDirective` is set;
+      16 cobblestone for ~7 min. `2b52ef1`. **A completed plan never reports
+      `idle`** — on SUCCESS `BotBrain.java:94` captures `lastProgress` *before*
+      `:96` swaps `activeBehavior` to idle, and `:190` reports that captured
+      progress whenever `activeDirective` is null and `lastDirective` is set;
       `Directive.complete()` (`Directive.java:50`) sets only `status`, never a
       phase. So the phase stays at what the behavior last set
       (`SkillBehavior.java:365` -> `skill:done`, `LocateBehavior.java:317` ->
-      `done`). The gate blocks forever after a plan completes, and 9.4 must
-      decide whether that is intended.
+      `done`). That fact is what 9.4 then acted on.
 - [x] 9.3 Script memory survives between ticks (cause A). `92de520`. See spec
       delta *Script memory survives between ticks*. The cooldown added in 9.1
       could never engage in production because nothing read `memory_out`;
       `MemoryRoundTripTest` fails on the pre-fix code (2 red) and drives two
       ticks through one `ScriptTick` rather than hand-feeding the value.
+- [x] 9.4 The action gate keys on directive status, not on the phase.
+      Lead ruled 2026-11-19 that the blocking is UNINTENDED, script-only, no mod
+      change. `scout.js` now opens the gate when `directive.status` is
+      `COMPLETED`/`FAILED`/`CANCELLED` (all three terminal paths set
+      `lastDirective` — `BotBrain.java:93`, `:106`, `:118` — not only SUCCESS),
+      or when `progress.phase` is `"idle"` (never-run). It holds on `ACTIVE`, on
+      any unrecognised status, and on a task with no `directive` or no
+      `progress`. Both openings are POSITIVE evidence; the absence of a field
+      never opens the gate.
+      **`state` is deliberately not the discriminator, and this is the trap in
+      the obvious reading of `BotBrain.java:180`.** That line reads
+      `activeBehavior != null ? describeState() : "idle"`, but `activeBehavior`
+      is `idleBehavior` at construction (`:29`) and on every terminal path, so it
+      is never null and the literal `"idle"` never reaches the payload — an idle
+      bot reports `"Standing by"` (`IdleBehavior.java:24`). A gate written as
+      `state === "idle"` would never fire: the flat-shape-health-guard failure
+      again, in the silent direction.
+      No mod change, by ruling: `currentPhase()` (`BotBrain.java:213-219`) feeds
+      the overlay (`OverlayNetwork.java:1207`), where the last result after a
+      directive ends is shown information; clearing `lastProgress` would remove
+      it and need a mod build plus a server restart.
+      Fixtures are producer-shaped for active, the three terminal statuses, an
+      unknown status, never-run, and unreadable. `test_every_terminal_status_
+      opens_the_gate` and `test_completed_plan_opens_the_gate` are red on
+      f5136c0 (holding, `[]`); `test_active_directive_still_holds` and
+      `test_unknown_status_holds_...` are red there only on the log wording,
+      since the old gate already held those — the decision was never the fault
+      line for ACTIVE. See spec delta *A script's action gate MUST key on the
+      directive status*.
 
 ## Milestone reporting
 

@@ -212,17 +212,21 @@ BUSY_DIRECTIVE = {
 }
 
 
-# The shape a COMPLETED plan reports, and the one the task gate blocks on.
+# The three shapes a TERMINATED directive reports, one per DirectiveStatus
+# terminal value (DirectiveStatus.java: COMPLETED, FAILED, CANCELLED).
 #
-# Not hand-written: BotBrain.java:88-99 shows that on SUCCESS the brain captures
-# `lastProgress` from the behaviour WITHOUT resetting it, then swaps in
-# idleBehavior. BotBrain.java:189-191 then reports that captured progress, so the
-# last directive keeps its behaviour's final phase forever. The phase strings here
-# are the ones the behaviours actually set on their success path:
-# "done" at LocateBehavior.java:317, "skill:done" at SkillBehavior.java:365.
-# Directive.complete() (Directive.java:50) only sets status; it never touches
-# progress. So a finished plan reports a NON-IDLE phase indefinitely, which is
-# why the gate holds a bot whose work is done.
+# Not hand-written. On every terminal path BotBrain swaps `activeBehavior` to
+# idleBehavior while `lastProgress` keeps that behaviour's final phase, and
+# :187-190 reports it for as long as `lastDirective` is set -- which is forever.
+# So the payload pairs a state of "Standing by" (IdleBehavior.describeState(),
+# IdleBehavior.java:24 -- NOT the literal "idle") with a non-idle phase. That
+# contradiction is the bug M3-1b fixes: "the work is over" and "a plan is in
+# flight" were being read from the same field.
+#
+# The status strings are `status.name()` from Directive.toMap() (Directive.java:63).
+# The phases are what each path leaves behind: "skill:done"/"done" on success
+# (SkillBehavior.java:365, LocateBehavior.java:317), "failed" on failure, and
+# the phase unchanged on cancel.
 COMPLETED_SKILL_DIRECTIVE = {
     "state": "Standing by",
     "self_preservation": "ok",
@@ -230,9 +234,46 @@ COMPLETED_SKILL_DIRECTIVE = {
     "progress": {"phase": "skill:done"},
 }
 
+COMPLETED_DONE_DIRECTIVE = {
+    "state": "Standing by",
+    "self_preservation": "ok",
+    "directive": {"id": 13, "type": "LOCATE", "status": "COMPLETED"},
+    "progress": {"phase": "done"},
+}
+
+FAILED_DIRECTIVE = {
+    "state": "Standing by",
+    "self_preservation": "ok",
+    "directive": {"id": 14, "type": "MINE", "status": "FAILED",
+                  "failure_reason": "no blocks in range"},
+    "progress": {"phase": "skill:failed"},
+}
+
+CANCELLED_DIRECTIVE = {
+    "state": "Standing by",
+    "self_preservation": "ok",
+    "directive": {"id": 15, "type": "WIDE_SEARCH", "status": "CANCELLED"},
+    "progress": {"phase": "pathing_to_cell"},
+}
+
+# Never run: no directive at all, and the phase the brain reports before any
+# dispatch. This is the one shape the OLD gate handled (via phase), and it must
+# keep working -- the fix adds an opening, it does not replace one.
+NEVER_RUN_DIRECTIVE = {"state": "Standing by", "self_preservation": "ok",
+                       "progress": {"phase": "idle"}}
+
 # A directive carrying no progress block at all: an older mod, or a shape the
 # script has not seen. The gate must hold AND must say it could not read it.
 UNREADABLE_DIRECTIVE = {"state": "Standing by", "self_preservation": "ok"}
+
+# An ARMED directive whose status the script does not recognise. Not terminal,
+# not ACTIVE -- the safe answer is to hold, never to read it as idle.
+UNKNOWN_STATUS_DIRECTIVE = {
+    "state": "Standing by",
+    "self_preservation": "ok",
+    "directive": {"id": 16, "type": "MINE", "status": "PENDING"},
+    "progress": {"phase": "mining"},
+}
 
 
 def _envelope(health=20.0, task=IDLE_DIRECTIVE, inventory=None, **extra):
@@ -568,22 +609,101 @@ class HeldTickIsObservableTest(unittest.TestCase):
                       "the log must name the phase it held on; got %r"
                       % (result["logs"],))
 
-    def test_completed_plan_still_logs_and_holds(self):
-        """A finished plan reports a non-idle phase, so the gate holds - loudly.
+    def test_completed_plan_opens_the_gate(self):
+        """M3-1b: a FINISHED plan must not hold the bot forever.
 
-        This is the shape that makes the gate's silence dangerous:
-        BotBrain.java:88-99 keeps the completed behaviour's final progress, so
-        `phase` stays "skill:done" and never returns to "idle". The bot's work
-        is over and the gate still holds it; only the log line says so.
+        On SUCCESS BotBrain swaps in idleBehavior but `lastProgress` keeps the
+        behaviour's final phase, so the payload reads `state: "Standing by"`
+        beside `progress.phase: "skill:done"` on every tick, forever. Keying
+        the gate on the phase held the bot permanently after its first plan;
+        the question is whether a directive is in FLIGHT, and the status
+        answers it. A COMPLETED directive is not in flight.
         """
         result = _run(_envelope(20.0, COMPLETED_SKILL_DIRECTIVE,
                                 inventory=CARRYING))
-        self.assertEqual([], result["actions"],
-                         "the gate holds a completed plan: %r" % (result["actions"],))
+        self.assertEqual(["STORE_ALL"], _directives(result),
+                         "a completed plan must not hold the bot: logs=%r"
+                         % (result["logs"],))
         joined = " ".join(result["logs"])
-        self.assertIn("skill:done", joined,
-                      "the completed phase must appear in the log; got %r"
+        self.assertNotIn("holding", joined,
+                         "nothing is being held; got %r" % (result["logs"],))
+
+    def test_every_terminal_status_opens_the_gate(self):
+        """COMPLETED, FAILED and CANCELLED all mean 'not in flight'.
+
+        The reviewer's correction: `lastDirective` is set on all three terminal
+        paths (BotBrain.java:93 SUCCESS, :106 FAILED, :118 CANCELLED), not only
+        on success, so a FAILED directive strands the bot exactly the same way.
+        One fixture per status, each in the shape the producer emits.
+        """
+        for name, fixture, phase in (
+                ("COMPLETED/skill:done", COMPLETED_SKILL_DIRECTIVE, "skill:done"),
+                ("COMPLETED/done", COMPLETED_DONE_DIRECTIVE, "done"),
+                ("FAILED", FAILED_DIRECTIVE, "skill:failed"),
+                ("CANCELLED", CANCELLED_DIRECTIVE, "pathing_to_cell")):
+            with self.subTest(status=name):
+                result = _run(_envelope(20.0, fixture, inventory=CARRYING))
+                self.assertEqual(
+                    ["STORE_ALL"], _directives(result),
+                    "%s is terminal and must not hold; logs=%r"
+                    % (name, result["logs"]))
+                # The stale phase must not drive the decision any more.
+                self.assertNotIn("holding", " ".join(result["logs"]),
+                                 "%s held on stale phase %r: %r"
+                                 % (name, phase, result["logs"]))
+
+    def test_never_run_bot_still_opens_the_gate(self):
+        """The fix ADDS an opening; it must not lose the one that worked.
+
+        A bot that has never been dispatched carries no `directive` key at all
+        and reports `progress.phase: "idle"`. That was the only shape the old
+        gate let through, and it must keep letting through.
+        """
+        result = _run(_envelope(20.0, NEVER_RUN_DIRECTIVE, inventory=CARRYING))
+        self.assertEqual(["STORE_ALL"], _directives(result),
+                         "a never-run bot must act: logs=%r"
+                         % (result["logs"],))
+
+    def test_active_directive_still_holds(self):
+        """ACTIVE is the one in-flight status - the gate must keep holding."""
+        result = _run(_envelope(20.0, BUSY_DIRECTIVE, inventory=CARRYING))
+        self.assertEqual([], result["actions"],
+                         "an ACTIVE directive must hold: %r"
+                         % (result["actions"],))
+        self.assertIn("ACTIVE", " ".join(result["logs"]),
+                      "the hold must name the status it held on; got %r"
                       % (result["logs"],))
+
+    def test_unknown_status_holds_rather_than_reading_as_idle(self):
+        """A status we do not recognise is not terminal: hold, do not guess.
+
+        Same asymmetry as an unreadable directive. If a future enum value were
+        read as terminal, the script would start a second job underneath a
+        live one - the exact failure this gate exists to prevent.
+        """
+        result = _run(_envelope(20.0, UNKNOWN_STATUS_DIRECTIVE, inventory=CARRYING))
+        self.assertEqual([], result["actions"],
+                         "an unknown status must hold: %r" % (result["actions"],))
+        self.assertIn("PENDING", " ".join(result["logs"]),
+                      "the hold should name the unrecognised status; got %r"
+                      % (result["logs"],))
+
+    def test_the_state_field_is_not_the_gate(self):
+        """`state` never reads "idle" in production - it must not be tested.
+
+        IdleBehavior.describeState() returns "Standing by" (IdleBehavior.java:24)
+        and `activeBehavior` is never null (BotBrain.java:29 and every terminal
+        path restore idleBehavior), so the literal "idle" at BotBrain.java:180
+        is unreachable. A gate written as `state === "idle"` would never fire -
+        the same dead-guard class as the flat-shape health guard. Pin it: a
+        terminal fixture whose state is "Standing by" still opens the gate, and
+        no test may depend on a state of "idle".
+        """
+        self.assertNotEqual("idle", COMPLETED_SKILL_DIRECTIVE["state"])
+        self.assertNotEqual("idle", NEVER_RUN_DIRECTIVE["state"])
+        result = _run(_envelope(20.0, COMPLETED_SKILL_DIRECTIVE,
+                                inventory=CARRYING))
+        self.assertEqual(["STORE_ALL"], _directives(result))
 
     def test_unreadable_directive_is_distinguished_from_a_known_phase(self):
         """No progress block logs a DISTINCT line, not a blank or a wrong phase.

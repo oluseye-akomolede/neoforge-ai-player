@@ -824,15 +824,97 @@ trusting either shape.
 > will not exercise it.
 
 
+### Requirement: A script's action gate MUST key on the directive status
+
+A script that would start a job MUST open its gate when the producer reports NO
+directive in flight, and MUST hold otherwise. "No directive in flight" SHALL be
+established positively, from either of two producer fields:
+
+- `directive.status` is a terminal status — `COMPLETED`, `FAILED` or `CANCELLED`
+  (`DirectiveStatus.java`; serialised by `Directive.toMap()` as `status.name()`); or
+- `progress.phase` is `"idle"` — a bot that has never been dispatched.
+
+Any other shape MUST hold: an `ACTIVE` status, a status outside that set, a task
+with no `directive`, or a task with no `progress` block. The absence of a field is
+never evidence that the bot is idle.
+
+The top-level `state` field MUST NOT be used as the discriminator. It carries the
+active behaviour's `describeState()`, which for an idle bot is `"Standing by"`
+(`IdleBehavior.java:24`), not the literal `"idle"`.
+
+#### Scenario: A completed plan does not hold the bot
+- **WHEN** the snapshot carries `state: "Standing by"`, a task whose
+  `directive.status` is `"COMPLETED"`, and `progress.phase` of `"skill:done"`
+- **THEN** the script proposes its action, because no directive is in flight
+
+#### Scenario: Every terminal status is treated the same
+- **WHEN** the task's `directive.status` is `COMPLETED`, `FAILED` or `CANCELLED`
+- **THEN** the script proposes its action in all three cases, whatever stale
+  `progress.phase` accompanies it
+
+#### Scenario: An active directive still holds
+- **WHEN** the task's `directive.status` is `"ACTIVE"`
+- **THEN** the script proposes no action
+
+#### Scenario: An unknown status is not read as finished
+- **WHEN** the task's `directive.status` is a value outside the four defined ones
+- **THEN** the script proposes no action
+
+#### Scenario: A never-run bot acts
+- **WHEN** the task carries no `directive` and `progress.phase` is `"idle"`
+- **THEN** the script proposes its action
+
+#### Scenario: The state field alone never opens the gate
+- **WHEN** the snapshot's `state` is `"Standing by"` but the task carries an
+  `ACTIVE` directive
+- **THEN** the script proposes no action, so no test can pass by matching `state`
+
+> **Why this requirement exists.** The gate introduced in M3-1 keyed on
+> `progress.phase === "idle"` alone. That field is not a liveness signal: on every
+> terminal path `BotBrain` sets `activeBehavior = idleBehavior` at `:96` (SUCCESS),
+> `:109` (FAILED) and `:121` (CANCELLED) while `lastProgress` retains the
+> behaviour's final phase, and `:187-190` keeps reporting it for as long as
+> `lastDirective` is set — which is for the life of the process, since nothing
+> clears it outside a reset. So after a bot's directory was first terminated, the
+> gate held it permanently and it never acted again. Measured on test 2026-11-19:
+> zero `[Scout/script]` dispatch lines for a bot holding 16 cobblestone.
+>
+> The question the gate is actually asking is "is a directive in flight", and
+> `directive.status` answers it directly. The lead ruled the blocking UNINTENDED on
+> 2026-11-19 and scoped the fix to the script, with no mod change: `currentPhase()`
+> (`BotBrain.java:213-219`) reports the same retained phase and feeds the in-game
+> overlay (`OverlayNetwork.java:1207`), where the last result after a directive ends
+> is information a player is meant to see. Clearing `lastProgress` would remove
+> shown information and require a mod build plus a server restart.
+>
+> **`state` looks like the answer and is not.** `BotBrain.java:180` writes
+> `activeBehavior != null ? describeState() : "idle"`, which reads like an idle
+> flag. But `activeBehavior` is assigned `idleBehavior` at construction (`:29`) and
+> restored to it on every terminal path, so it is never null and the literal
+> `"idle"` is unreachable in the PAYLOAD — an idle bot reports `"Standing by"`. The
+> same nullable ternary at `stateLine()` (`:210`) does return `"idle"`, but only
+> `OverlayNetwork.java:1208` and `OverlayScreen.java:1496` read that, and neither is
+> the HTTP response a script sees. A gate written as `state === "idle"` would never
+> fire: the same dead-guard class as the flat-shape health guard this script already
+> carries a comment about, failing in the silent direction.
+
+
 ### Requirement: A held tick MUST be observable in the log
 
-When a script declines to act because the bot is not provably idle, it SHALL emit
-`api.log` on that tick naming the phase it saw. A script that returns silently
-MUST NOT be the only evidence that it ran.
+When a script declines to act because a directive is in flight, it SHALL emit
+`api.log` on that tick naming what it held on — the directive status when there is
+one, and the phase. A script that returns silently MUST NOT be the only evidence
+that it ran.
 
 #### Scenario: A busy bot produces a log line every tick
-- **WHEN** the snapshot carries a task whose `progress.phase` is not `"idle"`
-- **THEN** the script proposes no action and logs a line naming that phase
+- **WHEN** the snapshot carries a task whose `directive.status` is `"ACTIVE"`
+- **THEN** the script proposes no action and logs a line naming that status
+
+#### Scenario: An unrecognised status is named as the reason
+- **WHEN** the snapshot carries a task whose `directive.status` is not one of
+  `ACTIVE`, `COMPLETED`, `FAILED`, `CANCELLED`
+- **THEN** the script proposes no action and logs a line naming that status, so a
+  reader can tell a status we do not recognise from a directive that is running
 
 #### Scenario: A directive with no progress block is logged as unreadable
 - **WHEN** the snapshot carries a task with no `progress` block at all
@@ -847,21 +929,15 @@ MUST NOT be the only evidence that it ran.
 > reachable were indistinguishable from the outside. The investigation could not
 > name a cause from the evidence because the code emitted no evidence.
 >
-> **The phase never returns to `"idle"` after a plan completes, which is why this
-> matters beyond observability.** On SUCCESS, `BotBrain.java:88-99` captures
-> `lastProgress` from the behaviour *without* resetting it, then sets
-> `activeBehavior = idleBehavior`. `toMap()` (`BotBrain.java:189-191`) then reports
-> that captured `lastProgress`, so the directive keeps the completed behaviour's
-> final phase — `"done"` (`LocateBehavior.java:317`), `"skill:done"`
-> (`SkillBehavior.java:365`). `Directive.complete()` (`Directive.java:50`) only sets
-> the status; it does not touch progress. A completed directive therefore reports a
-> non-idle phase indefinitely, and a gate keyed on `phase === "idle"` blocks a bot
-> whose work is finished. The log line is what makes that visible on the tick it
-> happens instead of requiring a source-reading investigation to suspect it.
->
-> This requirement deliberately does NOT change the gate's decision. Holding on an
-> unrecognised directive remains correct — the unsafe direction would be to act
-> underneath an unknown job. Only the silence is removed.
+> Naming the PHASE alone was not enough, which is why the line now leads with the
+> status: since M3-1b the decision turns on `directive.status`, and a hold is
+> almost always "a status we did not recognise" rather than a busy phase.
+
+> **This requirement originally said it did not change the gate's decision. That
+> is superseded by *A script's action gate MUST key on the directive status* below,
+> which the lead ruled on 2026-11-19.** The history is kept because the sequence
+> matters: 9.2 made the hold visible, and only then could 9.4 state the bug
+> precisely.
 
 
 ### Requirement: Script memory MUST round-trip through the agent
