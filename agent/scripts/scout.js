@@ -44,15 +44,22 @@ function tick() {
   // on every tick means a bot that is already unloaded pays for a full store
   // pass every tick, forever, and the mod queues a directive per tick.
   //
-  // WHY THE OBVIOUS GUARD IS WRONG: `state.inventory` is NOT a list. The
-  // endpoint returns `Map.of("inventory", bot.getCachedInventory())`
-  // (HttpApiServer.java:469) and the agent stores that body verbatim
-  // (api.py:101), so the shape is
+  // WHY THE OBVIOUS GUARD IS WRONG: on a successful read, `state.inventory`
+  // is a WRAPPER OBJECT, not a list. The endpoint returns
+  // `Map.of("inventory", bot.getCachedInventory())` (HttpApiServer.java:469)
+  // and the agent stores that body verbatim (snapshot.py:71; the fetch itself
+  // is api.py:102), so the shape is
   //   state.inventory = { inventory: [ {slot, item, count, display_name} ] }
   // Reading `state.inventory.length` on that object yields `undefined`, so a
   // `length > 0` guard NEVER FIRES - the same silent-never-fire class as the
   // health guard above (which read the flat shape and so never ran). The list
   // is `state.inventory.inventory`.
+  //
+  // NOT AN ABSOLUTE, though: a FAILED inventory read degrades to a bare `[]`
+  // (snapshot.py:71 passes `[]` as the default), so the wrapper is the shape
+  // only on success. The guard below handles that by falling back to `[]`,
+  // which reads as "nothing to store" - under-acting, never over-acting.
+  // Do not tighten this into an assertion that the wrapper is always present.
   //
   // WHEN: only when there is something to store, and not again for the same
   // inventory for a while. The cooldown is stored as the tick number it was
