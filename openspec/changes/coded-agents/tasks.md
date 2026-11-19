@@ -369,13 +369,22 @@ Scripted Bot Acts Only When There Is Something To Do*.
 - [x] 9.1 `scout.js` proposes `STORE_ALL` only when inventory holds at least one
       item, and holds for a named cooldown after proposing. Tests in
       `test_scout_script.py` with fixtures copied from the real snapshot shape.
-      `dc45196`. 18/18 green. The guard reads `state.inventory.inventory`
-      (`HttpApiServer.java:469` wraps the list; `api.py:101` stores the body),
-      because a `state.inventory.length` read is undefined on the wrapper and
-      would never fire. Cooldown is a tick stamp, since `recall()` returns the
-      blob the tick started with (`binding.js:293`) and `remember` takes one
-      string (`binding.js:312`). Three mutants verified caught: bare-array read
-      11 red, no inventory guard 2 red, no cooldown 1 red.
+      `dc45196`, then the spec-shape correction commit. 18/18 green. The guard reads
+      `state.inventory.inventory` (`HttpApiServer.java:469` wraps the list;
+      `snapshot.py:71` stores the body verbatim as `state.inventory`), because a
+      `state.inventory.length` read is undefined on the wrapper and would never
+      fire. Cooldown is a tick stamp, since `recall()` returns the blob the tick
+      started with (`binding.js:293`) and `remember` takes one string
+      (`binding.js:312`). Three mutants verified caught: bare-array read 11 red,
+      no inventory guard 2 red, no cooldown 1 red.
+      **Cooldown value: 100 ticks (~5 min)**, set deliberately, not the "at least
+      one tick" floor the spec names — ~5 min is how often a full bot retries a
+      store that keeps failing. `STORE_ALL_COOLDOWN_TICKS` in `scout.js:64`.
+      A failed inventory read degrades to a bare `[]` (`snapshot.py:56` default),
+      which the guard treats as empty; it under-acts, never over-acts.
+      The guard sits before the task check, so a bot already storing logs
+      `inventory empty, not storing` rather than returning at the busy-task
+      check — same behaviour, different log line; do not read it as misfiring.
 
 ## Milestone reporting
 

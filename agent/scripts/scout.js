@@ -64,7 +64,13 @@ function tick() {
   var STORE_ALL_COOLDOWN_TICKS = 100;
   var inv = (state.inventory && state.inventory.inventory) || [];
   if (!Array.isArray(inv) || inv.length === 0) {
-    api.log("scout: inventory empty, not storing");
+    // This guard runs before the task check, so this line fires both for a bot
+    // carrying nothing and for one mid-store that already deposited everything.
+    // Say which, because these log lines are evidence in the C1/C4 arms and the
+    // second case must not read as the guard misfiring.
+    api.log("scout: inventory empty, not storing (" +
+            ((snapshot.task && snapshot.task.progress &&
+              snapshot.task.progress.phase === "idle") ? "idle" : "already deposited") + ")");
     return;  // propose nothing: the runner reads api.do, not this value
   }
   var now = (typeof snapshot.tick === "number") ? snapshot.tick : 0;

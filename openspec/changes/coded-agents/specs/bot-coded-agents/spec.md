@@ -774,11 +774,15 @@ exists so that a store which keeps failing to complete — no reachable containe
 a container that fills mid-store — cannot be re-proposed on every tick.
 
 The inventory a script reads is the one the snapshot envelope carries at
-`state.inventory`: an object whose `inventory` member is the list of carried
-items, each with at least `slot`, `item` and `count`. It is **not** a bare
-array, and it is not absent when the bot carries nothing — it is present with an
-empty list. A script that reads an array-shaped field MUST NOT be relied on to
-detect an empty inventory.
+`state.inventory`: on a successful read it is an object whose `inventory` member
+is the list of carried items, each with at least `slot`, `item` and `count`. A
+bot carrying nothing still gets that wrapper, with an empty list.
+
+A script MUST NOT rely on the wrapper alone, because a *failed* read degrades to
+a bare array: `snapshot.py` substitutes a default when a reader raises, and the
+inventory default is `[]`. So `state.inventory` is the wrapper on success and a
+bare `[]` on failure, and a script MUST treat both as "no items" rather than
+trusting either shape.
 
 #### Scenario: Empty inventory proposes nothing
 - **WHEN** a bot's snapshot reports an empty inventory and the bot is provably idle
@@ -815,4 +819,6 @@ detect an empty inventory.
 > appear fixed while never storing anything at all. That is the same failure
 > class as the `snapshot.state` bug this script already carries a comment about,
 > and it fails in the silent direction. Fixtures MUST be copied from the real
-> response shape for this reason.
+> response shape for this reason — and MUST also cover the degraded case, where a
+> failed read leaves a bare `[]`: a fixture set that only ever builds the wrapper
+> will not exercise it.
