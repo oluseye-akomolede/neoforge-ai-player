@@ -694,6 +694,24 @@ Scripted Bot Acts Only When There Is Something To Do*.
       104/104 total (test_script_tick 37, test_agent_script_branch 40,
       test_scout_script 27).
 
+      REVIEW PASS (minecraft-reviewer, 17:24Z), on the CODE rev `0575b40`
+      (the reviewer's separate attestation commit is `c896a1e` — an artefact of
+      the review, not a code state; do not conflate the two). Verified by
+      mutation: restoring `text[:40]` in `_new_goal_id` turns the suite red on
+      exactly the two new tests and nothing else. The `#<seq>` suffix also
+      survives forged-`#` attacks ((sender,text) and (sender#1,'') stay
+      distinct; 50 identical calls give 50 ids), because the suffix is the
+      final component. Single-writer-no-lock confirmed: both id-minting callers
+      are in `_maybe_plan`, whose one call site is on the agent-loop thread; the
+      lock concern applies to the orchestrator SPAWN paths (order-worker
+      thread), which never reach id minting.
+      CI TRAP (reviewer, same note): `test_scout_script` run from a `git
+      archive` export goes skip-red with "agent-script-runner not found" — the
+      runner has no sibling there. Set
+      `AGENT_SCRIPT_RUNNER=/home/sigmastrain/minecraft/agent-script-runner` (or
+      run from the worktree). This is the guard working, not a failure, but a
+      pipeline that ships an archive will read it as one.
+
 ## Milestone reporting
 
 Result rows to `control-operator` at each of: (1) sandbox + tests on test,
