@@ -1040,6 +1040,17 @@ and MUST build the tick object the way production builds it.
 - **THEN** memory is empty on the first tick, exactly as the tick counter restarts
   at 1, and no guard may assume a remembered value survives a restart
 
+#### Scenario: A tick that does not remember keeps the previous blob
+- **WHEN** a script tick succeeds and returns `memory_out` of null because the
+  script did not call `api.remember` that tick
+- **THEN** the agent keeps the blob from the previous tick rather than replacing
+  it with the null, so a guard that stamped a value on an earlier tick still
+  reads it back
+
+#### Scenario: A failed tick does not disturb memory
+- **WHEN** any runner call falls back (timeout, refused, error)
+- **THEN** the agent leaves memory untouched, neither clearing nor advancing it
+
 > **Why this requirement exists.** M3-1 added a store cooldown that stamps the
 > tick number through `api.remember("{\"lastStoreAllTick\": n}")`. In production
 > that stamp was never read back, so `api.recall()` returned null on every tick
@@ -1064,3 +1075,15 @@ and MUST build the tick object the way production builds it.
 > `snapshot.py:135` restarts the tick at 1. A remembered tick number from before a
 > restart can never be compared against a tick after it, which is why both reset
 > together and why no guard may treat a surviving stamp as meaningful.
+>
+> **A null `memory_out` has two different meanings, and conflating them broke the
+> cooldown.** The runner returns null both when a call FELL BACK and when a
+> SUCCESSFUL tick simply chose not to call `api.remember`: `memoryOut` is set only
+> by that call (`binding.js:314`) and reset to null at the top of every tick
+> (`:113`). M3-1b's fix assigned `self._memory = result.memory` on every SCRIPT
+> state, which correctly protected a good blob from a fallback and incorrectly
+> let a quiet tick erase it. Measured through the real engine: store -> cool ->
+> `memory_out` null -> store again, one store every two ticks. The cooldown never
+> held, and STORE_ALL fired every ~4 s. The two cases are now distinguished by
+> the STATE, not by the null: a fallback leaves memory untouched, and a SCRIPT
+> state with a null keeps the previous blob.

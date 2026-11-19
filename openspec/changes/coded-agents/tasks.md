@@ -489,6 +489,29 @@ Scripted Bot Acts Only When There Is Something To Do*.
       Also fixed 9.5's display: each runner log entry is `{level, line}`, so
       printing it with `%s` emitted a Python dict repr instead of the message.
 
+- [x] 9.7 A quiet script tick must not erase the remembered blob. Found while
+      working M3-1e, and INDEPENDENT of the image: reproduced through the real
+      engine (`Sandbox`), not a fixture.
+      The runner returns `memory_out: null` on any tick where the script did
+      not call `api.remember` -- `memoryOut` is set ONLY by that call
+      (`agent-script-runner src/binding.js:314`) and reset to null at the top of
+      each tick (`:113`), so `worker.js:81` encodes null as null. 9.3's carry
+      assigned `self._memory = result.memory` unconditionally on a SCRIPT
+      state. That was right for a FALLBACK (never overwrite a good blob with an
+      empty one, which is why the guard exists) and wrong for a successful tick
+      that simply chose not to write: a quiet tick WIPED the blob.
+      The consequence is a cooldown that never holds. A cooling tick logs and
+      returns without re-remembering, so it returns `memory_out: null`; the next
+      tick sees no memory, `lastStoreAllTick` reads null, the comparison is
+      against nothing, and STORE_ALL fires again. Measured through the real
+      engine: memory in -> cool -> memory out null -> store again, one store
+      every two ticks, which is the STORE_ALL-every-4 s the lead observed.
+      Fixed: on a SCRIPT state, `None` means "the script did not write this
+      tick" and the previous blob is KEPT; a fallback still leaves memory
+      untouched. Test: `test_a_quiet_tick_does_not_erase_remembered_memory`,
+      red on the pre-fix tree. 37/37 in `test_script_tick`, 27/27 in
+      `test_scout_script`.
+
 ## Milestone reporting
 
 Result rows to `control-operator` at each of: (1) sandbox + tests on test,
