@@ -13,6 +13,7 @@ under `snapshot`. An earlier draft of script_tick.py invented a different body;
 these tests read the runner's own source so the same drift cannot pass silently.
 """
 
+import base64
 import importlib.util
 import os
 import re
@@ -433,6 +434,72 @@ class RunnerRecordTranslationTest(unittest.TestCase):
         self.assertEqual([a["kind"] for a in actions], ["MINE", "DROP"])
         self.assertEqual(st._last_action_seqs, [11, 13])
         self.assertEqual([r["seq"] for r in refusals], [12])
+
+
+class MemoryRoundTripTest(unittest.TestCase):
+    """M3-1b cause A: the agent must CARRY the script's memory between ticks.
+
+    The bug this pins was invisible to every existing test because each one
+    hand-fed `memory_out` back into the next request. Production has no such
+    hand: `ScriptTick` was constructed without `memory=` and nothing read
+    `result.memory`, so `api.recall()` returned null on every real tick and the
+    STORE_ALL cooldown could never engage. These tests drive two ticks through
+    one `ScriptTick` and read what the SECOND request carried.
+    """
+
+    def _two_ticks(self, memory_out):
+        """Drive two ticks through one ScriptTick; return the second request."""
+        bodies = []
+        def _post(path, data=None, **kw):
+            bodies.append(data)
+            return {"contract_version": 1, "status": "ok", "actions": [],
+                    "memory_out": memory_out}
+        api = _FakeApi()
+        st = ScriptTick(api, "Scout", "api.log('hi')", post=_post)
+        st.tick()
+        st.tick()
+        return bodies[0], bodies[1]
+
+    def test_the_first_tick_sends_no_memory(self):
+        first, _ = self._two_ticks("c2NvdXQ=")
+        self.assertIsNone(first["memory"],
+                          "a fresh agent has nothing remembered to send")
+
+    def test_memory_out_from_tick_one_is_sent_on_tick_two(self):
+        _, second = self._two_ticks("c2NvdXQ=")
+        self.assertEqual(second["memory"], "c2NvdXQ=",
+                         "memory_out must be carried verbatim to the next tick; "
+                         "the runner returns it base64 and decodes it on "
+                         "arrival (engine.js:1059), so re-encoding double-codes")
+
+    def test_a_fallback_tick_does_not_wipe_remembered_memory(self):
+        """A runner timeout carries memory=None; taking it would lose the blob."""
+        bodies = []
+        results = [
+            {"contract_version": 1, "status": "ok", "actions": [],
+             "memory_out": "c2NvdXQ="},
+            {"contract_version": 1, "status": "timeout", "detail": "slow"},
+        ]
+        def _post(path, data=None, **kw):
+            bodies.append(data)
+            return results.pop(0)
+        st = ScriptTick(_FakeApi(), "Scout", "api.log('hi')", post=_post)
+        st.tick()
+        st.tick()
+        self.assertEqual(bodies[1]["memory"], "c2NvdXQ=",
+                         "a timeout must not erase what was already remembered")
+
+    def test_constructor_memory_is_encoded_for_the_wire(self):
+        captured = {}
+        def _post(path, data=None, **kw):
+            captured.update(data)
+            return {"contract_version": 1, "status": "ok", "actions": []}
+        st = ScriptTick(_FakeApi(), "Scout", "api.log('hi')", post=_post,
+                        memory='{"lastStoreAllTick": 7}')
+        st.tick()
+        self.assertEqual(base64.b64decode(captured["memory"]).decode("utf-8"),
+                         '{"lastStoreAllTick": 7}',
+                         "a plain string from the caller must be encoded once")
 
 
 if __name__ == "__main__":

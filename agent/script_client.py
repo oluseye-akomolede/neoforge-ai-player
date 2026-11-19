@@ -123,14 +123,21 @@ class ScriptResult:
     ``state`` is always populated so the caller can report *why* the planner
     took over. ``actions`` is empty on any fallback, never partially filled:
     a half-applied action list is worse than none.
+
+    ``memory`` is the opaque blob the runner returned as ``memory_out``. The
+    caller must hold it and send it back on the bot's next tick, or a script's
+    ``api.remember()`` is write-only: every ``api.recall()`` then returns null.
+    It is None on any fallback, so a failed call cannot silently overwrite a
+    good blob with an empty one.
     """
 
-    __slots__ = ("state", "actions", "detail")
+    __slots__ = ("state", "actions", "detail", "memory")
 
-    def __init__(self, state, actions=None, detail=""):
+    def __init__(self, state, actions=None, detail="", memory=None):
         self.state = state
         self.actions = actions or []
         self.detail = detail
+        self.memory = memory
 
     def __repr__(self):
         return f"ScriptResult(state={self.state!r}, n_actions={len(self.actions)}, detail={self.detail!r})"
@@ -192,4 +199,5 @@ def call_runner(api, bot_state, *, post=None):
     if not isinstance(actions, list):
         return ScriptResult(STATE_FALLBACK_ERROR, detail=f"actions is {type(actions).__name__}, not a list")
 
-    return ScriptResult(STATE_SCRIPT, actions=actions, detail=f"{len(actions)} action(s)")
+    return ScriptResult(STATE_SCRIPT, actions=actions, detail=f"{len(actions)} action(s)",
+                        memory=payload.get("memory_out"))

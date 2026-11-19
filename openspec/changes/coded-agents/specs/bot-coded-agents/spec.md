@@ -862,3 +862,46 @@ MUST NOT be the only evidence that it ran.
 > This requirement deliberately does NOT change the gate's decision. Holding on an
 > unrecognised directive remains correct — the unsafe direction would be to act
 > underneath an unknown job. Only the silence is removed.
+
+
+### Requirement: Script memory MUST round-trip through the agent
+
+A script's `api.remember(blob)` SHALL be visible to `api.recall()` on the bot's
+NEXT tick. The agent MUST send back the `memory_out` the runner returned, per bot,
+and MUST build the tick object the way production builds it.
+
+#### Scenario: A remembered value is recalled on the next tick
+- **WHEN** a script stores a value with `api.remember` on one tick and the agent
+  runs that bot again
+- **THEN** the next tick's `api.recall()` returns that value, so a guard keyed on
+  it can hold
+
+#### Scenario: Memory reset with the pod
+- **WHEN** the agent pod restarts
+- **THEN** memory is empty on the first tick, exactly as the tick counter restarts
+  at 1, and no guard may assume a remembered value survives a restart
+
+> **Why this requirement exists.** M3-1 added a store cooldown that stamps the
+> tick number through `api.remember("{\"lastStoreAllTick\": n}")`. In production
+> that stamp was never read back, so `api.recall()` returned null on every tick
+> and the cooldown never engaged: measured on test 2026-11-19, every idle tick
+> would have proposed a store. The chain, each link at source:
+> `agent.py` constructs `ScriptTick(api, self.name, source)` with no `memory=`, so
+> `script_tick.py:284` sent `"memory": None`; the runner maps a non-string to null
+> (`main.js:211`), `decodeMemory(null)` returns null (`engine.js:1056-1061`) and
+> `recall()` returns it (`binding.js:294`); and `ScriptResult.__slots__` held only
+> `state, actions, detail`, so `memory_out` was parsed off the response and
+> discarded.
+>
+> **The suite was green over a round-trip that did not exist.** The test driver fed
+> `memoryOut` back into the next tick by hand, which production never did. That is
+> the fixture-must-come-from-the-producer failure this file records elsewhere: a
+> harness that wires a path the product does not wire cannot fail. The cause-A tests
+> below build the tick through the SAME constructor and the SAME client call
+> production uses, so an empty round-trip is visible.
+>
+> **Memory is per-process, like the tick counter.** The agent holds it in memory
+> keyed by bot and nothing persists it, so a pod restart empties it at the moment
+> `snapshot.py:135` restarts the tick at 1. A remembered tick number from before a
+> restart can never be compared against a tick after it, which is why both reset
+> together and why no guard may treat a surviving stamp as meaningful.

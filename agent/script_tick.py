@@ -20,6 +20,8 @@ feeds it a tick and binds what comes back.
 """
 from __future__ import annotations
 
+import base64
+
 import action_binding
 import snapshot as snapshot_mod
 from script_client import (
@@ -208,6 +210,26 @@ def _default_transport():
     return _post
 
 
+def _encode_memory(memory):
+    """Put a script-memory blob into the wire form the runner expects.
+
+    The runner base64-decodes `memory` on arrival (engine.js:1059,
+    `decodeMemory`) and base64-encodes `memory_out` on the way back, so the
+    blob travels encoded in both directions. Callers pass the plain str the
+    script remembered; the value taken from `memory_out` is already encoded and
+    is stored as-is rather than sent through here again, which is why `tick()`
+    assigns `result.memory` directly.
+    """
+    if memory is None:
+        return None
+    if isinstance(memory, bytes):
+        memory = memory.decode("utf-8")
+    if isinstance(memory, str):
+        return base64.b64encode(memory.encode("utf-8")).decode("ascii")
+    raise TypeError("script memory must be str, bytes or None, got %r"
+                    % type(memory).__name__)
+
+
 def _revision_of(source):
     """Stable revision id for a script body.
 
@@ -239,7 +261,7 @@ class ScriptTick:
         # whenever the script does or a stale script keeps running. Derived
         # from the source by default rather than left to the caller.
         self._revision = revision if revision is not None else _revision_of(script_source)
-        self._memory = memory
+        self._memory = _encode_memory(memory)
         # The per-bot snapshot cache is shared across ticks so the four-call
         # refresh is paid once per tick rather than once per evaluation.
         self._cache = cache
@@ -301,6 +323,18 @@ class ScriptTick:
         if result.state != STATE_SCRIPT:
             # Timeout, refused, error -- every non-script state falls through.
             return False, [], [], f"runner {result.state}: {result.detail}"
+
+        # Hold what the script remembered. The runner returns `memory_out` as
+        # BASE64 of the UTF-8 blob (contract §4.1; the encoding happens at
+        # worker.js:81), and `decodeMemory` base64-decodes on the way in
+        # (engine.js:1059), so it is sent back exactly as received. This was
+        # write-only until M3-1b: nothing read `memory_out`, so every
+        # `api.recall()` returned null in production while the test driver fed
+        # the value back by hand.
+        #
+        # Only on a SCRIPT state: a fallback carries memory=None, and taking it
+        # would wipe a good blob with an empty one on a single runner timeout.
+        self._memory = result.memory
 
         # Two shapes meet here: the runner's and the binder's. Translate first,
         # then bind, keeping the runner's seq beside each bound action so the
