@@ -1090,9 +1090,9 @@ and MUST build the tick object the way production builds it.
 >
 > **This prevents the AGENT erasing the blob; it does not prevent a SCRIPT from
 > clearing its own memory, and the two must not be conflated.** A script cannot
-> write `null`: `api.remember` rejects a non-string at `binding.js:299` before
-> the assignment at `:314` (`null` and `undefined` both return
-> `{ok: false, reason: bad_shape}`). But `api.remember("")` IS accepted -- an
+> write `null`: `api.remember` rejects a non-string at `binding.js:298-299`
+> before the only non-null assignment at `:314` (`null` and `undefined` both
+> return `{ok: false, reason: bad_shape}`). But `api.remember("")` IS accepted -- an
 > empty string passes the type check and the byte limit -- so a script CAN
 > overwrite its blob with an empty remember, and the carry assigns it. That is
 > not a regression and `scout.js:125` is unaffected, because
