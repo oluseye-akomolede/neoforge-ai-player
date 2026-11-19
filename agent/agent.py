@@ -2661,12 +2661,31 @@ Respond with ONLY a JSON array. Example:
     SCRIPT_IDLE_LOG_INTERVAL_S = 60.0
 
     def _print_script_logs(self, st):
-        """Relay the runner's `logs` for this tick into the agent log."""
+        """Relay the runner's `logs` for this tick into the agent log.
+
+        Each entry is an OBJECT (`{level, line}`), not a bare string: the runner
+        pushes what `api.log` received (agent-script-runner src/binding.js).
+        Printing the whole entry with `%s` produced
+        `log: {'level': 'info', 'line': '...'}` on TEST 2026-11-19 -- readable,
+        but noisy enough to obscure the one field being read, and it buried the
+        actual message inside a Python dict repr. Unwrap `line`, and keep
+        `level` visible when it is not "info" so a warning is not silently
+        promoted to a routine line. A non-object entry still prints, because a
+        dropped log line is worse than an oddly formatted one.
+        """
         logs = list(getattr(st, "last_logs", None) or [])
         dropped = getattr(st, "last_logs_dropped", 0) or 0
         shown = logs[:self.SCRIPT_LOG_MAX_LINES]
-        for line in shown:
-            text = line if isinstance(line, str) else repr(line)
+        for entry in shown:
+            if isinstance(entry, dict):
+                text = entry.get("line")
+                if not isinstance(text, str):
+                    text = repr(entry)
+                level = entry.get("level")
+                if isinstance(level, str) and level.lower() not in ("", "info"):
+                    text = f"[{level}] {text}"
+            else:
+                text = entry if isinstance(entry, str) else repr(entry)
             if len(text) > self.SCRIPT_LOG_MAX_CHARS:
                 text = text[:self.SCRIPT_LOG_MAX_CHARS] + "…"
             print(f"[{self.name}/script] log: {text}")

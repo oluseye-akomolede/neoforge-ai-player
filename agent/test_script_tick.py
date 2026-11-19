@@ -115,9 +115,16 @@ class RequestShapeTest(unittest.TestCase):
         self.assertIsInstance(data["script_revision"], str)
         self.assertEqual(data["source"], "api.log('hi')")
         # The snapshot is nested, not flattened into the body: the runner reads
-        # body.snapshot (main.js:208). It carries the contract's state fields.
+        # body.snapshot (main.js:208). The contract's state fields live under
+        # `snapshot.state` -- the envelope that `build_envelope` produces and
+        # that every script reads as `snapshot.state.<field>`. Asserting them
+        # at `snapshot` top level, as this did until M3-1c part 5, pinned the
+        # bare-state shape that made every script field undefined in production.
+        self.assertIn("state", data["snapshot"],
+                      "snapshot must be the envelope, with bot facts under "
+                      "'state'")
         for field in ("health", "position", "inventory"):
-            self.assertIn(field, data["snapshot"])
+            self.assertIn(field, data["snapshot"]["state"])
 
     def test_every_field_the_runner_gates_on_is_present(self):
         # The runner's pre-routing gate, read from source. Each entry here is a
@@ -500,6 +507,86 @@ class MemoryRoundTripTest(unittest.TestCase):
         self.assertEqual(base64.b64decode(captured["memory"]).decode("utf-8"),
                          '{"lastStoreAllTick": 7}',
                          "a plain string from the caller must be encoded once")
+
+
+class SnapshotWireShapeTest(unittest.TestCase):
+    """M3-1c part 5: `snapshot` on the wire must be the ENVELOPE.
+
+    The script reads `snapshot.state.<field>` (scout.js:65) because
+    `build_envelope` wraps the bot facts under a `state` key. Production builds
+    `ScriptTick` with no cache (agent.py:2881), so `_build_snapshot` falls to
+    `snapshot_mod.build_state`, which returns `(state, errors)` -- the STATE,
+    not an envelope. Unpacked as `envelope, snap_errors`, that put a bare state
+    object on the wire with no `state` key, so every `snapshot.state.*` read in
+    the script returned undefined. Measured on TEST 2026-11-19: Scout logged
+    "inventory empty" every tick while holding 16 cobblestone.
+
+    Every existing test missed it because each one either injected a cache or
+    stubbed the snapshot; none drove the no-cache path the agent actually uses.
+    """
+
+    def _captured_snapshot(self):
+        captured = {}
+
+        def _post(path, data=None, **kw):
+            captured.update(data)
+            return {"contract_version": 1, "status": "ok", "actions": []}
+
+        class _Api(_FakeApi):
+            def inventory(self, bot):
+                # The mod's real shape (HttpApiServer.java:469): a wrapper.
+                return {"inventory": [
+                    {"slot": 0, "item": "minecraft:cobblestone", "count": 16},
+                ]}
+
+        st = ScriptTick(_Api(), "Scout", "api.log('hi')", post=_post)
+        st.tick()
+        return captured["snapshot"]
+
+    def test_snapshot_on_the_wire_is_the_envelope(self):
+        snap = self._captured_snapshot()
+        self.assertIn("state", snap,
+                      "the wire snapshot must be the envelope; a bare state "
+                      "object makes every snapshot.state.* read undefined")
+        self.assertIn("tick", snap)
+        self.assertIn("task", snap)
+
+    def test_the_scripts_inventory_path_resolves(self):
+        snap = self._captured_snapshot()
+        inv = (snap.get("state") or {}).get("inventory") or {}
+        items = inv.get("inventory") if isinstance(inv, dict) else None
+        self.assertEqual(1, len(items or []),
+                         "snapshot.state.inventory.inventory is the path "
+                         "scout.js:107 reads; it must hold the bot's items")
+        self.assertEqual("minecraft:cobblestone", items[0]["item"])
+
+    def test_health_is_readable_where_the_script_reads_it(self):
+        snap = self._captured_snapshot()
+        self.assertEqual(20.0, (snap.get("state") or {}).get("health"),
+                         "the health guard reads snapshot.state.health; it was "
+                         "undefined on every tick for the same reason")
+
+    def test_a_cached_tick_and_an_uncached_tick_agree(self):
+        uncached = self._captured_snapshot()
+
+        captured = {}
+        def _post(path, data=None, **kw):
+            captured.update(data)
+            return {"contract_version": 1, "status": "ok", "actions": []}
+
+        class _Api(_FakeApi):
+            def inventory(self, bot):
+                return {"inventory": [{"slot": 0, "item": "minecraft:cobblestone",
+                                       "count": 16}]}
+
+        cache = _st.snapshot_mod.SnapshotCache(_Api(), ttl=60)
+        st = ScriptTick(_Api(), "Scout", "api.log('hi')", post=_post, cache=cache)
+        st.tick()
+        cached = captured["snapshot"]
+        # Both paths must produce the same top-level shape, or a bot behaves
+        # differently depending on how its ScriptTick happened to be built.
+        self.assertEqual(sorted(uncached.keys()), sorted(cached.keys()),
+                         "cached and uncached ticks must send the same shape")
 
 
 if __name__ == "__main__":

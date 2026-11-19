@@ -462,6 +462,33 @@ Scripted Bot Acts Only When There Is Something To Do*.
       `test_no_logs_prints_no_log_lines` stays green); removing the idle line ->
       2 red. See spec delta *A script's own log lines MUST reach the agent log*.
 
+- [x] 9.6 The snapshot reaches the script as an envelope. Found by 9.5's own
+      lines, which is what they were for: the test run logged `inventory empty`
+      every ~2 s while Scout held 16 cobblestone.
+      `ScriptTick._build_snapshot` has two paths and they returned different
+      things. With a cache, `SnapshotCache.get` returns `(envelope, errors)`.
+      Without one, `snapshot.build_state` returns `(state, errors)` -- the state
+      dict, NOT an envelope. `tick()` unpacks either into `envelope, errors` and
+      sends it as `"snapshot"`, so on the no-cache path the wire carried a bare
+      state: no `state` key and no `tick`. The script's `snapshot.state || {}`
+      then threw away everything, so EVERY `state.*` read was undefined --
+      inventory, health, task alike, not just the inventory guard. `agent.py:2881`
+      builds `ScriptTick` with no cache, so production always took that path.
+      A second, independent degradation sits behind it and is now named in the
+      code: the mod answers an unknown bot with HTTP 200 and a body of
+      `{"error": "Bot not found: ..."}` (measured in-pod), so `snapshot._read`
+      records NO error and stores that dict as `state["inventory"]`. The guard's
+      `|| []` turns it into "inventory empty" with nothing in `errors` to say
+      why. `snap_errors` was also received by `tick()` and returned nowhere.
+      Fixed: `_build_snapshot` returns an envelope on both paths, supplying the
+      `tick` counter and `task` the contract requires. Tests assert the
+      script-visible path (`snapshot.state.inventory.inventory[0]`), not the
+      tuple's shape -- the old suite stubbed `_FakeApi.inventory` to return a
+      bare list, a shape no producer emits, and so could never have caught this.
+      Mutant: reverting `_build_snapshot` to the bare state -> 5 red.
+      Also fixed 9.5's display: each runner log entry is `{level, line}`, so
+      printing it with `%s` emitted a Python dict repr instead of the message.
+
 ## Milestone reporting
 
 Result rows to `control-operator` at each of: (1) sandbox + tests on test,

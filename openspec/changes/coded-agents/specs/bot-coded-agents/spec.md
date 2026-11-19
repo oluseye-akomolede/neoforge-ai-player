@@ -979,6 +979,50 @@ line), which remains the correctness bound.
 > This is the same shape as M3-1b cause A: a value produced on one side and never
 > read on the other.
 
+### Requirement: The tick snapshot MUST reach the script as an envelope
+
+The tick request's `snapshot` field SHALL be the envelope the runner and the scripts
+read — an object carrying `tick` and `state`, where `state` holds the bot's facts
+(`health`, `food`, `position`, `inventory`, `nearby`, `task`). It SHALL NOT be the
+`state` object alone, at any code path.
+
+This MUST hold on EVERY path that builds a snapshot, not only the one with a cache:
+`script_tick._build_snapshot` has a cached path returning an envelope and an uncached
+path returning a bare state, and a shape that differs by path is a shape the script
+cannot rely on.
+
+A bot fact that cannot be read SHALL NOT be presented to the script as an empty
+value when the producer answered with an error body. The mod answers an unknown bot
+with HTTP 200 and `{"error": "Bot not found: ..."}` (`HttpApiServer.java`, measured
+in-pod 2026-11-19), which is not an exception, so the read records no error and the
+error body itself becomes the field.
+
+#### Scenario: The script sees the inventory the bot holds
+- **WHEN** the bot holds 16 cobblestone and the snapshot is built on the uncached path
+- **THEN** `snapshot.state.inventory.inventory` in the script is the stack list, and
+  the guard does not report the inventory as empty
+
+#### Scenario: Every state field survives both snapshot paths
+- **WHEN** a snapshot is built with a cache and without one
+- **THEN** both send an envelope whose `state` carries the same keys, and a script
+  reading `snapshot.state.<anything>` gets the same answer on either path
+
+#### Scenario: A failed read is not an empty list
+- **WHEN** a bot fact read returns an error body rather than a value
+- **THEN** the failure is recorded and surfaced, rather than degrading to a default
+  that the script reports as "empty"
+
+> **Why this requirement exists.** 9.5's log lines found this on their first run:
+> the test pod logged `inventory empty` every ~2 s while Scout held 16 cobblestone.
+> `agent.py` builds `ScriptTick` with no cache, so production took the uncached path,
+> where `build_state`'s `(state, errors)` tuple was unpacked as if it were
+> `(envelope, errors)` — the wire carried a bare state with no `state` key, so every
+> `snapshot.state.*` read in the script was `undefined`. The inventory guard was
+> only the field loud enough to notice; the health guard and the task read were
+> silently blind too. The suite could not catch it because its fake API returned a
+> bare list for `inventory`, a shape no producer emits — the M3-1b fixture lesson a
+> third time.
+
 ### Requirement: Script memory MUST round-trip through the agent
 
 A script's `api.remember(blob)` SHALL be visible to `api.recall()` on the bot's

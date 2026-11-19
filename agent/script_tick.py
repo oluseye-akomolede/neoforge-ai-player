@@ -381,9 +381,37 @@ class ScriptTick:
         return True, bound, refusals, f"{len(bound)} action(s)"
 
     def _build_snapshot(self):
+        """Return `(envelope, errors)` -- an ENVELOPE on both paths.
+
+        The two paths used to disagree, and the one production takes was the
+        wrong shape. `SnapshotCache.get` returns `(envelope, errors)`; a bare
+        `build_state` returns `(state, errors)`. Unpacked at the call site as
+        `envelope, snap_errors`, the uncached path therefore put a raw state
+        object on the wire with no `state` key -- and the script reads
+        `snapshot.state.<field>` (scout.js:65), so EVERY field it touched was
+        undefined: inventory, health, position, task. Measured on TEST
+        2026-11-19, Scout logged "inventory empty" every tick for eight
+        minutes while holding 16 cobblestone, and the agent-side reads were
+        correct the whole time. The bot was not misreporting; the envelope was
+        missing.
+
+        The agent builds `ScriptTick` with no cache (agent.py:2881), so that
+        wrong path was the only one production ever ran. Wrap here rather than
+        requiring a cache: the cache is an optimisation, and a shape that
+        depends on whether it is present is a bug waiting for a flag change.
+
+        `tick` and `task` are supplied the same way `SnapshotCache.get` does,
+        for the same reason it documents: the envelope and the state are
+        separate objects, and leaving `task=` unset makes `snapshot.task` None
+        on every tick whatever the bot is doing.
+        """
         if self._cache is not None:
             return self._cache.get(self._bot)
-        return snapshot_mod.build_state(self._api, self._bot)
+        state, errors = snapshot_mod.build_state(self._api, self._bot)
+        tick = self._tick_count = getattr(self, "_tick_count", 0) + 1
+        envelope = snapshot_mod.build_envelope(state, tick=tick,
+                                               task=state.get("task"))
+        return envelope, errors
 
     def refresh(self):
         """Force the next tick to rebuild the snapshot (after an action lands)."""
