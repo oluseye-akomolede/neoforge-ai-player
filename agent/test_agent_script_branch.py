@@ -591,6 +591,7 @@ class ScriptHoldTest(unittest.TestCase):
         # The hold's own state, at the default __init__ gives it (None), so a
         # test cannot pass merely because the attribute is absent.
         self.a._script_hold = None
+        self.a._script_hold_seq = 0
         self.a._l3_orchestrator_dispatch = mock.Mock(
             return_value="COMPLETED STORE_ALL {'stored': 1}")
         self.a._run_directive = mock.Mock(return_value={"success": True})
@@ -700,6 +701,33 @@ class ScriptHoldTest(unittest.TestCase):
         self.assertTrue(self.a._end_script_hold("goal-B"),
                         "the owning goal could not release its own hold")
         self.assertIsNone(self.a._script_hold)
+
+    def test_two_goals_sharing_a_prefix_get_distinct_ids(self):
+        """F2: build ids through the PRODUCTION expression, not hand-passed
+        literals. A truncated-prefix id collapsed these two into one string,
+        so a finished goal released a still-running goal's hold -- the exact
+        double-issue 9.8 exists to prevent. This is the test that reddens if
+        the identity goes back to text[:40]."""
+        a = self.a._new_goal_id("Steve", "mine ten oak logs and then craft a table now")
+        b = self.a._new_goal_id("Steve", "mine ten oak logs and then craft a table first")
+        self.assertNotEqual(a, b, "two distinct goals collapsed to one id")
+        self.assertIn("chat:Steve:", a, "the readable prefix is lost from the id")
+        self.assertIn("chat:Steve:", b, "the readable prefix is lost from the id")
+
+    def test_a_finished_goal_does_not_release_a_running_goal_with_the_same_prefix(self):
+        """The reviewer's F1 sequence, driven through real ids: A accepted and
+        owns; B accepted and replaces A; A finishes FIRST -- its release must
+        not cancel B's live hold."""
+        a_id = self.a._new_goal_id("Steve", "mine ten oak logs and then craft a table now")
+        self.a._begin_script_hold(a_id, "mine ten oak logs and then craft a table now")
+        b_id = self.a._new_goal_id("Steve", "mine ten oak logs and then craft a table first")
+        self.a._begin_script_hold(b_id, "mine ten oak logs and then craft a table first")
+        self.assertFalse(self.a._end_script_hold(a_id),
+                         "a finished goal released the running goal's hold")
+        self.assertIsNotNone(self.a._script_hold, "the running goal's hold was dropped")
+        self.assertEqual(self.a._script_hold["goal_id"], b_id)
+        self.assertTrue(self.a._end_script_hold(b_id),
+                        "the owning goal could not release its own hold")
 
     def test_a_run_with_no_goal_does_not_release_a_chat_hold(self):
         """The spec-driven and order-worker spawn paths pass goal_id=""; their

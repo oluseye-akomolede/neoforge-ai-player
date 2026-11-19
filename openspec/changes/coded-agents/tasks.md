@@ -675,6 +675,25 @@ Scripted Bot Acts Only When There Is Something To Do*.
       Node heap bound (`NODE_OPTIONS=--max-old-space-size=2048`) and no
       virtual-memory cap, per the Node exception.
 
+      F1/F2 (reviewer, 17:20Z): the goal ID was `f"chat:{sender}:{text[:40]}"`
+      at both accept sites - a truncated prefix is NOT an identity. Two goals
+      sharing 40 chars collapsed; a finished goal's release then matched and
+      cancelled a still-running goal's hold, resuming the script into a
+      planner-owned goal - the exact double-issue 9.8 forbids, arriving via the
+      identity mechanism meant to prevent it. FIX: `_new_goal_id(sender, text)`
+      appends a monotonic `#<seq>` suffix (`_script_hold_seq`, single writer = the
+      loop thread, no lock needed); the readable prefix stays for logs. The
+      reviewer confirmed the ownership LOGIC was correct by driving the real
+      methods, so the fix is the id construction alone. F2: no test built an id
+      the way the code does, so `test_only_the_owning_goal_releases_the_hold`
+      passed on trivially-distinct hand-passed ids. ADDED
+      `test_two_goals_sharing_a_prefix_get_distinct_ids` and
+      `test_a_finished_goal_does_not_release_a_running_goal_with_the_same_prefix`,
+      both building ids through `_new_goal_id`. Both redden when the helper is
+      mutated back to `text[:40]` (verified). Suite now 40 hold/branch tests;
+      104/104 total (test_script_tick 37, test_agent_script_branch 40,
+      test_scout_script 27).
+
 ## Milestone reporting
 
 Result rows to `control-operator` at each of: (1) sandbox + tests on test,

@@ -256,6 +256,12 @@ class BotRunner:
         # MUST carry cause and identity"). The hold is its own state, keyed by
         # the goal that owns it, and the resume consults THAT goal's outcome.
         self._script_hold = None
+        # Monotonic per-goal id suffix. A truncated text prefix is NOT an
+        # identity: two goals sharing 40 chars would collapse, and a finished
+        # goal would then release a still-running goal's hold (the double-issue
+        # 9.8 exists to prevent). The counter makes every accepted goal id
+        # distinct; the readable prefix stays for logs.
+        self._script_hold_seq = 0
         self._cached_inventory = []  # updated on each observe tick
         self._terrain_tick = 0
         self._lock = threading.Lock()
@@ -666,7 +672,7 @@ class BotRunner:
                     # so _run_script_tick cannot dispatch a script action into a
                     # goal the planner already owns. The SAME goal_id is handed
                     # to the run, so the run releases exactly this hold on exit.
-                    _goal_id = f"chat:{sender}:{text[:40]}"
+                    _goal_id = self._new_goal_id(sender, text)
                     self._begin_script_hold(_goal_id, text)
                     shared_state.push_event({"bot": self.name, "type": "l3_plan_dispatched", "instruction": text[:100]})
                     t = threading.Thread(
@@ -869,7 +875,7 @@ class BotRunner:
                     self._plan_instruction = text
                     # Task 9.8: hold the script BEFORE the planner thread starts;
                     # the same goal_id rides along so the run releases this hold.
-                    _goal_id = f"chat:{sender}:{text[:40]}"
+                    _goal_id = self._new_goal_id(sender, text)
                     self._begin_script_hold(_goal_id, text)
                     shared_state.push_event({"bot": self.name, "type": "l3_plan_dispatched", "instruction": text[:100]})
                     t = threading.Thread(
@@ -1282,6 +1288,20 @@ class BotRunner:
         return True
 
     # ── M3-1g task 9.8: a player goal holds the running script ──────────────
+
+    def _new_goal_id(self, sender: str, text: str) -> str:
+        """Mint a unique id for one accepted chat goal.
+
+        The readable part (`chat:<sender>:<first 40 chars>`) is for logs only.
+        The monotonic suffix is the identity: without it, two goals sharing a
+        40-char prefix collide, and a finished goal's release would match and
+        cancel a still-running goal's hold -- resuming the script into a
+        planner-owned goal, the exact double-issue 9.8 forbids. Single writer
+        (the agent loop thread), so the increment needs no lock.
+        """
+        seq = getattr(self, "_script_hold_seq", 0) + 1
+        self._script_hold_seq = seq
+        return f"chat:{sender}:{text[:40]}#{seq}"
 
     def _begin_script_hold(self, goal_id: str, goal_text: str = "") -> None:
         """Hold the running script for `goal_id` (spec: "A Player Goal Yields A
