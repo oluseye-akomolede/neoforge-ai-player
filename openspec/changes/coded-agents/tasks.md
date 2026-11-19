@@ -512,7 +512,7 @@ Scripted Bot Acts Only When There Is Something To Do*.
       red on the pre-fix tree. 37/37 in `test_script_tick`, 27/27 in
       `test_scout_script`.
 
-- [ ] 9.8 A player goal takes precedence over a running script (M3-1g; owner
+- [x] 9.8 A player goal takes precedence over a running script (M3-1g; owner
       ruled 1, 2026-11-19 16:51Z, answer to row e4974776). Before this, the
       planner and the script were only ever alternatives in the spec (the
       planner being the fallback), and nothing covered a chat goal arriving
@@ -627,6 +627,53 @@ Scripted Bot Acts Only When There Is Something To Do*.
       `:1448`, `:1480`, `:1484`, `:1496`, `:1500` - belong to the nested
       helpers `_shadow_plan_write`, `_shadow_plan_finalize` and
       `_check_task_board`, not to the orchestrator run.)
+      IMPLEMENTED (2026-11-19). Two design points settled during coding, both
+      by re-reading this spec against the code rather than trusting a draft:
+      FIRST, the hold is its own state (`BotRunner._script_hold`, a dict naming
+      the owning `goal_id`), NOT a generation counter. An early draft keyed the
+      hold on a generation and double-bumped (`_begin_script_hold` minted one,
+      `_run_orchestrator` minted another), so the hold's generation never
+      matched the run's and the hold could never release on completion - and a
+      mutant-killed test caught that the double key passed all 11 tests while
+      the hold leaked. The spec's own identity idiom (§ "carry cause and
+      identity") is the goal, not a number, so the generation was dropped
+      entirely. SECOND, the held outcome is a module-level sentinel
+      `SCRIPT_HELD` (a `float(0.0)` subclass sharing one identity), not `False`.
+      The spec's "A held tick MUST be expressible as its own outcome" forbids
+      encoding a hold as `False`; `SCRIPT_HELD` is falsy so the loop's
+      `if self._run_script_tick():` falls through and the goal proceeds, but
+      `result is SCRIPT_HELD` is distinguishable from both `True` and `False`.
+      Wiring: `_begin_script_hold` records the goal and calls
+      `_cancel_orchestrator` (aborting an already-started planner run, per
+      "a held goal MUST stop a planner run that already started");
+      `_end_script_hold(goal_id)` releases only on the owning goal's terminal
+      state (a `goal_id=""` run from the spec-driven/order-worker paths releases
+      nothing); `_clear_script_hold` is reset's unconditional drop. The hold is
+      placed at both chat accept sites (`agent.py:670`, `:873`) BEFORE the
+      thread spawn, with the same `goal_id` passed to `_run_orchestrator` via
+      `kwargs` so the run releases exactly its own hold. The `:1419` ImportError
+      return now reports FAILED and releases the hold (the "every
+      generation-consuming run must terminate" finding: a silent early return
+      stranded the hold forever). `_run_script_tick` gates on the hold before
+      any dispatch, so a held script never reaches the `interrupted_by_chat`
+      `return True` at `:2947` - the two are distinguishable by construction.
+      The remembered blob is never touched (a hold is a pause; wiping it is the
+      9.7 bug).
+      TESTS: 11 new in `test_agent_script_branch.ScriptHoldTest`, through the
+      real `BotRunner` methods (not a stubbed tick), covering the third
+      outcome, the falsy-fall-through, no-dispatch-while-held, abort-live-run,
+      latch-in-spawn-window, same-object-resume, memory-survives, ownership,
+      goal-less-run, reset-clears, and the stranded early-return. Six mutants
+      bite (hold-as-False, no-abort, no-dispatch-gate, ownership-guard,
+      goal-less-guard, early-return-release); the goal-less mutant initially
+      SURVIVED a test that passed for the wrong reason (the `!=` comparison
+      shielded the guard), so that test was tightened to pin the guard's
+      positive side. 102/102 across `test_script_tick` (48),
+      `test_agent_script_branch` (27) and `test_scout_script` (27). Note:
+      `test_scout_script` runs the Node/WASM runner and FAILS under
+      `ulimit -v 4194304` (`WebAssembly.Memory` RangeError) - run it with the
+      Node heap bound (`NODE_OPTIONS=--max-old-space-size=2048`) and no
+      virtual-memory cap, per the Node exception.
 
 ## Milestone reporting
 

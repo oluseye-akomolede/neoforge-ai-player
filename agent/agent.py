@@ -131,6 +131,35 @@ _container_db = None  # ContainerDB instance
 _all_runners = {}  # name -> BotRunner
 _terrain = None  # TerrainDB instance
 _orchestration_lock = threading.Lock()
+
+
+class _ScriptHeld(float):
+    """The third outcome of `_run_script_tick`: the script is held for a goal.
+
+    The spec ("A held tick MUST be expressible as its own outcome") requires
+    this to be distinct from both `True` ("the script handled this tick") and
+    `False` ("the script did not run, so the planner may"). Neither is true
+    here: the script DID run, it is paused, and the planner owns the goal --
+    but not because the script declined. Encoding it as `False` is forbidden
+    because that is the fallback path, which would wipe the remembered blob.
+
+    It subclasses float so it is falsy (bool(0.0) is False): the loop's
+    `if self._run_script_tick():` still falls through and lets the goal proceed,
+    while `result is SCRIPT_HELD` distinguishes the case for callers and tests.
+    A single module-level instance is the identity.
+    """
+
+    __slots__ = ()
+
+    def __new__(cls):
+        return super().__new__(cls, 0.0)
+
+    def __repr__(self):
+        return "SCRIPT_HELD"
+
+
+SCRIPT_HELD = _ScriptHeld()
+
 _orchestrated_messages = {}  # message_text -> coordinator bot name
 _ALL_BOTS_RE = re.compile(r"\b(all\s+bots?|every\s*one|every\s+bot|everybody)\b", re.IGNORECASE)
 _COUNT_IN_STEP_RE = re.compile(r"(\d+)\s*x\s+|\((\d+)\)|\s(\d+)$")
@@ -220,6 +249,13 @@ class BotRunner:
         # cancel Event (the window between thread spawn and _orch_cancel=...).
         # Without it, _cancel_orchestrator finds None and the stop is lost.
         self._orch_stop_pending = False
+        # M3-1g task 9.8: a player goal holds the running script so the planner
+        # and the script never act on one intent at once. NOT a reuse of
+        # _orch_stop_pending -- that latch has three callers and no cause, so it
+        # cannot say WHICH goal holds or release the right one (spec, "The hold
+        # MUST carry cause and identity"). The hold is its own state, keyed by
+        # the goal that owns it, and the resume consults THAT goal's outcome.
+        self._script_hold = None
         self._cached_inventory = []  # updated on each observe tick
         self._terrain_tick = 0
         self._lock = threading.Lock()
@@ -307,6 +343,11 @@ class BotRunner:
         self._current_task_id = None
         self._awaiting_taskboard = False
         self._following_player = None
+        # M3-1g task 9.8: a reset is terminal, so it drops any script hold
+        # unconditionally -- unlike a goal's terminal state, which releases its
+        # own hold only. Without this a reset during a held goal would leave the
+        # script paused forever (the "every path must terminate" finding).
+        self._clear_script_hold()
         self.conversation_history.clear()
         with _orchestration_lock:
             _orchestrated_messages.clear()
@@ -621,10 +662,17 @@ class BotRunner:
                         return
                     print(f"[{self.name}/orchestrator] L3 plan layer accepting: {text[:80]}")
                     self._plan_instruction = text
+                    # Task 9.8: hold the script BEFORE the planner thread starts,
+                    # so _run_script_tick cannot dispatch a script action into a
+                    # goal the planner already owns. The SAME goal_id is handed
+                    # to the run, so the run releases exactly this hold on exit.
+                    _goal_id = f"chat:{sender}:{text[:40]}"
+                    self._begin_script_hold(_goal_id, text)
                     shared_state.push_event({"bot": self.name, "type": "l3_plan_dispatched", "instruction": text[:100]})
                     t = threading.Thread(
                         target=self._run_orchestrator,
                         args=(text, sender),
+                        kwargs={"goal_id": _goal_id},
                         name=f"orch:{self.name}",
                         daemon=True,
                     )
@@ -819,10 +867,15 @@ class BotRunner:
                         return
                     print(f"[{self.name}/orchestrator] dispatching to L3 plan layer: {text[:80]}")
                     self._plan_instruction = text
+                    # Task 9.8: hold the script BEFORE the planner thread starts;
+                    # the same goal_id rides along so the run releases this hold.
+                    _goal_id = f"chat:{sender}:{text[:40]}"
+                    self._begin_script_hold(_goal_id, text)
                     shared_state.push_event({"bot": self.name, "type": "l3_plan_dispatched", "instruction": text[:100]})
                     t = threading.Thread(
                         target=self._run_orchestrator,
                         args=(text, sender),
+                        kwargs={"goal_id": _goal_id},
                         name=f"orch:{self.name}",
                         daemon=True,
                     )
@@ -1228,6 +1281,68 @@ class BotRunner:
         ev.set()
         return True
 
+    # ── M3-1g task 9.8: a player goal holds the running script ──────────────
+
+    def _begin_script_hold(self, goal_id: str, goal_text: str = "") -> None:
+        """Hold the running script for `goal_id` (spec: "A Player Goal Yields A
+        Running Script").
+
+        Called as an accepted chat goal starts its plan. Two jobs:
+
+        1. Record the hold, naming the owning goal. The resume consults THIS
+           goal's outcome, not a bare flag and not a counter -- the spec's
+           "carry cause and identity" clause. A later goal replaces the owner
+           (last accepted owns the hold).
+        2. Signal any planner run that already started to abort. The planner is
+           spawned in `_maybe_plan` BEFORE `_run_script_tick` runs this
+           iteration, so declining to tick the script suppresses nothing that
+           mattered; the hold must reach into the live run. `_cancel_orchestrator`
+           already handles the spawn window via `_orch_stop_pending`.
+
+        The remembered memory is NOT touched: a hold is a pause, and the spec's
+        "Memory MUST survive the hold" clause makes wiping it the 9.7 bug again.
+        """
+        prev = getattr(self, "_script_hold", None)
+        self._script_hold = {
+            "goal_id": goal_id,
+            "goal_text": (goal_text or "")[:120],
+        }
+        print(f"[{self.name}/hold] script held by goal {goal_id!r}"
+              + (f" (replacing {prev.get('goal_id')!r})" if prev else ""))
+        # Abort a planner run started earlier this iteration. This is the part
+        # the spec calls "a held goal MUST stop a planner run that already
+        # started"; declining to tick the script is not enough.
+        self._cancel_orchestrator(f"held by goal {goal_id}")
+
+    def _end_script_hold(self, goal_id: str) -> bool:
+        """Release the hold, if `goal_id` names the owner. Returns True if it did.
+
+        The goal_id guard is the behaviour the spec pins under "One goal owns
+        the hold": a stale outcome from an earlier goal must not resume a script
+        that a newer goal now holds, and a run that owns no goal (the
+        spec-driven and order-worker spawn paths pass goal_id="") must not
+        release a chat goal's hold at all. An empty goal_id therefore releases
+        nothing -- the unconditional release is `_clear_script_hold`, used only
+        by reset, which is terminal.
+        """
+        if not goal_id:
+            return False
+        hold = getattr(self, "_script_hold", None)
+        if not hold:
+            return False
+        if hold.get("goal_id") != goal_id:
+            return False
+        self._script_hold = None
+        print(f"[{self.name}/hold] released {hold.get('goal_id')!r}; the script resumes")
+        return True
+
+    def _clear_script_hold(self) -> None:
+        """Drop the hold unconditionally. For reset(), which is terminal."""
+        hold = getattr(self, "_script_hold", None)
+        if hold:
+            self._script_hold = None
+            print(f"[{self.name}/hold] cleared {hold.get('goal_id')!r} on reset")
+
     def _is_chat_message(self, text: str) -> bool:
         """True when an addressed message is conversation, not an instruction.
 
@@ -1282,7 +1397,7 @@ class BotRunner:
             except Exception:
                 pass
 
-    def _run_orchestrator(self, task_text: str, sender: str = "", order_id: str = "", order_kind: str = ""):
+    def _run_orchestrator(self, task_text: str, sender: str = "", order_id: str = "", order_kind: str = "", goal_id: str = ""):
         """Worker target: drives plan_orchestrator.execute_task for a single task.
         Runs in its own daemon thread so the existing tick loop is unaffected.
         Chat callbacks announce each phase to the player so the bot isn't silent.
@@ -1302,6 +1417,13 @@ class BotRunner:
             import plan_orchestrator
         except ImportError as e:
             print(f"[{self.name}/orchestrator] disabled (import failed): {e}")
+            # Task 9.8: this run may be the one a hold is waiting on for its
+            # terminal state. A silent return here leaves the script held
+            # forever (the "every generation-consuming path must terminate"
+            # finding). Report FAILED and release the hold so the script
+            # resumes, exactly as the "L3 plan layer disabled" template does.
+            _order_status("FAILED", f"orchestrator disabled (import failed): {str(e)[:80]}")
+            self._end_script_hold(goal_id or None)
             return
         # Who asked. Reconnaissance results go back to this player's TemPad,
         # so the bot answers the person who sent it rather than relying on L3
@@ -1437,6 +1559,10 @@ class BotRunner:
         finally:
             if self._orch_cancel is cancel_event:
                 self._orch_cancel = None
+            # Task 9.8: this run is ending -- terminal from the hold's point of
+            # view. Release the hold IF this run owns it (goal_id match), so a
+            # newer goal's hold is not released by this run's exit.
+            self._end_script_hold(goal_id or None)
 
     # ── shadow-plan persistence (L3 spec-driven planning visibility) ───────
 
@@ -2726,6 +2852,11 @@ Respond with ONLY a JSON array. Example:
         the L1/L3 path run exactly as it did before, so this never raises and
         never returns True without having actually executed something.
 
+        SCRIPT_HELD is the third outcome (M3-1g task 9.8): a player goal is
+        holding the script. It is falsy, so the loop still falls through and the
+        planner proceeds with the goal, but it is not False -- the "did not run,
+        planner may" case the memory clause forbids conflating with a hold.
+
         The one asymmetry worth stating: a script that deliberately returns []
         (it chose not to act) falls through to the planner too. Suppressing the
         planner on an intentional no-op would turn a quiet script into a dead
@@ -2735,6 +2866,18 @@ Respond with ONLY a JSON array. Example:
             st = self._get_script_tick()
             if st is None:
                 return False
+            # M3-1g task 9.8: a player goal holds the script. _maybe_plan ran
+            # BEFORE this (:3074 vs :3082) and already spawned the planner for
+            # the goal, so dispatching script actions here would put two actors
+            # on one intent -- the exact double-issue this task exists to stop.
+            # Return SCRIPT_HELD, the THIRD outcome: not True ("handled") and
+            # not False ("did not run, planner may" -- the forbidden fallback
+            # that wipes memory). It is falsy, so the loop still falls through
+            # and the goal proceeds; identity tells callers it was a hold.
+            hold = getattr(self, "_script_hold", None)
+            if hold:
+                print(f"[{self.name}/script] held by goal {hold.get('goal_id')!r}, not dispatching")
+                return SCRIPT_HELD
             handled, actions, refusals, detail = st.tick()
             # The script's OWN log lines, whatever the outcome. Before M3-1c
             # this happened not at all: `script_client` did not read the

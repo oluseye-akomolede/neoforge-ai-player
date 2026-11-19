@@ -547,5 +547,207 @@ class ScriptObservabilityTest(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class ScriptHoldTest(unittest.TestCase):
+    """M3-1g task 9.8: a player goal holds the running script and the script
+    resumes, with its remembered value, when that goal reaches a terminal state.
+
+    Spec: "A Player Goal Yields A Running Script" (seven scenarios). The cases
+    here are the ones that fail silently in production:
+
+      1. THIRD OUTCOME -- a held tick is neither True ("handled") nor False
+         ("did not run, planner may"). Encoding it as False is the forbidden
+         fallback that wipes memory (the 9.7 bug one layer down).
+      2. NO DISPATCH -- while held, the script runs no action.
+      3. ABORT-ALREADY-STARTED -- _maybe_plan spawns the planner BEFORE
+         _run_script_tick runs, so the hold must signal that run to abort; a
+         hold that merely declines to tick suppresses nothing that mattered.
+      4. SAME OBJECT RESUMES -- the resumed ScriptTick is the held one, with
+         the same remembered value; a fresh ScriptTick would lose it.
+      5. OWNERSHIP -- last accepted goal owns the hold; an earlier goal's
+         terminal state does not resume a later goal's hold.
+      6. STRANDED RUN -- a run that exits before publishing its cancel event
+         (the ImportError return) still terminates its hold.
+    """
+
+    def setUp(self):
+        agent_mod = _agent_module()
+        self.agent_mod = agent_mod
+        self.a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
+        self.a.name = "Scout"
+        self.a.profile = {}
+        self.a._script_tick = None
+        self.a._script_loaded = True
+        self.a._plan_steps = []
+        self.a._plan_step_idx = 0
+        self.a._plan_instruction = ""
+        self.a._following_player = None
+        self.a._orch_cancel = None
+        self.a._orch_stop_pending = False
+        self.a._l1_failed_steps = set()
+        self.a._all_failed_steps = set()
+        self.a._current_task_id = None
+        self.a._awaiting_taskboard = False
+        self.a.conversation_history = mock.Mock()
+        # The hold's own state, at the default __init__ gives it (None), so a
+        # test cannot pass merely because the attribute is absent.
+        self.a._script_hold = None
+        self.a._l3_orchestrator_dispatch = mock.Mock(
+            return_value="COMPLETED STORE_ALL {'stored': 1}")
+        self.a._run_directive = mock.Mock(return_value={"success": True})
+
+    def _with_tick(self, tick_result, memory=None):
+        """A script object that records calls and replays tick_result."""
+        calls = []
+
+        class Stub:
+            def tick(_self):
+                calls.append(1)
+                return tick_result
+
+        if memory is not None:
+            Stub._memory = memory
+        self.a._script_tick = Stub()
+        return calls
+
+    # ── 1. third outcome ─────────────────────────────────────────────────
+
+    def test_a_held_tick_is_its_own_outcome_not_false(self):
+        """The held outcome must be distinguishable from both True and False.
+
+        The spec forbids encoding a hold as False, because False is the
+        fallback path ("did not run, planner may") that the memory clause
+        already forbids as the resume route. Identity, not truthiness, is the
+        distinguishing test.
+        """
+        held = self.agent_mod.SCRIPT_HELD
+        self._with_tick((True, [{"kind": "STORE_ALL"}], [], "ok"))
+        self.a._begin_script_hold("goal-A", "dig the hill")
+        result = self.a._run_script_tick()
+        self.assertIs(result, held, "a held tick was not SCRIPT_HELD")
+        self.assertIsNot(result, False, "a hold was encoded as the forbidden fallback")
+        self.assertIsNot(result, True, "a hold was encoded as 'handled'")
+
+    def test_the_held_outcome_is_falsy_so_the_loop_falls_through(self):
+        """The loop does `if self._run_script_tick(): continue`. A hold must be
+        falsy there, so the planner-owned goal proceeds rather than being
+        skipped by the `continue`."""
+        self._with_tick((True, [{"kind": "STORE_ALL"}], [], "ok"))
+        self.a._begin_script_hold("goal-A", "dig the hill")
+        self.assertFalse(bool(self.a._run_script_tick()),
+                         "a held tick is truthy; the loop would skip the goal")
+
+    # ── 2. no dispatch while held ────────────────────────────────────────
+
+    def test_a_held_script_dispatches_nothing(self):
+        self._with_tick((True, [{"kind": "STORE_ALL"}], [], "ok"))
+        self.a._begin_script_hold("goal-A", "dig the hill")
+        self.a._run_script_tick()
+        self.a._l3_orchestrator_dispatch.assert_not_called()
+
+    # ── 3. abort an already-started planner run ─────────────────────────
+
+    def test_beginning_a_hold_signals_a_live_run_to_abort(self):
+        """The planner is spawned before the script tick, so the hold must reach
+        into a run that is already dispatching. `_cancel_orchestrator` sets the
+        live cancel event, or latches a pending stop in the spawn window."""
+        import threading
+        live = threading.Event()
+        self.a._orch_cancel = live
+        self.a._begin_script_hold("goal-A", "dig the hill")
+        self.assertTrue(live.is_set(),
+                        "the hold did not abort the already-started planner run")
+
+    def test_a_hold_in_the_spawn_window_latches_a_pending_stop(self):
+        """No run has published its cancel event yet: the hold must latch, not
+        silently do nothing."""
+        self.a._orch_cancel = None
+        self.a._begin_script_hold("goal-A", "dig the hill")
+        self.assertTrue(self.a._orch_stop_pending,
+                        "a hold in the spawn window left the planner free to run")
+
+    # ── 4. the same object resumes, with its memory ─────────────────────
+
+    def test_the_same_script_object_resumes_after_the_hold(self):
+        """Identity, not equality: a fresh ScriptTick would lose the blob the
+        way 9.7 did. Capture the object, hold, release, and assert it is the
+        one that ticks again."""
+        self._with_tick((True, [{"kind": "STORE_ALL"}], [], "ok"))
+        held_obj = self.a._script_tick
+        self.a._begin_script_hold("goal-A", "dig the hill")
+        self.a._run_script_tick()          # held: no dispatch
+        self.a._end_script_hold("goal-A")  # goal terminal
+        self.a._run_script_tick()          # resumes
+        self.assertIs(self.a._script_tick, held_obj,
+                      "a new ScriptTick was built; the remembered blob is gone")
+        self.a._l3_orchestrator_dispatch.assert_called_once()
+
+    def test_the_hold_does_not_touch_the_remembered_blob(self):
+        blob = {"kind": "script-memory", "blob": "remembered-42"}
+        self._with_tick((True, [], [], "ok"), memory=blob)
+        self.a._begin_script_hold("goal-A", "dig the hill")
+        self.a._run_script_tick()
+        self.assertIs(blob, self.a._script_tick._memory,
+                      "the hold cleared the script's remembered value")
+
+    # ── 5. ownership ────────────────────────────────────────────────────
+
+    def test_only_the_owning_goal_releases_the_hold(self):
+        self.a._begin_script_hold("goal-A", "dig")
+        self.a._begin_script_hold("goal-B", "chop")   # last accepted owns
+        self.assertFalse(self.a._end_script_hold("goal-A"),
+                         "a superseded goal released the live hold")
+        self.assertIsNotNone(self.a._script_hold)
+        self.assertTrue(self.a._end_script_hold("goal-B"),
+                        "the owning goal could not release its own hold")
+        self.assertIsNone(self.a._script_hold)
+
+    def test_a_run_with_no_goal_does_not_release_a_chat_hold(self):
+        """The spec-driven and order-worker spawn paths pass goal_id=""; their
+        exit must not resume a chat goal's hold.
+
+        The empty-string guard is what makes this true even if a hold ever had
+        an empty goal_id; assert it directly (a matching non-empty id must
+        release) so removing the guard is caught rather than incidentally
+        masked by the `!= ` comparison against a non-empty hold id.
+        """
+        self.a._begin_script_hold("goal-A", "dig")
+        self.assertFalse(self.a._end_script_hold(""))
+        self.assertIsNotNone(self.a._script_hold,
+                             "a goal-less run released a chat goal's hold")
+        # The guard's positive side: a hold truly owned by "" would be released
+        # by a "" run ONLY if the guard is absent. Pin that it is not.
+        self.a._script_hold = {"goal_id": "", "goal_text": "x"}
+        self.assertFalse(self.a._end_script_hold(""),
+                         "an empty goal_id released a hold; the no-goal guard is gone")
+        self.assertIsNotNone(self.a._script_hold)
+
+    def test_reset_clears_the_hold(self):
+        self.a._begin_script_hold("goal-A", "dig")
+        self.a.reset()
+        self.assertIsNone(self.a._script_hold, "reset left the script held forever")
+
+    # ── 6. a run that exits early still terminates its hold ─────────────
+
+    def test_a_run_that_exits_before_publishing_releases_its_hold(self):
+        """`import plan_orchestrator` fails (the :1305 return). The run owns a
+        goal's hold and exits before publishing its cancel event; without a
+        terminal path the hold never clears."""
+        self.a._begin_script_hold("goal-A", "dig the hill")
+        self.a._orch_cancel = None   # nothing published yet
+
+        real_import = __import__
+
+        def deny(name, *a, **k):
+            if name == "plan_orchestrator":
+                raise ImportError("disabled for test")
+            return real_import(name, *a, **k)
+
+        with mock.patch("builtins.__import__", side_effect=deny):
+            self.a._run_orchestrator("dig the hill", sender="alice", goal_id="goal-A")
+
+        self.assertIsNone(self.a._script_hold,
+                          "the run exited without releasing the hold it owned")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
