@@ -566,6 +566,16 @@ Scripted Bot Acts Only When There Is Something To Do*.
       script tick - the other scenarios all pass on an implementation that
       still double-issues. Also pin hold ownership: two goals in one batch,
       last accepted owns the hold, and an earlier run's abort MUST NOT resume.
+      CAUSE AND IDENTITY (reviewer 17:00Z, accepted): do NOT express the hold
+      with `_orch_stop_pending` - it is one latched bool with three callers
+      (`:298`, `:473`, hold) that records no cause (`:1222` set, `:1413`
+      cleared by whichever thread consumes it). A hold firing on every goal
+      would cancel, or be cancelled by, an unrelated orchestrator. Give the
+      hold its own state naming the owning goal, and have the resume consult
+      that goal's outcome. The identity idiom is already here at `:1438`
+      (`if self._orch_cancel is cancel_event`). Do not widen the pre-existing
+      unlocked set/clear at `:1222`/`:1413`: keep the hold's state separate
+      and guarded.
 
 ## Milestone reporting
 
