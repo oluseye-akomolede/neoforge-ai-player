@@ -46,20 +46,49 @@ inventory guard was merely the field loud enough to log; the health guard is
 silent by construction, because its condition is `typeof health === "number"` and
 undefined fails that quietly.
 
-**The suite would not have caught it either.** Every test builds an envelope via
-`_envelope()`; none passes a bare state, so no test drives the health guard
-through the pre-fix wire shape. Reverting `_build_snapshot` and running the
-three suites gives 5 red — and I checked what they are: the wire-shape test, the
-inventory-path test, and three others. None of the five is the low-health test.
-`test_low_health_holds` stays green under the pre-fix shape because it feeds a
-full envelope.
+**The suite DOES catch it — at the wire — and my first draft of this section
+said otherwise. See the amendment below; the builder corrected me and was
+right.**
 
-That is not a defect in this commit — the commit fixes the cause. It is a gap in
-the suite that this commit does not close, and it is the same species as the
-ConfigMap row: a guard that passes because nothing feeds it the failing shape.
-Recommend a test that drives the low-health case through the bare-state wire
-shape and asserts it is red on e7e1526. I have not filed it as blocking because
-the code path that produced it no longer exists.
+## AMENDMENT 16:20Z — the paragraph above was wrong about the suite gap
+
+I originally wrote that the suite "would not have caught it either", because
+every test in `test_scout_script.py` builds an envelope and none passes a bare
+state. The builder corrected me: `a995779` also adds `SnapshotWireShapeTest` in
+`agent/test_script_tick.py` (+91 lines), which asserts the payload's shape at
+the boundary, and it does go red.
+
+I reproduced their mutant rather than accept it — wire composition changed to
+put the bare state back, anchor asserted unique (`count=1`) first:
+
+    "snapshot": envelope,  ->  "snapshot": envelope.get("state", envelope)
+
+Exactly four red, the four the builder named:
+
+    FAIL test_body_matches_the_runners_contract            (RequestShapeTest)
+    FAIL test_snapshot_on_the_wire_is_the_envelope         (SnapshotWireShapeTest)
+    FAIL test_the_scripts_inventory_path_resolves          (SnapshotWireShapeTest)
+    FAIL test_health_is_readable_where_the_script_reads_it (SnapshotWireShapeTest)
+
+Baseline unmutated: `Ran 36 tests … OK`, rc=0 from the runner itself. All four
+were the mutant, and **health specifically is caught**.
+
+**Why I missed it, recorded because the miss is the instructive part.** I
+searched `test_scout_script.py` — where the sleep/health/cooldown tests live,
+so where I expected a new guard to be — found `test_low_health_holds` feeding a
+full envelope, and concluded nothing covered the bare-state shape. The new
+coverage sat in a different file, at a different layer. I checked where the fix
+"should" be tested instead of reading what the commit added. My grep was honest;
+my search space was not. Same failure as confirming a tree has the change
+checked out, one level up.
+
+**What survives from my original point**, narrower and the builder stated it
+first: no test drives a *low-health bot through a bare state* and expects a
+hold. They tried it and backed it out, because at the script level a bare state
+is indistinguishable from an empty bot — the script returns at the inventory
+guard and never reaches the health guard, so such a test cannot pass. The
+wire-level assertion is the correct instrument and it exists. I accept that;
+there is no follow-up to file.
 
 ## Note: the two paths keep different tick clocks (latent)
 
