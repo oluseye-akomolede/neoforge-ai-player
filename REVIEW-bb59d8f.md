@@ -1,5 +1,29 @@
 # Review: bb59d8f (M3-1g spec delta — "A Player Goal Yields A Running Script")
 
+> ## CORRECTION (11-19 17:0xZ), issued before any further work
+>
+> **B1 and the N2 memory finding below are WITHDRAWN. They were read from the
+> wrong tree.** My worktree `minecraft-wt-qwen` sat at `ae2fb43`, which is not
+> an ancestor of the change branch: the two share only `d75f30bc`, and
+> `agent.py` differs by 253 lines because my branch never took M3-1b/1c/1e
+> (`92de520`, `a995779`, `7133983`, …). Reading `bb59d8f:agent/agent.py` from my
+> own checkout gave line numbers 25 lower than the change branch's.
+>
+> The builder's citations are correct **on the branch the spec lives on**.
+> Verified: at `28e06dd`, `:530` is `if chat_filter.is_pure_pleasantry(...)` and
+> `:534` is `from_bot = sender in _all_runners`. Only B1b survives, and only as
+> "add the follow gate", which they have done.
+>
+> The memory finding is also wrong: at `28e06dd`, `script_tick.py:363-364` does
+> assign `self._memory = result.memory` (guarded on `not None`) and `:321` sends
+> it. My `grep memory_out agent/` could not see it — the production field is
+> `_memory`, in a different file. That is the instrument, not the world.
+>
+> **The real defect this exposed is in my process, not their spec: I reviewed a
+> change on a branch my worktree never fast-forwarded to.** Everything below is
+> preserved unedited as the record of what I said and why; treat B1 and the N2
+> memory paragraph as refuted, and see the re-review of `28e06dd` at the end.
+
 Rev reviewed: `bb59d8f` (also ancestor of the worktree HEAD `ae2fb43`).
 `openspec validate coded-agents --strict` at that rev: **valid** (rc=0).
 
