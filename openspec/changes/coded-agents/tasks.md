@@ -712,6 +712,37 @@ Scripted Bot Acts Only When There Is Something To Do*.
       run from the worktree). This is the guard working, not a failure, but a
       pipeline that ships an archive will read it as one.
 
+      DEVELOPER-TEST FAIL + FIX (lead, 11-19 17:36Z; TEST on d9bbce0 FAILED).
+      The hold called `_cancel_orchestrator`, which with no published
+      `_orch_cancel` set `_orch_stop_pending`; the planner this goal itself
+      spawned then honoured the latch at start and finalised the goal
+      "cancelled" 0.6s after it began - the hold cancelled the goal it held
+      for. Measured: held 17:27:53.5828, "stop pending" same ms, "honoring
+      pending stop at orchestrator start" 17:27:53.6216, "plan cancelled
+      between subtasks" 17:27:54.2178. ROOT CAUSE was a spec error, not just
+      code: the requirement said a hold "MUST stop a planner run that already
+      started", but the run that already started is the player's own goal -
+      there was no prior run to abort. FIX: the hold no longer calls
+      `_cancel_orchestrator` at all; its only job is to suppress script
+      dispatch until the goal is terminal. The spec requirement was rewritten
+      ("A held goal MUST NOT cancel the planner run it is holding for"), the
+      ownership and latch-cause paragraphs corrected, and the same-iteration
+      scenario corrected from "the planner run is aborted" to "the planner run
+      proceeds and no script action is dispatched". The two now-wrong tests
+      (`...signals_a_live_run_to_abort`, `...latches_a_pending_stop`) were
+      replaced by `...does_not_cancel_anything` and a REAL-orchestrator test
+      `test_a_held_goal_runs_its_real_orchestrator_to_completion` that drives
+      `_run_orchestrator` through the real start (including the
+      honour-pending-stop block) with a stubbed `execute_task` capturing the
+      run's cancel_event. Offline suite missed this because every hold test
+      used a fixture; this one goes through the start path. Verified by
+      mutation: reintroducing `_cancel_orchestrator` in the hold reddens BOTH
+      new tests and nothing else. 104/104 (test_script_tick 37,
+      test_agent_script_branch 40, test_scout_script 27), openspec --strict
+      valid. Lead also observed, separately: one held tick with no dispatch,
+      memory intact across the hold (STORE_ALL ~3.5 min, dirt stored, 8 items
+      at 17:29:52), 0 script errors.
+
 ## Milestone reporting
 
 Result rows to `control-operator` at each of: (1) sandbox + tests on test,

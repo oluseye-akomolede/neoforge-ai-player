@@ -1307,17 +1307,21 @@ class BotRunner:
         """Hold the running script for `goal_id` (spec: "A Player Goal Yields A
         Running Script").
 
-        Called as an accepted chat goal starts its plan. Two jobs:
+        Called as an accepted chat goal starts its plan. ONE job: record the
+        hold, naming the owning goal, so `_run_script_tick` stops dispatching
+        until this goal is terminal. The resume consults THIS goal's outcome,
+        not a bare flag and not a counter -- the spec's "carry cause and
+        identity" clause. A later goal replaces the owner (last accepted owns
+        the hold).
 
-        1. Record the hold, naming the owning goal. The resume consults THIS
-           goal's outcome, not a bare flag and not a counter -- the spec's
-           "carry cause and identity" clause. A later goal replaces the owner
-           (last accepted owns the hold).
-        2. Signal any planner run that already started to abort. The planner is
-           spawned in `_maybe_plan` BEFORE `_run_script_tick` runs this
-           iteration, so declining to tick the script suppresses nothing that
-           mattered; the hold must reach into the live run. `_cancel_orchestrator`
-           already handles the spawn window via `_orch_stop_pending`.
+        The hold MUST NOT cancel anything. It does not call
+        `_cancel_orchestrator`: the planner this goal spawns IS the run that
+        should proceed, and with no live `_orch_cancel` published yet a cancel
+        latches `_orch_stop_pending`, which that same planner then honours at
+        start -- cancelling the player's own goal within a tick (lead's TEST
+        17:38Z: "the hold cancels the goal it holds for"). The earlier read that
+        a hold must "abort the already-started planner" confused the planner
+        this goal owns with a prior run; there is no prior run to abort here.
 
         The remembered memory is NOT touched: a hold is a pause, and the spec's
         "Memory MUST survive the hold" clause makes wiping it the 9.7 bug again.
@@ -1329,10 +1333,10 @@ class BotRunner:
         }
         print(f"[{self.name}/hold] script held by goal {goal_id!r}"
               + (f" (replacing {prev.get('goal_id')!r})" if prev else ""))
-        # Abort a planner run started earlier this iteration. This is the part
-        # the spec calls "a held goal MUST stop a planner run that already
-        # started"; declining to tick the script is not enough.
-        self._cancel_orchestrator(f"held by goal {goal_id}")
+        # Deliberately NOT calling _cancel_orchestrator here: see the docstring.
+        # The goal's own planner is the run that must proceed; a cancel latches
+        # _orch_stop_pending before that planner publishes its Event, and the
+        # planner honours it at start, killing the player's goal.
 
     def _end_script_hold(self, goal_id: str) -> bool:
         """Release the hold, if `goal_id` names the owner. Returns True if it did.

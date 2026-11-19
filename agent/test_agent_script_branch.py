@@ -647,24 +647,58 @@ class ScriptHoldTest(unittest.TestCase):
 
     # ── 3. abort an already-started planner run ─────────────────────────
 
-    def test_beginning_a_hold_signals_a_live_run_to_abort(self):
-        """The planner is spawned before the script tick, so the hold must reach
-        into a run that is already dispatching. `_cancel_orchestrator` sets the
-        live cancel event, or latches a pending stop in the spawn window."""
+    def test_beginning_a_hold_does_not_cancel_anything(self):
+        """The hold must NOT signal a run to abort. The planner this goal
+        spawns IS the run that should proceed; cancelling it kills the player's
+        own goal (lead's TEST 17:38Z: "the hold cancels the goal it holds for").
+        Both a live event and the spawn window are checked: neither may be
+        touched."""
         import threading
         live = threading.Event()
         self.a._orch_cancel = live
         self.a._begin_script_hold("goal-A", "dig the hill")
-        self.assertTrue(live.is_set(),
-                        "the hold did not abort the already-started planner run")
-
-    def test_a_hold_in_the_spawn_window_latches_a_pending_stop(self):
-        """No run has published its cancel event yet: the hold must latch, not
-        silently do nothing."""
+        self.assertFalse(live.is_set(),
+                         "the hold aborted a live run -- it would kill its own goal")
+        # And the spawn-window path: with no published Event, a hold must not
+        # latch a pending stop, or the goal's own planner honours it at start.
         self.a._orch_cancel = None
+        self.a._begin_script_hold("goal-B", "chop")
+        self.assertFalse(self.a._orch_stop_pending,
+                         "the hold latched _orch_stop_pending; its own planner will self-cancel")
+
+    def test_a_held_goal_runs_its_real_orchestrator_to_completion(self):
+        """REAL orchestrator start with a hold active (the offline suite missed
+        this, per the lead). Drive `_run_orchestrator` for the held goal through
+        the real start path -- including the honour-pending-stop block -- and
+        assert the run's own cancel_event is NOT set at start, so the goal is
+        not born cancelled. `execute_task` is stubbed to capture the event."""
+        import plan_orchestrator
+        # _run_orchestrator reads these before execute_task; the __new__ fixture
+        # has no __init__, so supply the minimum it touches on the way in.
+        self.a.model = "test-model"
+        self.a.squad = None
+        self.a.squad_members = []
+        self.a._findings = []
         self.a._begin_script_hold("goal-A", "dig the hill")
-        self.assertTrue(self.a._orch_stop_pending,
-                        "a hold in the spawn window left the planner free to run")
+        captured = {}
+
+        def fake_execute_task(**kw):
+            captured["event"] = kw["cancel_event"]
+            captured["set_at_start"] = kw["cancel_event"].is_set()
+            captured["stop_pending"] = getattr(self.a, "_orch_stop_pending", None)
+            return None
+
+        with mock.patch.object(plan_orchestrator, "execute_task",
+                               side_effect=fake_execute_task):
+            self.a._run_orchestrator("dig the hill", sender="alice", goal_id="goal-A")
+
+        self.assertIn("event", captured, "execute_task was never reached")
+        self.assertFalse(captured["set_at_start"],
+                         "the held goal's own plan was born cancelled -- TEST failure reproduced")
+        self.assertFalse(captured["stop_pending"],
+                         "a pending stop survived into the orchestrator start")
+        self.assertIsNone(self.a._script_hold,
+                          "the run finished but the hold it owned was not released")
 
     # ── 4. the same object resumes, with its memory ─────────────────────
 

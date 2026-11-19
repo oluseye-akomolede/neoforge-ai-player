@@ -756,37 +756,42 @@ script's own dispatch loop, a reason to report the tick handled
 (`agent.py:2804`); a cancel that leaves the script held MUST be distinguishable
 from that.
 
-**A held goal MUST stop a planner run that already started.** The hold cannot
-be enforced by declining to tick the script, because the planner does not start
-after the script tick — it starts before it. `_maybe_plan` runs first in the
-iteration (`agent.py:2931`) and spawns the orchestrator daemon thread as it
-accepts an instruction (`agent.py:625-631`); `_run_script_tick` runs second
-(`agent.py:2939`). By the time a script tick could report that it is held, the
-planner thread for that very instruction is already dispatching, so a hold that
-only suppresses the script suppresses nothing that mattered. While a script is
-held, a planner run the hold supersedes MUST NOT dispatch a directive. Where
-that run was started earlier in the same iteration, holding MUST signal it to
-abort rather than rely on it not having started; the signal MUST work in the
-window between the spawn and the run publishing its cancel event
-(`_cancel_orchestrator`, `agent.py:1213-1228`, which sets `_orch_stop_pending`
-for exactly that window, honoured at `agent.py:1412-1415`). A hold that leaves
-an already-started planner dispatching does not satisfy this requirement.
+**A held goal MUST NOT cancel the planner run it is holding for.** The planner
+starts before the script tick: `_maybe_plan` runs first in the iteration
+(`agent.py:3074`) and, on accepting a chat goal, spawns the orchestrator daemon
+thread for *that goal* (`agent.py:684`); `_run_script_tick` runs second
+(`agent.py:3082`). The hold's job is therefore to suppress the *script's*
+dispatch, not to stop the planner — the planner run that already started is the
+player's own goal, and it MUST be allowed to proceed. Calling
+`_cancel_orchestrator` from the hold is a DEFECT: at hold time no `_orch_cancel`
+is published yet, so it latches `_orch_stop_pending` (`agent.py:1281`), and the
+very planner this goal spawned honours that latch at its start
+(`agent.py:1558-1561`), finalising the goal "cancelled" within a tick. Measured
+on TEST (lead, 11-19 17:38Z): held at 17:27:53.5828, "stop pending" the same
+millisecond, "honoring pending stop at orchestrator start" at 17:27:53.6216,
+"plan cancelled between subtasks" at 17:27:54.2178 — the player's goal never
+ran. The hold MUST reach only the script; it MUST NOT set `_orch_stop_pending`
+and MUST NOT set any live run's cancel event.
 
 **One goal owns the hold.** `_maybe_plan` is called for every message in the
-batch, and a second accepted goal cancels the first run (`agent.py:471` does
-this for nav shortcuts). When a batch carries two goals, the hold is owned by
-the last one accepted, and the earlier run's abort is not a resume trigger: a
-hold MUST resume only on the terminal state of the directive it is holding.
+batch, and each accepted chat goal spawns its own orchestrator thread; a hold
+records the goal that most recently began one as its owner, replacing any
+earlier owner. A hold MUST resume only on the terminal state of the directive
+it is holding, and a stale terminal state from an earlier goal MUST NOT resume
+a script a newer goal now holds. (Note: the nav-shortcut path at `agent.py:471`
+does cancel the live orchestrator, but that is the shortcut's own stop and is
+independent of a hold — a hold itself must not cancel, per the requirement
+above.)
 
 **The hold MUST carry cause and identity, not a bare flag.** `_orch_stop_pending`
-is a single latched boolean with three callers (`agent.py:298` reset, `:473` nav
-shortcut, and a hold would be the third) and no record of who set it: it is set
-unguarded at `:1222` and cleared by whichever thread consumes it at `:1413`. That
-is adequate for stop and reset, which are terminal. A hold is recoverable and
-fires far more often, so a bare flag would let an unrelated orchestrator
-publishing first consume the latch and be cancelled in the holding goal's place,
-leaving the real goal unchecked; the mirror error occurs when a stop during a
-hold consumes the hold's latch.
+is a single latched boolean with real callers (`agent.py:298` reset, `:473` nav
+shortcut) and no record of who set it: it is set unguarded at `:1222` and cleared
+by whichever thread consumes it at `:1558-1561`. That is adequate for stop and
+reset, which are terminal. A hold is recoverable and fires far more often, so
+reusing this latch for a hold would (and, before the developer-test fix, did)
+cause the holding goal's own orchestrator to consume the latch and cancel
+itself. A hold is therefore its own state, not this latch — and must not set
+this latch at all.
 A hold therefore MUST be its own state, not this latch, and the resume MUST
 consult the holding goal's own outcome rather than a bare flag. The state MUST
 identify the goal that owns the hold, so that "held by goal A" and "held by goal
@@ -814,14 +819,15 @@ as paused, disabled, deleted or fallen back to the planner.
   runner, a script action IS dispatched — so "no action" is attributable to the
   hold and not to the script being inert
 
-#### Scenario: A goal arriving in the same iteration does not double-issue
+#### Scenario: A goal arriving in the same iteration runs and the script does not double-issue
 - **GIVEN** a bot with an active script and a reachable runner
 - **WHEN** a player goal arrives in the same loop iteration as a script tick
-- **THEN** the planner run started for that goal is aborted, or dispatches no directive
+- **THEN** the planner run started for that goal proceeds — it is NOT cancelled
+  by the hold (it is the goal the hold is waiting on)
 - **AND** no script action is dispatched for that tick
-- **AND** in a control run with the same script, runner and a goal that arrives
-  when the script is not active, the planner does dispatch — so "did not
-  dispatch" is attributable to the hold and not to a planner that never runs
+- **AND** in a control run with the same script and runner but no goal, a script
+  action IS dispatched — so "no script action" is attributable to the hold and
+  not to a script that was inert
 
 #### Scenario: A held script is not ticked
 - **WHEN** a bot with an active script and a reachable runner is held for a player goal
