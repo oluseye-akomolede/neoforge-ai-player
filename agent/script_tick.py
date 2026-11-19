@@ -349,7 +349,19 @@ class ScriptTick:
         #
         # Only on a SCRIPT state: a fallback carries memory=None, and taking it
         # would wipe a good blob with an empty one on a single runner timeout.
-        self._memory = result.memory
+        #
+        # And only when the script actually remembered something. The runner
+        # sets `memoryOut` ONLY on an `api.remember` call (binding.js:314) and
+        # resets it to null at the start of every tick (binding.js:113), so a
+        # successful tick that logs and returns without storing reports
+        # `memory_out: null`. Assigning that cleared the STORE_ALL cooldown
+        # stamp on every non-storing tick, and the next tick stored again --
+        # measured on test 2026-11-19 as a dispatch every 2 ticks for 8 minutes
+        # (M3-1e bug 1). The two nulls mean different things: None from a
+        # fallback is "the call did not happen", null on a SCRIPT tick is "the
+        # script chose not to write". Only the first may clear the blob.
+        if result.memory is not None:
+            self._memory = result.memory
 
         # The script's log lines, held for the caller to print. Set on the
         # SCRIPT path only: a fallback has no script logs, and carrying the

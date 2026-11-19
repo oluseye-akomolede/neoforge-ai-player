@@ -508,6 +508,45 @@ class MemoryRoundTripTest(unittest.TestCase):
                          '{"lastStoreAllTick": 7}',
                          "a plain string from the caller must be encoded once")
 
+    def test_a_successful_tick_that_does_not_remember_keeps_the_blob(self):
+        """M3-1e bug 1: a SCRIPT tick with memory_out null must not erase memory.
+
+        Measured on test 2026-11-19 (image m31d-a995779): STORE_ALL dispatched
+        every 2 ticks for 8 minutes. The cause is here, not in the script. The
+        runner sets `memoryOut` ONLY when the script calls `api.remember`
+        (binding.js:314) and resets it to null every tick (binding.js:113), so
+        a tick that logs and returns without storing carries `memory_out: null`.
+        Assigning that to `self._memory` wiped the cooldown stamp on every
+        non-storing tick, so the next tick saw `lastStoreAllTick` absent and
+        stored again -- a store, a cool, a store, a cool, forever.
+
+        `None` from a fallback means "the call did not happen"; null on a
+        SCRIPT tick means "the script chose not to write". They are different,
+        and only the first may clear the blob.
+        """
+        bodies = []
+        results = [
+            # tick 1: the script stored and remembered the tick stamp
+            {"contract_version": 1, "status": "ok",
+             "actions": [{"seq": 1, "call": "do", "directive": "STORE_ALL"}],
+             "memory_out": "eyJsYXN0U3RvcmVBbGxUaWNrIjoyfQ=="},
+            # tick 2: it held the cooldown and never called remember
+            {"contract_version": 1, "status": "ok", "actions": [],
+             "memory_out": None},
+            # tick 3: should still be cooling
+            {"contract_version": 1, "status": "ok", "actions": [],
+             "memory_out": None},
+        ]
+        def _post(path, data=None, **kw):
+            bodies.append(data)
+            return results.pop(0)
+        st = ScriptTick(_FakeApi(), "Scout", "api.log('hi')", post=_post)
+        st.tick(); st.tick(); st.tick()
+        self.assertEqual(bodies[1]["memory"], "eyJsYXN0U3RvcmVBbGxUaWNrIjoyfQ==",
+                         "a non-storing SCRIPT tick must carry the previous blob")
+        self.assertEqual(bodies[2]["memory"], "eyJsYXN0U3RvcmVBbGxUaWNrIjoyfQ==",
+                         "and the one after it, for as long as the script stays quiet")
+
 
 class SnapshotWireShapeTest(unittest.TestCase):
     """M3-1c part 5: `snapshot` on the wire must be the ENVELOPE.
