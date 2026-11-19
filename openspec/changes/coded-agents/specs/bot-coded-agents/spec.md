@@ -940,6 +940,45 @@ that it ran.
 > precisely.
 
 
+### Requirement: A script's own log lines MUST reach the agent log
+
+The runner returns the script's `api.log` output as a `logs` array on every tick
+response (`agent-script-runner src/main.js:153`), and counts any lines its own cap
+dropped in `logs_dropped` (`:154`). The agent SHALL print each returned line to its
+own log as `[<bot>/script] log: <line>`, and SHALL print `logs_dropped` when it is
+non-zero. A returned log line that reaches the runner's response but not the pod
+log MUST NOT be the normal case.
+
+The agent caps what it prints per tick for display (a fixed maximum number of lines
+and characters per line). That cap is a flood guard and MUST be reported when it
+bites — a silently truncated display is the same defect as a dropped line. It does
+NOT replace the runner's own cap (`binding.js:38,41`: 100 lines/min, 1024 bytes per
+line), which remains the correctness bound.
+
+#### Scenario: A script's log line appears in the agent log
+- **WHEN** the runner answers a tick with `logs: ["hi from scout"]`
+- **THEN** the agent log carries a line containing `[<bot>/script] log: hi from scout`
+
+#### Scenario: Lines the runner dropped are visible as dropped
+- **WHEN** the runner answers with a non-zero `logs_dropped`
+- **THEN** the agent log states how many lines were dropped, so a reader does not
+  read silence as the script having logged nothing
+
+#### Scenario: The display cap reports when it bites
+- **WHEN** the runner returns more lines than the agent's per-tick display cap
+- **THEN** the agent prints the cap's worth and states how many it did not print
+
+> **Why this requirement exists.** M3-1b added a log line to the action gate, and
+> on test 2026-11-19 (image `m31b-a26b1c2`, pod `aibot-agent-test-7fc9969694-gxrrg`)
+> eight minutes produced ZERO `[Scout/script]` lines of any kind — not the gate's
+> line, not a refusal, not a fallback. The line existed in `scout.js` and was being
+> executed; the runner returned it in `logs`; nothing on the agent read that field
+> (`script_client.py` and `script_tick.py` had no reference to `logs` at all). The
+> observability added in M3-1b was therefore invisible in production, and the
+> silence that motivated M3-1b reproduced unchanged under a change meant to fix it.
+> This is the same shape as M3-1b cause A: a value produced on one side and never
+> read on the other.
+
 ### Requirement: Script memory MUST round-trip through the agent
 
 A script's `api.remember(blob)` SHALL be visible to `api.recall()` on the bot's

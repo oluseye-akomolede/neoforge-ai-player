@@ -2649,6 +2649,54 @@ Respond with ONLY a JSON array. Example:
             print(f"[{self.name}/L4] OpenAI call failed: {e}")
             return None
 
+    # Display caps for the script log relay (M3-1c). These are FLOOD GUARDS,
+    # not correctness bounds: the runner already caps at 100 lines/min and
+    # 1024 bytes/line (`agent-script-runner src/binding.js:38,41`) and reports
+    # its own drops in `logs_dropped`. Printing an unbounded number of lines
+    # from a looping script would let one bot bury every other line in the pod
+    # log. When either cap bites the fact is printed, because a silent
+    # truncation reads exactly like a script that logged less than it did.
+    SCRIPT_LOG_MAX_LINES = 5
+    SCRIPT_LOG_MAX_CHARS = 200
+    SCRIPT_IDLE_LOG_INTERVAL_S = 60.0
+
+    def _print_script_logs(self, st):
+        """Relay the runner's `logs` for this tick into the agent log."""
+        logs = list(getattr(st, "last_logs", None) or [])
+        dropped = getattr(st, "last_logs_dropped", 0) or 0
+        shown = logs[:self.SCRIPT_LOG_MAX_LINES]
+        for line in shown:
+            text = line if isinstance(line, str) else repr(line)
+            if len(text) > self.SCRIPT_LOG_MAX_CHARS:
+                text = text[:self.SCRIPT_LOG_MAX_CHARS] + "…"
+            print(f"[{self.name}/script] log: {text}")
+        hidden = len(logs) - len(shown)
+        if hidden:
+            print(f"[{self.name}/script] log: (+{hidden} more lines this tick, "
+                  f"display cap {self.SCRIPT_LOG_MAX_LINES})")
+        if dropped:
+            # The runner's cap, not ours. Named separately so a reader can tell
+            # the script was suppressed from logging from us not showing it.
+            print(f"[{self.name}/script] log: runner dropped {dropped} line(s)")
+
+    def _note_script_idle(self):
+        """Say, at most once per interval, that the script proposed nothing.
+
+        Rate-limited rather than per-tick: a bot held by the gate can stay idle
+        for minutes, and one line per tick would make the log unreadable in the
+        opposite direction. The interval is wall-clock, so it survives a slow
+        tick loop without drifting.
+        """
+        import time
+        now = time.monotonic()
+        last = getattr(self, "_script_idle_logged_at", None)
+        if last is not None and (now - last) < self.SCRIPT_IDLE_LOG_INTERVAL_S:
+            return
+        self._script_idle_logged_at = now
+        ticks = getattr(self, "_script_idle_ticks", 0) + 1
+        self._script_idle_ticks = ticks
+        print(f"[{self.name}/script] idle: no actions ({ticks} idle log point(s))")
+
     def _run_script_tick(self):
         """Run one script-mode tick. Return True if the script handled it.
 
@@ -2669,6 +2717,14 @@ Respond with ONLY a JSON array. Example:
             if st is None:
                 return False
             handled, actions, refusals, detail = st.tick()
+            # The script's OWN log lines, whatever the outcome. Before M3-1c
+            # this happened not at all: `script_client` did not read the
+            # runner's `logs` field, so `api.log()` -- including the action
+            # gate's line that M3-1b added to end the silence -- was produced
+            # in the sandbox and discarded at the wire. Printed here rather
+            # than after the handled check because a script that logs and then
+            # declines is exactly the case that could not be diagnosed.
+            self._print_script_logs(st)
             for r in refusals:
                 print(f"[{self.name}/script] refused action: {r}")
             if not handled:
@@ -2678,6 +2734,12 @@ Respond with ONLY a JSON array. Example:
                     print(f"[{self.name}/script] falling back to planner: {detail}")
                 return False
             if not actions:
+                # The script ran, handled the tick, and proposed nothing. This
+                # used to return in silence, which made "bound and gated",
+                # "bound and never called" and "never bound" identical from the
+                # outside. Rate-limited so a bot that stays idle does not fill
+                # the log: one line on entry, then at most one per minute.
+                self._note_script_idle()
                 return False
             # `actions` are BOUND actions: `{"kind": KIND, ...allowed args}`
             # (action_binding.py:82) -- not `{"directive": {...}}`. An earlier
@@ -2820,6 +2882,17 @@ Respond with ONLY a JSON array. Example:
         except Exception as e:  # noqa: BLE001
             print(f"[{self.name}/script] script mode unavailable: {e}")
             self._script_tick = None
+            return None
+        # Printed ONCE, on the bind that succeeds, and never on the cache hit
+        # above (`:2804`), so the line dates the moment the script became live
+        # rather than repeating every tick. Until M3-1c a successful bind was
+        # silent, which left "bound", "unbound" and "bound and never called"
+        # looking identical in the log. The digest is of the SOURCE BYTES, the
+        # same value `_revision_of` derives (script_tick.py:233), so it can be
+        # matched to the file's own sha256 prefix without trusting this line.
+        import hashlib
+        digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
+        print(f"[{self.name}/script] bound {path} ({digest})")
         return self._script_tick
 
     def _loop(self):

@@ -131,13 +131,24 @@ class ScriptResult:
     good blob with an empty one.
     """
 
-    __slots__ = ("state", "actions", "detail", "memory")
+    __slots__ = ("state", "actions", "detail", "memory", "logs", "logs_dropped")
 
-    def __init__(self, state, actions=None, detail="", memory=None):
+    def __init__(self, state, actions=None, detail="", memory=None, logs=None,
+                 logs_dropped=0):
         self.state = state
         self.actions = actions or []
         self.detail = detail
         self.memory = memory
+        # The script's own `api.log` lines, as the runner returned them
+        # (src/main.js:153). They were produced and discarded until M3-1c:
+        # nothing on the agent read this field, so a script's log line -- and
+        # the action gate's, which motivated M3-1b -- never reached the pod
+        # log. Empty on any fallback, like `actions`.
+        self.logs = logs or []
+        # Lines the runner's own cap dropped (binding.js:38,41). Carried so a
+        # reader cannot mistake a script that logged nothing for a script whose
+        # lines were dropped.
+        self.logs_dropped = logs_dropped or 0
 
     def __repr__(self):
         return f"ScriptResult(state={self.state!r}, n_actions={len(self.actions)}, detail={self.detail!r})"
@@ -199,5 +210,17 @@ def call_runner(api, bot_state, *, post=None):
     if not isinstance(actions, list):
         return ScriptResult(STATE_FALLBACK_ERROR, detail=f"actions is {type(actions).__name__}, not a list")
 
+    # `logs` is read defensively: a runner revision that omits it, or sends a
+    # non-list, must not make an otherwise good tick look like a failure. A
+    # wrong-shape field is dropped rather than raised, because losing the log
+    # lines is survivable and losing the tick is not.
+    logs = payload.get("logs")
+    if not isinstance(logs, list):
+        logs = []
+    dropped = payload.get("logs_dropped")
+    if not isinstance(dropped, int) or isinstance(dropped, bool):
+        dropped = 0
+
     return ScriptResult(STATE_SCRIPT, actions=actions, detail=f"{len(actions)} action(s)",
-                        memory=payload.get("memory_out"))
+                        memory=payload.get("memory_out"), logs=logs,
+                        logs_dropped=dropped)

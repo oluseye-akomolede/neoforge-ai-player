@@ -267,6 +267,14 @@ class ScriptTick:
         self._cache = cache
         self._post = post
         self.renderer = None
+        # The script's own log lines from the last tick, and how many the
+        # runner's cap dropped. Attributes rather than extra tuple elements:
+        # `tick()` returns `(handled, actions, refusals, detail)` and widening
+        # that would change every caller for data only the logging path wants.
+        # Read after `tick()`; reset at the start of each tick so a caller
+        # cannot re-print a previous tick's lines as if they were new.
+        self.last_logs = []
+        self.last_logs_dropped = 0
 
     @property
     def enabled(self):
@@ -278,6 +286,13 @@ class ScriptTick:
         `handled=False` means "the planner should run this tick" -- the caller
         must never treat it as "do nothing".
         """
+        # Cleared first: every early return below leaves the caller reading
+        # these, and a previous tick's lines must never be reported as this
+        # tick's. A stale log line is worse than a missing one -- it says
+        # something happened that did not.
+        self.last_logs = []
+        self.last_logs_dropped = 0
+
         if not self._source:
             return False, [], [], "no script"
 
@@ -335,6 +350,12 @@ class ScriptTick:
         # Only on a SCRIPT state: a fallback carries memory=None, and taking it
         # would wipe a good blob with an empty one on a single runner timeout.
         self._memory = result.memory
+
+        # The script's log lines, held for the caller to print. Set on the
+        # SCRIPT path only: a fallback has no script logs, and carrying the
+        # previous tick's lines forward would attribute them to this one.
+        self.last_logs = result.logs
+        self.last_logs_dropped = result.logs_dropped
 
         # Two shapes meet here: the runner's and the binder's. Translate first,
         # then bind, keeping the runner's seq beside each bound action so the

@@ -405,5 +405,147 @@ class BindingsTest(unittest.TestCase):
         self.assertEqual(tick._source, "// scout\n")
 
 
+class ScriptObservabilityTest(unittest.TestCase):
+    """M3-1c: the script's own logs and its idle outcome must reach the log.
+
+    These go through the REAL ScriptTick with a fake transport that returns the
+    runner's actual wire shape (`src/main.js:145-156`), not a hand-built tuple.
+    The M3-1b lesson was that a fixture which feeds the consumer directly proves
+    nothing about the producer; a stub tick returning a bare tuple would have
+    passed over the missing `logs` relay because the stub never had logs.
+    """
+
+    def setUp(self):
+        agent_mod = _agent_module()
+        self.agent_mod = agent_mod
+        self.a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
+        self.a.name = "Scout"
+        self.a.profile = {}
+        self.a._l3_orchestrator_dispatch = mock.Mock(
+            return_value="COMPLETED STORE_ALL {'stored': 1}")
+
+    def _real_tick(self, payload):
+        """One real ScriptTick whose runner answers `payload`."""
+        import script_tick
+
+        def _post(path, data=None, **kw):
+            return payload
+
+        st = script_tick.ScriptTick(_Any(), "Scout", "api.log('hi')", post=_post)
+        self.a._script_tick = st
+        self.a._script_loaded = True
+        return st
+
+    def _wire(self, **over):
+        """The runner's documented tick response shape, from src/main.js."""
+        base = {"contract_version": 1, "status": "ok", "script_revision": "r",
+                "actions": [], "cpu_ms": 1, "wall_ms": 2, "host_calls": 0,
+                "heap_peak_bytes": 0, "memory_out": None, "logs": [],
+                "logs_dropped": 0, "cold": False}
+        base.update(over)
+        return base
+
+    def test_a_script_log_line_reaches_the_agent_log(self):
+        self._real_tick(self._wire(logs=["hi from scout"]))
+        with mock.patch("builtins.print") as p:
+            self.a._run_script_tick()
+        out = " ".join(str(c) for c in p.call_args_list)
+        self.assertIn("[Scout/script] log: hi from scout", out,
+                      "the runner returned a log line and the agent dropped it")
+
+    def test_no_logs_prints_no_log_lines(self):
+        # The control: a quiet script must not look like a script whose lines
+        # were swallowed. Without this, the test above could pass on any
+        # unconditional print.
+        self._real_tick(self._wire(logs=[]))
+        with mock.patch("builtins.print") as p:
+            self.a._run_script_tick()
+        out = " ".join(str(c) for c in p.call_args_list)
+        self.assertNotIn("log: ", out.replace("idle:", ""))
+
+    def test_runner_drops_are_stated(self):
+        self._real_tick(self._wire(logs=["a"], logs_dropped=7))
+        with mock.patch("builtins.print") as p:
+            self.a._run_script_tick()
+        out = " ".join(str(c) for c in p.call_args_list)
+        self.assertIn("runner dropped 7 line(s)", out)
+
+    def test_the_display_cap_reports_what_it_hid(self):
+        self._real_tick(self._wire(logs=["l%d" % i for i in range(9)]))
+        with mock.patch("builtins.print") as p:
+            self.a._run_script_tick()
+        out = " ".join(str(c) for c in p.call_args_list)
+        self.assertIn("(+4 more lines this tick", out,
+                      "9 lines returned, cap 5, so 4 must be reported hidden")
+
+    def test_a_long_line_is_truncated_and_marked(self):
+        self._real_tick(self._wire(logs=["x" * 500]))
+        with mock.patch("builtins.print") as p:
+            self.a._run_script_tick()
+        out = " ".join(str(c) for c in p.call_args_list)
+        self.assertIn("…", out)
+        self.assertNotIn("x" * 500, out)
+
+    def test_an_idle_tick_says_so_instead_of_returning_silently(self):
+        # The core M3-1c symptom: script handled the tick, proposed nothing,
+        # returned False, printed NOTHING. Eight minutes of that on test
+        # produced zero [Scout/script] lines.
+        self._real_tick(self._wire(actions=[]))
+        with mock.patch("builtins.print") as p:
+            handled = self.a._run_script_tick()
+        self.assertFalse(handled)
+        out = " ".join(str(c) for c in p.call_args_list)
+        self.assertIn("[Scout/script] idle: no actions", out)
+
+    def test_the_idle_line_is_rate_limited(self):
+        self._real_tick(self._wire(actions=[]))
+        import time as _t
+        with mock.patch("builtins.print") as p:
+            self.a._run_script_tick()
+            self.a._run_script_tick()   # same monotonic instant: suppressed
+        idle = [c for c in p.call_args_list if "idle: no actions" in str(c)]
+        self.assertEqual(1, len(idle),
+                         "two idle ticks inside one interval must print once")
+
+    def test_a_stale_log_line_is_not_reprinted_as_this_ticks(self):
+        # A tick that falls back must CLEAR last_logs, or the next tick that
+        # reports would attribute the previous tick's lines to itself.
+        st = self._real_tick(self._wire(logs=["first tick line"]))
+        with mock.patch("builtins.print") as p:
+            self.a._run_script_tick()
+        self.assertIn("first tick line", " ".join(str(c) for c in p.call_args_list))
+        # Now make the transport fail: a fallback carries no script logs.
+        st._post = lambda *a, **k: {"contract_version": 1, "status": "error"}
+        with mock.patch("builtins.print") as p:
+            self.a._run_script_tick()
+        self.assertNotIn("first tick line",
+                         " ".join(str(c) for c in p.call_args_list),
+                         "a fallback tick reprinted the previous tick's log line")
+
+    def test_a_successful_bind_is_announced_once_with_the_source_digest(self):
+        import hashlib
+        source = "// scout body\n"
+        d = tempfile.mkdtemp()
+        try:
+            path = os.path.join(d, "scout.js")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(source)
+            self.a._bound_script_path = lambda: path
+            self.a._script_loaded = False
+            self.a._script_tick = None
+            with mock.patch("builtins.print") as p:
+                first = self.a._get_script_tick()
+                self.a._get_script_tick()   # cache hit: must NOT print again
+            expect = hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
+            bound = [str(c) for c in p.call_args_list if "bound " in str(c)]
+            self.assertEqual(1, len(bound),
+                             "the bind line must print once, not on every tick")
+            self.assertIn(expect, bound[0],
+                          "the announced digest must be the source's own sha16")
+            self.assertIsNotNone(first)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

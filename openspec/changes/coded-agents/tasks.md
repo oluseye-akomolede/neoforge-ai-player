@@ -432,6 +432,35 @@ Scripted Bot Acts Only When There Is Something To Do*.
       since the old gate already held those — the decision was never the fault
       line for ACTIVE. See spec delta *A script's action gate MUST key on the
       directive status*.
+- [x] 9.5 The script's own logs and its idle outcome reach the agent log.
+      Test result of 9.4 was FAIL: image `m31b-a26b1c2`, pod
+      `aibot-agent-test-7fc9969694-gxrrg`, goal injected 13:36:31Z, and eight
+      minutes produced ZERO `[Scout/script]` lines of any kind. The runner was
+      returning them — `agent-script-runner src/main.js:153` puts the script's
+      `api.log` output in `logs`, `:154` counts the runner's own drops in
+      `logs_dropped` — and the agent read neither: `script_client.py` and
+      `script_tick.py` had no reference to `logs` at all. So 9.2's gate line and
+      every `api.log` before it was produced in the sandbox and discarded at the
+      wire. Same shape as cause A of M3-1b: a value produced on one side and
+      never read on the other.
+      `ScriptResult` now carries `logs`/`logs_dropped`; `ScriptTick` exposes
+      them as `last_logs`/`last_logs_dropped`, cleared at the top of every
+      `tick()` so a fallback cannot reprint the previous tick's lines. `agent.py`
+      prints three things: `[<bot>/script] bound <path> (<sha16>)` once on the
+      bind that succeeds (never on the cache hit), each returned line as
+      `[<bot>/script] log: <line>`, and — when a handled tick proposes nothing —
+      `[<bot>/script] idle: no actions`, rate-limited to one per 60 s.
+      Display caps are 5 lines / 200 chars per tick and are FLOOD GUARDS, not
+      correctness bounds; the runner's own cap (`binding.js:38,41`: 100 lines/min,
+      1024 bytes/line) remains the bound that matters. Both caps report when
+      they bite, and `logs_dropped` is surfaced separately, because a silent
+      truncation reads exactly like a script that logged less than it did.
+      Tests go through the real `ScriptTick` with a fake transport returning the
+      producer's wire shape (`main.js:145-156`), not a stub tuple — a stub tick
+      would have passed over the missing relay, which is the M3-1b fixture
+      lesson. 88/88 green. Mutants: removing the relay print -> 5 red (control
+      `test_no_logs_prints_no_log_lines` stays green); removing the idle line ->
+      2 red. See spec delta *A script's own log lines MUST reach the agent log*.
 
 ## Milestone reporting
 
