@@ -756,6 +756,28 @@ script's own dispatch loop, a reason to report the tick handled
 (`agent.py:2804`); a cancel that leaves the script held MUST be distinguishable
 from that.
 
+**A held goal MUST stop a planner run that already started.** The hold cannot
+be enforced by declining to tick the script, because the planner does not start
+after the script tick — it starts before it. `_maybe_plan` runs first in the
+iteration (`agent.py:2931`) and spawns the orchestrator daemon thread as it
+accepts an instruction (`agent.py:625-631`); `_run_script_tick` runs second
+(`agent.py:2939`). By the time a script tick could report that it is held, the
+planner thread for that very instruction is already dispatching, so a hold that
+only suppresses the script suppresses nothing that mattered. While a script is
+held, a planner run the hold supersedes MUST NOT dispatch a directive. Where
+that run was started earlier in the same iteration, holding MUST signal it to
+abort rather than rely on it not having started; the signal MUST work in the
+window between the spawn and the run publishing its cancel event
+(`_cancel_orchestrator`, `agent.py:1213-1228`, which sets `_orch_stop_pending`
+for exactly that window, honoured at `agent.py:1412-1415`). A hold that leaves
+an already-started planner dispatching does not satisfy this requirement.
+
+**One goal owns the hold.** `_maybe_plan` is called for every message in the
+batch, and a second accepted goal cancels the first run (`agent.py:471` does
+this for nav shortcuts). When a batch carries two goals, the hold is owned by
+the last one accepted, and the earlier run's abort is not a resume trigger: a
+hold MUST resume only on the terminal state of the directive it is holding.
+
 **Memory MUST survive the hold.** While held, the game MUST NOT advance, clear
 or re-encode the remembered value, and MUST NOT construct a new `ScriptTick`:
 the object that resumes MUST be the object that was held. A hold is not a tick
@@ -773,7 +795,16 @@ as paused, disabled, deleted or fallen back to the planner.
   runner, a script action IS dispatched — so "no action" is attributable to the
   hold and not to the script being inert
 
-#### Scenario: A script that is held is not ticked
+#### Scenario: A goal arriving in the same iteration does not double-issue
+- **GIVEN** a bot with an active script and a reachable runner
+- **WHEN** a player goal arrives in the same loop iteration as a script tick
+- **THEN** the planner run started for that goal is aborted, or dispatches no directive
+- **AND** no script action is dispatched for that tick
+- **AND** in a control run with the same script, runner and a goal that arrives
+  when the script is not active, the planner does dispatch — so "did not
+  dispatch" is attributable to the hold and not to a planner that never runs
+
+#### Scenario: A held script is not ticked
 - **WHEN** a bot with an active script and a reachable runner is held for a player goal
 - **THEN** the runner receives no tick for that bot during the hold
 - **AND** in a control run with the same script and runner but no goal, the runner DOES receive a tick
