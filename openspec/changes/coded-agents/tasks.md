@@ -508,7 +508,7 @@ Scripted Bot Acts Only When There Is Something To Do*.
       every two ticks, which is the STORE_ALL-every-4 s the lead observed.
       Fixed: on a SCRIPT state, `None` means "the script did not write this
       tick" and the previous blob is KEPT; a fallback still leaves memory
-      untouched. Test: `test_a_quiet_tick_does_not_erase_remembered_memory`,
+      untouched. Test: `test_a_successful_tick_that_does_not_remember_keeps_the_blob`,
       red on the pre-fix tree. 37/37 in `test_script_tick`, 27/27 in
       `test_scout_script`.
 

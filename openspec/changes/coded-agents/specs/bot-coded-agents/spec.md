@@ -1087,3 +1087,16 @@ and MUST build the tick object the way production builds it.
 > held, and STORE_ALL fired every ~4 s. The two cases are now distinguished by
 > the STATE, not by the null: a fallback leaves memory untouched, and a SCRIPT
 > state with a null keeps the previous blob.
+>
+> **This prevents the AGENT erasing the blob; it does not prevent a SCRIPT from
+> clearing its own memory, and the two must not be conflated.** A script cannot
+> write `null`: `api.remember` rejects a non-string at `binding.js:299` before
+> the assignment at `:314` (`null` and `undefined` both return
+> `{ok: false, reason: bad_shape}`). But `api.remember("")` IS accepted -- an
+> empty string passes the type check and the byte limit -- so a script CAN
+> overwrite its blob with an empty remember, and the carry assigns it. That is
+> not a regression and `scout.js:125` is unaffected, because
+> `JSON.parse(api.recall() || "{}")` treats `""` as falsy exactly as it treats a
+> null. A future reader should read the carry as protecting the agent's copy of
+> the blob across a tick that returned nothing, not as making script memory
+> read-only.
