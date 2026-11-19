@@ -33,9 +33,27 @@ Spec only. No code, no build, no deploy until the lead approves this spec.
       **suppressed** (queued, discarded, not dispatched). It binds only on
       `ok`. A failed dry tick falls back to the plain planner and keeps any
       previously bound script in force.
-- [ ] 2.4 The decision "script vs plain planner" is conditions, not model
-      preference: (1) planning kind allows scripting; (2) dry tick passed;
-      (3) no script already driving this goal. Any failure → plain planner.
+- [ ] 2.4 **Binding is a rebind.** `_script_loaded` is a one-shot latch
+      (`agent/agent.py:235,3052,3054`; one production caller at `:2890`), so a
+      bot resolves its script once for the process lifetime. The latch gains a
+      defined reset for a planner-authored script, and that reset is its ONLY
+      writer. Without it, calling the existing path returns the previous
+      script forever.
+- [ ] 2.5 **A dry tick spends no rate budget and carries no memory.**
+      `acceptAction` records calls in `botState.actionTimes`
+      (`binding.js:154-174`), per-BOT state that survives a tick
+      (`binding.js:45-52`) against `do:30/min`, `say:30/min`, `send:20/min`
+      (`:44`); the dry tick must leave `actionTimes` unchanged.
+      `api.remember` writes per-tick `state.memoryOut` (`binding.js:314`) so
+      the sandbox discards it, but `script_tick.py:364` adopts the returned
+      memory — the dry tick's memory must be discarded too.
+- [ ] 2.6 The decision "script vs plain planner" is conditions, not model
+      preference: (1) planning kind allows scripting; (2) NO script is
+      currently bound to this bot; (3) dry tick passed. Any failure → plain
+      planner. Condition 2 is per BOT because `bindings.get(self.name)`
+      (`agent.py:3027`) is per bot and no goal-to-script association exists;
+      it does not contradict the M3-1g hold, which names the goal that owns a
+      pause, not the script a goal owns.
 
 ## 3. What is deliberately out of scope
 

@@ -47,10 +47,38 @@ as a **dry tick** against the bot's current snapshot, with its actions
 suppressed (queued actions are discarded, not dispatched), and bind it only if
 that tick returns `ok`.
 
+**Binding here is a REBIND, and the requirement names the mechanism.** Today a
+bot's script is resolved once for the process lifetime: `_get_script_tick`
+reads `bindings.json` on first call and a `_script_loaded` latch
+(`agent/agent.py:3052-3054`, set `False` at `:235`) returns the cached tick on
+every later call. There is one production caller (`:2890`). An implementer who
+calls the existing path to "bind" a written script reaches the latch and gets
+the PREVIOUS script for the life of the process. The latch MUST therefore gain
+a defined reset for a planner-authored script, and that reset MUST be the only
+writer that clears it. Without that reset this requirement is unimplementable;
+with it, every other requirement here is ordinary work.
+
+**A dry tick MUST NOT consume the bot's rate budget.** Actions cost nothing to
+*discard* — `api.do` pushes onto a sandbox-local array (`binding.js:244-251`)
+that the agent throws away — but `acceptAction` records the call in
+`botState.actionTimes` (`binding.js:154-174`), which is per-BOT state that
+deliberately survives a tick (`binding.js:45-52`, `resetTickState` does not
+touch it). The budgets are `do:30/min`, `say:30/min`, `send:20/min`
+(`binding.js:44`). A dry tick that spends up to 8 `do` slots for a script that
+is then rejected takes those slots from the bot's real work. The dry tick MUST
+spend no rate budget: `actionTimes` MUST be unchanged by it.
+
+**A dry tick MUST NOT carry its memory forward.** `api.remember` writes
+per-tick `state.memoryOut` (`binding.js:314`), so the sandbox write is
+naturally discarded — but `script_tick.py:364` adopts the returned memory
+(`self._memory = result.memory`), so the hazard is downstream of the sandbox,
+not inside it. The dry tick's returned memory MUST be discarded rather than
+adopted.
+
 A script that fails its dry tick MUST NOT be bound. The goal MUST fall back to
 the plain planner, and the bot MUST keep any previously bound script in force
 per "Authoring Rejects Code That Cannot Run" — a failed dry tick disarms
-nothing and interrupts no task.
+nothing, interrupts no task, spends no rate budget and carries no memory.
 
 #### Scenario: A script that fails its first tick is not bound
 - **GIVEN** a planner-authored script that parses but throws on its first tick
@@ -65,15 +93,30 @@ nothing and interrupts no task.
 - **THEN** the queued action is discarded, not dispatched
 - **AND** the world is unchanged by the dry tick
 
-#### Scenario: A passing dry tick binds the script
-- **GIVEN** a script that returns `ok` and queues at least one action
-- **WHEN** it is dry-ticked
-- **THEN** it is bound, and the same source runs on subsequent real ticks
+#### Scenario: A dry tick spends no rate budget
+- **GIVEN** a bot whose `do` rate window is already at its 30/min limit
+- **WHEN** a planner-authored script that calls `api.do` is dry-ticked
+- **THEN** the dry tick is rejected as `rate_limited`, not silently admitted
+- **AND** the bot's real script keeps its full budget
+- **AND** `botState.actionTimes` is unchanged by the dry tick
+
+#### Scenario: A dry tick carries no memory
+- **GIVEN** a planner-authored script that calls `api.remember`
+- **WHEN** it is dry-ticked and then rejected
+- **THEN** the bot's memory is what it was before the dry tick
+
+#### Scenario: A passing dry tick rebinds the script
+- **GIVEN** a bot already bound to a working script
+- **AND** a planner-authored script that returns `ok` and queues at least one action
+- **WHEN** the written script is dry-ticked and passes
+- **THEN** the `_script_loaded` latch is reset by the one writer that clears it
+- **AND** the next real tick runs the written source, not the previous script
 
 #### Scenario: A failed dry tick does not disarm a working bot
 - **GIVEN** a bot already running a valid script
 - **WHEN** a new planner-authored script fails its dry tick
 - **THEN** the bot continues running its previous script
+- **AND** the `_script_loaded` latch is NOT reset
 - **AND** no tick is missed
 
 ### Requirement: The Agent Decides Script Vs Plain Planner By Stated Conditions
@@ -84,9 +127,21 @@ be left to the model's preference:
 
 1. The goal is a planning kind the planner may script — a world goal, not a
    single directive, and not a chat/query the planner answers directly.
-2. The script passed its dry tick (the preceding requirement).
-3. No hand-written or previously bound script is already driving this bot for
-   this goal.
+2. No script — hand-written or previously written — is currently bound to this
+   bot.
+3. The script passed its dry tick (the preceding requirement).
+
+**Condition 2 is per BOT, not per goal, because that is the binding model.**
+`bindings.json` maps bot name to script and the agent reads
+`bindings.get(self.name)` (`agent/agent.py:3027`); there is no goal-to-script
+association anywhere, so a condition phrased "no script is driving this bot FOR
+THIS GOAL" names a relationship the code cannot test and would be vacuously
+satisfiable. This does not conflict with the M3-1g hold: the hold records a
+`goal_id` (`agent.py:1330-1333`) but suppresses the BOT's dispatch
+(`:2901-2904`) — it names the goal that OWNS the pause, not the script the goal
+owns. Script identity stays per-goal inside the hold; script ownership stays
+per-bot at binding. Those are two different questions and the spec keeps them
+apart deliberately.
 
 If any condition fails, the goal MUST proceed through the plain planner. A
 failed or absent script proposal is always a fallback, never a hard error and
@@ -100,13 +155,13 @@ never a reason for the bot to idle.
 #### Scenario: A goal falls back when the script is not usable
 - **GIVEN** a world goal and a planner-authored script that fails its dry tick
 - **WHEN** the agent decides script vs plain planner
-- **THEN** condition 2 fails and the goal is driven by the plain planner
+- **THEN** condition 3 fails and the goal is driven by the plain planner
 
 #### Scenario: An existing script is not displaced by a new one
-- **GIVEN** a bot already bound to a working script for its goal
+- **GIVEN** a bot with a script currently bound
 - **WHEN** the planner proposes a new script
-- **THEN** condition 3 fails and the existing script keeps driving the bot until
-  its goal ends or the existing script fails by its own outcome classes
+- **THEN** condition 2 fails and the bound script keeps driving the bot until
+  it fails by its own outcome classes or is unbound
 
 #### Scenario: A held script is not resumed by a written-script decision
 - **GIVEN** a bot whose script is held by an active chat goal (M3-1g)

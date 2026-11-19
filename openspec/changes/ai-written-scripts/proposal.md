@@ -53,7 +53,7 @@ existing change does not say. Each is the subject of one ADDED requirement.
    emit a script *as the plan* instead of a list of directives. Step (a) is
    exactly that: a planning outcome of kind "here is a script for this goal".
 
-2. **A dry tick before binding — not just a syntax check.**
+2. **A dry tick before binding — and binding is a REBIND.**
    "Authoring Rejects Code That Cannot Run" requires the proposal to *parse* and
    pass name/fs/network checks before it is **stored**. That is necessary and
    not sufficient for *binding to a live bot*: a script can be syntactically
@@ -63,10 +63,37 @@ existing change does not say. Each is the subject of one ADDED requirement.
    actions suppressed, and bind it only if that tick returns `ok`. A failed dry
    tick is a fallback to the plain planner, never a stored-and-broken script.
 
+   **The word "bind" hides a mechanism that does not exist yet.** A bot resolves
+   its script once for the process lifetime: `_script_loaded` is `False` at
+   `agent/agent.py:235`, returns the cached tick at `:3052` and is set `True`
+   at `:3054`, with one production caller at `:2890`. Binding is therefore a
+   **rebind**, and the spec says so explicitly: the latch gains a defined reset
+   for a planner-authored script, and that reset is its only writer. An
+   implementer who calls the existing path without it gets the previous script
+   forever.
+
+   **The dry tick is not free, and "actions suppressed" understates it.**
+   Discarding actions costs nothing — `api.do` pushes onto a sandbox-local array
+   (`binding.js:244-251`). But `acceptAction` records every accepted call in
+   `botState.actionTimes` (`binding.js:154-174`), per-BOT state that
+   deliberately survives a tick (`binding.js:45-52`), against budgets of
+   `do:30/min`, `say:30/min`, `send:20/min` (`:44`). A dry tick that spends up
+   to 8 `do` slots for a script it then rejects takes those slots from the
+   bot's real work. Memory is the mirror case: `api.remember` writes per-tick
+   state (`binding.js:314`), so the sandbox discards it — but
+   `script_tick.py:364` adopts the returned memory, so the dry tick must not.
+   Both are named in the requirement so they are testable; neither needs an
+   engine change.
+
 3. **When the agent uses a written script vs the plain planner.**
    No requirement decides this. "A Player Goal Yields A Running Script" is about
    chat *pausing a running* script; it does not say when the planner *chooses*
    to script at all. Without a rule, the choice is the model's whim.
+
+   The rule is stated as conditions, and the condition is **per BOT**: binding
+   is `bindings.get(self.name)` (`agent.py:3027`), with no goal-to-script
+   association anywhere, so a per-goal condition would be vacuously satisfiable
+   and would pretend to an association the code does not have.
 
 ## The design tension this change names, and does not hide
 
