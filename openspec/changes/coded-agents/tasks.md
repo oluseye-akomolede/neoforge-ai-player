@@ -386,6 +386,24 @@ Scripted Bot Acts Only When There Is Something To Do*.
       `inventory empty, not storing` rather than returning at the busy-task
       check — same behaviour, different log line; do not read it as misfiring.
 
+- [x] 9.2 A held tick is visible in the log, naming the phase it saw.
+      Cause B of M3-1b: `scout.js` returned silently when the task was not idle,
+      so a busy bot and a bot that was never called printed identically — the
+      2026-11-19 test report was zero `[Scout/script]` lines with a bot holding
+      16 cobblestone for ~7 min. `2b52ef1`. The gate's DECISION is unchanged and
+      must stay so: holding on an unreadable directive is the safe direction; it
+      is the silence that was the bug. **A completed plan never reports `idle`**
+      — `BotBrain.java:189-192` returns `lastProgress` after a directive
+      finishes, `complete()` sets only `status` (`:82`), and the phase stays at
+      what the behavior last set (`SkillBehavior.java:365` -> `skill:done`,
+      `LocateBehavior.java:317` -> `done`). So the gate blocks forever after a
+      plan completes, and 9.4 must decide whether that is intended.
+- [x] 9.3 Script memory survives between ticks (cause A). `92de520`. See spec
+      delta *Script memory survives between ticks*. The cooldown added in 9.1
+      could never engage in production because nothing read `memory_out`;
+      `MemoryRoundTripTest` fails on the pre-fix code (2 red) and drives two
+      ticks through one `ScriptTick` rather than hand-feeding the value.
+
 ## Milestone reporting
 
 Result rows to `control-operator` at each of: (1) sandbox + tests on test,
