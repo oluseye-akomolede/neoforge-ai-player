@@ -67,6 +67,19 @@ Spec only. No code, no build, no deploy until the lead approves this spec.
       prior output and MAY be displaced. This is what keeps the 2.4 latch reset
       reachable — gating condition 2 on ANY bound script would disable it in
       the only case it exists for.
+- [ ] 2.8 **Provenance is process-scoped, deliberately, and the consequence is
+      stated.** The agent has NO write path for script source: `scripts_dir`
+      comes from `SCRIPTS_DIR` (`agent.py:3006`) and the only accesses are
+      reading `bindings.json` (`:3011`) and joining the filename (`:3035`).
+      That directory is a ConfigMap mount — shared, restart-surviving. So after
+      a restart an agent-written script MUST be treated as hand-written and not
+      displaced: the fresh process can read the bytes but cannot prove it wrote
+      them. A restart is a deployment boundary; whatever is bound after one was
+      placed by a ConfigMap change, a human action. Accepted cost: a bot cannot
+      replace its own pre-restart script until a human unbinds it.
+      Do NOT "fix" this into a `bindings.json` provenance field or an in-file
+      marker — the agent cannot write the artefact, and adding a write path is a
+      later step's storage design.
 
 ## 3. What is deliberately out of scope
 

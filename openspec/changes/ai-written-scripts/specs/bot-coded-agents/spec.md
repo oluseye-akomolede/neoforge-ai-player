@@ -163,6 +163,30 @@ script would disable the `_script_loaded` reset in the only case it exists for
 — a bot already running a working script. The reset exists precisely so a
 written script can replace the agent's earlier one.
 
+**Provenance is deliberately PROCESS-SCOPED, and this is not an oversight.** The
+agent does not write scripts anywhere: `scripts_dir` comes from `SCRIPTS_DIR`
+(`agent.py:3006`) and the only accesses are reading `bindings.json` (`:3011`)
+and joining the resolved filename (`:3035`) — there is no write path for script
+source in the agent at all. That directory is a ConfigMap mount, so it survives
+a restart and is shared. The provenance record lives in the process and does
+not survive one.
+
+The consequence, stated so that no later implementer "fixes" it into a
+`bindings.json` field: **after a restart, an agent-written script is
+indistinguishable from a hand-written one and MUST be treated as hand-written,
+so it is not displaced.** A fresh process can read the script's bytes but cannot
+prove it authored them. A restart is therefore a deliberate deployment
+boundary: whatever script is bound after one was placed there by a ConfigMap
+change, which is a human action, even when the agent originally generated its
+contents.
+
+The cost is accepted and real: a bot that wrote its own script before a restart
+cannot replace it after one until a human unbinds it. The alternative — trusting
+an authorship claim the process cannot verify — would let a stale script silently
+outlive the intent that produced it. A marker written into the stored artefact
+is not available to this change, because the agent has no write path to that
+artefact; establishing one is the storage design of a later step.
+
 If any condition fails, the goal MUST proceed through the plain planner. A
 failed or absent script proposal is always a fallback, never a hard error and
 never a reason for the bot to idle.
@@ -176,6 +200,13 @@ never a reason for the bot to idle.
 - **GIVEN** a world goal and a planner-authored script that fails its dry tick
 - **WHEN** the agent decides script vs plain planner
 - **THEN** condition 3 fails and the goal is driven by the plain planner
+
+#### Scenario: A restart freezes the script an agent wrote
+- **GIVEN** an agent that wrote and bound a script in an earlier process
+- **WHEN** the process restarts and reloads that same script from `bindings.json`
+- **THEN** the fresh process has no record that it authored the script
+- **AND** condition 2 treats the script as hand-written
+- **AND** the script is not displaced by a new written one until a human unbinds it
 
 #### Scenario: A hand-written script is not displaced by a new one
 - **GIVEN** a bot with a hand-written script currently bound

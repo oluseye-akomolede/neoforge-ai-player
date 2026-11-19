@@ -107,6 +107,20 @@ existing change does not say. Each is the subject of one ADDED requirement.
    previously written script is the agent's own prior output and displacing it
    is the point of step (a).
 
+   **Provenance is process-scoped, and that is a stated decision, not a gap.**
+   The agent has no write path for script source at all — `scripts_dir` comes
+   from `SCRIPTS_DIR` (`agent.py:3006`), and the only accesses are reading
+   `bindings.json` (`:3011`) and joining the filename (`:3035`). That directory
+   is a ConfigMap mount: shared, and surviving restart. The record of what the
+   agent wrote does not survive. So after a restart an agent-written script must
+   be treated as hand-written and is not displaced. A restart is a deployment
+   boundary; the script bound after one arrived by ConfigMap change, a human
+   action. The cost is accepted explicitly: a bot cannot replace its own
+   pre-restart script until a human unbinds it. Unverifiable authorship would be
+   worse — it would let a stale script outlive the intent that produced it. An
+   in-artefact marker is not open to this change because there is no write path
+   to the artefact; that belongs to a later step's storage design.
+
 ## The design tension this change names, and does not hide
 
 The skill layer draws a deliberate boundary
