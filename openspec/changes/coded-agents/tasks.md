@@ -393,11 +393,14 @@ Scripted Bot Acts Only When There Is Something To Do*.
       16 cobblestone for ~7 min. `2b52ef1`. The gate's DECISION is unchanged and
       must stay so: holding on an unreadable directive is the safe direction; it
       is the silence that was the bug. **A completed plan never reports `idle`**
-      — `BotBrain.java:189-192` returns `lastProgress` after a directive
-      finishes, `complete()` sets only `status` (`:82`), and the phase stays at
-      what the behavior last set (`SkillBehavior.java:365` -> `skill:done`,
-      `LocateBehavior.java:317` -> `done`). So the gate blocks forever after a
-      plan completes, and 9.4 must decide whether that is intended.
+      — on SUCCESS `BotBrain.java:94` captures `lastProgress` *before* `:96`
+      swaps `activeBehavior` to idle, and `:190` reports that captured progress
+      whenever `activeDirective` is null and `lastDirective` is set;
+      `Directive.complete()` (`Directive.java:50`) sets only `status`, never a
+      phase. So the phase stays at what the behavior last set
+      (`SkillBehavior.java:365` -> `skill:done`, `LocateBehavior.java:317` ->
+      `done`). The gate blocks forever after a plan completes, and 9.4 must
+      decide whether that is intended.
 - [x] 9.3 Script memory survives between ticks (cause A). `92de520`. See spec
       delta *Script memory survives between ticks*. The cooldown added in 9.1
       could never engage in production because nothing read `memory_out`;
