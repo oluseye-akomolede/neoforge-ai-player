@@ -419,7 +419,8 @@ Scripted Bot Acts Only When There Is Something To Do*.
       is never null and the literal `"idle"` never reaches the payload — an idle
       bot reports `"Standing by"` (`IdleBehavior.java:24`). A gate written as
       `state === "idle"` would never fire: the flat-shape-health-guard failure
-      again, in the silent direction.
+      again, in the silent direction. The gate therefore keys on
+      `directive.status`, and on `phase` idle only for the never-run case.
       No mod change, by ruling: `currentPhase()` (`BotBrain.java:213-219`) feeds
       the overlay (`OverlayNetwork.java:1207`), where the last result after a
       directive ends is shown information; clearing `lastProgress` would remove
@@ -742,6 +743,21 @@ Scripted Bot Acts Only When There Is Something To Do*.
       valid. Lead also observed, separately: one held tick with no dispatch,
       memory intact across the hold (STORE_ALL ~3.5 min, dirt stored, 8 items
       at 17:29:52), 0 script errors.
+
+      SPEC REVISION (reviewer ea264ce, 11-19 17:40Z; code PASS, spec NOT YET,
+      all mechanical). S1: the rewrite left both the old opener and the new
+      conclusion, so the requirement stated "A hold is its own state" twice in
+      consecutive sentences - old opener deleted, remainder joined. S2: seven
+      inherited citations were stale by differing amounts (:2197→:2258,
+      :2804→:2971, :3074→:3098, :684→:678, :3082→:3106, :471→:520, :298→:340,
+      plus :473→:520, :1222→:1281, :1413→:1559, :1438→:1584). The two citations
+      introduced fresh in that commit (:1281, :1558) were exact; every
+      carried-over one was stale - the fault was re-checking new claims against
+      the rev but never re-checking inherited ones, NOT a single offset. Fixed
+      by sweeping every `l.NNN` in the holding requirement against `sed -n` at
+      HEAD, and re-reading the order lines (:3098 precedes :3106) after editing
+      rather than trusting the delta. S3: the "before the developer-test fix"
+      post-mortem was moved out of the MUST paragraph into this record.
 
 ## Milestone reporting
 

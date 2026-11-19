@@ -751,16 +751,16 @@ handled this tick" (`True`) nor "the script did not run, so the planner may"
 will encode it as `False` and the fallback returns one layer down. While a tick
 is held the script MUST NOT resume and the planner MUST NOT dispatch on account
 of it. The same string must not mean opposite things: `interrupted_by_chat` is
-today both the reason a directive is cancelled (`agent.py:2197`) and, to the
+today both the reason a directive is cancelled (`agent.py:2258`) and, to the
 script's own dispatch loop, a reason to report the tick handled
-(`agent.py:2804`); a cancel that leaves the script held MUST be distinguishable
+(`agent.py:2971`); a cancel that leaves the script held MUST be distinguishable
 from that.
 
 **A held goal MUST NOT cancel the planner run it is holding for.** The planner
 starts before the script tick: `_maybe_plan` runs first in the iteration
-(`agent.py:3074`) and, on accepting a chat goal, spawns the orchestrator daemon
-thread for *that goal* (`agent.py:684`); `_run_script_tick` runs second
-(`agent.py:3082`). The hold's job is therefore to suppress the *script's*
+(`agent.py:3098`) and, on accepting a chat goal, spawns the orchestrator daemon
+thread for *that goal* (`agent.py:678`); `_run_script_tick` runs second
+(`agent.py:3106`). The hold's job is therefore to suppress the *script's*
 dispatch, not to stop the planner — the planner run that already started is the
 player's own goal, and it MUST be allowed to proceed. Calling
 `_cancel_orchestrator` from the hold is a DEFECT: at hold time no `_orch_cancel`
@@ -778,27 +778,25 @@ batch, and each accepted chat goal spawns its own orchestrator thread; a hold
 records the goal that most recently began one as its owner, replacing any
 earlier owner. A hold MUST resume only on the terminal state of the directive
 it is holding, and a stale terminal state from an earlier goal MUST NOT resume
-a script a newer goal now holds. (Note: the nav-shortcut path at `agent.py:471`
+a script a newer goal now holds. (Note: the nav-shortcut path at `agent.py:520`
 does cancel the live orchestrator, but that is the shortcut's own stop and is
 independent of a hold — a hold itself must not cancel, per the requirement
 above.)
 
 **The hold MUST carry cause and identity, not a bare flag.** `_orch_stop_pending`
-is a single latched boolean with real callers (`agent.py:298` reset, `:473` nav
-shortcut) and no record of who set it: it is set unguarded at `:1222` and cleared
+is a single latched boolean with real callers (`agent.py:340` reset, `:520` nav
+shortcut) and no record of who set it: it is set unguarded at `:1281` and cleared
 by whichever thread consumes it at `:1558-1561`. That is adequate for stop and
 reset, which are terminal. A hold is recoverable and fires far more often, so
-reusing this latch for a hold would (and, before the developer-test fix, did)
-cause the holding goal's own orchestrator to consume the latch and cancel
-itself. A hold is therefore its own state, not this latch — and must not set
-this latch at all.
-A hold therefore MUST be its own state, not this latch, and the resume MUST
-consult the holding goal's own outcome rather than a bare flag. The state MUST
+reusing this latch for a hold would cause the holding goal's own orchestrator to
+consume the latch and cancel itself. A hold MUST therefore be its own state, not
+this latch, and the resume MUST consult the holding goal's own outcome rather than
+a bare flag. The state MUST
 identify the goal that owns the hold, so that "held by goal A" and "held by goal
-B" are distinguishable; identity is already the idiom for this at `agent.py:1438`
+B" are distinguishable; identity is already the idiom for this at `agent.py:1584`
 (`if self._orch_cancel is cancel_event`), and a cancel that leaves the script
 held MUST be distinguishable both from a player "stop" and from a supersede by a
-later goal. The pre-existing unguarded set/clear at `:1222` and `:1413` is not
+later goal. The pre-existing unguarded set/clear at `:1281` and `:1559` is not
 this requirement's to fix, but the hold MUST NOT widen it: a hold that is made
 routine must not rely on an unlocked latch.
 
