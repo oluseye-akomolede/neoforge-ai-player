@@ -72,6 +72,58 @@ data:
         return;  // propose nothing: the runner reads api.do, not this value
       }
 
+      // STORE_ALL must not fire on every idle tick.
+      //
+      // WHAT: STORE_ALL is a bank-everything directive. Firing it unconditionally
+      // on every tick means a bot that is already unloaded pays for a full store
+      // pass every tick, forever, and the mod queues a directive per tick.
+      //
+      // WHY THE OBVIOUS GUARD IS WRONG: `state.inventory` is NOT a list. The
+      // endpoint returns `Map.of("inventory", bot.getCachedInventory())`
+      // (HttpApiServer.java:469) and the agent stores that body verbatim
+      // (api.py:101), so the shape is
+      //   state.inventory = { inventory: [ {slot, item, count, display_name} ] }
+      // Reading `state.inventory.length` on that object yields `undefined`, so a
+      // `length > 0` guard NEVER FIRES - the same silent-never-fire class as the
+      // health guard above (which read the flat shape and so never ran). The list
+      // is `state.inventory.inventory`.
+      //
+      // WHEN: only when there is something to store, and not again for the same
+      // inventory for a while. The cooldown is stored as the tick number it was
+      // last fired at, compared against the current tick, rather than a countdown:
+      // `api.recall()` returns the blob this tick STARTED with, so a value
+      // decremented and remembered in the same tick is not visible until the next
+      // one (agent-script-runner engine.js:398-406). A tick-number stamp needs no
+      // decrement and cannot drift if ticks are skipped.
+      var STORE_ALL_COOLDOWN_TICKS = 100;
+      var inv = (state.inventory && state.inventory.inventory) || [];
+      if (!Array.isArray(inv) || inv.length === 0) {
+        // This guard runs before the task check, so this line fires both for a bot
+        // carrying nothing and for one mid-store that already deposited everything.
+        // Say which, because these log lines are evidence in the C1/C4 arms and the
+        // second case must not read as the guard misfiring.
+        api.log("scout: inventory empty, not storing (" +
+                ((snapshot.task && snapshot.task.progress &&
+                  snapshot.task.progress.phase === "idle") ? "idle" : "already deposited") + ")");
+        return;  // propose nothing: the runner reads api.do, not this value
+      }
+      var now = (typeof snapshot.tick === "number") ? snapshot.tick : 0;
+      // `api.recall()` returns the decoded STRING the game sent, and `remember`
+      // takes a single string blob (contract §4.1). So the memory is JSON text on
+      // the wire and must be parsed here; reading a property off the raw string
+      // yields undefined and the cooldown never engages.
+      var mem = {};
+      try {
+        mem = JSON.parse(api.recall() || "{}") || {};
+      } catch (e) {
+        mem = {};  // a corrupt blob must not wedge the bot: store rather than stall
+      }
+      var lastStore = (typeof mem.lastStoreAllTick === "number") ? mem.lastStoreAllTick : null;
+      if (lastStore !== null && now - lastStore < STORE_ALL_COOLDOWN_TICKS) {
+        api.log("scout: stored at tick " + lastStore + ", cooling down");
+        return;  // propose nothing: the runner reads api.do, not this value
+      }
+
       // The task we are on. `snapshot.task` is the directive the agent is
       // currently running, so a script does not start a second job underneath one
       // already in flight.
@@ -129,6 +181,11 @@ data:
       // is therefore the plausible call, and a constructed fixture should
       // construct that one.
       api.do("STORE_ALL", {});
+      // Stamp the tick we fired at, so the next tick can cool down. One string
+      // blob per the contract: preserve keys we do not own, since the memory is
+      // shared with the planner's own usage.
+      mem.lastStoreAllTick = now;
+      api.remember(JSON.stringify(mem));
     }
 
     // Called explicitly so a syntax error surfaces as a script failure rather than
