@@ -778,6 +778,25 @@ this for nav shortcuts). When a batch carries two goals, the hold is owned by
 the last one accepted, and the earlier run's abort is not a resume trigger: a
 hold MUST resume only on the terminal state of the directive it is holding.
 
+**The hold MUST carry cause and identity, not a bare flag.** `_orch_stop_pending`
+is a single latched boolean with three callers (`agent.py:298` reset, `:473` nav
+shortcut, and a hold would be the third) and no record of who set it: it is set
+unguarded at `:1222` and cleared by whichever thread consumes it at `:1413`. That
+is adequate for stop and reset, which are terminal. A hold is recoverable and
+fires far more often, so a bare flag would let an unrelated orchestrator
+publishing first consume the latch and be cancelled in the holding goal's place,
+leaving the real goal unchecked; the mirror error occurs when a stop during a
+hold consumes the hold's latch.
+A hold therefore MUST be its own state, not this latch, and the resume MUST
+consult the holding goal's own outcome rather than a bare flag. The state MUST
+identify the goal that owns the hold, so that "held by goal A" and "held by goal
+B" are distinguishable; identity is already the idiom for this at `agent.py:1438`
+(`if self._orch_cancel is cancel_event`), and a cancel that leaves the script
+held MUST be distinguishable both from a player "stop" and from a supersede by a
+later goal. The pre-existing unguarded set/clear at `:1222` and `:1413` is not
+this requirement's to fix, but the hold MUST NOT widen it: a hold that is made
+routine must not rely on an unlocked latch.
+
 **Memory MUST survive the hold.** While held, the game MUST NOT advance, clear
 or re-encode the remembered value, and MUST NOT construct a new `ScriptTick`:
 the object that resumes MUST be the object that was held. A hold is not a tick
