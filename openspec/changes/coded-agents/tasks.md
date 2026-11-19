@@ -519,7 +519,7 @@ Scripted Bot Acts Only When There Is Something To Do*.
       while a script ticks. Measured 2026-11-19: a chat goal reached the planner
       while the script ticked and both issued store work for one intent
       (directive SKILL 26022 and STORE_ALL 26021/26025 against one goal).
-      Requirement + five scenarios added to the change spec ("A Player Goal
+      Requirement + seven scenarios added to the change spec ("A Player Goal
       Yields A Running Script"), and the metering requirement extended so a
       hold is a fifth not-active case and accrues nothing.
       Which chat counts is the EXISTING set, not a new authority rule, and the
@@ -576,6 +576,24 @@ Scripted Bot Acts Only When There Is Something To Do*.
       (`if self._orch_cancel is cancel_event`). Do not widen the pre-existing
       unlocked set/clear at `:1222`/`:1413`: keep the hold's state separate
       and guarded.
+      GOAL IDENTITY HAS THREE SPAWN SITES, NOT ONE (reviewer 17:01Z,
+      accepted): `_run_orchestrator` is started from `agent.py:626` (the
+      `USE_L3_PLAN_LAYER` branch), `:824` (the else/spec-driven branch, an
+      almost identical body behind the same `:596` gate), and `:4370` (the
+      overlay-order path). A goal that only bumps a generation at the first
+      site leaves a goal from `:824` or `:4370` carrying the previous
+      generation, so "generation equals holding generation" aliases and the
+      batch-ownership rule is satisfied in the letter but false in behaviour
+      - silently, because every path still works. Bump ONCE at ENTRY to
+      `_run_orchestrator` (`:1285`), the single choke point all three pass
+      through, before any early `return`; note that body itself reads and
+      writes `_plan_instruction` at `:1466`/`:1518`/`:1536`, so the bump must
+      be the first statement, not merely somewhere inside. Three edits
+      hundreds of lines apart is how one gets missed later.
+      `_plan_instruction` MUST NOT be the anchor: it is set in seven places
+      and cleared in nine (`:209`, `:304`, `:476`, `:542`, `:679`, `:912`,
+      `:2989`, `:3052`, `:3087`), so it identifies nothing by the time a
+      resume consults it.
 
 ## Milestone reporting
 
