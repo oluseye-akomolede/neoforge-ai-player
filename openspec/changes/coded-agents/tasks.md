@@ -594,6 +594,22 @@ Scripted Bot Acts Only When There Is Something To Do*.
       and cleared in nine (`:209`, `:304`, `:476`, `:542`, `:679`, `:912`,
       `:2989`, `:3052`, `:3087`), so it identifies nothing by the time a
       resume consults it.
+      THE THREE CALLERS ARE NOT ON ONE THREAD (reviewer 17:03Z, accepted):
+      `:626` and `:824` run on the bot's tick loop, but `:4370` runs on
+      `_order_worker` - its own `while True: time.sleep(2)` daemon
+      (`:4280`, started `:4719`) draining `/telemetry/orders`. So an overlay
+      order and a chat goal can call `_run_orchestrator` concurrently, not
+      merely in sequence. A bare `self._goal_generation += 1` is a
+      read-modify-write: two threads can read the same value and both write
+      the same increment, giving two orchestrators generation N - the exact
+      aliasing the counter exists to prevent, arriving through the one path
+      off the tick loop. The GIL lets this pass almost every run, which is
+      what makes it surface in production rather than in a test. Take
+      `_orchestration_lock` (`:133`) for the bump, the same module-level lock
+      the coordinator election already takes at `:652` and reset at `:311`,
+      so the generation and the election cannot disagree about who is
+      current. Do not add a second lock over the same state. Note `:4370`
+      takes no lock today.
 
 ## Milestone reporting
 
