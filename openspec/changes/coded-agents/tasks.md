@@ -366,9 +366,16 @@ test, 2026-11-18. The guards it already had were all passing; none of them asked
 whether there was anything to do. Requirement added to the spec delta: *A
 Scripted Bot Acts Only When There Is Something To Do*.
 
-- [ ] 9.1 `scout.js` proposes `STORE_ALL` only when inventory holds at least one
+- [x] 9.1 `scout.js` proposes `STORE_ALL` only when inventory holds at least one
       item, and holds for a named cooldown after proposing. Tests in
       `test_scout_script.py` with fixtures copied from the real snapshot shape.
+      `dc45196`. 18/18 green. The guard reads `state.inventory.inventory`
+      (`HttpApiServer.java:469` wraps the list; `api.py:101` stores the body),
+      because a `state.inventory.length` read is undefined on the wrapper and
+      would never fire. Cooldown is a tick stamp, since `recall()` returns the
+      blob the tick started with (`binding.js:293`) and `remember` takes one
+      string (`binding.js:312`). Three mutants verified caught: bare-array read
+      11 red, no inventory guard 2 red, no cooldown 1 red.
 
 ## Milestone reporting
 
