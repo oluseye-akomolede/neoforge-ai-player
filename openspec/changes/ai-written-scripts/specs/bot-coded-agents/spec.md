@@ -337,11 +337,32 @@ therefore be reachable from the path that runs a goal.
 not a new `kind` and not a new directive type. With no script present the
 planner's reply, the resulting `Plan`, and the plan record written by
 `trajectory_log.log_call` MUST be byte-identical to what they are today — same
-`parsed` object, same `plan_ref` side effects, same subtask list. The script
-field is additive on the reply and MUST NOT be copied into the parsed plan
-object the planner logs, so a trainer reading `prompt_system`, `prompt_user`,
-`response_raw`, `parsed`, or `world_state_summary` sees exactly what it sees
-now.
+`parsed` object, same `plan_ref` side effects, same subtask list.
+
+**The script MUST NOT appear in any field the DPO trainer reads, and that is
+strictly wider than "not in `parsed`".** `build_dpo_dataset.py:89-93` builds
+`chosen`/`rejected` from `response_raw` verbatim — the whole reply string, not
+the parsed object. `l3_planner.py` passes `response_raw=raw` and
+`parsed=data` (`:451`, `:470`), and `trajectory_log.py:90-91` writes both. A
+script embedded in the reply JSON would therefore reach the trainer twice:
+once through `parsed`, and once more through `response_raw`, which is the field
+DPO actually trains on. Guarding `parsed` alone leaves the leak in the field
+that matters.
+
+**So the script is not carried inside the reply's JSON at all.** The script
+travels in a channel separate from the JSON object the trainer consumes —
+either a distinct top-level key on the API response that `_parse_plan` strips
+before `json.loads`, or a second call. Whatever the mechanism, the recorded
+`response_raw` MUST parse to a JSON object containing no script source, so that
+`parsed` and `response_raw` agree and the whole record is clean at once. A
+trainer reading `prompt_system`, `prompt_user`, `response_raw`, `parsed`, or
+`world_state_summary` sees exactly what it sees now.
+
+This is the one place the DPO constraint bites hardest, because it rules out
+the obvious design: putting the script in the same JSON the plan comes in. The
+answer to "where may the script appear in the record" is **nowhere**, and the
+mechanism is chosen to make that true by construction rather than by a filter
+someone must remember to apply.
 
 A script the planner authors MUST be bound to the bot that runs the goal, by
 the rules of this capability ("A Written Script MUST Pass A Dry Tick Before It
@@ -383,7 +404,17 @@ its stored steps rather than being re-scripted.
 - **GIVEN** an L3 reply that carries both a valid plan and a script
 - **WHEN** the planner records the call
 - **THEN** the logged `parsed` object contains no script source
+- **AND** the logged `response_raw` parses to a JSON object containing no
+  script source
 - **AND** the script is carried in process memory only
+
+#### Scenario: No field the trainer reads contains script source
+- **GIVEN** a reply carrying both a plan and a script
+- **WHEN** the call is logged
+- **THEN** no field `build_dpo_dataset.py` reads — `prompt_user`,
+  `response_raw`, `parsed` — contains any of the script's source
+- **AND** the `chosen` string a trajectory pair would be built from is
+  byte-identical to what the same plan without a script would produce
 
 #### Scenario: A template hit writes no script
 - **GIVEN** a goal that matches a saved plan template
@@ -413,10 +444,19 @@ round trip.
 The rule MUST NOT override any other constraint in this capability: a goal that
 is clearly one-shot stays a step list even if it is phrased with a time
 clause, and a script is still subject to the hand-written check and its dry
-tick. When a goal could be read either way, the planner MAY choose, and the
-choice MUST be visible in the logged plan — a script answer and a step-list
-answer are distinguishable in the trajectory log today, because a script answer
-parses as a reply carrying a script.
+tick. When a goal could be read either way, the planner MAY choose.
+
+**The choice is visible in the agent's log lines, not in the trajectory
+record.** A script answer is distinguishable because the agent emits the
+dry-gate and bind lines ("Exactly One Driver Per Goal", which requires the
+bind and its handover on the status line), and a step-list answer is
+distinguishable because it produces `L3 EXEC` lines. That is where the choice
+can be observed. It MUST NOT be made observable by putting the script into the
+trajectory record: the previous paragraph forbids that, and the DPO constraint
+below is why. An earlier draft of this requirement said the choice was visible
+"in the trajectory log today", which was both false (no script field exists)
+and in direct conflict with the scenario asserting the script never enters the
+logged plan.
 
 #### Scenario: A repeating goal is answered with a script
 - **GIVEN** a goal with no fixed end, such as "keep the furnace fed"
@@ -535,3 +575,40 @@ that record them.
 - **THEN** nothing is bound and this path releases no hold
 - **AND** the orchestrator executes the reply's steps, so the goal is still
   driven by exactly one thing
+
+### Requirement: Binding A Script Is Atomic Against The Bot's Tick
+Binding happens on the orchestrator's thread while the bot's own tick loop is
+running on another, and the bind touches state the tick reads. `_bind_planner_script`
+(`agent.py:3149-3196`) assigns `_planner_script`, clears `_script_tick`, and
+sets `_script_loaded = False` — three fields `_get_script_tick` consults to
+decide what to run. `_run_script_tick` (`agent.py:2895-2930`) takes no lock on
+that path. Interleaved with a tick, the tick can observe the new source with the
+old cached `ScriptTick`, or a cleared latch with the old source, and dispatch
+against neither the old script nor the new one.
+
+The bind and the reset it depends on MUST be atomic with respect to a script
+tick: a tick sees either the whole previous state or the whole new one, never a
+mix. `self._lock` already exists (`agent.py:274`) and is the lock to use, but
+this requirement is about the guarantee, not the primitive — a lock, an atomic
+swap, or making the three assignments one object replacement all satisfy it.
+
+**This is why the requirement lives here rather than in the implementation
+notes.** The delta forces the bind to happen while the bot is live: the hold is
+released as part of the bind so the script's ticks start immediately ("A Goal's
+Own Script Is Not Held By That Goal"). Making the bind overlap the tick is a
+direct consequence of that requirement, so the safety property it needs belongs
+in the same delta, not in a reviewer's head.
+
+#### Scenario: A tick never sees a half-applied bind
+- **GIVEN** a bot whose tick loop is running against its current script
+- **WHEN** a planner script is bound concurrently
+- **THEN** any tick observes either the previous script and latch together, or
+  the new script and its reset latch together
+- **AND** no tick dispatches against a source it did not fully load
+
+#### Scenario: A dry tick inside the bind does not race the live tick
+- **GIVEN** a bind in progress that is running its dry tick
+- **WHEN** the bot's own tick fires
+- **THEN** the bot's tick either waits for the bind to finish or sees the
+  pre-bind state in full
+- **AND** the dry tick's throwaway state never becomes the bot's live state
