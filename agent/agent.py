@@ -961,6 +961,18 @@ class BotRunner:
                 self._consume_message(msg)
             return
 
+    def _run_planner_for_pass(self, new_msgs):
+        """The loop's planner entries for one pass (task 3.6).
+
+        A player message wins the pass: `_maybe_plan` has already had it, so
+        the result-triggered entry is skipped whenever this pass carried new
+        messages -- a fresh instruction must not be pre-empted by a stale
+        result. With no message, a pending result gets the pass to itself.
+        """
+        self._maybe_plan(new_msgs)
+        if not new_msgs:
+            self._maybe_plan_on_result()
+
     def _maybe_plan_on_result(self):
         """Start one planner call when a script result is pending (task 3.4).
 
@@ -3063,20 +3075,22 @@ Respond with ONLY a JSON array. Example:
         result raises no trigger of its own (task 3.7); `_maybe_plan_on_result`
         is what turns it into a call, under the per-bot caps.
 
-        `goal_id` is the goal that owned the tick. The slot keeps it so that a
-        result from a superseded goal is discarded rather than delivered into a
-        later one (task 3.9), which would let a finished script steer a goal it
-        never ran for.
+        The result carries NO goal. Whatever is in `_script_hold` here is the
+        goal the runner refused to tick in this pass (a held script returns
+        SCRIPT_HELD before `st.tick()`), so it is not this result's owner, and
+        the entry that delivers a result reads its goal from that same hold.
+        The slot's discard rule (task 3.9) therefore compares a result with
+        the goal that receives it, both read from the hold -- never the goal
+        that ran the script, which the tick does not carry out of the sandbox.
+        That part of 3.9 is not reachable from here and is recorded on 3.9.
         """
         if not result:
             return
         text = result.get("text") if isinstance(result, dict) else None
         if not text:
             return
-        hold = getattr(self, "_script_hold", None) or {}
-        goal_id = hold.get("goal_id", "")
         value = {"text": text, "truncated": bool(result.get("truncated"))}
-        self._result_slot.store(goal_id, value, "done")
+        self._result_slot.store("", value, "done")
 
     def _note_script_idle(self):
         """Say, at most once per interval, that the script proposed nothing.
@@ -3506,13 +3520,7 @@ Respond with ONLY a JSON array. Example:
                     new_msgs = [m for m in new_msgs if "RESET:" not in m]
                     continue
 
-                self._maybe_plan(new_msgs)
-                # Task 3.6: a player message wins the pass. _maybe_plan has
-                # already had it, so the result-triggered entry is skipped
-                # whenever this pass carried new messages -- a fresh
-                # instruction must not be pre-empted by a stale result.
-                if not new_msgs:
-                    self._maybe_plan_on_result()
+                self._run_planner_for_pass(new_msgs)
 
                 # ── M2 script path: runs ONLY if a script answered ──
                 # Placed before plan execution and after _maybe_plan, so a new

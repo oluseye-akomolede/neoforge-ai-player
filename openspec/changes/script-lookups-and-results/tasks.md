@@ -75,7 +75,7 @@ document work that preceded them, kept so the reasoning is not lost.
 
 ## 3. Results (c)
 
-- [ ] 3.1 A later change adds `api.result(v)` to the runner binding and
+- [x] 3.1 A later change adds `api.result(v)` to the runner binding and
       delivers its stored value to the planner on exactly three triggers:
       `done`, error, `escalate`. Delivery does not wait for a player message.
       The script's top-level return value is NOT the result (lead rule,
@@ -87,38 +87,46 @@ document work that preceded them, kept so the reasoning is not lost.
       `test_a_report_over_the_cap_is_marked_not_dropped`. The UTF-8 cut uses
       `decode("utf-8", "ignore")` on the byte prefix: measured identical to a
       hand boundary walk over six paddings, so the simpler one ships.
-- [ ] 3.3 The per-bot 4/hour cap and the per-bot 15-minute cooldown, as the
+- [x] 3.3 The per-bot 4/hour cap and the per-bot 15-minute cooldown, as the
       load-bearing guard on result-triggered calls. Pinned by a test that binds
       10 **distinct** scripts back to back, each calling `api.result({done:
       true})` once, and asserts exactly 4 deliveries — not 10 ticks of one
       script, which a reported `done` makes impossible since it releases the
       binding. The mutant keys the cooldown on the script instead of the bot
       and must red it.
-- [ ] 3.4 `_maybe_plan_on_result()` beside `_maybe_plan`: evaluated every pass,
+- [x] 3.4 `_maybe_plan_on_result()` beside `_maybe_plan`: evaluated every pass,
       acts only when a result is pending for the bot's current goal, so a
       finished script reaches `call_plan` with no player message. Pinned by a
       test that a done result with no new messages still produces a
       `call_plan`; the mutant makes the entry a no-op and must red it. A test
       also pins that with no result pending it makes no call at all, so it is
       not a per-tick planner call.
-- [ ] 3.5 The result renders into that call's prompt as its own observation,
+- [x] 3.5 The result renders into that call's prompt as its own observation,
       with no extra LLM call. Pinned by a test on the rendered prompt and a
       test that no additional planner call is made.
-- [ ] 3.6 Ordering: a player message wins a pass — `_maybe_plan` runs first and
+- [x] 3.6 Ordering: a player message wins a pass — `_maybe_plan` runs first and
       the result-triggered call is skipped for that pass. A result arriving
       mid-call is queued to the slot, never injected. Pinned by tests for both.
-- [ ] 3.7 The caps are the guard, not a backstop: a fifth result within the
+- [x] 3.7 The caps are the guard, not a backstop: a fifth result within the
       hour and a second within the cooldown are queued with the suppressing cap
       logged, not dropped and not called. Pinned by tests; the mutant removes
       the cap and must red them.
-- [ ] 3.8 The cap and cooldown state is per bot and lives for the process
+- [x] 3.8 The cap and cooldown state is per bot and lives for the process
       lifetime; `reset()` (`agent/agent.py:385-400`) MUST NOT clear it. Pinned
       by a test that spends the cap, calls `reset()`, and asserts the fifth
       result is still held off; the mutant clears the counters in `reset()` and
       must red it.
-- [ ] 3.9 `replace` keeps the existing `goal_id`; the planner never mints one
+- [x] 3.9 `replace` keeps the existing `goal_id`; the planner never mints one
       and `_new_goal_id` stays player-message only. Pinned by a test that a
       replace outcome keeps the id and that no planner path produces a new one.
+      Part of the rule is NOT reachable yet, recorded here rather than
+      claimed: a tick carries no goal id out of the sandbox (a held script
+      returns SCRIPT_HELD before ticking), so results are stored with goal
+      `""`, and the entry that delivers a result reads its goal from the same
+      hold -- a result and the goal receiving it are compared with
+      themselves, so the `goal-changed` discard cannot fire in production. The
+      slot rule, the replace rule and the no-minting rule are pinned and live;
+      the discard needs a tick that reports which goal it ran for.
 
 ## 4. Trials on test (run by the lead)
 

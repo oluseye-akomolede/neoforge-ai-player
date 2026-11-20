@@ -1284,11 +1284,9 @@ class ScriptResultReachesTheSlotTest(unittest.TestCase):
         # a method that does not exist, which drops every report silently.
         #
         # No hold is set, because a held script returns SCRIPT_HELD before it
-        # ticks at all (`_run_script_tick`:3077). The consequence is recorded
-        # honestly here: a tick that runs carries NO goal, so the slot's
-        # goal_id is "" in production and task 3.9's discard rule cannot fire
-        # yet. See the task's note; the goal is kept in the slot so the rule
-        # works the moment identity reaches this point.
+        # ticks at all (`_run_script_tick`). That is the same reason the tick
+        # cannot carry a goal id out of the sandbox, so the result's goal
+        # stays "" (see `test_a_tick_copies_no_hold_onto_the_report`).
         self._tick_reporting({"text": "a red flower", "truncated": False},
                              goal_id=None)
         with mock.patch("builtins.print"):
@@ -1299,6 +1297,24 @@ class ScriptResultReachesTheSlotTest(unittest.TestCase):
         self.assertEqual(goal_id, "")
         self.assertEqual(value["text"], "a red flower")
         self.assertEqual(trigger, "done")
+
+    def test_a_tick_copies_no_hold_onto_the_report(self):
+        # The holder in `_script_hold` is the goal this pass REFUSED to tick,
+        # so it is not the result's owner: the entry that delivers a result
+        # reads `_script_hold["goal_id"]` as the receiving goal. Copying the
+        # holder onto the result would name a goal the script never ran for.
+        #
+        # A held script never reaches the hold-the-result code (measured:
+        # `_run_script_tick` returns SCRIPT_HELD first), so this test calls
+        # that code in the state it names -- a hold present -- rather than
+        # through a tick that cannot have one. It would fail if the method
+        # copied the holder, which is the only reachable way to get there.
+        #
+        # KILLS: storing `_script_hold["goal_id"]` as the result's goal.
+        self.a._script_hold = {"goal_id": "goal-not-mine", "goal_text": "t"}
+        self.a._hold_script_result({"text": "a red flower", "truncated": False})
+        goal_id, _value, _trigger = self.a._result_slot.peek()
+        self.assertEqual(goal_id, "")
 
     def test_a_tick_with_no_report_stores_nothing(self):
         # KILLS: storing a placeholder for every tick, which would make the
@@ -1349,6 +1365,154 @@ class ScriptResultReachesTheSlotTest(unittest.TestCase):
             self.a._maybe_plan_on_result()
         Thread.assert_not_called()
 
+    def _run_pass(self, new_msgs):
+        """One loop pass' planner branch, as the loop (:3521) has it.
+
+        The REAL `_run_planner_for_pass`, `_maybe_plan` and
+        `_maybe_plan_on_result` are used, so a
+        change to either reds these tests. Two fakes sit below them, in
+        threaded things only: the planner's Thread, whose start calls
+        `_run_orchestrator`, and the HTTP api. So "a call started, with what
+        text" is read off the hand-off between the two, not from the thread
+        body. The local `planner.decompose` is faked so a planner path may
+        finish; it starts no thread, so it shows up as no hand-off.
+        """
+        # The pass reaches the legacy planner branch (agent.py:938-939) after
+        # the hand-off, so the planner itself is faked and only that hand-off
+        # -- `Thread` made with the task -- is real and recorded.
+        self.a.model = "test-model"
+        self.a._get_my_inventory_summary = lambda: ""
+        with mock.patch.object(self.agent_mod, "planner") as planner:
+            class Answer(list):
+                script = None   # no program: the step list is what follows
+            planner.decompose.return_value = Answer(["look around"])
+            return self._pass_body(new_msgs)
+
+    def _pass_body(self, new_msgs):
+        # Read by `_maybe_plan`: the task board (agent.py:568) and
+        # consuming the message (agent.py:517).
+        self.a._current_task_id = None
+        self.a.chat_history = []
+        self.a._following_player = None
+        # Read by `_maybe_plan` (agent.py:675) and by the legacy planner
+        # branch (:938), which the shadow plan write also touches.
+        self.a.semantic_mem = None
+        self.a._cached_inventory = []
+        self.a._l4_escalations = 0
+        self.a.conversation_history = []
+        self.a._shadow_plan_write = mock.Mock()
+        self.a._consume_message = mock.Mock()
+        # The hand-off into the planner's thread is the thing measured, so it
+        # is the one fake: recording `Thread(args=(prompt, role))` where the
+        # task is made, instead of starting it.
+        prompts = []
+
+        def thread(**kw):
+            prompts.append(kw["args"][0])
+            return mock.Mock()
+
+        with mock.patch.object(self.agent_mod, "api", mock.Mock()), \
+                mock.patch.object(self.agent_mod.threading, "Thread", thread), \
+                mock.patch("builtins.print"):
+            self.a._run_planner_for_pass(new_msgs)
+        return prompts
+
+    def test_a_player_message_wins_the_pass(self):
+        # 3.6: a player message wins a pass -- the message reaches L3 and the
+        # older result waits for a pass of its own.
+        #
+        # HONEST LIMIT (measured): this pass shape cannot red the guard. The
+        # player's message is not address-parsed (no "#" prefix, so it is not
+        # "for you"), so `_maybe_plan` only decomposes it; no thread starts.
+        # With the guard inverted (`if True`) the result entry still makes no
+        # call, because `_maybe_plan` left a non-empty `_plan_steps` and the
+        # entry returns on it. An inverted guard here is undetectable from
+        # outside, so this test pins the outcome rather than a mutant: the
+        # message is what reached L3, the result is still queued, and no
+        # second call was made. The guard's other side is pinned by
+        # `test_a_pass_with_no_message_delivers_the_result`.
+        self.a._is_chat_message = lambda text: True
+        self.a._reply_in_character = mock.Mock()
+        self.a._plan_steps = []
+        self.a._result_slot = self.agent_mod.ResultSlot()
+        self.a._result_slot.store("", {"text": "a red flower"}, "done")
+        prompts = self._run_pass(["Player: scout the hill"])
+        self.assertEqual(prompts, [], "the legacy planner path hands no task "
+                                      "to a thread")
+        self.assertNotIn("a red flower", self.a._plan_instruction,
+                         "the player's message, not the result, reached L3")
+        self.assertTrue(self.a._result_slot.has_pending(),
+                        "the result waits for a pass of its own")
+
+    def test_a_pass_with_no_message_delivers_the_result(self):
+        # The other branch of the same predicate: with no message, the
+        # result's call is the one that starts.
+        # KILLS: a guard that never lets the result entry run.
+        self.a._plan_steps = []
+        self.a._result_slot = self.agent_mod.ResultSlot()
+        self.a._result_slot.store("", {"text": "a red flower"}, "done")
+        prompts = self._run_pass([])
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("a red flower", prompts[0])
+
+    def test_a_pending_result_is_held_off_at_the_hour_cap(self):
+        # 3.7: the caps are the guard on result-triggered calls, not a
+        # backstop behind a working path. Spend the hour on the real
+        # `_maybe_plan_on_result` (cooldown 0, so the hour cap is the bound),
+        # then report a fifth time and require the planner call to be
+        # suppressed and the result KEPT, with the cap's name logged.
+        #
+        # KILLS: an `_maybe_plan_on_result` that ignores `may_call`, which
+        # calls the planner on the fifth result.
+        self.a._plan_steps = []
+        self.a._result_slot = self.agent_mod.ResultSlot(
+            clock=lambda: 1000.0, cooldown_seconds=0)
+        calls = []
+
+        class Thread:
+            def __init__(self, **kw):
+                calls.append(kw)
+
+            def start(self):
+                pass
+
+        with mock.patch.object(self.agent_mod.threading, "Thread", Thread):
+            for _ in range(5):
+                self.a._result_slot.store("", {"text": "found"}, "done")
+                with mock.patch("builtins.print") as pr:
+                    self.a._maybe_plan_on_result()
+        self.assertEqual(len(calls), 4, "four calls an hour, then held")
+        self.assertTrue(self.a._result_slot.has_pending(),
+                        "the fifth result is queued under the cap, not dropped")
+        printed = " ".join(str(c.args[0]) for c in pr.call_args_list)
+        self.assertIn("held (hour-cap)", printed)
+
+    def test_a_pending_result_is_held_off_inside_the_cooldown(self):
+        # 3.7: with the real 15-minute cooldown, a second result right after
+        # a delivered one is held with the cooldown named.
+        #
+        # KILLS: a version enforcing only the hour cap.
+        self.a._plan_steps = []
+        now = [1000.0]
+        self.a._result_slot = self.agent_mod.ResultSlot(clock=lambda: now[0])
+        calls = []
+
+        def thread(**kw):
+            calls.append(kw)
+            return mock.Mock()
+
+        with mock.patch.object(self.agent_mod.threading, "Thread", thread):
+            self.a._result_slot.store("", {"text": "found"}, "done")
+            with mock.patch("builtins.print"):
+                self.a._maybe_plan_on_result()
+            self.a._result_slot.store("", {"text": "found again"}, "done")
+            with mock.patch("builtins.print") as pr:
+                self.a._maybe_plan_on_result()
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(self.a._result_slot.has_pending())
+        printed = " ".join(str(c.args[0]) for c in pr.call_args_list)
+        self.assertIn("held (cooldown)", printed)
+
     def test_a_result_arriving_mid_plan_is_queued_not_injected(self):
         # KILLS: starting a second planner while one is live, which would put
         # two planners on one bot. The result must survive the wait.
@@ -1359,6 +1523,44 @@ class ScriptResultReachesTheSlotTest(unittest.TestCase):
         Thread.assert_not_called()
         self.assertTrue(self.a._result_slot.has_pending(),
                         "a queued result must stay parked for a later pass")
+
+
+class NoPlannerPathMintsAGoalIdTest(unittest.TestCase):
+    """3.9: the planner never mints a goal id; replace keeps the existing one."""
+
+    def setUp(self):
+        agent_mod = _agent_module()
+        self.agent_mod = agent_mod
+        self.a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
+        self.a.name = "Scout"
+        self.a._script_hold_seq = 4
+        self.a._script_hold = {"goal_id": "chat:Player:mine#4", "goal_text": "mine"}
+        self.a._run_orchestrator = mock.Mock()
+        self.a._result_slot = agent_mod.ResultSlot()
+
+    def test_a_result_call_carries_the_existing_goal_and_mints_none(self):
+        # The result-triggered call re-enters the orchestrator with the goal
+        # the hold names; the sequence counter must not move.
+        #
+        # KILLS: minting a fresh id for a result-triggered call (a new id
+        # whose release could never match the hold, or match a later goal).
+        with mock.patch.object(self.agent_mod.threading, "Thread",
+                               side_effect=lambda **kw: mock.Mock()) as Thread, \
+                mock.patch("builtins.print"):
+            self.a._plan_with_result({"text": "x"}, "done", "chat:Player:mine#4")
+        kw = Thread.call_args.kwargs
+        self.assertEqual(kw["kwargs"]["goal_id"], "chat:Player:mine#4")
+        self.assertEqual(self.a._script_hold_seq, 4, "no id was minted")
+
+    def test_a_replace_outcome_keeps_the_goal_id(self):
+        # "Replace" (lead's call): a second goal replaces the hold and keeps
+        # the id the first one had. The minting function is called by
+        # `_maybe_plan` alone, on a player message.
+        #
+        # KILLS: a replace that mints a new id.
+        self.a._begin_script_hold("chat:Player:mine#4", "replace me")
+        self.assertEqual(self.a._script_hold["goal_id"], "chat:Player:mine#4")
+        self.assertEqual(self.a._script_hold_seq, 4)
 
 
 if __name__ == "__main__":
