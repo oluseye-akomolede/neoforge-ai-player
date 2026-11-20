@@ -34,7 +34,7 @@ Spec only. No code, no build, no deploy until the lead approves this spec.
       `ok`. A failed dry tick falls back to the plain planner and keeps any
       previously bound script in force.
 - [x] 2.4 **Binding is a rebind.** `_script_loaded` is a one-shot latch
-      (`agent/agent.py:235,3204-3206`; one production caller at `:2909`), so a
+      (`agent/agent.py:235,3206-3208`; one production caller at `:2909`), so a
       bot resolves its script once for the process lifetime. The latch gains a
       defined reset for a planner-authored script, and that reset is its ONLY
       writer. Without it, calling the existing path returns the previous

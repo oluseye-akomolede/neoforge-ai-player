@@ -96,7 +96,7 @@ that tick returns `ok`.
 **Binding here is a REBIND, and the requirement names the mechanism.** Today a
 bot's script is resolved once for the process lifetime: `_get_script_tick`
 reads `bindings.json` on first call and a `_script_loaded` latch
-(`agent/agent.py:3204-3206`, set `False` at `:235`) returns the cached tick on
+(`agent/agent.py:3206-3208`, set `False` at `:235`) returns the cached tick on
 every later call. There is one production caller (`:2909`). An implementer who
 calls the existing path to "bind" a written script reaches the latch and gets
 the PREVIOUS script for the life of the process. The latch MUST therefore gain

@@ -75,8 +75,8 @@ existing change does not say. Each is the subject of one ADDED requirement.
 
    **The word "bind" hides a mechanism that does not exist yet.** A bot resolves
    its script once for the process lifetime: `_script_loaded` is `False` at
-   `agent/agent.py:235`, returns the cached tick at `:3139` and is set `True`
-   at `:3140`, with one production caller at `:2909`. Binding is therefore a
+   `agent/agent.py:235`, returns the cached tick at `:3207` and is set `True`
+   at `:3208`, with one production caller at `:2909`. Binding is therefore a
    **rebind**, and the spec says so explicitly: the latch gains a defined reset
    for a planner-authored script, and that reset is its only writer. An
    implementer who calls the existing path without it gets the previous script
