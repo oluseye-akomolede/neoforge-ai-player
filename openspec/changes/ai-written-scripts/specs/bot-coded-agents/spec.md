@@ -68,6 +68,16 @@ touch it). The budgets are `do:30/min`, `say:30/min`, `send:20/min`
 is then rejected takes those slots from the bot's real work. The dry tick MUST
 spend no rate budget: `actionTimes` MUST be unchanged by it.
 
+The mechanism that satisfies this is that the dry tick runs against a
+**throwaway `botState`**, not the bot's live one. `createApi` already takes
+`botState` as a parameter (`binding.js:126-136`); the engine passes its
+long-lived object (`engine.js:756`) and the default exists only so a direct
+caller gets sane behaviour. A dry tick passes its own, so it neither reads nor
+writes the live window. This is deliberate, not incidental: `acceptAction`
+(`binding.js:154-174`) always either rejects or pushes, with no
+check-without-spending mode, so a dry tick sharing the live window could only
+avoid spending by never calling `api.do` — which would defeat the gate.
+
 **A dry tick MUST NOT carry its memory forward.** `api.remember` writes
 per-tick `state.memoryOut` (`binding.js:314`), so the sandbox write is
 naturally discarded — but `script_tick.py:364` adopts the returned memory
@@ -94,11 +104,26 @@ nothing, interrupts no task, spends no rate budget and carries no memory.
 - **AND** the world is unchanged by the dry tick
 
 #### Scenario: A dry tick spends no rate budget
-- **GIVEN** a bot whose `do` rate window is already at its 30/min limit
+- **GIVEN** a bot whose `do` rate window already holds entries
 - **WHEN** a planner-authored script that calls `api.do` is dry-ticked
-- **THEN** the dry tick is rejected as `rate_limited`, not silently admitted
+- **THEN** the dry tick evaluates against a rate window of its own, not the
+  bot's live one (`createApi` takes `botState` as a parameter,
+  `binding.js:126-136`)
 - **AND** the bot's real script keeps its full budget
 - **AND** `botState.actionTimes` is unchanged by the dry tick
+
+A dry tick therefore never reports `rate_limited` on the bot's live budget: it
+neither reads nor writes it. This is the stronger guarantee, and it is the only
+one the mechanism supports — `acceptAction` (`binding.js:154-174`) has no
+check-without-spending mode, so a dry tick sharing the live window could only
+be safe by never calling `api.do` at all, which would defeat the gate.
+
+#### Scenario: A dry tick is unaffected by the bot's spent budget
+- **GIVEN** a bot whose `do` window is at its 30/min limit
+- **WHEN** a planner-authored script that calls `api.do` is dry-ticked
+- **THEN** the dry tick is NOT rejected as `rate_limited`
+- **AND** it passes or fails on its own merits (throw, host-call cap, CPU)
+- **AND** the bot's live `actionTimes` is still unchanged afterwards
 
 #### Scenario: A dry tick carries no memory
 - **GIVEN** a planner-authored script that calls `api.remember`
