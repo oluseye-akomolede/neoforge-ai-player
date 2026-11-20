@@ -908,9 +908,9 @@ reach the agent. The agent adds no second limiter.
 One known gap bounds that guarantee: the window lives on the sandbox
 (`engine.js:251`, documented at `engine.js:399-406`), so a sandbox recycle
 after a `memory_exceeded`, a guard eviction or a wasm trap restarts it empty.
-The honest bound is therefore 30 per rolling minute plus up to 30 more per
-recycle. An ordinary script throw does not recycle the sandbox
-(`recycle.js:45-49`).
+The honest bound is therefore 30 per rolling minute for `say` and 20 for
+`send`, plus up to the same amount again per recycle. An ordinary script
+throw does not recycle the sandbox (`recycle.js:45-49`).
 
 #### Scenario: A say action is delivered through the chat path
 - **GIVEN** a tick whose script called `api.say("all clear")`
