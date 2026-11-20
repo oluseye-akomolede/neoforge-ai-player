@@ -892,29 +892,34 @@ public class BotPlayer {
         return result;
     }
 
+    /**
+     * The nearest {@link #NEARBY_BLOCKS_PER_ID} instances of each block id
+     * within {@code radius}, with registry ids so a caller can match a kind
+     * rather than a display name, and one entry per instance rather than one
+     * per name.
+     */
     public List<Map<String, Object>> getNearbyBlocks(int radius) {
-        List<Map<String, Object>> result = new ArrayList<>();
         BlockPos center = player.blockPosition();
-        Set<String> seen = new HashSet<>();
-        for (int x = -radius; x <= radius; x++) {
-            for (int y = -radius; y <= radius; y++) {
-                for (int z = -radius; z <= radius; z++) {
-                    BlockPos pos = center.offset(x, y, z);
-                    BlockState state = player.level().getBlockState(pos);
-                    if (!state.isAir()) {
-                        String blockName = state.getBlock().getName().getString();
-                        if (seen.add(blockName)) {
-                            Map<String, Object> info = new LinkedHashMap<>();
-                            info.put("block", blockName);
-                            info.put("position", formatBlockPos(pos));
-                            result.add(info);
-                        }
+        return NearbyBlockIndex.select(
+                (dx, dy, dz) -> {
+                    BlockState state = player.level().getBlockState(center.offset(dx, dy, dz));
+                    if (state.isAir()) {
+                        return null;
                     }
-                }
-            }
-        }
-        return result;
+                    return new NearbyBlockIndex.Block(
+                            BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString(),
+                            state.getBlock().getName().getString());
+                },
+                radius, NEARBY_BLOCKS_PER_ID,
+                center.getX(), center.getY(), center.getZ());
     }
+
+    /**
+     * How many instances of one block id the nearby list keeps. Two is enough
+     * for "is there a second chest" without letting a floor of stone fill the
+     * payload; the bound exists because the cube is 1331 cells at radius 5.
+     */
+    public static final int NEARBY_BLOCKS_PER_ID = 2;
 
     public List<Map<String, Object>> surfaceScan(int radius) {
         List<Map<String, Object>> result = new ArrayList<>();

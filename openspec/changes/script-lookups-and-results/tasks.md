@@ -1,28 +1,33 @@
 # Tasks: script lookups (b) and script results (c)
 
-Nothing in this change is code. Every task here produces or checks a document.
-Code tasks appear only after the owner approves the spec and a later change
-carries them.
+Design approved at `c180797`; code starts here. §2 and §3 are code, test-first:
+each task names the test that pins it and the mutant that must red it. §1 is the
+document work that preceded them, kept so the reasoning is not lost.
 
 ## 1. Design approved
 
-- [ ] 1.1 `design.md` passes `/egm-review` as a document: every `file:line`
+- [x] 1.1 `design.md` passes `/egm-review` as a document: every `file:line`
       resolves, every recommendation has its alternative and why it lost, and
       §3's loop bound has a number that could be wrong.
 - [ ] 1.2 Owner has read §3's cost sentence (up to 4 planner calls per hour per
       bot from results) and the §1 restriction (lookups answer only what the
       snapshot already carries), and has approved both.
-- [ ] 1.6 The snapshot bound is true nearest-K per block id, not first-K in
+- [x] 1.6 The snapshot bound is true nearest-K per block id, not first-K in
       scan order: squared distance per candidate, K-bounded insertion, scan
       order as the tie-break. The cost is 1331 integer distance computations
-      plus K-bounded insertion per refresh. A later change that implements it
-      pins the (2,0,2) vs (-5,-5,-5) case at K=1, which scan-order code fails.
-- [ ] 1.3 Every radius in `design.md`, `tasks.md` and the spec delta is 5
+      plus K-bounded insertion per refresh. Pinned by the (2,0,2) vs
+      (-5,-5,-5) case at K=1, which scan-order code fails.
+- [x] 1.3 Every radius in `design.md`, `tasks.md` and the spec delta is 5
       (blocks) / 16 (mobs) — the values `BotPlayer.java:619-620` caches — and no
-      artefact still describes the requested radii as the served ones. Checked
-      by grepping the change's own files for a claim that the snapshot covers
-      radius 8 or radius 24; outside the §1 cost table, which compares cell
-      counts on purpose, both must return nothing.
+      artefact still describes the requested radii as the served ones.
+      *Corrected while ticking:* the check as first written ("grep for radius 8
+      or radius 24 must return nothing outside the cost table") cannot be
+      satisfied, because `design.md:27` must name 8 and 24 to state the F1
+      finding — that the agent *requests* those and the endpoints ignore them.
+      A denial of the claim contains the same words as the claim. Ticked by
+      reading each hit: 27 denies, 161 and 513 are the cost table's cell-count
+      comparison, and the tasks line was the instruction itself. No artefact
+      asserts 8/24 are served.
 - [ ] 1.4 **Count lookup demand before 2.1.** Read the planner's actual scripts
       from the next trial and count how many would call a lookup at all, and of
       those how many need more than radius 5/16 or block state. This chooses
@@ -35,13 +40,14 @@ carries them.
 
 ## 2. Lookups (b)
 
-- [ ] 2.0 **Grow the snapshot before building `look`.** Add the registry id to
+- [x] 2.0 **Grow the snapshot before building `look`.** Add the registry id to
       each `nearby.blocks` entry and stop deduplicating by name
       (`BotPlayer.java:895-919`), so a lookup can match a kind and see a second
       instance. Pinned by a test asserting two chests both appear and each entry
       carries `minecraft:`-prefixed id.
-- [ ] 2.1 A later change installs a `look` object beside `api`, built from the
-      snapshot literal, with no reference to `api` and no host call.
+- [ ] 2.1 `look` is installed beside `api` in the sandbox
+      (`agent-script-runner/src/engine.js`), built from the snapshot literal,
+      with no reference to `api` and no host call.
 - [ ] 2.2 Its results are deep copies. Pinned by a test that mutates a result
       and asserts the next lookup is unaffected; the mutant returns a live
       reference and must red it.
