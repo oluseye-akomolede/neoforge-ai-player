@@ -107,6 +107,12 @@ document work that preceded them, kept so the reasoning is not lost.
 - [x] 3.6 Ordering: a player message wins a pass — `_maybe_plan` runs first and
       the result-triggered call is skipped for that pass. A result arriving
       mid-call is queued to the slot, never injected. Pinned by tests for both.
+      `_run_planner_for_pass` is the tested method the loop calls for a pass.
+      Limit (measured): an inverted pass guard cannot be seen in the legacy
+      planner shape, where the message starts no thread and the result entry
+      then returns on the non-empty plan, so the message-pass test pins the
+      outcome (the message reached L3, the result stayed queued) rather than a
+      mutant.
 - [x] 3.7 The caps are the guard, not a backstop: a fifth result within the
       hour and a second within the cooldown are queued with the suppressing cap
       logged, not dropped and not called. Pinned by tests; the mutant removes
