@@ -1563,5 +1563,107 @@ class NoPlannerPathMintsAGoalIdTest(unittest.TestCase):
         self.assertEqual(self.a._script_hold_seq, 4)
 
 
+class PlannerForPassHonoursTheCapsTest(unittest.TestCase):
+    """`_run_planner_for_pass` must enforce all three (F-1).
+
+    The reviewer deleted the goal id from the delivery record and 81 tests
+    stayed green, because every earlier test checked the slot's predicate or
+    the individual helpers and none drove the entry the loop actually calls.
+    This drives `_run_planner_for_pass` itself with an injected clock, and
+    reads the goal off the boundary that consumes it: `_run_orchestrator`'s
+    `goal_id`, whose only use is `_end_script_hold(goal_id or None)`.
+    """
+
+    def setUp(self):
+        agent_mod = _agent_module()
+        self.agent_mod = agent_mod
+        self.now = [1000.0]
+        self.a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
+        self.a._lock = threading.Lock()
+        self.a.name = "Scout"
+        self.a.profile = {}
+        self.a._plan_steps = []
+        self.a._plan_instruction = ""
+        self.a._result_slot = agent_mod.ResultSlot(clock=lambda: self.now[0])
+        self.a._script_hold = None
+        self.a._maybe_plan = mock.Mock()
+        self.plan_calls = []
+
+        def fake_orchestrator(task_text, sender="", order_id="",
+                              order_kind="", goal_id=""):
+            self.plan_calls.append({"text": task_text, "goal_id": goal_id})
+            # A real run finishes and `_maybe_plan_on_result` refuses only
+            # while `_plan_steps` is non-empty, so leave it empty for the
+            # next pass; otherwise the cap is never reached in this fixture.
+            self.a._plan_steps = []
+
+        self.a._run_orchestrator = fake_orchestrator
+
+    def _pass(self, value="a red flower", goal_id=""):
+        """One pass with no message and `value` pending. Returns True if it planned."""
+        self.a._result_slot.store(goal_id, {"text": value, "truncated": False}, "done")
+        before = len(self.plan_calls)
+        with mock.patch("builtins.print"):
+            self.a._run_planner_for_pass([])
+        return len(self.plan_calls) > before
+
+    def test_the_four_a_hour_cap_turns_it_red(self):
+        # KILLS: dropping `slot.record_call()` from the delivery -- then every
+        # pass plans, so the fifth call of the hour happens.
+        #
+        # The constant is NOT free: it must exceed the 900s cooldown.
+        from result_delivery import COOLDOWN_SECONDS
+        # Exact relationship, not a loose bound: cooldown * (cap) == hour, so
+        # the cooldown alone already holds the rate to 4/hour and the cap can
+        # only bite on the boundary. Change any of the three and the reasoning
+        # below is void -- so this fails loudly.
+        from result_delivery import HOUR_SECONDS, MAX_RESULTS_PER_HOUR
+        self.assertEqual(COOLDOWN_SECONDS * MAX_RESULTS_PER_HOUR,
+                         HOUR_SECONDS,
+                         "4 gaps of cooldown exactly span the hour only at "
+                         "900s * 4; the reachability note below depends on it")
+        # Five calls inside one rolling hour is IMPOSSIBLE while the cooldown
+        # is strict at 900s: the 2nd..5th each wait >= 900s after the previous,
+        # so the 5th is >= 4*900 = 3600s after the 1st and the 1st has rolled
+        # out of the window. So the cap is reachable only when the cooldown is
+        # removed or shortened -- and this test pins exactly that: with the
+        # cooldown lifted, the 5th call in one hour is refused BY THE CAP.
+        slot = self.a._result_slot
+        slot._cooldown = 0                  # the cap must stand on its own
+        self.assertTrue(self._pass("r1"))
+        for n in (2, 3, 4):
+            self.now[0] += 60               # well inside the hour
+            self.assertTrue(self._pass(f"r{n}"))
+        self.now[0] += 60
+        self.assertFalse(self._pass("r5"),
+                         f"a fifth call in one hour must be refused: "
+                         f"{[c['text'] for c in self.plan_calls]!r}")
+        self.assertEqual(len(self.plan_calls), 4,
+                         f"calls: {[c['text'] for c in self.plan_calls]!r}")
+
+    def test_the_fifteen_minute_cooldown_turns_it_red(self):
+        # KILLS: making `may_call` ignore `_recent_calls` -- then the second
+        # result one minute later plans immediately.
+        self.assertTrue(self._pass("r1"))
+        self.now[0] += 60
+        self.assertFalse(self._pass("r2"),
+                         f"a call one minute after the last must be held: "
+                         f"{[c['text'] for c in self.plan_calls]!r}")
+        self.now[0] += 15 * 60
+        self.assertTrue(self._pass("r3"),
+                        "the call must resume once the cooldown has expired")
+
+    def test_the_goal_the_delivery_is_attributed_to_turns_it_red(self):
+        # KILLS: passing a constant or empty goal_id to `_plan_with_result` --
+        # the reviewer's exact deletion, which left 81 tests green.
+        self.a._script_hold = {"goal_id": "goal-A", "goal_text": "t"}
+        self.assertTrue(self._pass(goal_id="goal-A"))
+        self.assertEqual(self.plan_calls[0]["goal_id"], "goal-A",
+                         f"the planner call must carry the held goal: "
+                         f"{self.plan_calls!r}")
+        self.assertIn("Script result (done)", self.plan_calls[0]["text"])
+        self.assertIn("a red flower", self.plan_calls[0]["text"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
