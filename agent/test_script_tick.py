@@ -774,5 +774,53 @@ class TestAScriptReportIsCappedButKept(unittest.TestCase):
         self.assertFalse(truncated)
 
 
+class TestTheTickHoldsWhatTheScriptReported(unittest.TestCase):
+    """`last_result` is what the script handed over, kept for the planner.
+
+    The runner sends the report ALREADY serialised. Everything here is about
+    the tick not damaging that text on its way through.
+    """
+
+    def _tick_with(self, reported):
+        tick = _st.ScriptTick.__new__(_st.ScriptTick)
+        tick.last_result = None
+        result = _rc.ScriptResult("script", result=reported)
+        tick._hold_result(result)
+        return tick.last_result
+
+    def test_a_report_is_kept_verbatim(self):
+        # The planner reads this text. Re-serialising it would quote it.
+        # KILLS: cap_result(result.result) -- passing the dict instead of
+        # text= serialises the string a second time, so the planner sees
+        # "\"{\\\"found\\\":\\\"oak\\\"}\"" instead of the report.
+        self.assertEqual(self._tick_with({"text": '{"found":"oak"}',
+                                          "truncated": False}),
+                         {"text": '{"found":"oak"}', "truncated": False})
+
+    def test_no_report_holds_none(self):
+        # KILLS: initialising last_result to {} -- an empty report is not the
+        # same as no report, and the planner would read it as "nothing found".
+        self.assertIsNone(self._tick_with(None))
+
+    def test_an_oversize_report_is_cut_and_marked(self):
+        # The runner should have capped this. If it did not, the tick must
+        # not hand 4 KiB of text to a planner that budgets 2 KiB.
+        # KILLS: trusting the runner's cap -- removing the re-cut leaves 4096
+        # bytes in last_result.
+        big = "x" * 4096
+        held = self._tick_with({"text": big, "truncated": False})
+        self.assertLessEqual(len(held["text"].encode("utf-8")), _st.RESULT_CAP_BYTES)
+        self.assertTrue(held["truncated"])
+
+    def test_the_runners_truncation_flag_is_kept(self):
+        # The runner may have capped a report that is short by the time it
+        # lands?  It cannot -- but the flag must survive regardless, because a
+        # re-cut that clears it would report a partial result as complete.
+        # KILLS: last_result = {"text": ..., "truncated": cut} -- dropping the
+        # runner's flag makes a truncated report read as whole.
+        held = self._tick_with({"text": "abc", "truncated": True})
+        self.assertTrue(held["truncated"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

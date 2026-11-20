@@ -177,10 +177,11 @@ class ScriptResult:
     good blob with an empty one.
     """
 
-    __slots__ = ("state", "actions", "detail", "memory", "logs", "logs_dropped")
+    __slots__ = ("state", "actions", "detail", "memory", "logs", "logs_dropped",
+                 "result")
 
     def __init__(self, state, actions=None, detail="", memory=None, logs=None,
-                 logs_dropped=0):
+                 logs_dropped=0, result=None):
         self.state = state
         self.actions = actions or []
         self.detail = detail
@@ -195,6 +196,13 @@ class ScriptResult:
         # reader cannot mistake a script that logged nothing for a script whose
         # lines were dropped.
         self.logs_dropped = logs_dropped or 0
+        # What the script reported via `api.result(v)`, as the runner's own
+        # `{text, truncated}` -- already JSON text and already capped at
+        # 2 KiB (binding.js capResult). None means the script reported
+        # nothing this tick, which is NOT the same as reporting JSON null:
+        # capResult returns text=None for both, and the caller treats it as
+        # "no report" rather than storing an empty one.
+        self.result = result
 
     def __repr__(self):
         return f"ScriptResult(state={self.state!r}, n_actions={len(self.actions)}, detail={self.detail!r})"
@@ -273,6 +281,15 @@ def call_runner(api, bot_state, *, post=None):
     if not isinstance(dropped, int) or isinstance(dropped, bool):
         dropped = 0
 
+    # `result` is read defensively for the same reason as `logs`: a runner that
+    # omits it, or sends something that is not our `{text, truncated}` shape,
+    # must not fail an otherwise good tick. Anything malformed becomes "no
+    # report", which is the benign reading -- the planner simply has nothing to
+    # continue from, exactly as on a tick that never called api.result().
+    reported = payload.get("result")
+    if not (isinstance(reported, dict) and "text" in reported):
+        reported = None
+
     return ScriptResult(STATE_SCRIPT, actions=actions, detail=f"{len(actions)} action(s)",
                         memory=payload.get("memory_out"), logs=logs,
-                        logs_dropped=dropped)
+                        logs_dropped=dropped, result=reported)

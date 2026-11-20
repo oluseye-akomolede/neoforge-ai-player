@@ -25,6 +25,7 @@ import transmute_db
 import container_db
 import openai_brain
 import waypoints
+from result_delivery import ResultSlot
 import mc_items
 import terrain_db
 import skill_author
@@ -269,6 +270,11 @@ class BotRunner:
         # cannot exist here. Cleared to None on restart by construction --
         # there is nothing to reload it from, which is the spec's stated cost.
         self._planner_script = None
+        # Result delivery (change: script-lookups-and-results, task 3.8).
+        # Per bot, process-lifetime: `reset()` deliberately does NOT clear it.
+        # A reset ends a plan and releases a script hold, but it is not an
+        # amnesty for the planner-call budget -- see result_delivery.py.
+        self._result_slot = ResultSlot()
         self._plan_steps = []
         self._plan_step_idx = 0
         self._plan_instruction = ""
@@ -954,6 +960,64 @@ class BotRunner:
                 self._shadow_plan_write()
                 self._consume_message(msg)
             return
+
+    def _maybe_plan_on_result(self):
+        """Start one planner call when a script result is pending (task 3.4).
+
+        Evaluated every pass. It acts ONLY when the slot holds a result for
+        the goal the bot is currently running, and the caps allow a call, so
+        it is not a per-tick planner call -- with nothing pending it returns
+        without touching the planner.
+
+        A result arriving while the planner is already running is queued, not
+        injected: it stays in the slot and this entry returns, because
+        starting a second call while one is live would run two planners
+        against one bot. The slot deliverys it on a later pass, under the caps.
+        """
+        slot = self._result_slot
+        if not slot.has_pending():
+            return
+        if self._plan_steps:
+            # Already planning a goal: queue into the one slot, do not call.
+            return
+        goal_id = (self._script_hold or {}).get("goal_id", "")
+        allowed, reason = slot.may_call(goal_id=goal_id)
+        if not allowed:
+            if reason in ("hour-cap", "cooldown"):
+                print(f"[{self.name}/result] held ({reason}); "
+                      f"{len(slot._recent_calls())} call(s) this hour")
+            elif reason == "goal-changed":
+                # The goal the result belonged to is gone; discard it so it
+                # cannot leak into a later goal.
+                print(f"[{self.name}/result] dropped: goal changed")
+                slot.clear()
+            return
+        goal_id_used, value, trigger = slot.peek()
+        slot.record_call()
+        print(f"[{self.name}/result] delivering {trigger} result for goal "
+              f"{goal_id_used!r}: {str(value)[:120]}")
+        self._plan_with_result(value, trigger, goal_id_used)
+
+    def _plan_with_result(self, value, trigger, goal_id):
+        """The call the result triggers (task 3.5): one call, result in prompt.
+
+        No extra LLM call is made for the result: the value renders into the
+        ordinary planner prompt as its own observation section.
+        """
+        text = (f"Script result ({trigger}): {json.dumps(value)[:2000]}"
+                if not isinstance(value, str) else f"Script result ({trigger}): {value[:2000]}")
+        self._plan_instruction = text
+        try:
+            t = threading.Thread(
+                target=self._run_orchestrator,
+                args=(text, "script"),
+                kwargs={"goal_id": goal_id},
+                name=f"orch:{self.name}",
+                daemon=True,
+            )
+            t.start()
+        except Exception as e:
+            print(f"[{self.name}/result] failed to start planner: {e}")
 
     def _plan_context(self):
         """Build the plan section for the observation prompt."""
@@ -3411,6 +3475,12 @@ Respond with ONLY a JSON array. Example:
                     continue
 
                 self._maybe_plan(new_msgs)
+                # Task 3.6: a player message wins the pass. _maybe_plan has
+                # already had it, so the result-triggered entry is skipped
+                # whenever this pass carried new messages -- a fresh
+                # instruction must not be pre-empted by a stale result.
+                if not new_msgs:
+                    self._maybe_plan_on_result()
 
                 # ── M2 script path: runs ONLY if a script answered ──
                 # Placed before plan execution and after _maybe_plan, so a new

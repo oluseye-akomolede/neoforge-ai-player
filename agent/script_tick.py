@@ -49,7 +49,7 @@ RESULT_CAP_BYTES = 2048
 RESULT_TRUNCATED_MARKER = "...[truncated]"
 
 
-def cap_result(value):
+def cap_result(value=None, *, text=None):
     """Return `(text, truncated)` -- the script's report as capped JSON text.
 
     A truncated result is KEPT, not dropped: a partial report the planner can
@@ -66,26 +66,39 @@ def cap_result(value):
       always reading a string it can quote, never a broken document it must
       repair.
 
+    Pass `text=` instead of `value()` to cap a string that is ALREADY JSON --
+    the runner serialises the script's report before it crosses the wire, so
+    the agent holds text, not an object. Passing that text as `value` would
+    serialise it a second time and turn `{"a":1}` into `"{\\"a\\":1}"`.
+
     Returns `(None, False)` for a value that is not reportable at all, so the
     caller can treat "no report" as its own case rather than as an empty one.
     """
-    if value is None:
-        return None, False
-    try:
-        text = json.dumps(value, ensure_ascii=False, sort_keys=True)
-    except (TypeError, ValueError):
-        # Not serialisable. Reported as absent rather than as a repr: a repr
-        # of an unserialisable object is not what the script meant.
-        return None, False
+    if text is None:
+        if value is None:
+            return None, False
+        try:
+            text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError):
+            # Not serialisable. Reported as absent rather than as a repr: a repr
+            # of an unserialisable object is not what the script meant.
+            return None, False
     raw = text.encode("utf-8")
     if len(raw) <= RESULT_CAP_BYTES:
         return text, False
+    # The cap bounds what the PLANNER RECEIVES, marker included -- so the body
+    # is cut to leave room for the marker rather than cutting to the full limit
+    # and appending the marker on top of it. Cutting to RESULT_CAP_BYTES and
+    # then appending returned 2062 bytes for a 2048-byte cap; nothing caught it
+    # because the older tests asserted the marker and the prefix but never the
+    # total length.
+    room = RESULT_CAP_BYTES - len(RESULT_TRUNCATED_MARKER.encode("utf-8"))
     # errors="ignore" drops the partial character the byte cut lands on, so the
     # text stays valid UTF-8. Measured against a hand walk that backs up to the
     # boundary character by character: the two agree on every input tried
     # (2046-2048 bytes over six paddings), because both yield the longest valid
     # prefix. Simpler and the same, so this is the one that ships.
-    return raw[:RESULT_CAP_BYTES].decode("utf-8", "ignore") + RESULT_TRUNCATED_MARKER, True
+    return raw[:room].decode("utf-8", "ignore") + RESULT_TRUNCATED_MARKER, True
 
 
 def no_runner_detail():
@@ -423,6 +436,10 @@ class ScriptTick:
         # An attribute for the same reason as last_logs: widening the tick()
         # tuple would touch every caller for data the logging path alone wants.
         self.last_deliveries = []
+        # What the script reported via `api.result(v)` this tick, already JSON
+        # text and already capped by the runner. None when it reported nothing.
+        # An attribute for the same reason as the two above.
+        self.last_result = None
 
     @property
     def enabled(self):
@@ -441,6 +458,7 @@ class ScriptTick:
         self.last_logs = []
         self.last_logs_dropped = 0
         self.last_deliveries = []
+        self.last_result = None
 
         if not self._source:
             return False, [], [], "no script"
@@ -523,6 +541,18 @@ class ScriptTick:
         self.last_logs = result.logs
         self.last_logs_dropped = result.logs_dropped
 
+        # What the script reported, held for the caller to hand to the planner.
+        #
+        # The runner already capped it and sent JSON text, so this is a HOLD,
+        # not a second serialisation: cap_result() takes a Python object and
+        # would quote a string that is already JSON, turning {"a":1} into
+        # "{\"a\":1}". The text is re-cut against the same byte limit rather
+        # than trusted, because binding.js capResult and this module must agree
+        # about the limit and a silent disagreement would only ever surface as
+        # an over-size string reaching the planner. Re-cutting in-range text
+        # is a no-op.
+        self._hold_result(result)
+
         # Two shapes meet here: the runner's and the binder's. Translate first,
         # then bind, keeping the runner's seq beside each bound action so the
         # dispatch log can carry it (M2 §8.2 evidence wants the matching seq).
@@ -569,6 +599,27 @@ class ScriptTick:
                 f"{len(bound)} action(s), "
                 f"{len(self.last_deliveries)} delivery(ies)")
         return True, bound, refusals, f"{len(bound)} action(s)"
+
+    def _hold_result(self, result):
+        """Keep what the script reported, for the caller to hand to the planner.
+
+        The runner sends the report already serialised as JSON text and already
+        capped, so this is a HOLD and not a second serialisation -- passing the
+        text as a *value* to cap_result() would serialise it twice and turn
+        {"a":1} into the string "{\\"a\\":1}".
+
+        The text is nonetheless re-cut against the same byte limit rather than
+        trusted: binding.js capResult and cap_result() here must agree about the
+        limit, and a silent disagreement would only ever show up as an over-size
+        string reaching the planner. Re-cutting in-range text is a no-op.
+        """
+        reported = result.result
+        if not (reported and reported.get("text") is not None):
+            return
+        text, cut = cap_result(text=str(reported["text"]))
+        if text is not None:
+            self.last_result = {"text": text,
+                                "truncated": bool(reported.get("truncated")) or cut}
 
     def _build_snapshot(self):
         """Return `(envelope, errors)` -- an ENVELOPE on both paths.
