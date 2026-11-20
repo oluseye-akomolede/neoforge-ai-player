@@ -56,12 +56,24 @@ class _FakeApi:
     def blocks(self, bot, radius=8):
         self.calls.append(("blocks", bot, radius))
         self._maybe_fail("blocks")
-        return [{"type": "minecraft:chest", "pos": {"x": 2, "y": 64, "z": -3}}]
+        # Copied from NearbyBlockIndex.select's real output, not invented: the
+        # mod has never sent `type` on a block. These are the fields a script
+        # actually receives (BotPlayer.java getNearbyBlocks -> CacheEntry).
+        return [{"id": "minecraft:chest",
+                 "block": "minecraft:chest",
+                 "position": {"x": 2, "y": 64, "z": -3}}]
 
     def entities(self, bot, radius=24.0):
         self.calls.append(("entities", bot, radius))
         self._maybe_fail("entities")
-        return [{"type": "minecraft:cow", "distance": 4.2}]
+        # Entities DO carry `type` (BotPlayer.java:883) -- unlike blocks. Real
+        # shape: distance is a String, formatted "%.1f", because that is what
+        # the mod puts on the wire (BotPlayer.java:886).
+        return [{"type": "minecraft:cow",
+                 "name": "Cow",
+                 "position": {"x": 5.0, "y": 64.0, "z": 1.5},
+                 "distance": "4.2",
+                 "health": 10.0}]
 
     def get_directive(self, bot):
         self.calls.append(("directive", bot))
@@ -84,8 +96,14 @@ class BuildStateTest(unittest.TestCase):
         for field in ("health", "food", "position", "inventory", "nearby", "task"):
             self.assertIn(field, state)
         self.assertEqual(state["health"], 20.0)
-        self.assertEqual(state["nearby"]["blocks"][0]["type"], "minecraft:chest")
+        # Blocks carry {id, block, position} -- no `type`, and NOT an empty
+        # `type` key either. Pinning the exact key set is the point: an
+        # invented `type` is what let this fixture drift from the mod.
+        self.assertEqual(sorted(state["nearby"]["blocks"][0]),
+                         ["block", "id", "position"])
+        self.assertEqual(state["nearby"]["blocks"][0]["id"], "minecraft:chest")
         self.assertEqual(state["nearby"]["mobs"][0]["type"], "minecraft:cow")
+        self.assertEqual(state["nearby"]["mobs"][0]["distance"], "4.2")
 
     def test_one_dead_reader_degrades_that_field_only(self):
         # A mod endpoint being down must not blank the snapshot: the script can
@@ -117,7 +135,8 @@ class SnapshotIsReadOnlyTest(unittest.TestCase):
         decoded = json.loads(text)
         decoded["state"]["health"] = -1
         decoded["state"]["inventory"].clear()
-        decoded["state"]["nearby"]["blocks"].append({"type": "planted"})
+        decoded["state"]["nearby"]["blocks"].append(
+            {"id": "planted", "block": "planted", "position": {"x": 0, "y": 0, "z": 0}})
 
         self.assertEqual(json.dumps(state, sort_keys=True),
                          json.dumps(before, sort_keys=True),

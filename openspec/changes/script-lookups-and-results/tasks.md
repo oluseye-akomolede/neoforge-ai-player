@@ -6,7 +6,8 @@ document work that preceded them, kept so the reasoning is not lost.
 
 ## 1. Design approved
 
-- [x] 1.1 `design.md` passes `/egm-review` as a document: every `file:line`
+- [x] 1.1 `design.md` passes review as a document (minecraft-wt-qwen:
+      371095c, 5ae0372, a0146b0, b40f71b): every `file:line`
       resolves, every recommendation has its alternative and why it lost, and
       §3's loop bound has a number that could be wrong.
 - [ ] 1.2 Owner has read §3's cost sentence (up to 4 planner calls per hour per
@@ -57,6 +58,13 @@ document work that preceded them, kept so the reasoning is not lost.
       list. Pinned by a test; the mutant returns `[]` and must red it.
 - [ ] 2.5 The dry tick sees identical lookups. Pinned by a test running the
       same script dry and live against one snapshot.
+- [x] 2.6 **The snapshot fixture is copied from the producer, not written
+      from memory.** `agent/test_snapshot.py` carried a block field `type`
+      the mod has never sent (blocks send `{id, block, position}`; entities
+      send `type` plus a STRING `distance`). It now uses `NearbyBlockIndex`'s
+      real output, and `test_state_carries_the_contract_fields` pins the exact
+      block key set, so a re-invented field reds instead of drifting. KILLS:
+      giving a block a `type` key, or `distance` a float, reds it.
 
 ## 3. Results (c)
 
