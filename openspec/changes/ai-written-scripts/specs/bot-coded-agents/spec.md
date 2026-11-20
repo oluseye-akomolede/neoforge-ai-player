@@ -900,10 +900,31 @@ then read as "all actions refused" and fell back to the planner, so nothing was
 said in game. The planner prompt offers `api.say` and `api.send`; a planner
 script that chats must be able to chat.
 
-The runner's own rates bound this and remain the only bound: `api.say` 30/min
-and `api.send` 20/min per bot, enforced inside the runner (contract §8), so a
-script that calls them too often is already rate-limited before its records
-reach the agent. The agent adds no second limiter.
+The runner bounds this and remains the only bound, but what it enforces today
+is **a per-tick cap of 8** (`MAX_HOST_CALLS`, `binding.js`), not a hard
+per-minute one. The `say:30/min` and `send:20/min` counters
+(`binding.js`, `actionRates`) prune entries older than 60 s **relative to now**,
+so after 60 s of silence the array is empty and a full window is available
+again. A script that says 8 lines once a minute — the cadence of the
+2026-11-20 trial — is therefore never rate-limited: about 480 lines an hour.
+
+Measured at runner `7855a39`, one long-lived `botState` as the sandbox holds it:
+
+| Trace | Accepted | Rejected |
+|---|---|---|
+| 8 `say`/tick, ticks 1 s apart, 10 ticks | 30 | 50 |
+| 8 `say`/tick, ticks 0.5 s apart, 20 ticks | 30 | 130 |
+| 10 ticks, one tick per full minute | 800 | 0 |
+
+**Known gap, not fixed here.** The refill-on-silence window is the same defect
+the runner already fixed for `api.log` at `6a755d6` (60 ticks x 8 lines
+produced 0 drops); it remains live for `say`/`send`. The fix belongs in the
+runner, beside the log one, and is drafted separately rather than made in this
+change. Until then the spec MUST NOT claim a per-minute guarantee.
+
+The agent adds no second limiter: the bound belongs in the runner, and a
+limiter in the agent would be a second bound to keep in step that drops what
+the runner allowed.
 
 #### Scenario: A say action is delivered through the chat path
 - **GIVEN** a tick whose script called `api.say("all clear")`
@@ -928,4 +949,12 @@ reach the agent. The agent adds no second limiter.
 - **GIVEN** a script that calls `api.say` and `api.send`
 - **WHEN** it is run under a dry tick
 - **THEN** no chat message MUST be sent and no message MUST reach another bot
+- **AND** the script's `last_deliveries` MUST be empty
 - **AND** the dry tick's question MUST remain "can this script run" only
+
+The runner does not read the dry flag (at `7855a39`, `grep -rn "dry" src/`
+finds nothing), so this holds only because the script tick clears
+`last_deliveries` when it is dry. That clear MUST be exercised by a test that
+drives a **real** dry tick carrying `say`/`send` records, so the records reach
+the routing and only the clear can empty them; a test that mocks the script
+tick cannot hold this line, because the records it returns are never routed.

@@ -533,6 +533,44 @@ class ScriptObservabilityTest(unittest.TestCase):
         self.assertEqual(chat.call_count, 2)
         self.assertIn("delivery of say failed", " ".join(str(c) for c in p.call_args_list))
 
+    def test_a_real_dry_tick_clears_its_deliveries(self):
+        # F2 (review 11c71ac): the dry guarantee is load-bearing in the spec,
+        # and the ONLY thing enforcing it is the clear in ScriptTick.tick.
+        # A mocked ScriptTick cannot hold that line: the record it returns is
+        # never routed, so it stays green with the clear deleted. This drives
+        # the REAL tick with dry=True and say/send records, so the records DO
+        # reach the routing and only the clear can empty the list.
+        # KILLS: `if self._dry: self.last_deliveries = []` -> `if False:`.
+        import script_tick
+
+        def _post(path, data=None, **kw):
+            return self._wire(actions=[
+                {"seq": 1, "call": "say", "text": "LEAK"},
+                {"seq": 2, "call": "send", "to": "S1", "msg": "LEAK"}])
+
+        st = script_tick.ScriptTick(_Any(), "Scout", "x", dry=True, post=_post)
+        handled, _actions, _refusals, _detail = st.tick()
+        self.assertEqual(st.last_deliveries, [],
+                         "a dry tick routed say/send into last_deliveries: "
+                         "a rehearsal would speak in game")
+        self.assertTrue(handled, "the record still has to bind; only the "
+                                 "delivery is withheld")
+
+    def test_the_same_records_are_delivered_when_not_dry(self):
+        # The positive control for the test above. Without it, that test passes
+        # on any code that never delivers anything, which is the failure this
+        # whole row exists to fix.
+        import script_tick
+
+        def _post(path, data=None, **kw):
+            return self._wire(actions=[
+                {"seq": 1, "call": "say", "text": "hi"},
+                {"seq": 2, "call": "send", "to": "S1", "msg": "yo"}])
+
+        st = script_tick.ScriptTick(_Any(), "Scout", "x", post=_post)
+        st.tick()
+        self.assertEqual([d["seq"] for d in st.last_deliveries], [1, 2])
+
     def test_a_dry_tick_never_reaches_the_delivery_path(self):
         # A rehearsal must not speak. The guarantee is structural: the dry
         # tick is a SEPARATE method that drops every action and never calls
