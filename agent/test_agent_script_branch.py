@@ -841,15 +841,22 @@ class DryTickTest(unittest.TestCase):
         self.a._script_hold_seq = 0
         self.a._script_provenance = set()
 
-    def _script_tick_stub(self, *, outcome="ok", actions=None, memory=None):
+    def _script_tick_stub(self, *, outcome="ok", actions=None, memory=None,
+                          refusals=None):
         """Build a ScriptTick stand-in that looks like the real one.
 
         Returns `(handled, actions, refusals, detail)` exactly as
         script_tick.py:283 does, and exposes `.memory` the way the caller
         reads it after a tick.
+
+        `outcome="all actions refused"` reproduces the real runner verdict for
+        a script that ran cleanly but emitted nothing dispatchable: handled is
+        False and refusals is non-empty (script_tick.py:386-391).
         """
         calls = []
         actions = [{"call": "do", "args": {}}] if actions is None else actions
+        refusals = [] if refusals is None else refusals
+        ran = outcome in ("ok", "all actions refused")
 
         class Stub:
             def __init__(_self):
@@ -859,8 +866,7 @@ class DryTickTest(unittest.TestCase):
 
             def tick(_self):
                 calls.append(1)
-                b = outcome == "ok"
-                return b, (actions if b else []), [], outcome
+                return (outcome == "ok"), (actions if ran else []), refusals, outcome
 
         stub = Stub()
         self.a._dry_script_factory = lambda *a, **k: stub
@@ -878,20 +884,53 @@ class DryTickTest(unittest.TestCase):
         self.assertIs(ok, False)
         self.assertEqual(len(calls), 1)
 
-    def test_dry_tick_returns_the_bot_memory_unchanged(self):
-        """A dry tick whose script remembers must not adopt that memory.
+    def test_dry_tick_does_not_adopt_the_scripts_memory(self):
+        """A dry tick whose script remembers must leave no trace of it.
 
         The stub returns a NON-None memory deliberately: a None here would let
         the `if result.memory is not None` guard at script_tick.py:364 pass
         without being exercised, which is the vacuous case.
+
+        This scans the agent's whole instance namespace for the dry tick's
+        memory string rather than naming one attribute. The first version
+        asserted on `self.a._script_memory` -- an attribute that exists only in
+        a comment at agent.py:3041 -- so it compared the test's own value to
+        itself and stayed GREEN under the real adoption mutant (reviewer's F2,
+        which I reproduced: an adoption mutant left this method untouched).
+
+        `BotRunner` has no `_memory` field at all; memory lives on the
+        ScriptTick instance (script_tick.py:264) and is adopted at :364. So the
+        property to pin is that the dry tick's instance dies with no reachable
+        reference to its memory left on the agent.
         """
-        before = self.a._script_memory = "the bot's actual memory"
-        stub, _ = self._script_tick_stub(outcome="ok", memory="WRITTEN BY DRY TICK")
+        marker = "WRITTEN BY DRY TICK"
+        stub, _ = self._script_tick_stub(outcome="ok", memory=marker)
 
         self.a._dry_tick("api.remember('x')")
 
-        self.assertEqual(self.a._script_memory, before,
-                         "the dry tick adopted memory that must have been discarded")
+        leaked = [k for k, v in vars(self.a).items()
+                  if isinstance(v, str) and marker in v]
+        self.assertEqual(leaked, [],
+                         f"the dry tick left its memory on {leaked}; the dry "
+                         f"ScriptTick must die without being adopted")
+
+    def test_a_say_only_script_still_binds(self):
+        """F1: 'all actions refused' is a script that RAN, not a failure.
+
+        A planner-authored script whose purpose is `api.say` emits actions the
+        binding layer refuses by design (script_tick.py:386-391 returns
+        handled=False, detail="all actions refused"). A dry tick that read
+        `handled` as `ok` would refuse to bind every say/send/log script, which
+        is most of what a planner would write.
+        """
+        stub, calls = self._script_tick_stub(
+            outcome="all actions refused",
+            actions=[{"kind": "say", "text": "hello"}],
+            refusals=[{"index": 0, "reason": "not a dispatchable do"}])
+        ok = self.a._dry_tick("api.say('hello')")
+        self.assertIs(ok, True,
+                      "a say-only script must bind; it ran cleanly")
+        self.assertEqual(len(calls), 1)
 
     def test_dry_tick_never_touches_the_live_rate_window(self):
         """The dry tick evaluates on its own botState, so live is untouched."""

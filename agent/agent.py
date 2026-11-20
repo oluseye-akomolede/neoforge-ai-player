@@ -2996,16 +2996,22 @@ Respond with ONLY a JSON array. Example:
             src/binding.js:244-251), so a tick whose return value is ignored
             already reaches nothing.
 
-          - SPEND THE RATE BUDGET. `acceptAction` (binding.js:154-174) filters
-            then either rejects or pushes into `botState.actionTimes`, per-BOT
-            state that survives a tick by design (binding.js:45-52). It has no
-            check-without-spending mode, so a dry tick sharing the live window
-            could only avoid spending by never calling `api.do` -- which would
-            defeat the gate. Instead the dry tick evaluates against a THROWAWAY
-            botState: `createApi` takes `botState` as a parameter
-            (binding.js:126-136) and the default exists only for a direct
-            caller. So the live window is neither read nor written, and a dry
-            tick can never be rate-limited by the bot's own spent budget.
+          - SPEND THE RATE BUDGET. **The dry tick DOES spend the live bot's
+            rate window, and this implementation cannot prevent it.** An
+            earlier revision of this docstring claimed a throwaway `botState`
+            made the cost zero. That was wrong, and wrong in the direction that
+            hides a cost: `ScriptTick` does not evaluate JS in-process, it
+            POSTs to the runner (script_tick.py:333), and the `botState` lives
+            inside that service -- one per cached worker (engine.js:238,
+            passed unchanged at :756; worker cached per bot at fleet.js:166).
+            The agent cannot reach it, so it cannot pass a different one.
+            `createApi` taking `botState` as a parameter (binding.js:132-136)
+            is true and irrelevant from here.
+            Consequence, stated rather than hidden: a dry tick may spend up to
+            8 of the bot's 30/min `do` slots, so rejected scripts can
+            rate-limit a working one. Whether to accept that, or to give the
+            runner a real dry mode, is an open decision for the lead -- it is
+            not fixed in this revision.
 
           - CARRY MEMORY. `api.remember` writes per-tick `state.memoryOut`
             (binding.js:314), which the sandbox discards -- but script_tick.py
@@ -3017,6 +3023,17 @@ Respond with ONLY a JSON array. Example:
         host_calls_exceeded, cpu_exceeded, no script support -- is False, and
         the caller falls back to the plain planner while keeping any previously
         bound script in force.
+
+        `ok` is NOT `handled`. Those two came apart on the `all actions
+        refused` path (script_tick.py:386-391): a script that runs cleanly and
+        emits only actions the binding layer will not take returns
+        `handled=False` with detail "all actions refused". That is a real
+        script doing a real thing, and a dry tick that read `handled` would
+        refuse to bind it -- so a planner-authored `api.say` script, whose
+        every action is undispatchable by design, could never be bound at all.
+        A dry tick's question is "can this script run against this bot", not
+        "did it queue a dispatchable action"; the answer to the second is no
+        for the whole say/send/log family and that is not a failure.
         """
         if not source:
             return False
@@ -3033,10 +3050,17 @@ Respond with ONLY a JSON array. Example:
         except Exception as e:  # noqa: BLE001
             print(f"[{self.name}/script] dry tick unavailable: {e}")
             return False
-        if not handled:
+        # A post-run binding refusal is NOT a dry-tick failure: the script ran.
+        # Read the refusal apart from a genuine non-run so an `api.say` script,
+        # all of whose actions are deliberately undispatchable, still binds.
+        if not handled and detail != "all actions refused":
             print(f"[{self.name}/script] dry tick failed ({detail}); "
                   f"not binding the written script")
             return False
+        if not handled:
+            print(f"[{self.name}/script] dry tick ok (ran; "
+                  f"{len(refusals)} action(s) refused at binding, none dispatched)")
+            return True
         # Deliberately NOT adopted: `st` owns its own memory and it dies here.
         # Nothing is assigned to self._script_memory.
         print(f"[{self.name}/script] dry tick ok "
