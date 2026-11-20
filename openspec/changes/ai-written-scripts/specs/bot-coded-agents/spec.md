@@ -881,5 +881,3 @@ one-program reply, which needed 6144.
 - **GIVEN** the model the agent runs against, asked the real PLAN prompt
 - **WHEN** the plan budget is chosen
 - **THEN** it MUST exceed the largest `eval_count` observed at a higher budget
-- **AND** the recorded measurement MUST say how many calls were cut off at the
-  previous budget

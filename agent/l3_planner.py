@@ -521,9 +521,9 @@ def call_plan(model: str, bot_name: str, task: str,
     # is not a usable answer, whatever it contains. check it first, always.
     if isinstance(body, dict) and body.get("done_reason") == "length":
         log.warning(
-            "[%s] L3 PLAN call hit its token limit (done_reason=length, "
-            "eval_count=%s, %d chars of content) — raising _PLAN_NUM_PREDICT "
-            "(%d) does not make this answer usable",
+            "[%s] L3 PLAN reply stopped at the token limit (done_reason=length, "
+            "eval_count=%s, %d chars of content) and is unusable as it stands; "
+            "the budget was %d",
             bot_name, body.get("eval_count"),
             len((body.get("message") or {}).get("content") or ""),
             _PLAN_NUM_PREDICT)
@@ -1343,17 +1343,6 @@ _TAIL_CHARS = 200
 # Changing this MUST NOT change any other call's num_predict.
 _SCRIPT_NUM_PREDICT = 6144
 
-# The plan call's budget. Measured 2026-11-20 22:0xZ against the model the
-# agent actually uses (qwen3.8:27b-q4_K_M via the test gateway), with the real
-# _PLAN_SYSTEM_PROMPT: at 1024, 4 of 6 calls were cut off by the limit, two of
-# them with ZERO content. The cost is the model's thinking block, which arrives
-# despite think=false and is not bounded by anything we control: 2093 to 8482
-# characters across six calls, a 4x swing. At 4096 all 3 sampled calls finished
-# (eval_count 698, 959, 2396), so 4096 leaves room over the worst seen while
-# staying well inside _SCRIPT_NUM_PREDICT's footprint. This is a budget for
-# thinking we cannot see, not slack for a longer plan.
-_PLAN_NUM_PREDICT = 4096
-
 # The classify call's budget. The answer is ~20 characters of JSON, but a model
 # served at temperature 0 can still spend tokens restating the question before
 # it emits them, and `format: "json"` constrains the SHAPE of the reply, not
@@ -1380,10 +1369,16 @@ _CLASSIFY_NUM_PREDICT = 128
 # this model still emits thinking for the plan prompt; that is measured, not
 # explained, and is out of scope for this fix.
 #
+# Across all nine calls measured, the thinking block ran 2093-8482 chars: a 4x
+# swing with nothing in this code controlling it. That is a budget for thinking
+# we cannot see, not slack for a longer plan.
+#
 # At 4096 the same goals stopped at eval 1040, 2396 (thinking 3515, 8482) with
-# the plan intact. 4096 is four times the largest plan seen and matches the
-# ceiling of what thinking has been observed to spend. Decode at 32-37 tok/s
-# puts the worst case near 120 s, inside the call timeout.
+# the plan intact. 4096 is four times the largest plan seen, clears the largest
+# eval_count measured (2396), and matches the ceiling of what thinking has been
+# observed to spend. Decode at 32-37 tok/s puts the worst case near 120 s,
+# inside the call timeout; the value also stays well inside the SCRIPT call's
+# 6144 footprint.
 #
 # This constant is the PLAN call's only. The SCRIPT call has its own
 # (_SCRIPT_NUM_PREDICT); a shared figure would be a coincidence, not a budget.
