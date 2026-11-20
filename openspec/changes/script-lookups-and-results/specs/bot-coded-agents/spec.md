@@ -117,22 +117,31 @@ trigger: it stores a value, and the trigger remains done/error/escalate.
 - **WHEN** the agent processes the failure
 - **THEN** a result MUST be delivered to the planner
 
-#### Scenario: A loop cannot re-trigger the planner every tick
-- **GIVEN** ten distinct scripts, each calling `api.result({ done: true })` on
-  its first tick
-- **WHEN** they are bound and run back to back within one hour, each released
-  by its own completion and the next bound in its place
-- **THEN** at most 4 results MUST reach the planner
-- **AND** the results over the cap MUST be queued and the suppressed call
-  logged with the cap named
-- **AND** the fifth script MUST NOT start a planner call even though its
-  binding and release are the same shape as the first
+#### Scenario: The cooldown is the binding rate limit
+- **GIVEN** a bot with a script result delivered at some moment
+- **WHEN** further script results are pending for that bot
+- **THEN** no result-triggered planner call MUST start within 900 seconds of
+  the last one
+- **AND** at most one such call MUST start per 900 seconds per bot, so at most
+  four in any rolling hour
+- **AND** a result held back by the cooldown MUST stay pending, not be dropped
 
-The shape is deliberate: a reported `done: true` releases the binding, so "ten ticks of
-one script" can never reach the cap — only ten separate scripts can. That makes
-this scenario the bind/release bypass test, and it is also what proves the
-cooldown is **per bot** rather than per script: ten different scripts must
-still be held off, so any implementation keyed on the script fails it.
+#### Scenario: The cooldown is per bot, not per script
+- **GIVEN** two bots, each with a script result pending
+- **WHEN** both results are delivered within the same 15 minutes
+- **THEN** each bot MUST get its planner call, because one bot's cooldown MUST
+  NOT hold back another bot's result
+
+#### Scenario: The hourly cap is a backstop
+The cap bounds the rate even if the cooldown is shortened or removed; on its
+own, with the cooldown at 900 seconds, the cooldown already holds the rate to
+four per hour.
+- **GIVEN** the 15-minute cooldown is short enough that four result-triggered
+  planner calls for one bot fall inside one rolling hour
+- **WHEN** a fifth result is pending for that bot inside the same hour
+- **THEN** the fifth call MUST NOT start
+- **AND** the fifth result MUST stay pending, not be dropped
+- **AND** the suppressed call MUST be logged with the cap named
 
 #### Scenario: A result has a size cap
 - **GIVEN** a script calling `api.result` with more than 2 KiB of JSON
