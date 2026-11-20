@@ -978,6 +978,19 @@ class TestTheExtractorAndTheDiagnosisShareOneRule(unittest.TestCase):
         got = l3_planner.extract_script_block(text)
         self.assertEqual(got, "const s = '```';\nreturn [];")
 
+    def test_a_closing_fence_followed_by_prose_still_yields_the_script(self):
+        """M-2 (reviewer on da97977). The reviewer diffed the old regex against
+        the da97977 walk and measured this shape going from 'return 1;' to
+        None: a model that writes a good block and then explains itself used to
+        be taken, and my walk threw the whole program away over a sentence.
+        KILLS: requiring the closing fence to end its line, which is the
+        regression da97977 introduced."""
+        text = "```js\nreturn 1;\n``` that's the script\n"
+        got = l3_planner.extract_script_block(text)
+        self.assertEqual(got, "return 1;")
+        d = l3_planner.fence_diagnosis(text)
+        self.assertNotIn("missing-closing-fence", d, d)
+
     def test_a_template_literal_survives_extraction(self):
         """The same defect in the form a planner actually writes."""
         text = "```js\napi.say(`hello ${bot}`);\nreturn [];\n```\n"

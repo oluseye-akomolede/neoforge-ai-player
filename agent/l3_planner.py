@@ -1279,7 +1279,9 @@ _TAIL_CHARS = 200
 # is a whole program rather than a short answer: at the plan's 1024 tokens a
 # correct script hit the limit mid-block on 2026-11-20 19:10Z (thinking was off,
 # so the budget was all content) and the unclosed fence read as "no block".
-# 4096 leaves room to finish without putting the reply near _OLLAMA_TIMEOUT.
+# 6144 fits inside the call timeout: at 32-37 tok/s that is ~166-192 s of
+# decode plus a <=68 s cold load, under 420 s. The window is not a constraint
+# (OLLAMA_CONTEXT_LENGTH=114688 holds prompt + reply), so this is the cap.
 # Changing this MUST NOT change any other call's num_predict.
 _SCRIPT_NUM_PREDICT = 6144
 
@@ -1322,15 +1324,68 @@ def tail_reply(raw: str, n: int = _TAIL_CHARS) -> str:
 # extracted, or the reverse. Two answers to one question is how a warning ends
 # up naming a cause the extractor never acted on.
 #
-# A fence token is ``` plus an optional language tag; it ENDS the line (only
-# trailing spaces or \r may follow). Only a token with no tag closes a block;
-# a tagged token opens a new one. This is the rule both functions use.
-_FENCE_TOKEN_RE = re.compile(r"```([A-Za-z0-9_+.-]*)[ \t]*\r?(?=\n|$)")
+# An OPENING token: ``` plus a language tag, ending its line -- a tag is a whole
+# word, so "```js that's it" is not an opening fence for js.
+_OPEN_FENCE_RE = re.compile(r"```([A-Za-z0-9_+.-]+)[ \t]*\r?(?=\n|$)")
+# A bare ``` that CLOSES an open js block.
+#
+# Two constraints pull against each other, and both are real replies:
+#   - a model that finishes a good block then explains itself on the same line
+#     ("... ``` that's the script") is handing us the script; the pre-da97977
+#     regex took it, and refusing it throws away a whole correct program.
+#   - a ``` inside the script's own text ("const s = '```';") is not a fence;
+#     treating it as one returns a truncated program that still binds.
+# What separates them is which quote it sits in: a fence immediately inside a
+# ' or " or ` that is still open belongs to the script. Scanning for the first
+# bare fence NOT inside an open string is a cheap stand-in for that, and it is
+# what the old lazy regex approximated by taking the first ``` anywhere.
+_CLOSE_FENCE_RE = re.compile(r"```")
 _JS_TAGS = ("js", "javascript")
 
 
+def _find_close(text: str, start: int) -> int:
+    """Index of the bare fence that closes an open js block, or -1.
+
+    Walks from `start` tracking whether a ' " or ` has been left open on the
+    fence's own line, so a ``` inside a string in the script is skipped. A
+    fence at the start of a line, or after only whitespace, always closes.
+    """
+    pos = start
+    quote = ""
+    while pos < len(text):
+        m = _CLOSE_FENCE_RE.search(text, pos)
+        if m is None:
+            return -1
+        # A tagged fence is a new opening, never a closer: "```js" while a js
+        # block is open is the model starting another block, not ending this.
+        if text[m.end():m.end() + 1].isalnum() or text[m.end():m.end() + 1] == "_":
+            pos = m.end()
+            continue
+        # Recompute the quote state from the start of this line up to the fence;
+        # scripts are short and this keeps the two rules independent.
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        prefix = text[line_start:m.start()]
+        q = ""
+        i = 0
+        while i < len(prefix):
+            ch = prefix[i]
+            if ch == "\\" and q:
+                i += 2
+                continue
+            if q:
+                if ch == q:
+                    q = ""
+            elif ch in "'\"`":
+                q = ch
+            i += 1
+        if not q:
+            return m.start()
+        pos = m.end()
+    return -1
+
+
 def _scan_fence_blocks(text: str):
-    """Yield (opens_js, closes_js, body) for each complete js block.
+    """Yield (opens_js, closes_js, body) as each js block closes.
 
     The walk is left to right with an inside flag: a tagged fence opens only
     when the tag is js/javascript and nothing is open, a bare fence closes only
@@ -1339,47 +1394,67 @@ def _scan_fence_blocks(text: str):
     is a bare fence, so a tally counts it as a js close and hides a genuinely
     missing one (python+python+unclosed js once read "opened 1, closed 2").
 
-    Yields nothing for an unclosed block: it contributes counts, not a body.
-    Returns the counts in the tail value so callers can report them; use the
-    generator form via _fence_census when only the counts are needed.
+    A closing fence may be followed by prose on its own line: the script is
+    complete at the fence, and what the model says after it is not part of it.
+    A bare ``` inside an open js block always closes; that is the same rule the
+    pre-da97977 regex used, and it means a template literal containing a fence
+    ends the block early. Callers get the bytes up to the fence, exactly as the
+    old extractor did.
+
+    Yields nothing for a block that never closes; those contribute counts only.
+    Use _fence_census when only the counts are needed.
     """
     opens_js = closes_js = 0
     inside_js = False
     open_start = 0
-    for m in _FENCE_TOKEN_RE.finditer(text):
-        tag = m.group(1).lower()
+    pos = 0
+    while pos < len(text):
         if inside_js:
-            if not tag:
-                closes_js += 1
-                inside_js = False
-                yield opens_js, closes_js, text[open_start:m.start()]
-        elif tag in _JS_TAGS:
-            opens_js += 1
-            inside_js = True
-            # The body starts after the fence's own line terminator, so the
-            # newline that ends the ```js line is not part of the script. The
-            # old regex had it outside the capture group; keeping that means
-            # the extracted source is the same bytes as before.
-            open_start = m.end()
-            if text.startswith("\r\n", open_start):
-                open_start += 2
-            elif text.startswith("\n", open_start):
-                open_start += 1
+            close_at = _find_close(text, pos)
+            if close_at < 0:
+                break
+            closes_js += 1
+            inside_js = False
+            yield opens_js, closes_js, text[open_start:close_at]
+            pos = close_at + 3
+        else:
+            m = _OPEN_FENCE_RE.search(text, pos)
+            if m is None:
+                break
+            if m.group(1).lower() in _JS_TAGS:
+                opens_js += 1
+                inside_js = True
+                # The body starts after the fence's own line terminator, so the
+                # newline that ends the ```js line is not part of the script.
+                open_start = m.end()
+                if text.startswith("\r\n", open_start):
+                    open_start += 2
+                elif text.startswith("\n", open_start):
+                    open_start += 1
+            pos = m.end()
 
 
 def _fence_census(text: str) -> tuple[int, int, bool]:
     """(opens_js, closes_js, still_open) using the same walk as extraction."""
     opens_js = closes_js = 0
     inside_js = False
-    for m in _FENCE_TOKEN_RE.finditer(text):
-        tag = m.group(1).lower()
+    pos = 0
+    while pos < len(text):
         if inside_js:
-            if not tag:
-                closes_js += 1
-                inside_js = False
-        elif tag in _JS_TAGS:
-            opens_js += 1
-            inside_js = True
+            close_at = _find_close(text, pos)
+            if close_at < 0:
+                break
+            closes_js += 1
+            inside_js = False
+            pos = close_at + 3
+        else:
+            m = _OPEN_FENCE_RE.search(text, pos)
+            if m is None:
+                break
+            if m.group(1).lower() in _JS_TAGS:
+                opens_js += 1
+                inside_js = True
+            pos = m.end()
     return opens_js, closes_js, inside_js
 
 

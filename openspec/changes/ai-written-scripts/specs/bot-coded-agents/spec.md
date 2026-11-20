@@ -733,3 +733,36 @@ The subject is the plan call's outgoing request: a test reads `num_predict`
 off what the plan call actually sent and fails if it is anything but 1024.
 Stating it as "a change to one must not change the other" named no request to
 inspect, so nothing could falsify it.
+
+### Requirement: One Rule Decides What Closes A Script Block
+
+The extractor and the warning that describes it MUST read the same fence rule,
+and the rule MUST accept a script the model has finished writing. Two
+definitions of a closing fence is how a reply gets reported "unusable" while
+being extractable, or the reverse: the warning names a cause the extractor
+never acted on.
+
+A closing fence MUST end the script even when the model writes more text after
+it on the same line, because the script was already complete at the fence. What
+the model adds afterwards is commentary, not code. Rejecting that reply discards
+a whole correct program over a sentence.
+
+The rule MUST NOT accept as a script a block that never closed, and MUST NOT
+treat a fence belonging to a non-js block as closing a js one.
+
+#### Scenario: A closing fence followed by prose on its line still yields the script
+
+- **GIVEN** a SCRIPT reply containing a js block whose closing fence is
+  followed on the same line by explanatory text
+- **WHEN** the reply is extracted
+- **THEN** the script MUST be the js block's body
+- **AND** the trailing text MUST NOT be part of it
+- **AND** the warning MUST NOT report a missing closing fence
+
+#### Scenario: A block that never closed is not a script
+
+- **GIVEN** a SCRIPT reply whose js fence is never closed
+- **WHEN** the reply is extracted
+- **THEN** extraction MUST yield no script
+- **AND** the warning MUST name a missing closing fence
+- **AND** that holds however many fences appear before the js one
