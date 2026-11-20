@@ -490,3 +490,48 @@ goal is no longer planning, so there is nothing left to contend with.
 - **GIVEN** a bot with a bound script when a chat goal arrives
 - **WHEN** the planner for that goal authors no script
 - **THEN** the pre-existing script stays held for that goal, as today
+
+### Requirement: Exactly One Driver Per Goal
+After the goal's own script is bound and its hold released, one thing drives the
+bot and only one. If the script is bound, the orchestrator MUST NOT go on to
+execute the step list from the same `call_plan` reply, and the goal MUST close
+as handed over to the script, recording that on its status line in the log. A
+reply that both binds a script and executes its own steps would put the script's
+ticks and the L3 execution loop in competition, issuing directives against the
+same bot at the same time.
+
+**This is the same trap as the hold, one layer up.** The hold releases because
+the script now drives the goal. If the orchestrator keeps stepping as well, then
+releasing the hold has not handed over control — it has duplicated it. The two
+requirements are one mechanism and MUST be implemented together: release the
+hold *because* nothing else drives, and stop driving *because* the script does.
+
+**The step list in a script reply is not wasted, but it is not executed.**
+This requirement constrains execution, not what may be recorded. What the
+recorded plan may contain is fixed by the DPO requirement: nothing a planner
+script touches may enter a record the trainer reads.
+
+**A reply with no script is untouched.** With no script, the orchestrator
+executes the reply's steps exactly as it does today, including the log lines
+that record them.
+
+#### Scenario: A script reply means no L3 execution for that goal
+- **GIVEN** a chat goal to a bot with no hand-written binding
+- **WHEN** `call_plan` replies with a script and that script passes its dry tick
+- **THEN** the script is bound and the goal's hold released
+- **AND** no `L3 EXEC` lines are logged for that goal after the bind
+- **AND** the goal closes as handed to the script, said plainly on its status
+  line in the log
+
+#### Scenario: A reply without a script still executes its steps
+- **GIVEN** a chat goal to a bot with no hand-written binding
+- **WHEN** `call_plan` replies with steps and no script
+- **THEN** the orchestrator executes those steps as it does today
+- **AND** the `L3 EXEC` lines for the goal appear as they do today
+
+#### Scenario: A failed dry tick leaves the orchestrator in charge
+- **GIVEN** a `call_plan` reply that carries a script
+- **WHEN** that script fails its dry tick
+- **THEN** nothing is bound and this path releases no hold
+- **AND** the orchestrator executes the reply's steps, so the goal is still
+  driven by exactly one thing
