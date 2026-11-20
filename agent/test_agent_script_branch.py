@@ -1321,6 +1321,45 @@ class ScriptResultReachesTheSlotTest(unittest.TestCase):
         self.assertFalse(allowed)
         self.assertEqual(reason, "goal-changed")
 
+    # -- 3.5 / 3.6: turning a pending result into exactly one call -----
+    def test_a_pending_result_starts_one_planner_call_carrying_the_result(self):
+        # KILLS: parking the result and never delivering it -- the defect the
+        # lead found in the design, where a done script's result only reached
+        # the planner if a player happened to speak.
+        self.a._plan_steps = []
+        self.a._result_slot.store("", {"text": "a red flower"}, "done")
+        with mock.patch.object(self.agent_mod.threading, "Thread") as Thread:
+            with mock.patch("builtins.print"):
+                self.a._maybe_plan_on_result()
+        Thread.assert_called_once()
+        args = Thread.call_args.kwargs["args"]
+        self.assertIn("a red flower", args[0],
+                      "the result must reach the planner prompt, not just the log")
+        self.assertFalse(self.a._result_slot.has_pending(),
+                         "a delivered result must be consumed, not re-delivered")
+
+    def test_no_pending_result_makes_no_call(self):
+        # The property: a pass with nothing pending starts no call. NOTE
+        # (measured): the early `has_pending` guard in `_maybe_plan_on_result`
+        # is redundant with the `no-result` branch of `slot.may_call`, so
+        # deleting the guard does NOT red this test -- it is an equivalent
+        # mutant. The guard is kept as defence in depth, not as the enforcement.
+        self.a._plan_steps = []
+        with mock.patch.object(self.agent_mod.threading, "Thread") as Thread:
+            self.a._maybe_plan_on_result()
+        Thread.assert_not_called()
+
+    def test_a_result_arriving_mid_plan_is_queued_not_injected(self):
+        # KILLS: starting a second planner while one is live, which would put
+        # two planners on one bot. The result must survive the wait.
+        self.a._plan_steps = ["step-1"]
+        self.a._result_slot.store("", {"text": "x"}, "done")
+        with mock.patch.object(self.agent_mod.threading, "Thread") as Thread:
+            self.a._maybe_plan_on_result()
+        Thread.assert_not_called()
+        self.assertTrue(self.a._result_slot.has_pending(),
+                        "a queued result must stay parked for a later pass")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
