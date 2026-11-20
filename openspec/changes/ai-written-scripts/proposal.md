@@ -52,6 +52,16 @@ existing change does not say. Each is the subject of one ADDED requirement.
    out-of-band author). Nothing says the L3 planner, while planning a goal, may
    emit a script *as the plan* instead of a list of directives. Step (a) is
    exactly that: a planning outcome of kind "here is a script for this goal".
+   The planner gains a script output kind — a prompt and return-contract change
+   in `agent/planner.py`, which is in scope for step (a) because it *is* the
+   feature; `decompose` and `orchestrate` return step strings today.
+
+   **The planner's script lives in memory, not on disk.** The agent has no
+   write path for script source (see requirement 4), so the emitted source is
+   carried in the process and built into a `ScriptTick` directly. This keeps
+   `bindings.json` meaning only the hand-written baseline, makes condition 2
+   answerable from that file alone, and replaces the older "restart freezes a
+   written script" cost with the milder "restart drops it".
 
 2. **A dry tick before binding — and binding is a REBIND.**
    "Authoring Rejects Code That Cannot Run" requires the proposal to *parse* and
@@ -91,7 +101,7 @@ existing change does not say. Each is the subject of one ADDED requirement.
    to script at all. Without a rule, the choice is the model's whim.
 
    The rule is stated as conditions, and the condition is **per BOT**: binding
-   is `bindings.get(self.name)` (`agent.py:3027`), with no goal-to-script
+   is `bindings.get(self.name)` (`agent.py:3113`), with no goal-to-script
    association anywhere, so a per-goal condition would be vacuously satisfiable
    and would pretend to an association the code does not have.
 
@@ -107,19 +117,18 @@ existing change does not say. Each is the subject of one ADDED requirement.
    previously written script is the agent's own prior output and displacing it
    is the point of step (a).
 
-   **Provenance is process-scoped, and that is a stated decision, not a gap.**
-   The agent has no write path for script source at all — `scripts_dir` comes
-   from `SCRIPTS_DIR` (`agent.py:3006`), and the only accesses are reading
-   `bindings.json` (`:3011`) and joining the filename (`:3035`). That directory
-   is a ConfigMap mount: shared, and surviving restart. The record of what the
-   agent wrote does not survive. So after a restart an agent-written script must
-   be treated as hand-written and is not displaced. A restart is a deployment
-   boundary; the script bound after one arrived by ConfigMap change, a human
-   action. The cost is accepted explicitly: a bot cannot replace its own
-   pre-restart script until a human unbinds it. Unverifiable authorship would be
-   worse — it would let a stale script outlive the intent that produced it. An
-   in-artefact marker is not open to this change because there is no write path
-   to the artefact; that belongs to a later step's storage design.
+   **Provenance is read from `bindings.json`, because the planner's script
+   lives in memory.** The agent has no write path for script source at all —
+   `scripts_dir` comes from `SCRIPTS_DIR` (`agent.py:3092`), and the only
+   accesses are reading `bindings.json` (`:3097`) and joining the filename
+   (`:3121`). So the emitted script is carried in the process and never added to
+   that file, which therefore names only hand-written scripts a human deployed.
+   Condition 2 asks "does `bindings.json` name a script for this bot?". A yes is
+   a human deployment a planner must not overwrite; a no leaves the bot free for
+   a written script. On restart the in-memory script is gone and the bot falls
+   back to its ConfigMap binding or the plain planner — the script is **dropped,
+   not frozen**, which is milder than the earlier draft's accepted cost (a bot
+   unable to replace its own pre-restart script until a human unbinds it).
 
 ## The design tension this change names, and does not hide
 
@@ -156,8 +165,10 @@ requirements lean on.
 
 ## Scope
 
-Specification only: behaviour, the dry-tick gate, and the use-vs-plain-planner
-rule. It does not implement the writer, the dry-tick harness, or the bind
-decision; it does not touch the mod's Java skill engine, the runner's limits, or
-steps (b)/(c). No code until the lead approves the spec. Nothing pushed,
-nothing deployed.
+This change specifies behaviour: the planner's script output, the in-memory
+carriage, the dry-tick gate, and the use-vs-plain-planner rule. Implementation
+follows the spec and covers the planner's script output kind and prompt
+(`planner.py`), the agent's dry-tick call and rebind, and the three conditions —
+all test-first, reviewed before any deploy to test. It does not touch the mod's
+Java skill engine, the runner's limits (the runner's dry mode already ships), or
+steps (b)/(c). No new storage: the script lives in memory and is never written.

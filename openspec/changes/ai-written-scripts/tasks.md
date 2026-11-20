@@ -51,40 +51,30 @@ Spec only. No code, no build, no deploy until the lead approves this spec.
       preference: (1) planning kind allows scripting; (2) no HAND-WRITTEN
       script is currently bound to this bot; (3) dry tick passed. Any failure
       → plain planner. Condition 2 is per BOT because
-      `bindings.get(self.name)` (`agent.py:3027`) is per bot and no
+      `bindings.get(self.name)` (`agent.py:3113`) is per bot and no
       goal-to-script association exists; it does not contradict the M3-1g
       hold, which names the goal that owns a pause, not the script a goal
       owns.
-- [ ] 2.7 **Provenance is recorded by the agent, not read from
-      `bindings.json`.** That file is a flat bot-name-to-filename map
-      (`{"Scout": "scout.js"}`) with no provenance field, and
-      `_bound_script_path` (`agent.py:3027-3035`) uses the value only as a
-      filename. So "no hand-written script bound" cannot be evaluated from it.
-      The agent must record in process which script it bound itself; condition
-      2 then asks "did this agent put the bound script here, or did a human?".
-      A hand-written script is a deliberate deployment and a planner must not
-      silently overwrite it; a previously written script is the agent's own
-      prior output and MAY be displaced. This is what keeps the 2.4 latch reset
-      reachable — gating condition 2 on ANY bound script would disable it in
-      the only case it exists for.
-- [ ] 2.8 **Provenance is process-scoped, deliberately, and the consequence is
-      stated.** The agent has NO write path for script source: `scripts_dir`
-      comes from `SCRIPTS_DIR` (`agent.py:3006`) and the only accesses are
-      reading `bindings.json` (`:3011`) and joining the filename (`:3035`).
-      That directory is a ConfigMap mount — shared, restart-surviving. So after
-      a restart an agent-written script MUST be treated as hand-written and not
-      displaced: the fresh process can read the bytes but cannot prove it wrote
-      them. A restart is a deployment boundary; whatever is bound after one was
-      placed by a ConfigMap change, a human action. Accepted cost: a bot cannot
-      replace its own pre-restart script until a human unbinds it.
-      Do NOT "fix" this into a `bindings.json` provenance field or an in-file
-      marker — the agent cannot write the artefact, and adding a write path is a
-      later step's storage design.
-      **Scoped to this change, not permanent.** The reason above expires the
-      moment an agent write path exists. When step (b) lands one, revisit this
-      decision on its merits rather than treating 2.8 as settled — a marker that
-      travels with the stored script would re-derive provenance across a restart
-      and lift the accepted cost. (Reviewer note on 58689f7, taken.)
+- [ ] 2.7 **"Hand-written" is read from `bindings.json`, which now names only
+      hand-written scripts.** A planner-authored script is carried in memory
+      and is never added to `bindings.json`, so an entry there can only have
+      been placed by a human. Condition 2 asks "does `bindings.json` name a
+      script for this bot?". A yes is a deliberate human deployment a planner
+      must not overwrite; a no leaves the bot free for a written script. This
+      keeps the 2.4 latch reset reachable for the agent's own previous script,
+      which leaves no file entry.
+- [ ] 2.8 **The script lives in memory, so a restart DROPS it rather than
+      freezing it.** The agent has NO write path for script source:
+      `scripts_dir` comes from `SCRIPTS_DIR` (`agent.py:3092`) and the only
+      accesses are reading `bindings.json` (`:3097`) and joining the filename
+      (`:3121`). The emitted script is therefore passed straight to the runner
+      as the tick's source. Consequence: on restart the in-memory script is
+      gone and the bot falls back to its `bindings.json` script or the plain
+      planner — no error, no missed tick, and NOT silently resumed.
+      This REPLACES the earlier "a bot cannot replace its own pre-restart
+      script until a human unbinds it" cost. Do NOT add a write path or a
+      `bindings.json` provenance field: in-memory is the design, and no new
+      storage is in scope.
 
 ## 3. What is deliberately out of scope
 
@@ -92,8 +82,9 @@ Spec only. No code, no build, no deploy until the lead approves this spec.
 - [ ] 3.2 Step (c): the script's result returned to the planner. Later change.
 - [ ] 3.3 No change to the six-function `api` surface, the runner's limits, or
       the mod's Java skill engine.
-- [ ] 3.4 No code in this change. The writer, the dry-tick harness and the bind
-      decision are a later implementation change, planned from this spec.
+- [ ] 3.4 Implementation follows this spec: the planner's script output kind and
+      prompt, the agent's dry-tick call, the rebind latch reset and the three
+      conditions. Test-first, reviewed before any deploy to test.
 
 ## 4. Known precondition, recorded not acted on
 

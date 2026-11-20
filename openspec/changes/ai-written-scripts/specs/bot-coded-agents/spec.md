@@ -34,6 +34,52 @@ finished" from any other script.
 - **WHEN** a player sends text that looks like a script
 - **THEN** it is treated as a goal, never as script source to store or run
 
+### Requirement: A Planner-Authored Script Lives In Memory, Not On Disk
+
+**The planner's script output is the step (a) feature, and the planner gains a
+script output kind to produce it.** This is a change to the planner's return
+contract and its prompt (`agent/planner.py`), not a caller the agent can wire
+around: `decompose` and `orchestrate` return a list of step strings today, and
+neither type nor prompt has a slot for a program.
+
+A planner-authored script MUST be carried **in the process** as source text and
+built into a `ScriptTick` directly. It MUST NOT be written to any file.
+
+This is forced by the capability's own constraint, not chosen for convenience:
+`scripts_dir` is a `SCRIPTS_DIR` mount (`agent.py:3092`) and the agent's only
+accesses to it are reading `bindings.json` (`:3097`) and joining a resolved
+filename (`:3121`) — **there is no write path for script source in the agent
+at all.** An in-memory script is the only form that exists inside that
+boundary, and it needs no new storage.
+
+`bindings.json` therefore keeps one meaning only: **the hand-written
+baseline.** The agent never adds an entry to it, so the file stays exactly the
+set of scripts a human deployed, and "hand-written" is decided by that file
+alone rather than by provenance the process would have to remember.
+
+#### Scenario: A planner script is never written to disk
+- **GIVEN** a planner that emits a script for a goal
+- **WHEN** the script is validated, dry-ticked and bound
+- **THEN** its source is held in memory and passed to the runner as the tick's
+  source
+- **AND** no file is created or modified under `scripts_dir`
+- **AND** `bindings.json` is unchanged
+
+#### Scenario: A restart returns the bot to its ConfigMap binding
+- **GIVEN** a bot running a planner-authored, in-memory script
+- **WHEN** the agent process restarts
+- **THEN** the in-memory script is gone
+- **AND** the bot falls back to whatever `bindings.json` names for it, which is
+  a hand-written script if one is deployed there, else to the plain planner
+- **AND** no error is raised and no tick is missed during the fallback
+
+#### Scenario: A planner script does not outlive the process that made it
+- **GIVEN** a script the planner authored in an earlier process
+- **WHEN** the process restarts
+- **THEN** there is no artefact to reload it from
+- **AND** the change to the bot's behaviour is visibly lost, not silently
+  preserved
+
 ### Requirement: A Written Script MUST Pass A Dry Tick Before It Is Bound
 
 Validating that a proposal parses and names only known actions is necessary but
@@ -158,12 +204,13 @@ be safe by never calling `api.do` at all, which would defeat the gate.
 - **THEN** the bot's memory is what it was before the dry tick
 
 #### Scenario: A passing dry tick rebinds a previously written script
-- **GIVEN** a bot whose bound script THIS agent wrote and bound in this process
+- **GIVEN** a bot whose running script THIS agent authored in this process
+- **AND** `bindings.json` names no script for this bot
 - **AND** a planner-authored script that returns `ok` and queues at least one action
 - **WHEN** the written script is dry-ticked and passes
-- **THEN** condition 2 holds, because the bound script is not hand-written
+- **THEN** condition 2 holds, because the hand-written file names no script
 - **AND** the `_script_loaded` latch is reset by the one writer that clears it
-- **AND** the next real tick runs the written source, not the previous script
+- **AND** the next real tick runs the newly written source, not the previous one
 
 #### Scenario: A failed dry tick does not disarm a working bot
 - **GIVEN** a bot already running a valid script
@@ -181,13 +228,16 @@ be left to the model's preference:
 1. The goal is a planning kind the planner may script — a world goal, not a
    single directive, and not a chat/query the planner answers directly.
 2. No **hand-written** script is currently bound to this bot. A script this
-   agent itself wrote and bound in this process is NOT hand-written for this
-   purpose, and a written script that passes its dry tick MAY displace one.
+   agent itself authored in this process is NOT hand-written for this purpose:
+   it lives in memory and never enters `bindings.json`, so it fails to make the
+   file name a script for this bot. A written script that passes its dry tick
+   MAY therefore displace the agent's own previous script, and MUST NOT
+   displace a hand-written one.
 3. The script passed its dry tick (the preceding requirement).
 
 **Condition 2 is per BOT, not per goal, because that is the binding model.**
 `bindings.json` maps bot name to script and the agent reads
-`bindings.get(self.name)` (`agent/agent.py:3027`); there is no goal-to-script
+`bindings.get(self.name)` (`agent/agent.py:3113`); there is no goal-to-script
 association anywhere, so a condition phrased "no script is driving this bot FOR
 THIS GOAL" names a relationship the code cannot test and would be vacuously
 satisfiable. This does not conflict with the M3-1g hold: the hold records a
@@ -197,47 +247,47 @@ owns. Script identity stays per-goal inside the hold; script ownership stays
 per-bot at binding. Those are two different questions and the spec keeps them
 apart deliberately.
 
-**"Hand-written" MUST be decided by provenance the agent records, not by a
-field in `bindings.json`.** The bindings file is a flat bot-name-to-filename
-map (`{"Scout": "scout.js"}`) with no provenance field, and
-`_bound_script_path` (`agent.py:3027-3035`) treats the value only as a
-filename — so a condition reading "no hand-written script is bound" cannot be
-evaluated from `bindings.json` at all, and would be as untestable as the
-per-goal phrasing it replaces. The agent MUST record, in process, which script
-it bound itself. Condition 2 then asks the only question the code can answer:
-*did this agent put the bound script here, or did a human?* A hand-written
-script is a deliberate deployment and a planner MUST NOT silently overwrite it;
-a previously written script is this agent's own prior output and displacing it
-is the purpose of this change.
+**"Hand-written" is decided by `bindings.json`, because that file now names
+only hand-written scripts.** The bindings file is a flat bot-name-to-filename
+map (`{"Scout": "scout.js"}`) and `_bound_script_path` (`agent.py:3070-3121`)
+treats the value only as a filename. A planner-authored script is carried in
+memory and is never added to this file (see "A Planner-Authored Script Lives In
+Memory, Not On Disk"), so an entry here can only have been placed by a human.
+Condition 2 asks the only question the code can answer: *does `bindings.json`
+name a script for this bot?* A yes is a deliberate human deployment and a
+planner MUST NOT overwrite it; a no means the bot is free for a written script
+to drive. **A planner script therefore never displaces a hand-written binding.**
+The only case in which it replaces a running script is the one the latch reset
+exists for: the bot is still on the agent's own previous in-memory script,
+which leaves no `bindings.json` entry and so fails condition 2 only when a
+human has since deployed one.
 
 **This is what makes the rebind reachable.** Condition 2 gating on ANY bound
 script would disable the `_script_loaded` reset in the only case it exists for
 — a bot already running a working script. The reset exists precisely so a
 written script can replace the agent's earlier one.
 
-**Provenance is deliberately PROCESS-SCOPED, and this is not an oversight.** The
-agent does not write scripts anywhere: `scripts_dir` comes from `SCRIPTS_DIR`
-(`agent.py:3006`) and the only accesses are reading `bindings.json` (`:3011`)
-and joining the resolved filename (`:3035`) — there is no write path for script
-source in the agent at all. That directory is a ConfigMap mount, so it survives
-a restart and is shared. The provenance record lives in the process and does
-not survive one.
+**Provenance is PROCESS-SCOPED because the script itself is.** A
+planner-authored script lives in memory and is never written to `bindings.json`
+(see "A Planner-Authored Script Lives In Memory, Not On Disk"). That file names
+only the hand-written baseline, so the question condition 2 asks — *is the
+bound script hand-written?* — reduces to *does `bindings.json` name a script for
+this bot?* That question is answerable from the file alone, and a script the
+agent authored is not in the file.
 
-The consequence, stated so that no later implementer "fixes" it into a
-`bindings.json` field: **after a restart, an agent-written script is
-indistinguishable from a hand-written one and MUST be treated as hand-written,
-so it is not displaced.** A fresh process can read the script's bytes but cannot
-prove it authored them. A restart is therefore a deliberate deployment
-boundary: whatever script is bound after one was placed there by a ConfigMap
-change, which is a human action, even when the agent originally generated its
-contents.
+**This replaces the earlier, severer cost.** The previous draft of this
+requirement accepted that an agent-written script would be *frozen* across a
+restart: written to the ConfigMap, then permanently indistinguishable from a
+human's. That cost is gone. An in-memory script cannot outlive the process that
+made it, so a restart does not freeze a stale script — it **drops** it, and the
+bot returns to its hand-written binding or the plain planner. The failure mode
+is now a lost script, visible as the bot reverting to older behaviour, rather
+than a stale script silently outliving the intent that produced it.
 
-The cost is accepted and real: a bot that wrote its own script before a restart
-cannot replace it after one until a human unbinds it. The alternative — trusting
-an authorship claim the process cannot verify — would let a stale script silently
-outlive the intent that produced it. A marker written into the stored artefact
-is not available to this change, because the agent has no write path to that
-artefact; establishing one is the storage design of a later step.
+The rebind lattice is unchanged in mechanism: a new planner script that passes
+its dry tick MUST reset `_script_loaded` so the next real tick runs the new
+source. What changes is what sits on the other side of the restart — absence,
+not a frozen copy.
 
 If any condition fails, the goal MUST proceed through the plain planner. A
 failed or absent script proposal is always a fallback, never a hard error and
@@ -253,12 +303,13 @@ never a reason for the bot to idle.
 - **WHEN** the agent decides script vs plain planner
 - **THEN** condition 3 fails and the goal is driven by the plain planner
 
-#### Scenario: A restart freezes the script an agent wrote
-- **GIVEN** an agent that wrote and bound a script in an earlier process
-- **WHEN** the process restarts and reloads that same script from `bindings.json`
-- **THEN** the fresh process has no record that it authored the script
-- **AND** condition 2 treats the script as hand-written
-- **AND** the script is not displaced by a new written one until a human unbinds it
+#### Scenario: A restart drops the script an agent wrote
+- **GIVEN** an agent that wrote and bound an in-memory script in an earlier process
+- **WHEN** the process restarts
+- **THEN** the script is gone, because there is no file it was written to
+- **AND** the bot falls back to its `bindings.json` script if one is deployed,
+  else to the plain planner
+- **AND** the previous script is NOT silently resumed or treated as hand-written
 
 #### Scenario: A hand-written script is not displaced by a new one
 - **GIVEN** a bot with a hand-written script currently bound
