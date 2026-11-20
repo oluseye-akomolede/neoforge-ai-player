@@ -1700,6 +1700,13 @@ class BotRunner:
                     tc = _transmute.get_context_string() if _transmute else ""
                     inv_context = self._get_my_inventory_summary()
                     steps = planner.decompose(self.model, desc, memory_context, tc, inv_context)
+                    # M3-2 step (a): a task-board goal may also come back as a
+                    # program. Without this the empty step list reads as "Plan
+                    # (0 steps)" and the bot quietly does nothing, which is the
+                    # dead-bot outcome the script path exists to avoid.
+                    planner_script = getattr(steps, "script", None)
+                    if planner_script and self._bind_planner_script(planner_script):
+                        return
                     self._plan_steps = steps
                     self._plan_step_idx = 0
                     self._plan_instruction = desc

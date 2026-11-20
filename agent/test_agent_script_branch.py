@@ -1045,9 +1045,58 @@ class PlannerScriptBindTest(unittest.TestCase):
         self.assertFalse(fake_open.called,
                          "binding a planner script must not touch the filesystem")
         self.assertEqual(self.a._planner_script, src)
-        # The latch is reset so the next tick builds a tick from THIS source.
+
+    def test_binding_clears_a_previously_latched_tick(self):
+        # KILLS: setting _planner_script without resetting the one-shot latch.
+        # The reset is invisible unless the bot is ALREADY latched when the bind
+        # happens, which is the real case: a prior build set _script_tick and
+        # _script_loaded, and the process keeps serving that cached tick for its
+        # whole lifetime. A test that starts unlatched asserts away a value its
+        # own setup just wrote and cannot tell a reset from a no-op.
+        stale = object()
+        self.a._script_tick = stale
+        self.a._script_loaded = True
+        with mock.patch.object(self.a, "_dry_tick", return_value=True):
+            self.assertTrue(self.a._bind_planner_script("api.say('new');"))
+        self.assertIsNone(self.a._script_tick,
+                          "the stale cached tick must be cleared on rebind")
         self.assertFalse(self.a._script_loaded,
-                         "binding a new script must reset the one-shot latch")
+                         "the latch must be reset or the next tick serves the old script")
+        # Strongest form: the next tick must actually BUILD from the new source
+        # rather than return the object cached before the bind.
+        built = self.a._get_script_tick()
+        self.assertIsNot(built, stale,
+                         "the bot ran the script cached before the rebind")
+        self.assertEqual(self.a._planner_script, "api.say('new');")
+
+    def test_a_taskboard_script_answer_is_bound_not_silently_dropped(self):
+        # KILLS: the task-board decompose caller assigning a script answer
+        # straight to _plan_steps. A script answer carries no steps, so the bot
+        # logs "Plan (0 steps)" and idles forever -- the quiet dead bot.
+        src = "api.say('task board script');"
+        answer = self.agent_mod.planner.PlannerResult([], script=src)
+        # Drive the real method with the planner stubbed to return a script.
+        self.a._plan_steps = []
+        self.a._plan_step_idx = 0
+        self.a._following_player = False
+        self.a.squad = None
+        self.a.specializations = []
+        self.a.semantic_mem = None
+        self.a._awaiting_taskboard = False
+        self.a.model = "test-model"
+        self.a._get_my_inventory_summary = lambda: ""
+        fake_board = mock.Mock()
+        fake_board.claim.return_value = {"id": 7, "description": "go mine"}
+        with mock.patch.object(self.agent_mod, "_task_board", fake_board), \
+             mock.patch.object(self.agent_mod, "planner") as fake_planner, \
+             mock.patch.object(self.agent_mod.api, "system_chat", create=True), \
+             mock.patch.object(self.agent_mod, "shared_state", create=True), \
+             mock.patch.object(self.a, "_bind_planner_script", return_value=True) as bind:
+            fake_planner.decompose.return_value = answer
+            self.a._check_task_board()
+        self.assertTrue(bind.called, "a task-board script answer must reach the bind path")
+        self.assertEqual(self.a._plan_steps, [],
+                         "a bound script must not be left as an empty plan to execute")
 
     def test_a_failed_dry_tick_binds_nothing(self):
         # KILLS: binding first and dry-ticking after -- or ignoring the dry

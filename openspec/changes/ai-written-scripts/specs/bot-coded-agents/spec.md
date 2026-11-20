@@ -241,8 +241,8 @@ be left to the model's preference:
 association anywhere, so a condition phrased "no script is driving this bot FOR
 THIS GOAL" names a relationship the code cannot test and would be vacuously
 satisfiable. This does not conflict with the M3-1g hold: the hold records a
-`goal_id` (`agent.py:1330-1333`) but suppresses the BOT's dispatch
-(`:2901-2904`) — it names the goal that OWNS the pause, not the script the goal
+`goal_id` (`agent.py:1349-1352`) but suppresses the BOT's dispatch
+(`:2927-2930`) — it names the goal that OWNS the pause, not the script the goal
 owns. Script identity stays per-goal inside the hold; script ownership stays
 per-bot at binding. Those are two different questions and the spec keeps them
 apart deliberately.
