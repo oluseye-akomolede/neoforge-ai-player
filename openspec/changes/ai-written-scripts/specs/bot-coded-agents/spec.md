@@ -353,7 +353,7 @@ that matters.
 **So the script is not carried inside the reply's JSON at all.** The script
 travels in a channel separate from the JSON object the trainer consumes. There
 is no parser to hook: `call_plan` reads the model's text inline at
-`l3_planner.py:427` (`raw = _strip_codefence(answer_text(resp.json()))`) and
+`l3_planner.py:426` (`raw = _strip_codefence(answer_text(resp.json()))`) and
 decodes it at `:429` (`json.loads(raw)`), and `raw` is the exact string logged
 as `response_raw`. So the channel is a helper this change introduces, called
 between those two lines, which splits the script out of the model's text and

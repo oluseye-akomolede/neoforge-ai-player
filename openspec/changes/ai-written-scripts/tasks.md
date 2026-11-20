@@ -88,7 +88,7 @@ L3 path rather than limit the spec to the decompose paths.
       carried outside the plan JSON** — not a new `kind`, not a new directive
       type, and not a field of the JSON object the trainer sees. A helper
       introduced by this change splits the script out of the model's text
-      between `l3_planner.py:427` and `:429`, so `raw` (and therefore
+      between `l3_planner.py:426` and `:429`, so `raw` (and therefore
       `response_raw` and `parsed`) never contains it. `Plan` may carry the
       script in memory for dispatch; `Plan.to_dict()` needs no exclusion,
       because the script was never in the dict to begin with.
