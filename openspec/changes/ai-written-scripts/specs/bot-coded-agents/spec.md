@@ -766,3 +766,63 @@ treat a fence belonging to a non-js block as closing a js one.
 - **THEN** extraction MUST yield no script
 - **AND** the warning MUST name a missing closing fence
 - **AND** that holds however many fences appear before the js one
+
+### Requirement: A Script Failure Names Its Own Cause
+
+A dry tick that fails MUST say why. The trial of 2026-11-20 21:2xZ reached the
+dry gate and logged `script_error` with no further detail: the runner sends a
+`message` on every error (`agent-script-runner/src/main.js`), and
+`agent/script_client.py:204` kept only `error_class`, so the reason the runner
+supplied was discarded on our side. A bare `script_error` is indistinguishable
+between a TypeError, an unknown action, and a CPU overrun.
+
+The failure record MUST carry the runner's message when the runner sends one,
+bounded and escaped so a multi-line message cannot forge extra log lines. The
+record MUST also carry a bounded head-and-tail preview of the script source
+that failed, because the defect is usually at one end of the program and a
+head-only preview cuts the tail where it often lives.
+
+The preview is model-authored content and MUST be logged ONLY. It MUST NOT be
+written to memory, to a bound script, or to any field the DPO trainer reads.
+
+#### Scenario: A runner error keeps the message the runner gave it
+- **GIVEN** a runner that fails a script with `error_class: "TypeError"` and `message: "api.get_snapshot is not a function"`
+- **WHEN** the client reports the failure
+- **THEN** the detail carries both the class and the message
+- **AND** the message is bounded and newline-escaped
+
+#### Scenario: A failed dry tick logs enough to diagnose it offline
+- **GIVEN** a planner-authored script that fails its dry tick
+- **WHEN** the failure is logged
+- **THEN** the log names the error class and the runner's message
+- **AND** it includes a bounded head-and-tail preview of the failing source
+- **AND** no other log line is forged by that content
+
+### Requirement: The Script Prompt Names The Host API The Sandbox Binds
+
+A planner-authored script runs in a sandbox whose host API is a fixed surface.
+The prompt that asks for the script MUST name that surface, and MUST NOT name
+a method the sandbox does not bind: a model that follows the prompt exactly
+then writes a call that throws, and the failure surfaces later as an opaque
+`script_error` at the dry gate rather than as a prompt defect.
+
+At 2026-11-20 the sandbox binds exactly `do`, `say`, `send`, `recall`,
+`remember`, `log` (`agent-script-runner/src/binding.js:109-135`). The bot
+snapshot is a read-only global named `snapshot` (`engine.js:660-680`), not an
+`api` method. The proposal's own dry-tick check still answers to
+`validate_proposal`; the prompt's API section MUST agree with the binding.
+
+#### Scenario: The prompt's API list matches the sandbox's binding
+- **GIVEN** the script prompt shipped in `_SCRIPT_SYSTEM_PROMPT`
+- **AND** the host API the runner binds
+- **WHEN** both lists are compared
+- **THEN** every method the prompt names is bound by the runner
+- **AND** every method the runner binds is named by the prompt
+- **AND** the prompt names `snapshot` as a global rather than an `api` method
+
+#### Scenario: A prompt naming an unbound method is a defect, not a model failure
+- **GIVEN** a prompt that instructs the model to call `api.get_snapshot()`
+- **AND** a sandbox that binds no such method
+- **WHEN** the model follows the prompt
+- **THEN** the resulting dry-tick failure is a prompt defect
+- **AND** the prompt is what MUST change

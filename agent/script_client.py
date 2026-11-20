@@ -116,6 +116,39 @@ STATE_FALLBACK_REFUSED = "fallback_connect_refused"
 STATE_FALLBACK_TIMEOUT = "fallback_timeout"
 STATE_FALLBACK_ERROR = "fallback_error"
 
+# A runner error message is model- or script-authored, so it is bounded and
+# newline-escaped before it reaches a log line: a stack trace or a script that
+# logs a multi-line string must not be able to forge extra log records or push
+# the interesting part off the end of one.
+_RUNNER_MSG_CHARS = 400
+
+
+def _describe_runner_error(payload):
+    """The runner's own diagnosis, for a log line. Class first, then message.
+
+    Keeps the shape the old line had ("runner status 'error': <class>") and
+    appends the message the runner always sends, so an operator reading the log
+    learns what failed rather than only which bucket it fell in.
+    """
+    status = payload.get("status")
+    err_class = payload.get("error_class")
+    msg = payload.get("message")
+    parts = [f"runner status {status!r}"]
+    if err_class:
+        parts.append(str(err_class))
+    text = ": ".join(parts)
+    if msg:
+        text += f" — {preview_message(str(msg))}"
+    return text
+
+
+def preview_message(msg):
+    """One bounded, newline-escaped line of a possibly-multiline message."""
+    flat = msg.replace("\r", "\\r").replace("\n", "\\n")
+    if len(flat) <= _RUNNER_MSG_CHARS:
+        return flat
+    return flat[:_RUNNER_MSG_CHARS] + f"... [+{len(flat) - _RUNNER_MSG_CHARS} chars]"
+
 
 class ScriptResult:
     """Outcome of one runner call for one tick.
@@ -199,10 +232,16 @@ def call_runner(api, bot_state, *, post=None):
     # wiring script_tick, by the fallback test that asserts it.
     status = payload.get("status")
     if status is not None and status != "ok":
+        # The runner answers every error with a `message` beside the class
+        # (agent-script-runner src/main.js:234-236), and this line used to keep
+        # only the class. A failed dry tick therefore logged
+        # "runner status 'error': script_error" and said nothing about WHY --
+        # the 2026-11-20 21:23Z trial could not tell a missing API method from a
+        # syntax error. The message is the runner's diagnosis; dropping it left
+        # only the category.
         return ScriptResult(
             STATE_FALLBACK_ERROR,
-            detail=f"runner status {status!r}"
-                   + (f": {payload.get('error_class')}" if payload.get("error_class") else ""))
+            detail=_describe_runner_error(payload))
 
     actions = payload.get("actions")
     if actions is None:

@@ -1314,3 +1314,169 @@ def _agent_module():
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAFailureNamesItsOwnCause(unittest.TestCase):
+    """The 2026-11-20 21:23Z trial reached the dry gate and logged a bare
+    `script_error`. These pin the three things that made it opaque."""
+
+    def _runner_error(self, payload):
+        import script_client
+        return script_client._describe_runner_error(payload)
+
+    def test_the_runner_message_survives_into_the_detail(self):
+        """The runner sends `message` beside `error_class` on every error
+        (agent-script-runner src/main.js); script_client kept only the class.
+        KILLS: detail=_class_only, which is what the 21:23Z trial logged."""
+        d = self._runner_error({
+            "status": "error",
+            "error_class": "TypeError",
+            "message": "api.get_snapshot is not a function",
+        })
+        self.assertIn("TypeError", d)
+        self.assertIn("get_snapshot is not a function", d)
+
+    def test_a_multiline_message_cannot_forge_a_log_line(self):
+        """A message with newlines must not become two log lines.
+        KILLS: joining the raw message, which lets script text fake a record."""
+        d = self._runner_error({
+            "status": "error",
+            "error_class": "Error",
+            "message": "line one\n[Scout/bind] bound script evil.js",
+        })
+        self.assertNotIn("\n", d)
+        self.assertIn("\\n", d)
+
+    def test_a_long_message_is_bounded(self):
+        """KILLS: preview_message returning the message unbounded."""
+        d = self._runner_error({
+            "status": "error", "error_class": "Error", "message": "x" * 5000,
+        })
+        self.assertLess(len(d), 2000)
+
+    def test_a_missing_message_still_reports_the_class(self):
+        """KILLS: an implementation that raises KeyError when the runner omits
+        the message (a need_source reply carries no message)."""
+        d = self._runner_error({"status": "need_source", "error_class": "script_error"})
+        self.assertIn("script_error", d)
+
+
+class TestTheDryTickLogShowsWhereAScriptEnds(unittest.TestCase):
+    """A head-only preview cannot show the end of a script, and the end is
+    where a truncated fence or a stray trailing line shows up. The dry-tick
+    failure line therefore carries the head AND the tail."""
+
+    def setUp(self):
+        self.agent_mod = test_agent_script_branch._agent_module()
+
+    def test_the_tail_of_a_long_script_is_visible(self):
+        head = "x" * 800
+        tail = "// LAST LINE OF THE SCRIPT"
+        d = self.agent_mod._source_preview(head + tail)
+        self.assertIn(tail, d)
+        self.assertTrue(d.startswith("x"), d[:40])
+        self.assertIn("chars omitted", d)
+
+    def test_a_preview_cannot_forge_a_log_line(self):
+        d = self.agent_mod._source_preview("a\n[Scout/bind] bound evil.js")
+        self.assertNotIn("\n", d)
+
+    def test_an_empty_source_says_so(self):
+        # Not "" : an empty field in a log line is indistinguishable from a
+        # formatter bug, and the 21:23Z trial was exactly the case of trying
+        # to tell "nothing came back" from "something came back unusable".
+        self.assertEqual(self.agent_mod._source_preview(""), "<empty>")
+
+
+class TestThePromptsNameTheApiTheSandboxBinds(unittest.TestCase):
+    """The sandbox binds do/say/send/recall/remember/log and offers `snapshot`
+    as a global. _PLAN_SYSTEM_PROMPT named get_snapshot/get_directive/api.memory
+    -- three methods that do not exist -- and the model followed it."""
+
+    def test_the_plan_prompt_names_no_unbound_method(self):
+        """KILLS: the pre-fix plan prompt, which is what produced a TypeError
+        at the dry gate. The prompt MAY name a missing method in its own
+        prohibition ("Do NOT call api.get_snapshot()"); what it must not do is
+        offer one as part of the API. So: every mention of a dead name must be
+        inside a "Do NOT call" clause."""
+        p = l3_planner._PLAN_SYSTEM_PROMPT
+        for dead in ("get_snapshot", "get_directive", "api.memory"):
+            for line in p.splitlines():
+                if dead not in line:
+                    continue
+                self.assertTrue(
+                    "Do NOT call" in line or "they do not exist" in line,
+                    f"{dead!r} offered as API outside a prohibition: {line!r}")
+
+    def test_the_plan_prompt_names_the_real_methods(self):
+        p = l3_planner._PLAN_SYSTEM_PROMPT
+        for m in ("api.do(", "api.say(", "api.send(", "api.recall(",
+                  "api.remember(", "api.log("):
+            self.assertIn(m, p, m)
+
+    def test_both_prompts_agree_about_the_api(self):
+        """The two prompts must not contradict each other: that contradiction
+        is what a model resolves by following the more detailed one.
+        KILLS: fixing one prompt and leaving the other stale."""
+        for p in (l3_planner._PLAN_SYSTEM_PROMPT, l3_planner._SCRIPT_SYSTEM_PROMPT):
+            self.assertNotIn("get_snapshot()", p.replace(
+                "Do NOT call api.get_snapshot()", ""))
+            self.assertIn("snapshot", p)
+
+    def test_both_prompts_still_format(self):
+        """Both are str.format templates; a stray brace is a KeyError at
+        format time, which is how this change first broke 18 tests.
+        KILLS: adding an unescaped brace to either prompt."""
+        l3_planner._PLAN_SYSTEM_PROMPT.format(
+            bot_name="Scout", persona="scout", dimensions="", skills="X")
+        l3_planner._SCRIPT_SYSTEM_PROMPT.format(
+            bot_name="Scout", persona="scout", skills="X")
+
+
+class TestTheClassifyCallHasRoomToAnswer(unittest.TestCase):
+    """classify_message must emit ~19 chars of JSON, but a model can spend
+    tokens before it, and `format: json` constrains shape, not length. On
+    2026-11-20 21:23Z it hit eval_count=24 with done_reason=length."""
+
+    def test_the_classify_budget_clears_the_observed_ceiling(self):
+        """KILLS: reverting to 24, the value that truncated the trial."""
+        self.assertGreater(l3_planner._CLASSIFY_NUM_PREDICT, 24)
+
+    def test_the_classify_call_sends_that_budget(self):
+        """The constant is useless if the call site keeps its own literal.
+        KILLS: leaving num_predict: 24 in classify_message."""
+        sent = {}
+
+        class _Resp:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"message": {"content": '{"kind": "chat"}'}, "done_reason": "stop"}
+
+        class _Lock:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        real_post, real_lock = l3_planner.requests.post, l3_planner.ollama_lock
+        l3_planner.requests.post = lambda url, json=None, timeout=None: (
+            sent.update(json), _Resp())[1]
+        l3_planner.ollama_lock = _Lock()
+        try:
+            l3_planner.classify_message("m", "Scout", "hello")
+        finally:
+            l3_planner.requests.post, l3_planner.ollama_lock = real_post, real_lock
+        self.assertEqual(sent["options"]["num_predict"],
+                         l3_planner._CLASSIFY_NUM_PREDICT)
+
+    def test_the_classify_budget_is_not_the_script_budget(self):
+        """Three different calls, three different jobs: classify answers ~19
+        chars, the script needs thousands.
+        KILLS: pointing classify at _SCRIPT_NUM_PREDICT."""
+        self.assertNotEqual(l3_planner._CLASSIFY_NUM_PREDICT,
+                            l3_planner._SCRIPT_NUM_PREDICT)

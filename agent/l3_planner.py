@@ -392,14 +392,19 @@ Choose between a STEP LIST and a SCRIPT:
   word ("bring me X before dark" is still one-shot). If a goal could be read
   either way, it is your call.
 
-A script is plain JavaScript for one tick, run every tick. Its API:
+A script is plain JavaScript for one tick, run every tick. Its API is exactly:
 - api.do(action)      — queue one game action this tick
 - api.say(text)       — speak in chat (rate limited)
-- api.send(target, t) — send a chat message
-- api.remember(v)     — persist a value across ticks (read it back via
-                        api.memory)
-- api.get_directive() — the current directive/state
-- api.get_snapshot()  — world snapshot
+- api.send(target, t) — send a chat message to another bot
+- api.recall()        — the memory blob this tick started with (or null)
+- api.remember(v)     — persist a STRING across ticks; read it back next tick
+                        via api.recall(). One blob, 16 KiB, last write wins.
+- api.log(level, t)   — write a line to the agent log ("info"/"warn"/...)
+The world state is a read-only global named `snapshot`, NOT an api method:
+  const s = snapshot;
+  if (s) {{ /* s.self, s.bots, s.inventory, ... */ }}
+Do NOT call api.get_snapshot() or api.get_directive() — they do not exist, and
+a call to a missing method throws and discards your whole script.
 Return an array of actions (or [] to do nothing this tick). A script that
 throws is discarded and the step-list path takes over.
 
@@ -437,11 +442,20 @@ step list.
 Script API (this is the whole surface):
 - api.do(action)      — queue one game action this tick
 - api.say(text)       — speak in chat (rate limited)
-- api.send(target, t) — send a chat message
-- api.remember(v)     — persist a value across ticks (read it back via
-                        api.memory)
-- api.get_directive() — the current directive/state
-- api.get_snapshot()  — world snapshot
+- api.send(target, t) — send a chat message to another bot
+- api.recall()        — the memory blob this tick started with (or null)
+- api.remember(v)     — persist a STRING across ticks; read it back next tick
+                        via api.recall(). One blob, 16 KiB, last write wins.
+- api.log(level, t)   — write a line to the agent log ("info"/"warn"/...)
+
+The world state is a read-only global named `snapshot`, not an api method:
+
+  const s = snapshot;              // may be undefined if none was sent
+  if (s) {{ /* s.self, s.bots, s.inventory, ... */ }}
+
+Do NOT call api.get_snapshot() or api.get_directive() — they do not exist,
+and a call to a missing method throws and discards your whole script.
+
 Return an array of actions (or [] to do nothing this tick). A script that
 throws is discarded and the step-list path takes over.
 
@@ -900,7 +914,18 @@ def classify_message(model: str, bot_name: str, text: str) -> str:
 
     Returns "chat" or "task". Fails to "task" on any error — the safe
     direction: a mistaken order is visible and correctable (the player sees
-    the plan), whereas a mistaken chat silently drops a real instruction."""
+    the plan), whereas a mistaken chat silently drops a real instruction.
+
+    The answer is one of two short JSON objects ({"kind": "chat"} / {"kind":
+    "task"}). The budget below was 24 tokens, which fits the answer and
+    NOTHING else: on 2026-11-20 21:23Z a repeating goal's message hit
+    eval_count=24 with done_reason=length and fell back to "task". Thinking
+    was already off (LLM_THINK defaults false), so the 24 went on the reply
+    itself — any preamble at all ("The user wants the bot to...") spends it
+    before the JSON starts, and `format: "json"` does not stop a model from
+    reasoning first. "task" is the fallback, so the failure is safe in
+    direction, but a repeating goal needs its classify to be right, not lucky.
+    """
     sys_prompt = _CLASSIFY_SYSTEM_PROMPT.format(bot_name=bot_name, text=text)
     try:
         with ollama_lock:
@@ -915,7 +940,7 @@ def classify_message(model: str, bot_name: str, text: str) -> str:
                     ],
                     "stream": False,
                     "format": "json",
-                    "options": {"temperature": 0.0, "num_predict": 24},
+                    "options": {"temperature": 0.0, "num_predict": _CLASSIFY_NUM_PREDICT},
                 },
                 timeout=60,
             )
@@ -1284,6 +1309,15 @@ _TAIL_CHARS = 200
 # (OLLAMA_CONTEXT_LENGTH=114688 holds prompt + reply), so this is the cap.
 # Changing this MUST NOT change any other call's num_predict.
 _SCRIPT_NUM_PREDICT = 6144
+
+# The classify call's budget. The answer is ~20 characters of JSON, but a model
+# served at temperature 0 can still spend tokens restating the question before
+# it emits them, and `format: "json"` constrains the SHAPE of the reply, not
+# its length. 24 was enough for a terse reply and no more: on 2026-11-20
+# 21:23Z classification hit eval_count=24 with done_reason=length. 128 leaves
+# room for a short preamble while staying far below anything that could cost
+# latency on a call made once per inbound message.
+_CLASSIFY_NUM_PREDICT = 128
 
 
 def preview_reply(raw: str) -> str:

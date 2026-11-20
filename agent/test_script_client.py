@@ -204,6 +204,22 @@ class BoundTest(unittest.TestCase):
         self.assertEqual(result.state, STATE_SCRIPT)
         self.assertEqual(result.actions, [{"kind": "say", "text": "hello"}])
 
+    def test_a_runner_error_carries_its_message_through_call_runner(self):
+        # The 21:23Z trial logged "runner status 'error': script_error" and
+        # stopped there, so nobody could tell a missing API method from a
+        # syntax error. _describe_runner_error is tested on its own elsewhere;
+        # what this pins is that call_runner USES it. A version of that helper
+        # left correct but unwired, or a call site that goes back to
+        # class-only, passes every unit test of the helper and reds this one.
+        def fake_post(path, data=None, **kw):
+            return {"status": "error", "error_class": "script_error",
+                    "message": "api.get_snapshot is not a function"}
+
+        result = call_runner(None, {"bot": "Scout"}, post=fake_post)
+        self.assertEqual(result.state, STATE_FALLBACK_ERROR)
+        self.assertIn("script_error", result.detail)
+        self.assertIn("get_snapshot is not a function", result.detail)
+
     def test_malformed_body_is_a_fallback_not_a_crash(self):
         def fake_post(path, data=None, **kw):
             return {"actions": "not-a-list"}

@@ -133,6 +133,35 @@ _terrain = None  # TerrainDB instance
 _orchestration_lock = threading.Lock()
 
 
+# A refused script's source preview: head and tail, because a failure is
+# usually at one end (a bad API call near the top, a missing close at the
+# bottom) and the middle is the least informative part of a long program.
+_SOURCE_HEAD_CHARS = 500
+_SOURCE_TAIL_CHARS = 300
+
+
+def _source_preview(source):
+    """Head + tail of a script, newline-escaped, for ONE agent log line.
+
+    This is model output, so it is bounded and flattened: a script containing
+    newlines must not forge extra log records, and a large source must not
+    flood the pod log. Never call this for anything that reaches
+    `response_raw` -- the DPO trainer reads that field.
+    """
+    if not source:
+        return "<empty>"
+
+    def flat(s):
+        return s.replace("\r", "\\r").replace("\n", "\\n")
+
+    if len(source) <= _SOURCE_HEAD_CHARS + _SOURCE_TAIL_CHARS:
+        return flat(source)
+    omitted = len(source) - _SOURCE_HEAD_CHARS - _SOURCE_TAIL_CHARS
+    return (flat(source[:_SOURCE_HEAD_CHARS])
+            + f" ... [+{omitted} chars omitted] ... "
+            + flat(source[-_SOURCE_TAIL_CHARS:]))
+
+
 class _ScriptHeld(float):
     """The third outcome of `_run_script_tick`: the script is held for a goal.
 
@@ -3117,8 +3146,15 @@ Respond with ONLY a JSON array. Example:
         # Read the refusal apart from a genuine non-run so an `api.say` script,
         # all of whose actions are deliberately undispatchable, still binds.
         if not handled and detail != script_tick.DETAIL_ALL_ACTIONS_REFUSED:
+            # The source is logged here and NOWHERE ELSE. It is model output —
+            # the same characters in `response_raw`, which the DPO trainer reads
+            # (build_dpo_dataset.py) — so putting it there would train on a
+            # script the gate just refused. The agent log is write-only to the
+            # trainer, which is why this is the one safe place for it.
             print(f"[{self.name}/script] dry tick failed ({detail}); "
                   f"not binding the written script")
+            print(f"[{self.name}/script] refused source "
+                  f"({len(source)} chars): {_source_preview(source)}")
             return False
         if not handled:
             print(f"[{self.name}/script] dry tick ok (ran; "
