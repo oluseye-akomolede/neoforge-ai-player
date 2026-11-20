@@ -46,18 +46,25 @@ document work that preceded them, kept so the reasoning is not lost.
       (`BotPlayer.java:895-919`), so a lookup can match a kind and see a second
       instance. Pinned by a test asserting two chests both appear and each entry
       carries `minecraft:`-prefixed id.
-- [ ] 2.1 `look` is installed beside `api` in the sandbox
+- [x] 2.1 `look` is installed beside `api` in the sandbox
       (`agent-script-runner/src/engine.js`), built from the snapshot literal,
       with no reference to `api` and no host call.
-- [ ] 2.2 Its results are deep copies. Pinned by a test that mutates a result
+- [x] 2.2 Its results are deep copies. Pinned by a test that mutates a result
       and asserts the next lookup is unaffected; the mutant returns a live
       reference and must red it.
-- [ ] 2.3 `hostCalls` is unchanged after many lookups. Pinned by a test; the
+- [x] 2.3 `hostCalls` is unchanged after many lookups. Pinned by a test; the
       mutant routes through `accept()` and must red it.
-- [ ] 2.4 An out-of-range query says "not searched that far", not an empty
+- [x] 2.4 An out-of-range query says "not searched that far", not an empty
       list. Pinned by a test; the mutant returns `[]` and must red it.
-- [ ] 2.5 The dry tick sees identical lookups. Pinned by a test running the
-      same script dry and live against one snapshot.
+- [x] 2.5 The dry tick sees identical lookups. Pinned by a test that drives
+      two independent sandboxes with one snapshot and the same source -- the
+      structure a dry tick has -- and asserts identical answers apart from the
+      wall-clock age. HONEST LIMIT: worker.js's `dryEvaluate` is not exported,
+      so this proves the property, not that worker.js passes the same context
+      to it; exporting a production function to reach it would be a change in
+      service of a test. The trial checks the wiring end to end. NO
+      DISCRIMINATING MUTANT FOUND: a purity violation is caught by the lookups'
+      ordinary tests first, so this test is a pin, not a mutant's kill.
 - [x] 2.6 **The snapshot fixture is copied from the producer, not written
       from memory.** `agent/test_snapshot.py` carried a block field `type`
       the mod has never sent (blocks send `{id, block, position}`; entities
