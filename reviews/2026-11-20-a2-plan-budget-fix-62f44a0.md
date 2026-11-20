@@ -86,3 +86,27 @@ carry "the second definition was the live one" forward as fact, because the next
 read the file will find a single definition whose history says the opposite.
 
 Nothing built or deployed by this review. No probe sent to `ollama-l3`.
+
+---
+
+## CORRECTION (added 22:2xZ, supersedes the F1 attribution above)
+
+The F1 attribution in this file is **wrong** and the builder's original account was right.
+`62f44a0` deleted the **dead** copy at `:1355` and kept the **live** one at `:1390`.
+
+Settled by execution, not by reading: I set the two definitions to different values at
+`9903d25` (`:1355` = 1111, `:1390` = 2222) and loaded the module — it bound **2222**. The
+later definition wins, so the table block at `:1390` was live and `:1355` was dead.
+
+Why my own review missed it: both copies held `4096`, so every read-level check agreed in
+both directions. Reading *which block was deleted* cannot tell you which block was **in
+force** while the two values are equal. Only forcing them apart does.
+
+Unchanged by this correction:
+- The duplicate existed and the budget test was inert against a reversion of `:1390`. That
+  was, and remains, the finding.
+- `62f44a0` fixes it: one definition, `4096`, read by the plan call, and 4096→1024 reds.
+- Every other check in this review (P-1, P-2, no behaviour change, the suite sets, the spec
+  hash).
+
+The verdict stays **PASS**.
