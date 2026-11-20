@@ -40,3 +40,8 @@ agent/memory_*.json
 
 # MinIO mount
 myminio/
+
+# Runtime bot telemetry written by the agent. Not source: a 378-line trajectory
+# was committed by accident in 3524e11 and had to be rewritten out of the
+# branch. Keep the directory out of git; the data lives on the volume.
+agent_trajectories/
