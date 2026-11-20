@@ -80,6 +80,11 @@ Spec only. No code, no build, no deploy until the lead approves this spec.
       Do NOT "fix" this into a `bindings.json` provenance field or an in-file
       marker — the agent cannot write the artefact, and adding a write path is a
       later step's storage design.
+      **Scoped to this change, not permanent.** The reason above expires the
+      moment an agent write path exists. When step (b) lands one, revisit this
+      decision on its merits rather than treating 2.8 as settled — a marker that
+      travels with the stored script would re-derive provenance across a restart
+      and lift the accepted cost. (Reviewer note on 58689f7, taken.)
 
 ## 3. What is deliberately out of scope
 
