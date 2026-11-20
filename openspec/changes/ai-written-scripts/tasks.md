@@ -84,19 +84,27 @@ inert for real goals: a player goal is planned by `plan_orchestrator.execute_tas
 with zero decompose calls. The lead ruled (A): move the script output onto the
 L3 path rather than limit the spec to the decompose paths.
 
-- [ ] 2a.1 **The script is ONE extra optional field on `call_plan`'s reply** —
-      not a new `kind`, not a new directive type. `Plan` gains an in-memory
-      `script` attribute, populated only when the reply carries one, and NOT
-      serialized by `Plan.to_dict()`.
+- [ ] 2a.1 **The script is ONE extra optional thing on `call_plan`'s reply,
+      carried outside the plan JSON** — not a new `kind`, not a new directive
+      type, and not a field of the JSON object the trainer sees. A helper
+      introduced by this change splits the script out of the model's text
+      between `l3_planner.py:427` and `:429`, so `raw` (and therefore
+      `response_raw` and `parsed`) never contains it. `Plan` may carry the
+      script in memory for dispatch; `Plan.to_dict()` needs no exclusion,
+      because the script was never in the dict to begin with.
 - [ ] 2a.2 **No script means byte-identical today.** With the field absent, the
       reply, the subtasks, the plan shape and the record
       `trajectory_log.log_call` writes are unchanged. Pinned by a test that
       compares the logged `parsed` object for a script-carrying reply against a
       reply with the field removed.
-- [ ] 2a.3 **The script is kept out of the trainer-visible record.** The DPO
-      export may read `call_plan` prompts and replies (asked of dags-lead, row
-      `qitem-20261120145614-65eb3af3994b0a26`); until they answer, the logged
-      `parsed` object must contain no script source.
+- [ ] 2a.3 **The script is kept out of every field the trainer reads, not just
+      `parsed`.** `build_dpo_dataset.py:89-93` builds `chosen`/`rejected` from
+      `response_raw` verbatim, so a `parsed`-only guard leaves the leak in the
+      trained field. The DPO export may read `call_plan` prompts and replies
+      (asked of dags-lead, row `qitem-20261120145614-65eb3af3994b0a26`);
+      until they answer, no field `build_dpo_dataset.py` reads may contain
+      script source. Pinned by a test asserting `response_raw` and `parsed` are
+      both script-free for a script-carrying reply.
 - [ ] 2a.4 **The orchestrator binds it.** `execute_task` hands the script to the
       caller through the existing `on_plan_created` hook, or an equivalent one
       argument; the agent's hook calls `_bind_planner_script`, which already

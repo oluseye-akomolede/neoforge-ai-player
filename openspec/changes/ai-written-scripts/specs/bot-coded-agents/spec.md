@@ -333,9 +333,10 @@ script at the decompose branch while three hours of logs showed the orchestrator
 running `L3 PLAN`/`L3 EXEC` with zero decompose calls. The script output MUST
 therefore be reachable from the path that runs a goal.
 
-**The script rides as one extra OPTIONAL field on `call_plan`'s reply.** It is
-not a new `kind` and not a new directive type. With no script present the
-planner's reply, the resulting `Plan`, and the plan record written by
+**The script is ONE extra OPTIONAL thing on `call_plan`'s reply, carried
+outside the plan JSON** (the following paragraphs say exactly where). It is not
+a new `kind` and not a new directive type. With no script present the planner's
+reply, the resulting `Plan`, and the plan record written by
 `trajectory_log.log_call` MUST be byte-identical to what they are today — same
 `parsed` object, same `plan_ref` side effects, same subtask list.
 
@@ -350,12 +351,22 @@ DPO actually trains on. Guarding `parsed` alone leaves the leak in the field
 that matters.
 
 **So the script is not carried inside the reply's JSON at all.** The script
-travels in a channel separate from the JSON object the trainer consumes —
-either a distinct top-level key on the API response that `_parse_plan` strips
-before `json.loads`, or a second call. Whatever the mechanism, the recorded
-`response_raw` MUST parse to a JSON object containing no script source, so that
-`parsed` and `response_raw` agree and the whole record is clean at once. A
-trainer reading `prompt_system`, `prompt_user`, `response_raw`, `parsed`, or
+travels in a channel separate from the JSON object the trainer consumes. There
+is no parser to hook: `call_plan` reads the model's text inline at
+`l3_planner.py:427` (`raw = _strip_codefence(answer_text(resp.json()))`) and
+decodes it at `:429` (`json.loads(raw)`), and `raw` is the exact string logged
+as `response_raw`. So the channel is a helper this change introduces, called
+between those two lines, which splits the script out of the model's text and
+returns the plan text alone. `raw` — and therefore `response_raw` and `parsed`
+— must then contain no script source, and the two agree because they are
+derived from the same cleaned string.
+
+The alternative, a second planner call, is rejected: it doubles planner
+latency and cost per goal and adds a second reply that can disagree with the
+first, whereas one deterministic split makes `response_raw` clean by
+construction, which is what this requirement wants.
+
+A trainer reading `prompt_system`, `prompt_user`, `response_raw`, `parsed`, or
 `world_state_summary` sees exactly what it sees now.
 
 This is the one place the DPO constraint bites hardest, because it rules out
@@ -507,9 +518,14 @@ release runs on every terminal path of the run (normal exit, crash, planner
 disabled), so a hold cannot outlive the goal that owns it.
 
 A script already bound from an earlier goal, or a hand-written one, is a rival
-to this goal and remains held for it exactly as today: binding the goal's own
-script releases the hold, and with it that earlier script also resumes — the
-goal is no longer planning, so there is nothing left to contend with.
+to this goal and remains held for it exactly as today. When the goal's own
+script is bound, the earlier in-memory script is **replaced**, not resumed:
+`_bind_planner_script` assigns `self._planner_script = source` (`:3185`), so
+the previous source ceases to exist and only the new one runs. The release is
+safe precisely BECAUSE the bind replaces it — releasing the hold would otherwise
+hand the bot back to a rival script, and it does not, because there is no longer
+a rival to hand it to. A hand-written binding is not replaced: it wins, and the
+bind is refused before any of this (condition 2), so the hold stands.
 
 #### Scenario: Binding a goal's own script releases that goal's hold
 - **GIVEN** a chat goal that has set the M3-1g hold
