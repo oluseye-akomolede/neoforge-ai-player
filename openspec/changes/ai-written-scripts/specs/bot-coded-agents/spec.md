@@ -900,31 +900,17 @@ then read as "all actions refused" and fell back to the planner, so nothing was
 said in game. The planner prompt offers `api.say` and `api.send`; a planner
 script that chats must be able to chat.
 
-The runner bounds this and remains the only bound, but what it enforces today
-is **a per-tick cap of 8** (`MAX_HOST_CALLS`, `binding.js`), not a hard
-per-minute one. The `say:30/min` and `send:20/min` counters
-(`binding.js`, `actionRates`) prune entries older than 60 s **relative to now**,
-so after 60 s of silence the array is empty and a full window is available
-again. A script that says 8 lines once a minute — the cadence of the
-2026-11-20 trial — is therefore never rate-limited: about 480 lines an hour.
+The runner's own rates bound this and remain the only bound: `api.say` 30/min
+and `api.send` 20/min per bot, enforced inside the runner (contract §8), so a
+script that calls them too often is already rate-limited before its records
+reach the agent. The agent adds no second limiter.
 
-Measured at runner `7855a39`, one long-lived `botState` as the sandbox holds it:
-
-| Trace | Accepted | Rejected |
-|---|---|---|
-| 8 `say`/tick, ticks 1 s apart, 10 ticks | 30 | 50 |
-| 8 `say`/tick, ticks 0.5 s apart, 20 ticks | 30 | 130 |
-| 10 ticks, one tick per full minute | 800 | 0 |
-
-**Known gap, not fixed here.** The refill-on-silence window is the same defect
-the runner already fixed for `api.log` at `6a755d6` (60 ticks x 8 lines
-produced 0 drops); it remains live for `say`/`send`. The fix belongs in the
-runner, beside the log one, and is drafted separately rather than made in this
-change. Until then the spec MUST NOT claim a per-minute guarantee.
-
-The agent adds no second limiter: the bound belongs in the runner, and a
-limiter in the agent would be a second bound to keep in step that drops what
-the runner allowed.
+One known gap bounds that guarantee: the window lives on the sandbox
+(`engine.js:251`, documented at `engine.js:399-406`), so a sandbox recycle
+after a `memory_exceeded`, a guard eviction or a wasm trap restarts it empty.
+The honest bound is therefore 30 per rolling minute plus up to 30 more per
+recycle. An ordinary script throw does not recycle the sandbox
+(`recycle.js:45-49`).
 
 #### Scenario: A say action is delivered through the chat path
 - **GIVEN** a tick whose script called `api.say("all clear")`
