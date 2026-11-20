@@ -918,13 +918,23 @@ def classify_message(model: str, bot_name: str, text: str) -> str:
 
     The answer is one of two short JSON objects ({"kind": "chat"} / {"kind":
     "task"}). The budget below was 24 tokens, which fits the answer and
-    NOTHING else: on 2026-11-20 21:23Z a repeating goal's message hit
-    eval_count=24 with done_reason=length and fell back to "task". Thinking
-    was already off (LLM_THINK defaults false), so the 24 went on the reply
-    itself — any preamble at all ("The user wants the bot to...") spends it
-    before the JSON starts, and `format: "json"` does not stop a model from
-    reasoning first. "task" is the fallback, so the failure is safe in
-    direction, but a repeating goal needs its classify to be right, not lucky.
+    NOTHING else: on 2026-11-20 21:23Z a message hit eval_count=24 with
+    done_reason=length. Thinking was already off (LLM_THINK defaults false), so
+    the 24 went on the reply itself: `format: "json"` constrains the SHAPE of
+    the reply, not its length, and a model may restate the question before it
+    emits the JSON.
+
+    What hitting the limit did NOT do, established from that trial and from
+    the call sites (agent.py:700 and :905) rather than assumed: classify is
+    asked only chat-vs-task. A length stop reaches `return "task"` through the
+    SAME path as a genuine "task", so it cannot misroute a chat as a task in a
+    way that loses the order -- "task" is the fallback direction precisely
+    because a mistaken order is visible and correctable. What it costs is the
+    other way: an utterance that really was chatter gets planned instead of
+    answered. 128 removes the limit as a cause. Whether a longer reply means
+    more preamble, and on which model, is NOT established here: the model the
+    agent uses is not reachable from this seat without a pod exec, and
+    measuring it would mean loading weights on the shared GPU.
     """
     sys_prompt = _CLASSIFY_SYSTEM_PROMPT.format(bot_name=bot_name, text=text)
     try:
