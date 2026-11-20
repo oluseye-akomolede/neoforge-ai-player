@@ -55,9 +55,11 @@ carries them.
 - [ ] 3.2 Size capped, truncated with a marker rather than dropped. Pinned by a
       test; the mutant drops and must red it.
 - [ ] 3.3 The per-bot 4/hour cap and the per-bot 15-minute cooldown, as the
-      load-bearing guard on result-triggered calls. Pinned by a test driving 10
-      ticks that asserts exactly one delivery; the mutant removes the cooldown
-      and must red it.
+      load-bearing guard on result-triggered calls. Pinned by a test that binds
+      10 **distinct** scripts back to back, each returning `done` once, and
+      asserts exactly 4 deliveries — not 10 ticks of one script, which a
+      `done: true` makes impossible since it releases the binding. The mutant
+      keys the cooldown on the script instead of the bot and must red it.
 - [ ] 3.4 `_maybe_plan_on_result()` beside `_maybe_plan`: evaluated every pass,
       acts only when a result is pending for the bot's current goal, so a
       finished script reaches `call_plan` with no player message. Pinned by a
@@ -75,6 +77,14 @@ carries them.
       hour and a second within the cooldown are queued with the suppressing cap
       logged, not dropped and not called. Pinned by tests; the mutant removes
       the cap and must red them.
+- [ ] 3.8 The cap and cooldown state is per bot and lives for the process
+      lifetime; `reset()` (`agent/agent.py:385-400`) MUST NOT clear it. Pinned
+      by a test that spends the cap, calls `reset()`, and asserts the fifth
+      result is still held off; the mutant clears the counters in `reset()` and
+      must red it.
+- [ ] 3.9 `replace` keeps the existing `goal_id`; the planner never mints one
+      and `_new_goal_id` stays player-message only. Pinned by a test that a
+      replace outcome keeps the id and that no planner path produces a new one.
 
 ## 4. Trials on test (run by the lead)
 

@@ -157,11 +157,32 @@ adequate needs three changes to what the agent sends:
 | Change | Effect | Cost |
 |---|---|---|
 | Real registry ids in `nearby.blocks` | colour or block kind can be matched on `minecraft:poppy` rather than `"Poppy"` | the Java builder must put `BuiltInRegistries.BLOCK.getKey(...)` in each entry; the display name is kept alongside. No extra scan. |
-| Stop deduplicating by name | a second chest becomes visible | the entry count for radius 5 is bounded by distinct **positions**, worst case the 1331-cell cube; today it is bounded by distinct names (tens). The tick payload grows. |
+| Stop deduplicating by name | a second chest becomes visible | the entry count for radius 5 is bounded by distinct **positions**, worst case the 1331-cell cube; today it is bounded by distinct names (tens). **The tick payload grows from about 1-3 KiB to about 57 KiB** — see the arithmetic below. |
 | Widen the radius | "chest within 16" becomes answerable | scanning is cubic: radius 5 is 1331 cells, radius 8 is 4913, radius 16 is 35937, radius 32 is 274625. At radius 16 the mod scans ~27× more cells than today, every 40 ticks, on the server thread (`BotPlayer.java:616-621` is called from the tick). |
 
 The third row is the expensive one and the one I cannot cost in milliseconds
 from source — §5 makes it a measurement, not an estimate.
+
+**The payload arithmetic for row 2.** One entry is built at
+`BotPlayer.java:907-910` as `{"block":"<display name>","position":"<x,y,z>"}`.
+Over 20 real block display names (`BotPlayer.java:905` is
+`state.getBlock().getName().getString()`) the names run 4-14 chars, median 7,
+so an entry is 41-51 bytes, median **44**. Today `seen.add(blockName)` at
+`:906` keeps one entry per distinct name, so a radius-5 tick carries roughly
+**0.9-2.6 KiB** for 20-60 distinct names: that is the 1-3 KiB of today's
+payload. Remove the dedup and the entry count becomes every non-air cell in
+the 1331-cell cube: **1331 entries × 44 B ≈ 57 KiB** — 30-54 KiB was the
+reviewer's estimate under partial fill; 57 KiB is the full-cube bound computed
+from the same 44-byte entry. Sent every 40 ticks that is about 1.5 KiB/s of
+extra egress per bot for a payload most ticks cannot use.
+
+**If that is too big every tick, bound it rather than ship it.** The
+recommended bound is **nearest K per block id** instead of the whole cube:
+for K=2 and 40 distinct names, 80 entries ≈ **3.4 KiB**; K=4 gives ≈ 6.9 KiB.
+That keeps "a second chest" answerable (K≥2), stays inside today's order of
+magnitude, and costs one insertion-ordered pass over the cube rather than a
+sort. It needs a per-id counter in the existing `seen` loop (`:898-911`),
+which is a few lines in the same method — not a new scan.
 
 ### The alternative: expose `find_blocks` as one host-call lookup
 
@@ -331,9 +352,17 @@ player intent ahead of a stale result.
 three outcomes: **continue** (the goal is unfinished — write the next script or
 step toward the same `goal_id`), **finish** (the goal's stated condition is
 met — clear it and say so), or **replace** (the goal is wrong or unachievable as
-stated — write a new script or directive for a new `goal_id`, with the reason
-logged). The planner is told which goal the result belongs to and is not asked
-to infer it.
+stated — write a new script or directive **under the same `goal_id`**, with the
+reason logged). The planner is told which goal the result belongs to and is not
+asked to infer it.
+
+**The planner does not mint goal ids.** `replace` keeps the existing `goal_id`:
+a goal id is created only by a player message (`_new_goal_id` stays
+player-message only), so a planner that rewrote its own goal would be handing
+itself a fresh id and, with it, the ability to slip the per-goal rules. Keeping
+the id means the result-keying rule (rule 1) and the discard rule keep working
+through a replace, and a replaced goal is still recognisably the same goal to
+whoever reads the log.
 
 **The one slot and its eviction rule.** There is one pending result per
 `{bot, goal_id}`. A newer result for the same key **overwrites** the older one,
@@ -379,6 +408,17 @@ Three caps, each independently sufficient to stop a runaway:
 - **The script stops on completion.** A `done: true` result releases the
   binding, so there is no next tick to trigger on until the planner writes a
   new script.
+
+**Where the cap and cooldown state lives.** Per **bot**, for the lifetime of the
+agent process — two counters and a timestamp next to the other per-bot agent
+state, keyed by bot name. It MUST **not** be cleared by `reset()`: `reset()`
+(`agent/agent.py:385-400`) clears script hold, conversation history and
+orchestration, and a reset is the one moment a bot is most likely to be handed
+a fresh goal and run again, so clearing the counters there would hand back the
+full hourly budget on demand. Losing the state on process restart is accepted —
+it costs at most one extra batch of 4 — because the alternative is persisting a
+rate counter, which is more machinery than the bound is worth. A test MUST fail
+if `reset()` clears it.
 
 **Cost stated plainly:** worst case 4 planner calls/hour/bot from results. For
 the bots on test that is a bounded, small number; it is not zero, and the trial

@@ -73,10 +73,20 @@ per-bot hourly cap and cooldown that bound how often that can happen.
 - **THEN** a result MUST be delivered to the planner
 
 #### Scenario: A loop cannot re-trigger the planner every tick
-- **GIVEN** a script that returns `done: true` on every tick
-- **WHEN** it runs for ten ticks inside one hour
+- **GIVEN** ten distinct scripts, each returning `done: true` on its first tick
+- **WHEN** they are bound and run back to back within one hour, each released
+  by its own completion and the next bound in its place
 - **THEN** at most 4 results MUST reach the planner
-- **AND** the count dropped by the per-bot hourly cap MUST be recorded
+- **AND** the results over the cap MUST be queued and the suppressed call
+  logged with the cap named
+- **AND** the fifth script MUST NOT start a planner call even though its
+  binding and release are the same shape as the first
+
+The shape is deliberate: a `done: true` releases the binding, so "ten ticks of
+one script" can never reach the cap — only ten separate scripts can. That makes
+this scenario the bind/release bypass test, and it is also what proves the
+cooldown is **per bot** rather than per script: ten different scripts must
+still be held off, so any implementation keyed on the script fails it.
 
 #### Scenario: A result has a size cap
 - **GIVEN** a script returning more than 2 KiB of JSON
@@ -103,14 +113,6 @@ per-bot hourly cap and cooldown that bound how often that can happen.
   for a player
 - **AND** that call MUST be started by the result-triggered entry point, not by
   `_maybe_plan`
-
-#### Scenario: Result-triggered calls stay under the cap
-- **GIVEN** scripts that finish repeatedly within one hour
-- **WHEN** the results would start more than 4 planner calls for that bot
-- **THEN** at most 4 result-triggered calls MUST be made in the hour
-- **AND** any result beyond the cap MUST be queued in the pending slot rather
-  than dropped
-- **AND** the call suppressed by the cap MUST be logged with the cap named
 
 #### Scenario: A result arriving mid-call is queued, not injected
 - **GIVEN** a planner call in flight for a goal
