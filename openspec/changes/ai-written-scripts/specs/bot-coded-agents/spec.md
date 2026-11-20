@@ -881,3 +881,51 @@ one-program reply, which needed 6144.
 - **GIVEN** the model the agent runs against, asked the real PLAN prompt
 - **WHEN** the plan budget is chosen
 - **THEN** it MUST exceed the largest `eval_count` observed at a higher budget
+
+### Requirement: A Script's Say And Send Are Delivered, Not Refused
+
+The runner's `api.say` and `api.send` produce action records beside the
+`do` records, and the agent MUST deliver them through the paths the planner
+already uses rather than refusing them: `say` through the existing chat-send
+path, `send` through the existing inter-bot message path. The agent MUST NOT
+open a new channel for either, MUST NOT change the runner, its rate limits, or
+the set of `do`-dispatchable kinds, and MUST NOT deliver anything from a dry
+tick.
+
+A delivered `say` or `send` counts toward the tick having handled it. Before
+this, the trial of 2026-11-20 22:21Z (image `e3478fb8`, goal "say all clear in
+chat") ran a script every ~61 s that called `api.say` each time, and every call
+was refused with "action is a 'say' call, not a dispatchable 'do'". The script
+then read as "all actions refused" and fell back to the planner, so nothing was
+said in game. The planner prompt offers `api.say` and `api.send`; a planner
+script that chats must be able to chat.
+
+The runner's own rates bound this and remain the only bound: `api.say` 30/min
+and `api.send` 20/min per bot, enforced inside the runner (contract §8), so a
+script that calls them too often is already rate-limited before its records
+reach the agent. The agent adds no second limiter.
+
+#### Scenario: A say action is delivered through the chat path
+- **GIVEN** a tick whose script called `api.say("all clear")`
+- **WHEN** the agent processes the action records
+- **THEN** it MUST call the existing chat path once with that text
+- **AND** the tick MUST count as handled, not as "all actions refused"
+
+#### Scenario: A send action reaches the other bot
+- **GIVEN** a tick whose script called `api.send("Scout", "on my way")`
+- **WHEN** the agent processes the action records
+- **THEN** it MUST deliver the message through the existing inter-bot path
+- **AND** the tick MUST count as handled
+
+#### Scenario: A tick with both a do and a say handles both
+- **GIVEN** a tick whose script called `api.do` and `api.say`
+- **WHEN** the agent processes the action records
+- **THEN** the `do` MUST dispatch as it does today
+- **AND** the `say` MUST be delivered
+- **AND** neither MUST be refused merely for sharing a tick with the other
+
+#### Scenario: A dry tick delivers nothing
+- **GIVEN** a script that calls `api.say` and `api.send`
+- **WHEN** it is run under a dry tick
+- **THEN** no chat message MUST be sent and no message MUST reach another bot
+- **AND** the dry tick's question MUST remain "can this script run" only

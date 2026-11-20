@@ -2940,6 +2940,55 @@ Respond with ONLY a JSON array. Example:
             # the script was suppressed from logging from us not showing it.
             print(f"[{self.name}/script] log: runner dropped {dropped} line(s)")
 
+    def _deliver_script_deliveries(self, deliveries):
+        """Send the script's `say`/`send` calls through the existing paths.
+
+        A `say` goes through `api.chat`, the same function the planner's chat
+        uses, so the script's chat is rate-limited, shaped and logged exactly
+        like the bot's own. A `send` goes through `BotRunner.send_bot_message`,
+        the existing inter-bot path -- no new channel, and no second way for
+        two bots to talk that a later reader would have to know about.
+
+        Nothing here rate-limits: the runner already did (contract §8:
+        `api.say` 30/min, `api.send` 20/min per bot, enforced in binding.js
+        before the record is queued), so a second limiter here would be a
+        second bound to keep in step and would drop what the runner allowed.
+
+        Returns the count delivered, for the caller's log. An individual
+        delivery failing is caught and logged, never raised: a script must not
+        kill the tick loop, and one unsendable `say` must not stop the `do`
+        beside it from having already happened.
+        """
+        delivered = 0
+        for d in deliveries or []:
+            call = d.get("call")
+            try:
+                if call == "say":
+                    success = api.chat(self.name, d.get("text") or "")
+                elif call == "send":
+                    success = BotRunner.send_bot_message(
+                        self.name, d.get("to") or "", d.get("text") or "")
+                else:
+                    # validated_deliveries refuses unknown kinds, so this is
+                    # unreachable from ScriptTick; named rather than silent so
+                    # a future caller passing its own list cannot slip one by.
+                    print(f"[{self.name}/script] cannot deliver {call!r}")
+                    continue
+            except Exception as e:  # noqa: BLE001 — one line must not kill the tick
+                print(f"[{self.name}/script] delivery of {call} failed: {e}")
+                continue
+            # `send_bot_message` returns False for a bot it does not know. That
+            # is a real non-delivery and must not be counted: a script that
+            # talks to a bot that is offline should be visible as such.
+            if call == "send" and success is False:
+                print(f"[{self.name}/script] send seq={d.get('seq')} "
+                      f"not delivered: {d.get('to')!r} is not a running bot")
+                continue
+            delivered += 1
+        if delivered:
+            print(f"[{self.name}/script] delivered {delivered} say/send call(s)")
+        return delivered
+
     def _note_script_idle(self):
         """Say, at most once per interval, that the script proposed nothing.
 
@@ -2995,6 +3044,18 @@ Respond with ONLY a JSON array. Example:
                 print(f"[{self.name}/script] held by goal {hold.get('goal_id')!r}, not dispatching")
                 return SCRIPT_HELD
             handled, actions, refusals, detail = st.tick()
+            # `say`/`send` are delivered HERE, through the same functions the
+            # planner uses, not through the directive dispatch below: they are
+            # runner actions with no `kind` (contract §4.1; agent-script-runner
+            # src/binding.js:259/271), so the dispatch set is untouched.
+            #
+            # Delivered BEFORE the `ran == 0` fallback so a say-only tick is
+            # not read as "nothing happened" -- that reading is exactly the
+            # 2026-11-20 22:21Z failure, where a script calling api.say every
+            # minute never spoke. A dry tick carries no deliveries at all
+            # (ScriptTick clears them), so a rehearsal cannot become visible.
+            self._deliver_script_deliveries(
+                getattr(st, "last_deliveries", []))
             # The script's OWN log lines, whatever the outcome. Before M3-1c
             # this happened not at all: `script_client` did not read the
             # runner's `logs` field, so `api.log()` -- including the action

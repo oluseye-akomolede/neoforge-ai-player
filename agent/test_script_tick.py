@@ -371,7 +371,7 @@ class RunnerRecordTranslationTest(unittest.TestCase):
     """
 
     def test_a_do_record_becomes_kind_plus_flat_args(self):
-        pairs, refusals = translate_runner_actions(
+        pairs, refusals, _deliveries = translate_runner_actions(
             [_do("STORE_ALL", {}, seq=7)])
         self.assertEqual(refusals, [])
         self.assertEqual(pairs, [({"kind": "STORE_ALL"}, 7)])
@@ -379,40 +379,69 @@ class RunnerRecordTranslationTest(unittest.TestCase):
     def test_null_args_are_treated_as_no_arguments(self):
         # binding.js writes `null` for undefined args so the field always
         # exists; it means "no arguments", not "arguments are broken".
-        pairs, refusals = translate_runner_actions(
+        pairs, refusals, _deliveries = translate_runner_actions(
             [{"seq": 3, "call": "do", "directive": "STORE_ALL", "args": None}])
         self.assertEqual(refusals, [])
         self.assertEqual(pairs, [({"kind": "STORE_ALL"}, 3)])
 
-    def test_a_say_record_is_refused_by_name_not_as_a_missing_kind(self):
-        # say/send shares the same actions list. Refusing it as "no 'kind'"
-        # would send a script author looking for a bug that is not there.
-        pairs, refusals = translate_runner_actions(
+    def test_a_say_record_is_routed_to_delivery_not_refused(self):
+        # say/send share the same actions list as do. Until 2026-11-20 22:21Z
+        # they were refused here, so a script that chatted every minute never
+        # spoke in game. They are now routed out of binding and delivered.
+        # KILLS: restoring the refusal that made the say-only trial silent.
+        pairs, refusals, deliveries = translate_runner_actions(
             [{"seq": 4, "call": "say", "text": "hi"}])
         self.assertEqual(pairs, [])
-        self.assertIn("say", refusals[0]["error"])
-        self.assertEqual(refusals[0]["seq"], 4)
+        self.assertEqual(refusals, [])
+        self.assertEqual([d["seq"] for d in deliveries], [4])
 
-    def test_a_send_record_is_refused_by_name(self):
-        pairs, refusals = translate_runner_actions(
+    def test_tick_exposes_the_routed_deliveries_to_its_caller(self):
+        # The routing is worthless if tick() does not hand the deliveries to
+        # the caller: agent.py delivers whatever `last_deliveries` holds, so a
+        # tick that parses them and then drops them is silent in game exactly
+        # like the refusal it replaced.
+        # KILLS: self.last_deliveries = [] (parsed and discarded).
+        st = ScriptTick(
+            _FakeApi(), "Scout", "x",
+            post=_poster(actions=[{"seq": 2, "call": "say", "text": "hi"},
+                                  {"seq": 3, "call": "send", "to": "S1", "msg": "yo"}]))
+        handled, actions, refusals, _detail = st.tick()
+        self.assertTrue(handled)
+        self.assertEqual(actions, [])
+        self.assertEqual(refusals, [])
+        self.assertEqual([d["seq"] for d in st.last_deliveries], [2, 3])
+
+    def test_a_send_record_is_routed_to_delivery_not_refused(self):
+        pairs, refusals, deliveries = translate_runner_actions(
             [{"seq": 5, "call": "send", "to": "S1", "msg": "x"}])
         self.assertEqual(pairs, [])
-        self.assertIn("send", refusals[0]["error"])
+        self.assertEqual(refusals, [])
+        self.assertEqual([d["seq"] for d in deliveries], [5])
+
+    def test_an_unknown_call_kind_is_still_refused_by_name(self):
+        """Routing say/send out must not turn into accepting ANY non-do call.
+        KILLS: routing by `call != 'do'`, which would deliver 'teleport'."""
+        pairs, refusals, deliveries = translate_runner_actions(
+            [{"seq": 7, "call": "teleport", "x": 1}])
+        self.assertEqual(pairs, [])
+        self.assertEqual(deliveries, [])
+        self.assertIn("teleport", refusals[0]["error"])
+        self.assertEqual(refusals[0]["seq"], 7)
 
     def test_a_missing_directive_is_refused_with_its_seq(self):
-        pairs, refusals = translate_runner_actions([{"seq": 6, "call": "do"}])
+        pairs, refusals, _deliveries = translate_runner_actions([{"seq": 6, "call": "do"}])
         self.assertEqual(pairs, [])
         self.assertEqual(refusals[0]["seq"], 6)
         self.assertIn("directive", refusals[0]["error"])
 
     def test_a_non_string_directive_is_refused(self):
-        pairs, refusals = translate_runner_actions(
+        pairs, refusals, _deliveries = translate_runner_actions(
             [{"seq": 8, "call": "do", "directive": 42, "args": {}}])
         self.assertEqual(pairs, [])
         self.assertEqual(refusals[0]["seq"], 8)
 
     def test_non_object_args_are_refused_not_coerced(self):
-        pairs, refusals = translate_runner_actions(
+        pairs, refusals, _deliveries = translate_runner_actions(
             [_do("STORE_ALL", ["not", "a", "dict"], seq=9)])
         self.assertEqual(pairs, [])
         self.assertEqual(refusals[0]["seq"], 9)
@@ -422,19 +451,20 @@ class RunnerRecordTranslationTest(unittest.TestCase):
         # bind_action reads kind/action as the action name, so an arg by that
         # name would silently become the directive and the real one lost.
         for reserved in ("kind", "action"):
-            pairs, refusals = translate_runner_actions(
+            pairs, refusals, _deliveries = translate_runner_actions(
                 [_do("MINE", {reserved: "WORLD_EDIT"}, seq=10)])
             self.assertEqual(pairs, [], reserved)
             self.assertEqual(len(refusals), 1, reserved)
             self.assertIn(reserved, refusals[0]["error"])
 
     def test_one_bad_record_does_not_suppress_the_others(self):
-        pairs, refusals = translate_runner_actions(
+        pairs, refusals, deliveries = translate_runner_actions(
             [_do("STORE_ALL", {}, seq=1),
-             {"seq": 2, "call": "say", "text": "hi"},
+             {"seq": 2, "call": "teleport"},
              _do("MINE", {"target": "stone"}, seq=3)])
         self.assertEqual([p[1] for p in pairs], [1, 3])
         self.assertEqual([r["seq"] for r in refusals], [2])
+        self.assertEqual(deliveries, [])
 
     def test_the_seq_survives_to_the_bound_actions_in_order(self):
         st = ScriptTick(
@@ -464,9 +494,14 @@ class RunnerRecordTranslationTest(unittest.TestCase):
         self.assertEqual(st._last_action_seqs, [11, 13])
         self.assertEqual([r["seq"] for r in refusals], [12])
 
-    def test_a_translation_refusal_does_not_shift_the_bind_seqs(self):
-        # Translation refuses record 1 before binding ever sees it; the seqs
-        # for the survivors must still be 11 and 13, not 11 and 12.
+    def test_a_say_between_two_dos_does_not_shift_the_bind_seqs(self):
+        # A say consumes a seq in the runner and never becomes a directive, so
+        # the seqs for the bound actions must still be 11 and 13, not 11 and
+        # 12. This is why the pairs carry their own seq rather than being
+        # zipped against a list of seqs by position.
+        #
+        # The say is now ROUTED to delivery rather than refused, so the gap it
+        # leaves is the point: it is still not in `_last_action_seqs`.
         st = ScriptTick(
             _FakeApi(), "Scout", "x",
             post=_poster(actions=[_do("MINE", {"target": "a"}, seq=11),
@@ -475,7 +510,8 @@ class RunnerRecordTranslationTest(unittest.TestCase):
         _h, actions, refusals, _d = st.tick()
         self.assertEqual([a["kind"] for a in actions], ["MINE", "DROP"])
         self.assertEqual(st._last_action_seqs, [11, 13])
-        self.assertEqual([r["seq"] for r in refusals], [12])
+        self.assertEqual(refusals, [])
+        self.assertEqual([d["seq"] for d in st.last_deliveries], [12])
 
 
 class MemoryRoundTripTest(unittest.TestCase):

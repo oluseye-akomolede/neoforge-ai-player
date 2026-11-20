@@ -486,6 +486,69 @@ class ScriptObservabilityTest(unittest.TestCase):
         self.assertIn("(+4 more lines this tick", out,
                       "9 lines returned, cap 5, so 4 must be reported hidden")
 
+    # ── say/send delivery ────────────────────────────────────────────────
+    # Until 2026-11-20 22:21Z a script's api.say was refused at translation,
+    # so a bot whose script chatted every minute never spoke. Routing them is
+    # only half the repair; these pin that the AGENT actually delivers them,
+    # through the planner's own functions rather than a second channel.
+
+    def test_a_say_reaches_the_chat_path_the_planner_uses(self):
+        self._real_tick(self._wire(actions=[{"seq": 1, "call": "say", "text": "hi"}]))
+        with mock.patch("api.chat", return_value=True) as chat, \
+             mock.patch("builtins.print"):
+            self.a._run_script_tick()
+        chat.assert_called_once_with("Scout", "hi")
+
+    def test_a_send_reaches_the_inter_bot_path(self):
+        self._real_tick(self._wire(actions=[
+            {"seq": 2, "call": "send", "to": "S1", "msg": "yo"}]))
+        with mock.patch.object(self.agent_mod.BotRunner, "send_bot_message",
+                               return_value=True) as send, \
+             mock.patch("builtins.print"):
+            self.a._run_script_tick()
+        send.assert_called_once_with("Scout", "S1", "yo")
+
+    def test_a_send_to_a_bot_that_does_not_exist_is_not_counted(self):
+        # send_bot_message returns False for an unknown bot. Counting that as
+        # delivered would make a script talking to an offline bot look fine.
+        self._real_tick(self._wire(actions=[
+            {"seq": 3, "call": "send", "to": "ghost", "msg": "yo"}]))
+        with mock.patch.object(self.agent_mod.BotRunner, "send_bot_message",
+                               return_value=False), \
+             mock.patch("builtins.print") as p:
+            n = self.a._deliver_script_deliveries(
+                [{"seq": 3, "call": "send", "to": "ghost", "text": "yo"}])
+        self.assertEqual(n, 0)
+        self.assertIn("not a running bot", " ".join(str(c) for c in p.call_args_list))
+
+    def test_one_failing_delivery_does_not_stop_the_next(self):
+        # A script must not kill the tick loop, and one unsendable say must
+        # not swallow the say beside it.
+        with mock.patch("api.chat", side_effect=[RuntimeError("network"), True]) as chat, \
+             mock.patch("builtins.print") as p:
+            n = self.a._deliver_script_deliveries(
+                [{"seq": 1, "call": "say", "text": "a"},
+                 {"seq": 2, "call": "say", "text": "b"}])
+        self.assertEqual(n, 1)
+        self.assertEqual(chat.call_count, 2)
+        self.assertIn("delivery of say failed", " ".join(str(c) for c in p.call_args_list))
+
+    def test_a_dry_tick_never_reaches_the_delivery_path(self):
+        # A rehearsal must not speak. The guarantee is structural: the dry
+        # tick is a SEPARATE method that drops every action and never calls
+        # `_deliver_script_deliveries`. Pinned so a later refactor merging the
+        # two paths cannot quietly make a rehearsal chat in game.
+        # KILLS: sharing one tick path between dry and live.
+        with mock.patch("api.chat", return_value=True) as chat, \
+             mock.patch.object(self.agent_mod.BotRunner, "_deliver_script_deliveries",
+                               autospec=True) as deliver, \
+             mock.patch("builtins.print"):
+            with mock.patch("script_tick.ScriptTick") as St:
+                St.return_value.tick.return_value = (True, [], [], "1 action(s)")
+                self.a._dry_tick("api.say('hi')")
+        chat.assert_not_called()
+        deliver.assert_not_called()
+
     def test_a_long_line_is_truncated_and_marked(self):
         self._real_tick(self._wire(logs=["x" * 500]))
         with mock.patch("builtins.print") as p:

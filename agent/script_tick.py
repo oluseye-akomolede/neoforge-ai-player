@@ -87,7 +87,10 @@ def translate_runner_actions(records):
     `_ALLOWED_ARGS`, so `seq`, `call` and `args` would each be refused on their
     own account. The record has to be translated, not widened.
 
-    Returns `(pairs, refusals)` where each pair is `(bindable, seq)`. The seq is
+    Returns `(pairs, refusals, deliveries)` where each pair is `(bindable, seq)`
+    and each delivery is the runner's raw `say`/`send` record (see
+    `validated_deliveries`, which turns it into something a caller can send).
+    The seq is
     kept BESIDE the translated record rather than inside it: `bind_action`
     refuses any key outside its argument allow-list, so a `seq` in the dict
     would be refused, and even if admitted it would be stripped by
@@ -115,15 +118,24 @@ def translate_runner_actions(records):
     """
     if not isinstance(records, list):
         return [], [{"seq": None,
-                     "error": f"actions must be a list, got {type(records).__name__}"}]
+                     "error": f"actions must be a list, got {type(records).__name__}"}], []
 
-    pairs, refusals = [], []
+    pairs, refusals, deliveries = [], [], []
     for record in records:
+        call = record.get("call") if isinstance(record, dict) else None
+        if call in ("say", "send"):
+            # Routed OUT of binding, not through it. A say is a chat call and a
+            # send is an inter-bot message (M2-PLAN.md:276-280); neither is a
+            # DirectiveType, so neither has a `kind` for bind_action to read.
+            # Collected in script order so the caller delivers them in the
+            # order the script called them.
+            deliveries.append(record)
+            continue
         try:
             pairs.append(_translate_one(record))
         except RefusedRecord as e:
             refusals.append({"seq": e.seq, "error": e.reason})
-    return pairs, refusals
+    return pairs, refusals, deliveries
 
 
 def _translate_one(record):
@@ -138,13 +150,14 @@ def _translate_one(record):
     seq = record.get("seq")
     call = record.get("call")
     if call != "do":
-        # The runner also queues `say` and `send` (src/binding.js), and they
-        # arrive in the same list. They are legitimate records with no
-        # dispatchable meaning here, so name that instead of letting
-        # bind_action report a confusing missing 'kind'.
+        # `say` and `send` are DELIVERED, not refused, but they are not
+        # bindable: they become chat calls and inter-bot messages, never a
+        # directive. `translate_runner_actions` routes them out before calling
+        # this, so reaching here means an unknown call kind -- refused, with
+        # the kind named so the reader can tell a typo from a new action.
         raise RefusedRecord(
-            f"action is a {call!r} call, not a dispatchable 'do': "
-            f"only do-calls become directives", seq)
+            f"unknown action call {call!r}: only 'do' binds to a directive "
+            f"(say and send are delivered separately)", seq)
 
     directive = record.get("directive")
     if not isinstance(directive, str) or not directive.strip():
@@ -168,6 +181,69 @@ def _translate_one(record):
                 f"action name and the directive {directive!r} would be lost", seq)
 
     return {"kind": directive, **args}, seq
+
+
+def validated_deliveries(deliveries):
+    """Turn runner `say`/`send` records into `(deliverables, refusals)`.
+
+    The shapes are the runner's own (agent-script-runner src/binding.js:259 and
+    :271), read from the code that builds them rather than guessed:
+
+        say  -> {seq, call: "say",  text}
+        send -> {seq, call: "send", to, msg}
+
+    Validation is repeated here even though the runner already checked these
+    types (`api.say` rejects a non-string at :254, `api.send` a non-string or
+    empty `otherBot` at :263). The runner version that answers may not be the
+    one this agent was written against, and a malformed record must be a named
+    refusal rather than a TypeError inside the caller's dispatch loop.
+
+    `send`'s `msg` may be any JSON value (the contract carries it verbatim),
+    so it is stringified for the chat path; a `to` that is not a bot id this
+    agent knows is the caller's problem, not a shape error, and is passed
+    through intact.
+
+    Returns `(deliverables, refusals)`. A deliverable is
+    `{"call": "say", "text": str, "seq": seq}` or
+    `{"call": "send", "to": str, "text": str, "seq": seq}`.
+    """
+    out, refused = [], []
+    for record in deliveries:
+        seq = record.get("seq")
+        call = record.get("call")
+        if call == "say":
+            text = record.get("text")
+            if not isinstance(text, str):
+                refused.append({"seq": seq,
+                                "error": f"say 'text' must be a string, "
+                                         f"got {type(text).__name__}"})
+                continue
+            out.append({"call": "say", "text": text, "seq": seq})
+        elif call == "send":
+            to = record.get("to")
+            if not isinstance(to, str) or not to:
+                refused.append({"seq": seq,
+                                "error": "send 'to' must be a non-empty bot "
+                                         "id string"})
+                continue
+            msg = record.get("msg")
+            out.append({"call": "send", "to": to,
+                        "text": "" if msg is None else _stringify_msg(msg),
+                        "seq": seq})
+        else:
+            refused.append({"seq": seq, "error": f"unknown delivery {call!r}"})
+    return out, refused
+
+
+def _stringify_msg(msg):
+    """The chat-path text for a `send` payload the contract allows as any JSON."""
+    if isinstance(msg, str):
+        return msg
+    import json
+    try:
+        return json.dumps(msg, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(msg)
 
 
 def _number_bind_refusals(translate_refusals, bind_refusals, pairs):
@@ -293,6 +369,10 @@ class ScriptTick:
         # cannot re-print a previous tick's lines as if they were new.
         self.last_logs = []
         self.last_logs_dropped = 0
+        # The `say`/`send` calls this tick delivered, for the caller to send.
+        # An attribute for the same reason as last_logs: widening the tick()
+        # tuple would touch every caller for data the logging path alone wants.
+        self.last_deliveries = []
 
     @property
     def enabled(self):
@@ -310,6 +390,7 @@ class ScriptTick:
         # something happened that did not.
         self.last_logs = []
         self.last_logs_dropped = 0
+        self.last_deliveries = []
 
         if not self._source:
             return False, [], [], "no script"
@@ -395,24 +476,48 @@ class ScriptTick:
         # Two shapes meet here: the runner's and the binder's. Translate first,
         # then bind, keeping the runner's seq beside each bound action so the
         # dispatch log can carry it (M2 §8.2 evidence wants the matching seq).
-        pairs, refusals = translate_runner_actions(result.actions)
+        pairs, refusals, raw_deliveries = translate_runner_actions(result.actions)
         bound, bind_refusals = action_binding.bind_actions([b for b, _ in pairs])
         refusals = _number_bind_refusals(refusals, bind_refusals, pairs)
+        # `say`/`send` are delivered, not bound. They are collected on the
+        # instance for the caller rather than returned in the tuple: the tuple
+        # is `(handled, actions, refusals, detail)` and widening it would touch
+        # every caller for data only the dispatch path wants -- the same reason
+        # last_logs is an attribute. A DRY tick collects NONE: its whole point
+        # is that it carries no side effects, and a chat line or an inter-bot
+        # message is the most visible side effect there is.
+        if self._dry:
+            self.last_deliveries = []
+        else:
+            self.last_deliveries, delivery_refusals = validated_deliveries(
+                raw_deliveries)
+            refusals = refusals + delivery_refusals
         # `bind_actions` returns `bound` in input order and names each refusal's
         # index, so the surviving seqs are the pairs whose index bind kept.
         rejected = {r["index"] for r in bind_refusals if "index" in r}
         self._last_action_seqs = [seq for i, (_, seq) in enumerate(pairs)
                                   if i not in rejected]
-        if not bound:
-            # The script ran and proposed nothing bindable. That is still a
-            # handled tick *if* the script genuinely said "do nothing"; but if
-            # every action was refused, falling through would let the planner
-            # quietly do something else, which is the opposite of what the
-            # script asked. Distinguish the two.
+        if not bound and not self.last_deliveries:
+            # The script ran and proposed nothing this agent can DO. That is
+            # still a handled tick *if* the script genuinely said "do nothing";
+            # but if every action was refused, falling through would let the
+            # planner quietly do something else, which is the opposite of what
+            # the script asked. Distinguish the two. A tick that only said
+            # something is NOT this case: it has deliveries, and the trial of
+            # 2026-11-20 22:21Z is what happens when a say-only script is read
+            # as "all actions refused" -- the bot falls back to the planner and
+            # never speaks.
             if refusals:
                 return False, [], refusals, DETAIL_ALL_ACTIONS_REFUSED
             return True, [], [], "script chose silence"
 
+        if not bound:
+            return True, [], refusals, (
+                f"{len(self.last_deliveries)} delivery(ies)")
+        if self.last_deliveries:
+            return True, bound, refusals, (
+                f"{len(bound)} action(s), "
+                f"{len(self.last_deliveries)} delivery(ies)")
         return True, bound, refusals, f"{len(bound)} action(s)"
 
     def _build_snapshot(self):
