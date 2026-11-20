@@ -1328,13 +1328,32 @@ def fence_diagnosis(raw: str) -> str:
     only ever describes a reply that already failed, and never decides anything.
     """
     text = raw or ""
-    opens_js = len(re.findall(r"```(?:js|javascript)[ \t]*\r?\n", text, re.IGNORECASE))
-    closes = len(re.findall(r"```[ \t]*\r?(?=\n|$)", text))
+    # Walk the fences in order with a state flag. Counting opens and closes
+    # independently cannot answer the question: a python block's closing fence
+    # is a fence alone on its line, so tallying those counts it as a js close
+    # and hides a genuinely missing one (python+python+unclosed js reported
+    # "opened 1, closed 2" -- the close it claimed was a python block's). An
+    # open is only a js open, and a close only counts when it terminates one.
+    opens_js = 0
+    closes_js = 0
+    inside_js = False
+    for m in re.finditer(r"```([A-Za-z0-9_+.-]*)[ \t]*\r?(?=\n|$)", text):
+        tag = m.group(1).lower()
+        if inside_js:
+            if not tag:  # a bare fence while a js block is open closes it
+                closes_js += 1
+                inside_js = False
+            # a tagged fence here is a new opening inside an unterminated js
+            # block; the js block stays open and the missing close is kept.
+        elif tag in ("js", "javascript"):
+            opens_js += 1
+            inside_js = True
+        # any other tag, or a bare fence with no js block open, is ignored.
     if opens_js == 0:
         return "no-js-fence (```js/```javascript not found)"
-    if closes < opens_js:
-        return f"missing-closing-fence (opened {opens_js}, closed {closes})"
-    return f"fence-present-but-block-unusable (opened {opens_js}, closed {closes})"
+    if inside_js or closes_js < opens_js:
+        return f"missing-closing-fence (opened {opens_js}, closed {closes_js})"
+    return f"fence-present-but-block-unusable (opened {opens_js}, closed {closes_js})"
 
 
 def extract_script_block(model_text: str) -> str | None:
