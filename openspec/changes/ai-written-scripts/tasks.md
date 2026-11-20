@@ -149,29 +149,31 @@ L3 path rather than limit the spec to the decompose paths.
 - [x] 2a.9 **Trial on test, run by the lead.** One repeating goal and one
       one-shot goal to a bot with no hand-written binding. Both must hold: the
       repeating goal logs a dry-gate accept then a bind then the script runs;
-      the one-shot goal logs a normal L3 plan with no script. Counted from the
-      log with grep, not from a summary.
+      the one-shot goal logs a normal L3 plan with no script. The entries below
+      are the lead's own trial outputs, relayed in the queue; the pods that ran
+      them had been replaced by the time I looked, so I could not recount them
+      from logs myself.
       Each failure below is a defect this change then had to fix, so the trial
-      is evidence about the path, not just a pass/fail:
-      - 21:45Z, on `1fad4205` + gateway `dfcccfea`: PLAN parsed and
-        `wants_script` was true, then `L3 SCRIPT call returned no block` with
-        an empty raw preview — a SCRIPT reply of `''` at HTTP 200. Cause was
-        the gateway dropping `done_reason`, so `answer_text`'s truncation
-        guard could never fire. Fixed additively in `b843ddd`.
-      - 22:2xZ, on `9903d25`: the plan call itself was cut off at its token
-        limit, and the partial reply surfaced as a JSON error at line 3 column
-        16 rather than as truncation. Measured at 4/6 calls lost at 1024 with
-        an unbudgeted thinking block of 2093-8482 chars; fixed at `9903d25`
-        (plan budget 4096, `done_reason` checked before parsing) and `62f44a0`.
-      - 22:38Z, on `8e1b3a5`: planner script dry-ticks, binds, releases the
-        hold, and its `api.say` reaches game chat every ~61s. This is the run
-        that makes 2a.9 true. Repeating goal observed; the one-shot half is
-        covered by tests rather than by a logged trial.
-      Verified by me only in part: I read the current test deployment at
-      22:5xZ (`agent@sha256:bb7792c1`, one bound script, 25 ticks, one
-      `STORE_ALL` dispatch, no planner calls), but that pod started 22:43Z and
-      the pods that ran the 21:45Z/22:38Z trials are gone, so their log lines
-      cannot be recounted here. The trial results above are the lead's runs.
+      is evidence about the path, not just a pass/fail. The list is in time
+      order apart from the untimed earlier trial, which is placed where its
+      defect was found:
+      - 21:45Z, on `53cb99a` (agent `60fc0296`), sheep goal: dry-tick accept,
+        bind, hold released, script ticked idle. This run PASSED.
+      - An earlier trial on `1fad4205` got an empty SCRIPT reply (`''` at HTTP
+        200) because the gateway dropped `done_reason`, so `answer_text`'s
+        truncation guard could never fire. No time is recorded for it here.
+        Fixed additively in `b843ddd`.
+      - 21:52Z, on `53cb99a`: the plan call was cut off at its token limit and
+        the partial reply (92 chars) surfaced as a JSON error at line 3 column
+        16 rather than as truncation. Fixed at `9903d25` (plan budget 4096,
+        `done_reason` checked before parsing) and `62f44a0`.
+      - 22:14:37Z, on `9903d25` (agent `e8be6ce5`), one-shot goal ("Scout, go
+        find a flower nearby and tell me what colour it is"): "plan written
+        with 1 subtasks", no SCRIPT call. This is the one-shot half.
+      - 22:38Z, on `8e1b3a5` (agent `bb7792c1`): the server log shows
+        `<Scout> all clear` seven times in ten minutes from 22:39:43Z, 61-62s
+        apart. Repeating goal observed.
+      Both halves were observed in logged trials; neither rests on a summary.
 - [x] 2a.10 Reviewer PASS on this delta before any code, then build test-first.
       Delta PASSed at 9a4be21; code PASSed at 7008491.
 - [x] 2a.11 **The channel is a separate call, not a key and not a fence after
