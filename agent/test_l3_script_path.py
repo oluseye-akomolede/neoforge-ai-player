@@ -960,6 +960,91 @@ class TestTheNoBlockWarningSaysWhy(unittest.TestCase):
         self.assertIn("BROKEN_END", tail)
 
 
+class TestTheScriptCallsTokenBudget(unittest.TestCase):
+    """The 19:10Z trial: the SCRIPT call stopped at exactly eval_count=1024
+    with done_reason=length and thinking OFF, so the budget was all content and
+    the script was simply longer than it. The unclosed fence then read as "no
+    block", which looked like a model problem and was a budget problem.
+
+    These pin the budget to the SCRIPT call alone. Raising it everywhere would
+    slow every call to serve one; raising it nowhere leaves the script unable to
+    finish.
+    """
+
+    def _script_body(self):
+        return {
+            "url": None, "json": None, "timeout": None,
+        }
+
+    def _drive(self):
+        import l3_planner
+        seen = []
+
+        def fake_post(url, json=None, timeout=None, **kw):
+            seen.append({"url": url, "body": json, "timeout": timeout})
+            resp = mock.Mock()
+            resp.raise_for_status = mock.Mock()
+            resp.json = mock.Mock(
+                return_value={"message": {"content": "```js\nreturn [];\n```"}})
+            return resp
+
+        with mock.patch.object(l3_planner.requests, "post", side_effect=fake_post), \
+             mock.patch.object(l3_planner, "ollama_lock", mock.MagicMock()):
+            got = l3_planner.call_script("Scout", "run away from zombies",
+                                         None, model="qwen3.8:27b")
+        return got, seen
+
+    def test_the_script_call_asks_for_more_than_the_plan_budget(self):
+        """KILLS: leaving num_predict at the plan's 1024, the value the trial
+        hit exactly. A budget at or below the observed ceiling cannot fit the
+        answer that overflowed it."""
+        got, seen = self._drive()
+        self.assertIsNotNone(got)
+        budget = seen[0]["body"]["options"]["num_predict"]
+        self.assertGreater(budget, 1024,
+                           "the script call's budget stayed at the plan's 1024")
+        self.assertEqual(budget, l3_planner._SCRIPT_NUM_PREDICT)
+
+    def test_the_script_call_keeps_its_other_options(self):
+        """KILLS: changing the budget while dropping JSON-off, the model, the
+        stream flag or the timeout, any of which changes behaviour the trial
+        relied on."""
+        _, seen = self._drive()
+        body = seen[0]["body"]
+        self.assertNotIn("format", body,
+                         "the script call must NOT be in JSON mode")
+        self.assertEqual(body["model"], "qwen3.8:27b")
+        self.assertIs(body["stream"], False)
+        self.assertEqual(body["options"]["temperature"], 0.2)
+        self.assertEqual(seen[0]["timeout"], l3_planner._OLLAMA_TIMEOUT)
+
+    def test_the_budget_change_is_the_script_calls_alone(self):
+        """KILLS: copying the new value into the plan call or any other prompt,
+        which would change latency and output for calls nobody complained
+        about. The plan call's 1024 is read from the wire, not from source."""
+        import l3_planner
+        plan_calls = []
+
+        def fake_post(url, json=None, timeout=None, **kw):
+            plan_calls.append(json)
+
+            class R:
+                def raise_for_status(self_):
+                    return None
+
+                def json(self_):
+                    return {"message": {"content": json_out}}
+            return R()
+
+        json_out = '{"task": "t", "subtasks": [{"id": 1, "description": "d", "criteria": "c"}]}'
+        with mock.patch.object(l3_planner.requests, "post", side_effect=fake_post), \
+             mock.patch.object(l3_planner.trajectory_log, "log_call",
+                               return_value="c-1"):
+            l3_planner.call_plan("m", "Scout", "keep the furnace fed")
+        self.assertEqual(plan_calls[0]["options"]["num_predict"], 1024,
+                         "the plan call's budget changed with the script call's")
+
+
 class TestTheFenceCountIgnoresOtherLanguages(unittest.TestCase):
     """Reviewer N-1 on 938fae6f: the diagnosis counted closes as
     `count("```") - opens`, which counts every NON-js opening fence as a

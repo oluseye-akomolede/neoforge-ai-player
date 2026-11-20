@@ -676,3 +676,41 @@ in the same delta, not in a reviewer's head.
 - **THEN** the bot's tick either waits for the bind to finish or sees the
   pre-bind state in full
 - **AND** the dry tick's throwaway state never becomes the bot's live state
+
+
+### Requirement: The Script Call's Token Budget Fits A Whole Script
+
+The SCRIPT call SHALL be given a token budget large enough to hold the whole
+reply it is asked for. The budget MUST NOT be one that a correct answer can
+exceed, because a reply that runs out of tokens is not a shorter script: the
+fence is left unclosed, extraction finds no block, and the goal silently falls
+back to its step list.
+
+A truncated reply MUST remain "no script" rather than a partially-bound
+program. Raising the budget does not make truncation safe; it makes it rare.
+The two properties are separate and both are required: room to answer, and a
+refusal to use an answer that was cut short.
+
+#### Scenario: A script longer than the old budget is returned whole
+
+- **GIVEN** a repeating goal whose script is longer than the call's previous
+  token budget
+- **WHEN** the SCRIPT call runs
+- **THEN** the reply MUST NOT stop for length
+- **AND** the script MUST be extracted and reach the dry gate
+
+#### Scenario: A reply that does stop for length binds nothing
+
+- **GIVEN** a SCRIPT call that stops with `done_reason: "length"`
+- **WHEN** the reply is processed
+- **THEN** the call MUST yield no script
+- **AND** the goal MUST proceed on its plan's step list
+- **AND** the log MUST name truncation as the cause, distinct from a malformed
+  or missing fence
+
+#### Scenario: The budget is the script call's own
+
+- **WHEN** the SCRIPT call is made
+- **THEN** the plan call and every other model call MUST keep their existing
+  token budgets
+- **AND** a change to the script call's budget MUST NOT change theirs

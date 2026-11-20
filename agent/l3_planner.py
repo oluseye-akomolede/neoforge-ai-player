@@ -1281,6 +1281,14 @@ _SCRIPT_FENCE_RE = re.compile(
 _PREVIEW_CHARS = 600
 _TAIL_CHARS = 200
 
+# The SCRIPT call's token budget, kept apart from every other call's. A script
+# is a whole program rather than a short answer: at the plan's 1024 tokens a
+# correct script hit the limit mid-block on 2026-11-20 19:10Z (thinking was off,
+# so the budget was all content) and the unclosed fence read as "no block".
+# 4096 leaves room to finish without putting the reply near _OLLAMA_TIMEOUT.
+# Changing this MUST NOT change any other call's num_predict.
+_SCRIPT_NUM_PREDICT = 4096
+
 
 def preview_reply(raw: str) -> str:
     """A bounded, newline-escaped preview of a model reply for the log.
@@ -1395,7 +1403,13 @@ def call_script(
                     ],
                     "stream": False,
                     # NOT JSON mode: the reply is one fenced JavaScript block.
-                    "options": {"temperature": 0.2, "num_predict": 1024},
+                    # Its own budget, larger than the plan's: a script is a
+                    # whole program, and at 1024 a correct answer ran out of
+                    # tokens mid-block (2026-11-20 19:10Z trial, thinking off,
+                    # done_reason=length, eval_count=1024) leaving the fence
+                    # unclosed. The plan and other calls keep their budgets.
+                    "options": {"temperature": 0.2,
+                                "num_predict": _SCRIPT_NUM_PREDICT},
                 },
                 timeout=_OLLAMA_TIMEOUT,
             )
