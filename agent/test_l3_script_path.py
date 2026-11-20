@@ -555,6 +555,15 @@ class TestRefusedBindAgainstARealHandWrittenBinding(unittest.TestCase):
                       "the hand-written script was not held while the goal ran: "
                       f"got {result!r}, so it dispatches alongside the steps")
 
+        # _get_script_tick is a Mock (a real ScriptTick needs WASM, which does
+        # not run under this VM's ulimit -v cap -- the lead accepted that
+        # boundary at 15:44Z). Assert on its tick() as well as on `called`, so
+        # the Mock cannot pass this test vacuously: while the goal holds, the
+        # script must not have been ticked at all.
+        self.assertFalse(a._get_script_tick.return_value.tick.called,
+                         "the hand-written script's tick() ran while the goal "
+                         "held the hold: it dispatched alongside the steps")
+
         # Checkpoint 3: the goal ends via the real terminal path, and the SAME
         # hand-written script runs again.
         self.assertTrue(a._end_script_hold(goal_id),
@@ -566,6 +575,15 @@ class TestRefusedBindAgainstARealHandWrittenBinding(unittest.TestCase):
                          "ended: it never resumes")
         self.assertTrue(a._get_script_tick.called,
                         "the resume never reached tick construction")
+        # Resuming means exactly one tick() after the release -- not zero (the
+        # Mock's return value passed through untouched) and not several (extra
+        # ticks from a rebuild loop).
+        self.assertEqual(a._get_script_tick.return_value.tick.call_count, 1,
+                         "after the goal ended the hand-written script did not "
+                         f"tick exactly once: "
+                         f"{a._get_script_tick.return_value.tick.call_count}")
+        self.assertIsNone(a._script_hold,
+                          "the hold outlived the goal: it was never released")
 
 
 # ── atomic bind ────────────────────────────────────────────────────────────
