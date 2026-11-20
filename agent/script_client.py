@@ -129,6 +129,19 @@ def _describe_runner_error(payload):
     Keeps the shape the old line had ("runner status 'error': <class>") and
     appends the message the runner always sends, so an operator reading the log
     learns what failed rather than only which bucket it fell in.
+
+    Two things the runner knows but this cannot show, both verified against
+    agent-script-runner rather than assumed:
+
+      * The exception NAME (TypeError, SyntaxError, ...). engine.js
+        normaliseError builds `{kind, name, message}` and the worker puts that
+        object on the wire, but main.js:242 flattens it to error_class +
+        message and drops `name`. So `error_name` is not a key the agent will
+        ever see, and reading it here would be a field that is always empty.
+        Until the runner sends it, error_class "script_error" covers a call to
+        an unbound method and an unclosed brace alike.
+      * Line and column. QuickJS in this runner reports neither, so they are
+        absent rather than omitted by this side.
     """
     status = payload.get("status")
     err_class = payload.get("error_class")

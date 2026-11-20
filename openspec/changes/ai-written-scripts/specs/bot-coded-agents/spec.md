@@ -773,8 +773,21 @@ A dry tick that fails MUST say why. The trial of 2026-11-20 21:2xZ reached the
 dry gate and logged `script_error` with no further detail: the runner sends a
 `message` on every error (`agent-script-runner/src/main.js`), and
 `agent/script_client.py:204` kept only `error_class`, so the reason the runner
-supplied was discarded on our side. A bare `script_error` is indistinguishable
-between a TypeError, an unknown action, and a CPU overrun.
+supplied was discarded on our side.
+
+A bare `script_error` covers every exception a script throws, because the
+runner's `normaliseError` maps all of them to that one kind (only stack
+overflow, CPU interruption and out-of-memory are split out). So a call to an
+unbound method, an unclosed brace, and a write to a frozen global all arrive
+looking identical until the message is read.
+
+Two facts a reader of the log should not have to rediscover:
+- The exception NAME (`TypeError`, `SyntaxError`) is not available to the
+  agent. The worker puts `{kind, name, message}` on the wire, but
+  `main.js:242` flattens it to `error_class` + `message` and drops `name`.
+  The agent therefore MUST NOT be specified against an `error_name` field
+  that no runner revision sends.
+- The runner reports no line or column for a script error.
 
 The failure record MUST carry the runner's message when the runner sends one,
 bounded and escaped so a multi-line message cannot forge extra log lines. The
