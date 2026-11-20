@@ -266,5 +266,78 @@ class TruncatedAnswerTests(unittest.TestCase):
             % missing)
 
 
+class TruncatedAnswerThroughTheGatewayTests(unittest.TestCase):
+    """The guard has to survive the transport it actually runs behind.
+
+    The unit tests above feed answer_text a hand-built Ollama body. The agent
+    never sees one: every L3 call goes through llm-gateway's /api/chat shim,
+    which until gateway-token-accounting emitted its own envelope and dropped
+    done_reason and eval_count entirely. So the three predicates were all
+    tested and the guard could still never fire in production. These tests use
+    the SHIM's envelope, so a regression in either half reddens them.
+    """
+
+    @staticmethod
+    def _gateway_envelope(content="", done_reason=None, eval_count=0,
+                          thinking=None):
+        """The body llm-gateway /api/chat returns after the passthrough fix."""
+        body = {
+            "model": "qwen3.8:27b-q4_K_M",
+            "created_at": "2026-11-20T18:43:00.000Z",
+            "message": {"role": "assistant", "content": content},
+            "done": True,
+            "total_duration": 1_000_000,
+            "eval_count": eval_count,
+            "done_reason": done_reason,
+            "_gateway": {"request_id": "abc123", "waited_ms": 0,
+                         "inference_ms": 1, "queue_depth": 0},
+        }
+        if thinking is not None:
+            body["message"]["thinking"] = thinking
+        return body
+
+    def test_gateway_length_reply_raises(self):
+        """KILLS: a gateway that drops done_reason (the 1fad4205 build).
+
+        Fed the pre-fix envelope this test returns "" instead of raising,
+        which is precisely the silent-empty failure it exists to catch.
+        """
+        from config import TruncatedAnswer, answer_text
+        body = self._gateway_envelope(content="", done_reason="length",
+                                      eval_count=1024)
+        with self.assertRaises(TruncatedAnswer) as cm:
+            answer_text(body)
+        self.assertIn("eval_count=1024", str(cm.exception))
+
+    def test_gateway_stop_reply_is_an_empty_answer(self):
+        """KILLS: treating every empty reply as truncation."""
+        from config import answer_text
+        body = self._gateway_envelope(content="", done_reason="stop",
+                                      eval_count=5)
+        self.assertEqual(answer_text(body), "")
+
+    def test_pre_fix_envelope_cannot_report_truncation(self):
+        """Documents the defect and fails loudly if it is reintroduced.
+
+        Before the fix the shim emitted no done_reason key at all. This asserts
+        what that envelope does: an empty, truncated-looking reply is
+        indistinguishable from a refusal, because the field that would say so
+        is absent. If this ever starts raising, the envelope changed again.
+        """
+        from config import answer_text
+        pre_fix = {
+            "model": "qwen3.8:27b-q4_K_M",
+            "created_at": "2026-11-20T18:39:00.000Z",
+            "message": {"role": "assistant", "content": ""},
+            "done": True,
+            "total_duration": 1_000_000,
+            "eval_count": 0,
+            "_gateway": {"request_id": "abc123", "waited_ms": 0,
+                         "inference_ms": 1, "queue_depth": 0},
+        }
+        self.assertNotIn("done_reason", pre_fix)
+        self.assertEqual(answer_text(pre_fix), "")
+
+
 if __name__ == "__main__":
     unittest.main()
