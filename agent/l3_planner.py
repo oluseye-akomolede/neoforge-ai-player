@@ -1272,12 +1272,6 @@ def _strip_codefence(s: str) -> str:
     return s.strip()
 
 
-# The planner's script channel. The script is fetched in its own call and
-# arrives as a fenced ```js block; see extract_script_block's docstring.
-_SCRIPT_FENCE_RE = re.compile(
-    r"```(?:js|javascript)\s*\n(.*?)\n?```", re.DOTALL | re.IGNORECASE)
-
-
 _PREVIEW_CHARS = 600
 _TAIL_CHARS = 200
 
@@ -1287,7 +1281,7 @@ _TAIL_CHARS = 200
 # so the budget was all content) and the unclosed fence read as "no block".
 # 4096 leaves room to finish without putting the reply near _OLLAMA_TIMEOUT.
 # Changing this MUST NOT change any other call's num_predict.
-_SCRIPT_NUM_PREDICT = 4096
+_SCRIPT_NUM_PREDICT = 6144
 
 
 def preview_reply(raw: str) -> str:
@@ -1321,37 +1315,84 @@ def tail_reply(raw: str, n: int = _TAIL_CHARS) -> str:
     return f"[+{len(raw) - n} chars]..." + repr(raw[-n:])
 
 
+# G-4: ONE definition of what a closing fence is, shared by the extractor and
+# the diagnosis. They had drifted apart -- the extractor accepted any ``` after
+# an optional newline, while the diagnosis required a bare fence alone on its
+# line -- so a reply could be reported "unusable" by the diagnosis and yet be
+# extracted, or the reverse. Two answers to one question is how a warning ends
+# up naming a cause the extractor never acted on.
+#
+# A fence token is ``` plus an optional language tag; it ENDS the line (only
+# trailing spaces or \r may follow). Only a token with no tag closes a block;
+# a tagged token opens a new one. This is the rule both functions use.
+_FENCE_TOKEN_RE = re.compile(r"```([A-Za-z0-9_+.-]*)[ \t]*\r?(?=\n|$)")
+_JS_TAGS = ("js", "javascript")
+
+
+def _scan_fence_blocks(text: str):
+    """Yield (opens_js, closes_js, body) for each complete js block.
+
+    The walk is left to right with an inside flag: a tagged fence opens only
+    when the tag is js/javascript and nothing is open, a bare fence closes only
+    when a js block is open, anything else is ignored. Counting opens and
+    closes independently cannot answer the question -- a python block's closer
+    is a bare fence, so a tally counts it as a js close and hides a genuinely
+    missing one (python+python+unclosed js once read "opened 1, closed 2").
+
+    Yields nothing for an unclosed block: it contributes counts, not a body.
+    Returns the counts in the tail value so callers can report them; use the
+    generator form via _fence_census when only the counts are needed.
+    """
+    opens_js = closes_js = 0
+    inside_js = False
+    open_start = 0
+    for m in _FENCE_TOKEN_RE.finditer(text):
+        tag = m.group(1).lower()
+        if inside_js:
+            if not tag:
+                closes_js += 1
+                inside_js = False
+                yield opens_js, closes_js, text[open_start:m.start()]
+        elif tag in _JS_TAGS:
+            opens_js += 1
+            inside_js = True
+            # The body starts after the fence's own line terminator, so the
+            # newline that ends the ```js line is not part of the script. The
+            # old regex had it outside the capture group; keeping that means
+            # the extracted source is the same bytes as before.
+            open_start = m.end()
+            if text.startswith("\r\n", open_start):
+                open_start += 2
+            elif text.startswith("\n", open_start):
+                open_start += 1
+
+
+def _fence_census(text: str) -> tuple[int, int, bool]:
+    """(opens_js, closes_js, still_open) using the same walk as extraction."""
+    opens_js = closes_js = 0
+    inside_js = False
+    for m in _FENCE_TOKEN_RE.finditer(text):
+        tag = m.group(1).lower()
+        if inside_js:
+            if not tag:
+                closes_js += 1
+                inside_js = False
+        elif tag in _JS_TAGS:
+            opens_js += 1
+            inside_js = True
+    return opens_js, closes_js, inside_js
+
+
 def fence_diagnosis(raw: str) -> str:
     """Name why extract_script_block found no block, for the warning line.
 
     Kept separate from the extractor so the extractor stays a pure parser: this
     only ever describes a reply that already failed, and never decides anything.
     """
-    text = raw or ""
-    # Walk the fences in order with a state flag. Counting opens and closes
-    # independently cannot answer the question: a python block's closing fence
-    # is a fence alone on its line, so tallying those counts it as a js close
-    # and hides a genuinely missing one (python+python+unclosed js reported
-    # "opened 1, closed 2" -- the close it claimed was a python block's). An
-    # open is only a js open, and a close only counts when it terminates one.
-    opens_js = 0
-    closes_js = 0
-    inside_js = False
-    for m in re.finditer(r"```([A-Za-z0-9_+.-]*)[ \t]*\r?(?=\n|$)", text):
-        tag = m.group(1).lower()
-        if inside_js:
-            if not tag:  # a bare fence while a js block is open closes it
-                closes_js += 1
-                inside_js = False
-            # a tagged fence here is a new opening inside an unterminated js
-            # block; the js block stays open and the missing close is kept.
-        elif tag in ("js", "javascript"):
-            opens_js += 1
-            inside_js = True
-        # any other tag, or a bare fence with no js block open, is ignored.
+    opens_js, closes_js, still_open = _fence_census(raw or "")
     if opens_js == 0:
         return "no-js-fence (```js/```javascript not found)"
-    if inside_js or closes_js < opens_js:
+    if still_open or closes_js < opens_js:
         return f"missing-closing-fence (opened {opens_js}, closed {closes_js})"
     return f"fence-present-but-block-unusable (opened {opens_js}, closed {closes_js})"
 
@@ -1379,11 +1420,17 @@ def extract_script_block(model_text: str) -> str | None:
     text = model_text or ""
     if not isinstance(text, str):
         return None
-    match = _SCRIPT_FENCE_RE.search(text)
-    if match is None:
-        return None
-    script = match.group(1)
-    return script if script.strip() else None
+    # The same walk fence_diagnosis reports on: one definition of what closes
+    # a js block, so the warning can never name a cause this did not act on.
+    for _, _, body in _scan_fence_blocks(text):
+        # The newline that separates the closing fence from the code is not
+        # part of the script; the old regex swallowed it with `\n?` before the
+        # fence. Stripping keeps the extracted source byte-identical to what
+        # shipped before this refactor, so nothing downstream sees a new blank
+        # line at the end of every script.
+        script = body.strip("\r\n")
+        return script if script.strip() else None
+    return None
 
 
 def call_script(
@@ -1442,6 +1489,18 @@ def call_script(
         # answer_text raises TruncatedAnswer, so it belongs inside the guard:
         # that exception is the whole reason this block exists.
         raw = answer_text(body)
+        # G-3: a length-stop is no-script even when content came back. The
+        # guard in answer_text fires only on EMPTY content, so a reply cut
+        # mid-block arrives here holding a partial fence -- and if the cut
+        # happens to land after a closing fence, extraction hands back a
+        # program that is half what the model meant and looks well-formed.
+        # Truncation is therefore decided before extraction, on the reply's
+        # own report of why it stopped, never on what survived.
+        if body.get("done_reason") == "length":
+            raise TruncatedAnswer(
+                "model stopped for length after %d chars (eval_count=%s); a "
+                "partial script is never bound"
+                % (len(raw), body.get("eval_count")))
         script = extract_script_block(raw)
     except TruncatedAnswer as e:
         # The model hit its budget mid-script. A truncated script would compile

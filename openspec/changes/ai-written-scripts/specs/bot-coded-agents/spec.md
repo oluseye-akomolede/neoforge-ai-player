@@ -708,9 +708,28 @@ refusal to use an answer that was cut short.
 - **AND** the log MUST name truncation as the cause, distinct from a malformed
   or missing fence
 
-#### Scenario: The budget is the script call's own
+#### Scenario: A truncated reply holding a complete-looking block still binds nothing
 
-- **WHEN** the SCRIPT call is made
-- **THEN** the plan call and every other model call MUST keep their existing
-  token budgets
-- **AND** a change to the script call's budget MUST NOT change theirs
+- **GIVEN** a SCRIPT call whose reply stops with `done_reason: "length"` and
+  whose content already contains a js fence that closes before the cut
+- **WHEN** the reply is processed
+- **THEN** the call MUST yield no script
+- **AND** the block MUST NOT reach the dry gate or the bind
+- **AND** extraction MUST NOT be consulted to decide this
+
+The model can close a fence and keep writing; a cut after that fence leaves a
+block that parses. Deciding on the reply's own report of why it stopped is the
+only check that does not depend on where the cut landed.
+
+#### Scenario: The plan call keeps its own budget when the script call's changes
+
+- **GIVEN** the SCRIPT call is configured with a token budget different from
+  the plan call's
+- **WHEN** a goal's plan call is made
+- **THEN** the plan call's request MUST carry `num_predict` 1024
+- **AND** it MUST NOT carry the script call's budget
+
+The subject is the plan call's outgoing request: a test reads `num_predict`
+off what the plan call actually sent and fails if it is anything but 1024.
+Stating it as "a change to one must not change the other" named no request to
+inspect, so nothing could falsify it.

@@ -960,6 +960,141 @@ class TestTheNoBlockWarningSaysWhy(unittest.TestCase):
         self.assertIn("BROKEN_END", tail)
 
 
+class TestTheExtractorAndTheDiagnosisShareOneRule(unittest.TestCase):
+    """G-4 (lead 19:32Z): the diagnosis and the extraction had two different
+    ideas of what closes a js block. They mostly agreed, which is why the drift
+    went unnoticed -- so these are the inputs where they actually disagree, not
+    restatements of the cases that always worked.
+
+    The extractor's old rule was a lazy regex ending at the first ``` anywhere,
+    so a script containing a backtick was cut at that backtick and the prefix
+    was handed back as the whole program.
+    """
+
+    def test_a_backtick_inside_the_script_does_not_end_the_block(self):
+        """The regression the shared walk fixes. KILLS: the old lazy regex,
+        which returns 'const s = '' -- a truncated program that still binds."""
+        text = "```js\nconst s = '```';\nreturn [];\n```\n"
+        got = l3_planner.extract_script_block(text)
+        self.assertEqual(got, "const s = '```';\nreturn [];")
+
+    def test_a_template_literal_survives_extraction(self):
+        """The same defect in the form a planner actually writes."""
+        text = "```js\napi.say(`hello ${bot}`);\nreturn [];\n```\n"
+        self.assertIn("return [];", l3_planner.extract_script_block(text))
+
+    def test_crlf_closing_fence_is_not_part_of_the_script(self):
+        """The old regex left a stray \\r on the last line."""
+        got = l3_planner.extract_script_block("```js\r\ncode();\r\n```\r\n")
+        self.assertEqual(got, "code();")
+
+    def test_what_the_diagnosis_counts_is_what_extraction_does(self):
+        """The claim in one assertion: whenever the census says a js block
+        closed, extraction returns one; whenever it says none closed and one
+        opened, extraction returns nothing. This is the coupling G-4 asks for
+        -- the warning can no longer name a cause extraction did not act on.
+        """
+        cases = [
+            "```js\na\n```\n",
+            "```python\nx\n```\n```js\nb\n```\n",
+            "```python\nx\n```\n```python\ny\n```\n```js\nb\n",
+            "```\n```\n```js\nb\n",
+            "```js\nb\n",
+            "```js\na\n```\n```js\nb\n",
+            "no fences at all",
+        ]
+        for text in cases:
+            with self.subTest(text=text):
+                opens, closes, _open_at_end = l3_planner._fence_census(text)
+                got = l3_planner.extract_script_block(text)
+                # Extraction returns a script exactly when at least one js
+                # block completed. A later block left open does not undo an
+                # earlier one that closed -- the earlier one is a real script
+                # and the warning is only reached when nothing came back.
+                if closes >= 1:
+                    self.assertIsNotNone(got, text)
+                else:
+                    self.assertIsNone(got, text)
+                    # ...and the census must agree there is nothing to bind.
+                    self.assertTrue(opens == 0 or _open_at_end or closes < opens,
+                                    f"census says a block completed but "
+                                    f"extraction found none: {text}")
+
+
+class TestALengthStopNeverBinds(unittest.TestCase):
+    """G-3 (reviewer finding, lead 19:31Z): answer_text raises TruncatedAnswer
+    only when the content is EMPTY. A length-stopped reply that already holds a
+    partial fence therefore goes to extract_script_block, and if the cut lands
+    after a closing fence it binds half a program that parses perfectly.
+
+    The rule is that done_reason=length means no-script, decided before
+    extraction -- on the reply's own report of why it stopped, never on what
+    survived the cut. What survived is exactly the thing that cannot be
+    trusted.
+    """
+
+    # The fence CLOSES, then the model keeps writing and is cut. Extraction
+    # alone would hand this back as a complete script.
+    TRUNCATED_AFTER_A_CLOSED_FENCE = (
+        "```js\napi.do({ skill: \"eat\", args: {} });\n```\n"
+        "const also = api.get_snapshot();\n// and then it was cut here mid-"
+    )
+
+    # Cut INSIDE the block: the fence never closes.
+    TRUNCATED_MID_BLOCK = (
+        "```js\napi.do({ skill: \"eat\", args: {} });\n"
+        "const snap = api.get_sn"
+    )
+
+    def _drive(self, content, done_reason, eval_count=6144):
+        import l3_planner
+        resp = mock.Mock()
+        resp.raise_for_status = mock.Mock()
+        resp.json = mock.Mock(return_value={
+            "message": {"content": content},
+            "done_reason": done_reason,
+            "eval_count": eval_count,
+        })
+        with mock.patch.object(l3_planner.requests, "post", return_value=resp), \
+             mock.patch.object(l3_planner, "ollama_lock", mock.MagicMock()):
+            return l3_planner.call_script("Scout", "eat when hurt", None,
+                                          model="qwen3.8:27b")
+
+    def test_a_length_stop_yields_no_script_even_though_a_block_closed(self):
+        """The whole point of G-3. KILLS: the '' mutant -- deciding on empty
+        content, which lets this reply through because it is not empty."""
+        self.assertIsNone(self._drive(self.TRUNCATED_AFTER_A_CLOSED_FENCE,
+                                      "length"))
+
+    def test_the_block_that_closed_is_one_extraction_would_have_returned(self):
+        """The premise, asserted rather than assumed: without the length check
+        this reply really does yield a script. If extraction rejected it, the
+        test above would pass for the wrong reason and prove nothing."""
+        import l3_planner
+        self.assertIsNotNone(
+            l3_planner.extract_script_block(self.TRUNCATED_AFTER_A_CLOSED_FENCE))
+
+    def test_a_length_stop_cut_mid_block_yields_no_script(self):
+        """KILLS: relying on the unclosed fence to reject truncation. It does
+        here, but only by luck of where the cut landed."""
+        self.assertIsNone(self._drive(self.TRUNCATED_MID_BLOCK, "length"))
+
+    def test_a_stop_reason_of_stop_still_binds(self):
+        """The guard must key on LENGTH, not on 'any done_reason'. KILLS:
+        treating every reply as truncated, which would disable scripts."""
+        got = self._drive(self.TRUNCATED_AFTER_A_CLOSED_FENCE, "stop")
+        self.assertIsNotNone(got)
+        self.assertIn("api.do", got)
+
+    def test_a_reply_with_no_done_reason_still_binds(self):
+        """This gateway omitted done_reason entirely before the passthrough
+        fix (row f0a805d6). An absent field must read as 'not truncated', not
+        as 'truncated' -- otherwise every script stops working on a gateway
+        that predates the fix."""
+        got = self._drive(self.TRUNCATED_AFTER_A_CLOSED_FENCE, None)
+        self.assertIsNotNone(got)
+
+
 class TestTheScriptCallsTokenBudget(unittest.TestCase):
     """The 19:10Z trial: the SCRIPT call stopped at exactly eval_count=1024
     with done_reason=length and thinking OFF, so the budget was all content and
