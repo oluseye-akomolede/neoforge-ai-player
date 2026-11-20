@@ -1087,56 +1087,69 @@ class TestTheFenceCountIgnoresOtherLanguages(unittest.TestCase):
         d = l3_planner.fence_diagnosis("```python\nprint('x')\n```\n")
         self.assertIn("no-js-fence", d)
 
-    def test_a_really_missing_js_close_is_not_called_unusable(self):
-        """The case N-1 masked. Reviewer row 1: python + unclosed js must be
-        reported as a MISSING CLOSE, not as an unusable block. KILLS: counting
-        the python closer as a js close, which makes the counts equal and
-        sends the next reader to a bad-script theory."""
-        text = (
-            "```python\nprint('x')\n```\n"
-            "```js\nreturn [];\n"
-        )
-        d = l3_planner.fence_diagnosis(text)
-        self.assertIn("missing-closing-fence", d, d)
-        self.assertIn("opened 1", d, d)
-        self.assertIn("closed 0", d, d)
-        self.assertIsNone(l3_planner.extract_script_block(text))
+    # The reviewer's four rows, verbatim from lead 19:18Z, with the js-close
+    # count each must report. Named row N so a later reader can match them
+    # against the review rather than guess which case is which.
+    ROW_1 = (
+        "```python\nprint('x')\n```\n"
+        "```js\nreturn [];\n```\n"
+    )                                                       # python + js, both closed
+    ROW_2 = (
+        "```python\nprint('a')\n```\n"
+        "```python\nprint('b')\n```\n"
+        "```js\nreturn [];\n"
+    )                                                       # python + python + UNCLOSED js
+    ROW_3 = (
+        "```\n"
+        "some bare fence with no language\n"
+        "```\n"
+        "```js\nreturn [];\n"
+    )                                                       # bare fence + UNCLOSED js
+    ROW_4 = (
+        "```python\nprint('x')\n```\n"
+        "```js\nreturn [];\n"
+    )                                                       # python + UNCLOSED js
 
-    def test_two_python_blocks_do_not_hide_a_missing_js_close(self):
-        """Reviewer row 2, the reported case exactly: python + python +
-        unclosed js used to read 'opened 1, closed 2'. KILLS: counting either
-        python closer, which makes closes exceed opens and takes the
-        block-unusable branch."""
-        text = (
-            "```python\nprint('a')\n```\n"
-            "```python\nprint('b')\n```\n"
-            "```js\nreturn [];\n"
-        )
-        d = l3_planner.fence_diagnosis(text)
-        self.assertIn("missing-closing-fence", d, d)
-        self.assertIn("opened 1", d, d)
-        self.assertIn("closed 0", d, d)
-
-    def test_a_python_block_after_a_closed_js_block_counts_no_extra_close(self):
-        """Reviewer row 3: js closed, THEN a python block. The python closer
-        comes after the js block is already shut and must not count, so the
-        reply is usable -- not 'missing'."""
-        text = (
-            "```js\nreturn [];\n```\n"
-            "```python\nprint('x')\n```\n"
-        )
-        d = l3_planner.fence_diagnosis(text)
+    def test_reviewer_row_1_python_plus_closed_js_is_one_close(self):
+        """Row 1: python + js, both closed -> 1 js close. KILLS: counting the
+        python closer as a js close (2), or the subtraction (3)."""
+        d = l3_planner.fence_diagnosis(self.ROW_1)
         self.assertIn("opened 1", d, d)
         self.assertIn("closed 1", d, d)
-        self.assertIn("block-unusable", d, d)
-        self.assertIsNotNone(l3_planner.extract_script_block(text))
+        self.assertIsNotNone(l3_planner.extract_script_block(self.ROW_1))
+
+    def test_reviewer_row_2_two_python_plus_unclosed_js_is_zero_closes(self):
+        """Row 2: python + python + UNCLOSED js -> 0. This is the reported
+        case: it used to read 'opened 1, closed 2'. KILLS: counting either
+        python closer, which makes closes exceed opens and takes the
+        block-unusable branch instead of reporting the missing close."""
+        d = l3_planner.fence_diagnosis(self.ROW_2)
+        self.assertIn("missing-closing-fence", d, d)
+        self.assertIn("opened 1", d, d)
+        self.assertIn("closed 0", d, d)
+
+    def test_reviewer_row_3_bare_fence_plus_unclosed_js_is_zero_closes(self):
+        """Row 3: bare fence + UNCLOSED js -> 0. KILLS: counting a bare fence
+        as a close regardless of whether a js block is open, which reports 1
+        close and hides the missing one."""
+        d = l3_planner.fence_diagnosis(self.ROW_3)
+        self.assertIn("missing-closing-fence", d, d)
+        self.assertIn("opened 1", d, d)
+        self.assertIn("closed 0", d, d)
+
+    def test_reviewer_row_4_python_plus_unclosed_js_is_zero_closes(self):
+        """Row 4: python + UNCLOSED js -> 0. KILLS: counting the python
+        closer, which makes the counts equal and hides the missing close."""
+        d = l3_planner.fence_diagnosis(self.ROW_4)
+        self.assertIn("missing-closing-fence", d, d)
+        self.assertIn("opened 1", d, d)
+        self.assertIn("closed 0", d, d)
+        self.assertIsNone(l3_planner.extract_script_block(self.ROW_4))
 
     def test_a_second_js_fence_while_one_is_open_is_not_a_close(self):
-        """Mine, not a reviewer row: a tagged fence while a js block is open
-        is not a closer. The operative fact is the missing close, and the
-        count stays 0 -- a second ```js inside an unterminated block is not a
-        close, so it must not be one here. KILLS: treating any tagged fence as
-        a closer (which would report closed 1 and call the block usable)."""
+        """Not a reviewer row -- mine. A tagged fence while a js block is open
+        must not count as a closer. KILLS: treating any tagged fence as a
+        closer, which would report closed 1 and call the block usable."""
         text = (
             "```js\nreturn [];\n"
             "```js\nreturn [1];\n"
