@@ -448,20 +448,43 @@ parses as a reply carrying a script.
 M3-1g holds the bot's running script while a chat goal is planned, so the script
 and the goal's planner cannot both act on one intent. That hold covers a script
 that was **already bound when the goal arrived**. A script the planner authors
-**for this goal** is the goal's own execution and MUST NOT be held by the hold
-that this goal owns: holding it would suppress the one run the goal asked for.
+**for this goal** is not a rival to the goal's execution — it IS that execution.
+Holding it would suppress the one run the goal asked for, and for a repeating
+goal ("keep the furnace fed") nothing would happen until some unrelated path
+ended the goal, which for a goal with no fixed end may never come.
 
-The two are distinguished by ownership, not by timing. The hold names the goal
-that owns the pause; the bound script is the goal's own product. When the agent
-binds a script for goal G, it MUST NOT be suppressed by G's hold. A script
-already bound from an earlier goal, or hand-written, remains held for G exactly
-as today.
+**Binding the goal's own script MUST release this goal's hold.** The hold
+is released by the `goal_id` that owns it, through the existing release, which
+is identity-guarded: a newer goal's hold is never released by an older run's
+exit (`_end_script_hold` returns False unless the id matches). The release MUST
+be part of the bind, not a separate decision, so there is no window in which the
+script is bound and still held.
 
-#### Scenario: A goal's own script runs under its own hold
-- **GIVEN** a bot whose running script is held by an active chat goal
-- **WHEN** the planner for that same goal authors and binds a script
-- **THEN** that script dispatches its actions while the goal is still running
-- **AND** the hold is not ended or reassigned to make this work
+The order is: a chat goal arrives and sets the hold; its planner returns a
+script; the agent dry-ticks it; on success it binds the script and releases
+that goal's hold; the bot's next tick dispatches the script's actions. The same
+release runs on every terminal path of the run (normal exit, crash, planner
+disabled), so a hold cannot outlive the goal that owns it.
+
+A script already bound from an earlier goal, or a hand-written one, is a rival
+to this goal and remains held for it exactly as today: binding the goal's own
+script releases the hold, and with it that earlier script also resumes — the
+goal is no longer planning, so there is nothing left to contend with.
+
+#### Scenario: Binding a goal's own script releases that goal's hold
+- **GIVEN** a chat goal that has set the M3-1g hold
+- **WHEN** the planner for that goal returns a script and it passes its dry tick
+- **THEN** the script is bound and that goal's hold is released, in that order
+- **AND** the bot's script tick runs the bound script's actions within the next
+  few ticks, with no intervening goal needing to end first
+- **AND** the released hold names this goal, so a newer goal's hold is not
+  released by this bind
+
+#### Scenario: A one-shot goal never reaches the bind
+- **GIVEN** a bounded goal that the planner answers with steps
+- **WHEN** the plan finishes
+- **THEN** no script was bound and the hold is released by the run's normal
+  terminal path, as today
 
 #### Scenario: A pre-existing script stays held
 - **GIVEN** a bot with a bound script when a chat goal arrives

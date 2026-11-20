@@ -104,11 +104,20 @@ L3 path rather than limit the spec to the decompose paths.
       latch reset).
 - [ ] 2a.5 **Hand-written bindings still win** — unchanged rule, now reachable
       from the goal path.
-- [ ] 2a.6 **A goal's own script is not held by that goal.** The M3-1g hold
-      covers a script already bound when the goal arrived. The script the
-      planner writes FOR that goal must dispatch under the goal's own hold,
-      without the hold being ended or reassigned. Test both directions: a
-      pre-existing script stays held, the goal's own script runs.
+- [ ] 2a.6 **Binding a goal's own script RELEASES that goal's hold.** The
+      M3-1g hold covers a script already bound when the goal arrived. A script
+      the planner writes FOR that goal is the goal's own execution, so holding
+      it would suppress the one run the goal asked for — and for a repeating
+      goal nothing would happen until some unrelated path ended it. Release
+      through the existing identity-guarded `_end_script_hold(goal_id)`, as
+      part of the bind and not as a separate step, so there is no bound-but-held
+      window and a newer goal's hold is never released by an older bind. Note
+      the current docstring of `_begin_script_hold` argues the opposite for the
+      cancel case; that reasoning is about cancellation, not about this
+      release, and the delta is the record of the difference. Test both
+      directions and the order: pre-existing script stays held, goal's own
+      script binds then dispatches, and a non-matching goal_id releases
+      nothing.
 - [ ] 2a.7 **Which paths author scripts is stated, and matches the code.**
       Orchestrator: yes. Decompose: yes, kept and reachable. Plan-template and
       plan-memory hits: no (Phase 0 returns before any planner call).
