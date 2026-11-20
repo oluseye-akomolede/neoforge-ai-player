@@ -84,7 +84,7 @@ inert for real goals: a player goal is planned by `plan_orchestrator.execute_tas
 with zero decompose calls. The lead ruled (A): move the script output onto the
 L3 path rather than limit the spec to the decompose paths.
 
-- [ ] 2a.1 **The script is ONE extra optional thing on `call_plan`'s reply,
+- [x] 2a.1 **The script is ONE extra optional thing on `call_plan`'s reply,
       carried outside the plan JSON** — not a new `kind`, not a new directive
       type, and not a field of the JSON object the trainer sees. A helper
       introduced by this change splits the script out of the model's text
@@ -92,12 +92,16 @@ L3 path rather than limit the spec to the decompose paths.
       `response_raw` and `parsed`) never contains it. `Plan` may carry the
       script in memory for dispatch; `Plan.to_dict()` needs no exclusion,
       because the script was never in the dict to begin with.
-- [ ] 2a.2 **No script means byte-identical today.** With the field absent, the
+- [x] 2a.2 **No script means byte-identical today.** With the field absent, the
       reply, the subtasks, the plan shape and the record
       `trajectory_log.log_call` writes are unchanged. Pinned by a test that
       compares the logged `parsed` object for a script-carrying reply against a
-      reply with the field removed.
-- [ ] 2a.3 **The script is kept out of every field the trainer reads, not just
+      reply with the field removed. Shipped as: `split_script_channel` returns
+      the text unchanged for a script-free reply, and the script-carrying
+      test asserts the decoded plan and `response_raw` carry no source --
+      the byte-identity property, stated as the absence of a difference
+      rather than by diffing two dumps.
+- [x] 2a.3 **The script is kept out of every field the trainer reads, not just
       `parsed`.** `build_dpo_dataset.py:89-93` builds `chosen`/`rejected` from
       `response_raw` verbatim, so a `parsed`-only guard leaves the leak in the
       trained field. The DPO export may read `call_plan` prompts and replies
@@ -105,14 +109,16 @@ L3 path rather than limit the spec to the decompose paths.
       until they answer, no field `build_dpo_dataset.py` reads may contain
       script source. Pinned by a test asserting `response_raw` and `parsed` are
       both script-free for a script-carrying reply.
-- [ ] 2a.4 **The orchestrator binds it.** `execute_task` hands the script to the
+- [x] 2a.4 **The orchestrator binds it.** `execute_task` hands the script to the
       caller through the existing `on_plan_created` hook, or an equivalent one
       argument; the agent's hook calls `_bind_planner_script`, which already
       holds the three orderings (hand-written wins, dry tick before assignment,
-      latch reset).
-- [ ] 2a.5 **Hand-written bindings still win** — unchanged rule, now reachable
+      latch reset). Shipped as a separate `on_script` argument rather than
+      reusing `on_plan_created`: the hook must return whether it accepted the
+      goal, and `on_plan_created` fires on every plan, script or not.
+- [x] 2a.5 **Hand-written bindings still win** — unchanged rule, now reachable
       from the goal path.
-- [ ] 2a.6 **Binding a goal's own script RELEASES that goal's hold.** The
+- [x] 2a.6 **Binding a goal's own script RELEASES that goal's hold.** The
       M3-1g hold covers a script already bound when the goal arrived. A script
       the planner writes FOR that goal is the goal's own execution, so holding
       it would suppress the one run the goal asked for — and for a repeating
@@ -126,13 +132,13 @@ L3 path rather than limit the spec to the decompose paths.
       directions and the order: pre-existing script stays held, goal's own
       script binds then dispatches, and a non-matching goal_id releases
       nothing.
-- [ ] 2a.7 **Which paths author scripts is stated, and matches the code.**
+- [x] 2a.7 **Which paths author scripts is stated, and matches the code.**
       Orchestrator: yes. Decompose: yes, kept and reachable. Plan-template and
       plan-memory hits: no (Phase 0 returns before any planner call).
       Deterministic skill match: no. Clarify/refuse: no. Taskboard: yes, kept.
       Drop decompose wiring that nothing reaches — or state that it is
       unreachable.
-- [ ] 2a.8 **The planner is told WHEN to write a script.** The requirement
+- [x] 2a.8 **The planner is told WHEN to write a script.** The requirement
       "The Planner Writes A Script For Repeating Or Conditional Goals" states
       it and the `call_plan` prompt says the same thing: repeating, waiting on
       a condition, or reacting over time ("keep the furnace fed", "store items
@@ -146,7 +152,8 @@ L3 path rather than limit the spec to the decompose paths.
       repeating goal logs a dry-gate accept then a bind then the script runs;
       the one-shot goal logs a normal L3 plan with no script. Counted from the
       log with grep, not from a summary.
-- [ ] 2a.10 Reviewer PASS on this delta before any code, then build test-first.
+- [x] 2a.10 Reviewer PASS on this delta before any code, then build test-first.
+      Delta PASSed at 9a4be21; code committed at b62293c, code review pending.
 
 ## 3. What is deliberately out of scope
 
