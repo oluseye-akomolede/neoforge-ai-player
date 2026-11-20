@@ -81,7 +81,7 @@ existing change does not say. Each is the subject of one ADDED requirement.
    to 8 `do` slots for a script it then rejects takes those slots from the
    bot's real work. Memory is the mirror case: `api.remember` writes per-tick
    state (`binding.js:314`), so the sandbox discards it — but
-   `script_tick.py:364` adopts the returned memory, so the dry tick must not.
+   `script_tick.py:387` adopts the returned memory, so the dry tick must not.
    Both are named in the requirement so they are testable; neither needs an
    engine change.
 

@@ -98,7 +98,7 @@ request the agent can send reaches the state the requirement protects.
 
 **A dry tick MUST NOT carry its memory forward.** `api.remember` writes
 per-tick `state.memoryOut` (`binding.js:314`), so the sandbox write is
-naturally discarded — but `script_tick.py:364` adopts the returned memory
+naturally discarded — but `script_tick.py:387` adopts the returned memory
 (`self._memory = result.memory`), so the hazard is downstream of the sandbox,
 not inside it. The dry tick's returned memory MUST be discarded rather than
 adopted.

@@ -45,7 +45,7 @@ Spec only. No code, no build, no deploy until the lead approves this spec.
       (`binding.js:45-52`) against `do:30/min`, `say:30/min`, `send:20/min`
       (`:44`); the dry tick must leave `actionTimes` unchanged.
       `api.remember` writes per-tick `state.memoryOut` (`binding.js:314`) so
-      the sandbox discards it, but `script_tick.py:364` adopts the returned
+      the sandbox discards it, but `script_tick.py:387` adopts the returned
       memory — the dry tick's memory must be discarded too.
 - [ ] 2.6 The decision "script vs plain planner" is conditions, not model
       preference: (1) planning kind allows scripting; (2) no HAND-WRITTEN

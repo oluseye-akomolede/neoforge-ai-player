@@ -908,8 +908,10 @@ class DryTickTest(unittest.TestCase):
         tick's memory onto `self` -- which is the property that matters, since
         the real `ScriptTick`'s adoption at :387 writes to its OWN instance and
         `_dry_tick`'s instance is a local that dies on return. The wire-level
-        guard (a dry tick discards the runner's returned `memory_out`) is
-        covered by the runner's dry-mode tests, not here.
+        guard lives in agent-script-runner's test/dry.test.mjs ("a dry tick
+        does not carry the live bot's remembered blob onto the wire"). It is
+        cited rather than duplicated here because the leak can only be observed
+        where the live botState lives: in the runner process.
         """
         marker = "WRITTEN BY DRY TICK"
         stub, _ = self._script_tick_stub(outcome="ok", memory=marker)
