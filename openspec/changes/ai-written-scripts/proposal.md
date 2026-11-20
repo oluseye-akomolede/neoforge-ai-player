@@ -57,7 +57,7 @@ existing change does not say. Each is the subject of one ADDED requirement.
    feature; `decompose` and `orchestrate` return step strings today.
 
    **The planner's script lives in memory, not on disk.** The agent has no
-   write path for script source (see requirement 4), so the emitted source is
+   write path for script source (see requirement 2), so the emitted source is
    carried in the process and built into a `ScriptTick` directly. This keeps
    `bindings.json` meaning only the hand-written baseline, makes condition 2
    answerable from that file alone, and replaces the older "restart freezes a
@@ -75,8 +75,8 @@ existing change does not say. Each is the subject of one ADDED requirement.
 
    **The word "bind" hides a mechanism that does not exist yet.** A bot resolves
    its script once for the process lifetime: `_script_loaded` is `False` at
-   `agent/agent.py:235`, returns the cached tick at `:3052` and is set `True`
-   at `:3054`, with one production caller at `:2890`. Binding is therefore a
+   `agent/agent.py:235`, returns the cached tick at `:3139` and is set `True`
+   at `:3140`, with one production caller at `:2890`. Binding is therefore a
    **rebind**, and the spec says so explicitly: the latch gains a defined reset
    for a planner-authored script, and that reset is its only writer. An
    implementer who calls the existing path without it gets the previous script
