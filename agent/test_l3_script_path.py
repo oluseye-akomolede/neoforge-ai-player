@@ -395,18 +395,25 @@ class TestTheRealOnScriptClosureReleasesTheHold(unittest.TestCase):
         handed = on_script(plan, "api.do('feed');")
         return handed, a, goal_id
 
-    def test_a_refused_bind_does_not_leave_the_goal_held(self):
-        """KILLS: releasing the hold only on a successful bind, so a refusal
-        (a hand-written binding won, or the dry tick was rejected) leaves the
-        hold set while the orchestrator runs the steps."""
+    def test_a_refused_bind_keeps_the_pre_existing_script_held(self):
+        """KILLS: releasing the hold on a refused bind (the 2a79329 version).
+
+        A refused bind means the bot already has a script -- the hand-written
+        binding, which is why the bind was refused. Releasing the hold would
+        let that script resume and issue directives while the planner's steps
+        also drive the bot: two drivers, which "Exactly One Driver Per Goal"
+        forbids. The hold is M3-1g: a chat goal beats a running script.
+        """
         handed, a, goal_id = self._run_real_closure(bind_returns=False)
 
         self.assertFalse(handed, "a refused bind must report not-handled")
-        self.assertIsNone(
+        self.assertIsNotNone(
             a._script_hold,
-            "a refused bind left the goal hold set: the orchestrator runs the "
-            "steps while _run_script_tick returns SCRIPT_HELD, so the goal is "
-            "driven with its script blocked")
+            "a refused bind released the hold: the pre-existing hand-written "
+            "script resumes and issues directives while the planner's steps "
+            "also run -- two drivers on one bot")
+        self.assertEqual(a._script_hold["goal_id"], goal_id,
+                         "the hold does not name the goal that took it")
 
     def test_a_successful_bind_releases_the_hold_and_hands_over(self):
         """KILLS: binding without releasing, so the goal's own script is held

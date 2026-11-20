@@ -1590,23 +1590,29 @@ class BotRunner:
             The release is part of the bind, not a separate step, so there is
             no window where the script is bound and still held.
 
-            A REFUSED bind also releases the hold. The hold was taken before
-            this planner thread started (:683), so leaving it set on refusal
-            would let the orchestrator run the plan's steps while the goal
-            stays held -- _run_script_tick (:2947) would then return
-            SCRIPT_HELD and the goal would be driven with its script blocked.
-            On refusal the planner's steps (not a script) drive the goal, so
-            the hold must be gone either way.
+            A REFUSED bind deliberately KEEPS the hold (lead ruling 15:42Z).
+            A refused bind means the bot already has a script -- normally the
+            hand-written binding, which is exactly why the bind was refused.
+            The hold is not blocking "this goal's script"; this goal has none.
+            It is blocking that pre-existing script, and holding it while the
+            planner's steps run is M3-1g (the owner's option 1: a chat goal
+            beats a running script). Releasing it here would let the
+            hand-written script resume and issue directives while the steps
+            also drive the bot -- two drivers, which the "Exactly One Driver
+            Per Goal" requirement forbids.
+
+            The hold still cannot outlive the goal: _end_script_hold runs on
+            every terminal path (:1608 here, :1469 on import failure), so the
+            script resumes when the goal ends.
             """
-            bound = self._bind_planner_script(source)
+            if not self._bind_planner_script(source):
+                print(f"[{self.name}/script] goal {goal_id or '-'} bind refused; "
+                      f"running the planner's steps, script stays held")
+                return False
+            print(f"[{self.name}/script] goal {goal_id or '-'} handed to the "
+                  f"planner's script; releasing its hold")
             self._end_script_hold(goal_id or None)
-            if bound:
-                print(f"[{self.name}/script] goal {goal_id or '-'} handed to "
-                      f"the planner's script; releasing its hold")
-                return True
-            print(f"[{self.name}/script] goal {goal_id or '-'} bind refused; "
-                  f"running the planner's steps instead")
-            return False
+            return True
 
         try:
             plan_orchestrator.execute_task(
