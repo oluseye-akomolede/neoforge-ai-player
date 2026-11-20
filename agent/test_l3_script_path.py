@@ -425,6 +425,149 @@ class TestTheRealOnScriptClosureReleasesTheHold(unittest.TestCase):
                           "a successful bind left the goal hold set")
 
 
+# ── the refused bind, end to end with a real hand-written binding ──────────
+
+class TestRefusedBindAgainstARealHandWrittenBinding(unittest.TestCase):
+    """The lead's scenario (15:43Z), driven through real code at every layer.
+
+    Nothing here is stubbed on the path under test:
+
+      - bindings.json and the script file are real files in a tmp dir, and
+        SCRIPTS_DIR points at them, so _bind_planner_script refuses the
+        planner's script through its OWN hand-written check rather than a
+        Mock's return value.
+      - _run_script_tick is the real method, so SCRIPT_HELD is the real
+        identity object produced by the real hold check.
+      - The resume after the goal ends uses the real terminal path
+        (_end_script_hold) and then the real _run_script_tick again.
+
+    M3-1g: a chat goal beats a running script. The hold must block the
+    hand-written script while the planner's steps run, and the script must
+    come back when the goal ends.
+    """
+
+    def setUp(self):
+        import tempfile
+        import agent as agent_mod
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        d = self._tmp.name
+        # A tiny, real script. `api.do` is the only call; it never runs,
+        # because the hold returns before the tick is taken.
+        script_path = os.path.join(d, "scout.js")
+        with open(script_path, "w", encoding="utf-8") as f:
+            f.write("api.do('noop');\n")
+        with open(os.path.join(d, "bindings.json"), "w", encoding="utf-8") as f:
+            json.dump({"Scout": "scout.js"}, f)
+
+        self._old_env = os.environ.get("SCRIPTS_DIR")
+        os.environ["SCRIPTS_DIR"] = d
+        self.addCleanup(self._restore_env)
+
+        a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
+        a.name = "Scout"
+        a.model = "m"
+        a.profile = {}
+        a._lock = threading.Lock()
+        a._planner_script = None
+        a._script_tick = None
+        a._script_loaded = False
+        a._script_hold = None
+        a._script_hold_seq = 0
+        # Real ScriptTick construction talks to the runner over HTTP; the
+        # binding decision and the hold check both happen before any tick, so
+        # this is only reached if the hold fails to block.
+        a._get_script_tick = mock.Mock(
+            return_value=mock.Mock(tick=mock.Mock(return_value=(True, [], [], ""))))
+        self.a = a
+        self.script_path = script_path
+
+    def _capture_real_closure(self, goal_id):
+        """Return the real on_script closure from _run_orchestrator.
+
+        Only execute_task is stubbed; everything that builds the closure is
+        the production path.
+        """
+        import plan_orchestrator
+        captured = {}
+
+        class _Captured(Exception):
+            pass
+
+        def fake_execute(**kw):
+            captured.update(kw)
+            raise _Captured()
+
+        with mock.patch.object(plan_orchestrator, "execute_task",
+                               side_effect=fake_execute):
+            try:
+                self.a._run_orchestrator("keep the furnace fed", "Steve",
+                                         goal_id=goal_id)
+            except _Captured:
+                pass
+        assert "on_script" in captured, "the orchestrator passed no on_script"
+        # _run_orchestrator's except-path releases the hold on the way out, so
+        # the hold is re-taken here to represent the state the closure sees.
+        self.a._begin_script_hold(goal_id, "keep the furnace fed")
+        return captured["on_script"]
+
+    def _restore_env(self):
+        if self._old_env is None:
+            os.environ.pop("SCRIPTS_DIR", None)
+        else:
+            os.environ["SCRIPTS_DIR"] = self._old_env
+
+    def test_a_hand_written_binding_is_refused_and_held_then_resumes(self):
+        """The lead's three checkpoints, in order, all through real code.
+
+        KILLS: releasing the hold on a refused bind (the 2a79329 version). If
+        the hold is released there, checkpoint 2 (SCRIPT_HELD while the goal
+        runs) returns a normal tick instead and the script issues directives
+        while the planner's steps also drive the bot.
+        """
+        import agent as agent_mod
+        a = self.a
+
+        # Checkpoint 0: the real refusal. _bind_planner_script reads the real
+        # bindings.json, sees Scout bound, and refuses on its own check.
+        self.assertTrue(a._bound_script_path(),
+                        "fixture: the hand-written binding was not found")
+        self.assertFalse(a._bind_planner_script("api.do('planner');"),
+                         "the planner's script was bound over a hand-written "
+                         "binding; the hand-written check did not run")
+
+        # The goal arrives and takes the hold (agent.py:683 in production).
+        goal_id = a._new_goal_id("Steve", "keep the furnace fed")
+        a._begin_script_hold(goal_id, "keep the furnace fed")
+
+        # The orchestrator calls the REAL on_script closure with the planner's
+        # script. The closure is where the refused-bind decision lives, so the
+        # mutant that releases on refusal only dies if this runs.
+        on_script = self._capture_real_closure(goal_id)
+        handed = on_script(mock.Mock(), "api.do('planner');")
+        self.assertFalse(handed, "the closure claimed the goal was handed over "
+                                 "despite the hand-written binding")
+
+        # Checkpoint 2: while the goal runs, the real tick refuses to dispatch
+        # the hand-written script.
+        result = a._run_script_tick()
+        self.assertIs(result, agent_mod.SCRIPT_HELD,
+                      "the hand-written script was not held while the goal ran: "
+                      f"got {result!r}, so it dispatches alongside the steps")
+
+        # Checkpoint 3: the goal ends via the real terminal path, and the SAME
+        # hand-written script runs again.
+        self.assertTrue(a._end_script_hold(goal_id),
+                        "the terminal path did not release the hold")
+        a._script_loaded = False
+        result_after = a._run_script_tick()
+        self.assertIsNot(result_after, agent_mod.SCRIPT_HELD,
+                         "the hand-written script is still held after the goal "
+                         "ended: it never resumes")
+        self.assertTrue(a._get_script_tick.called,
+                        "the resume never reached tick construction")
+
+
 # ── atomic bind ────────────────────────────────────────────────────────────
 
 class TestBindIsAtomicAgainstTheTick(unittest.TestCase):
