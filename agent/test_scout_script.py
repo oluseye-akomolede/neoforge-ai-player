@@ -742,7 +742,7 @@ class EndToEndBindingTest(unittest.TestCase):
     def _chain(self):
         result = _run(_envelope(20.0, inventory=CARRYING))
         self.assertTrue(result["ok"], f"engine rejected the script: {result['error']}")
-        pairs, refusals = _script_tick.translate_runner_actions(result["actions"])
+        pairs, refusals, _deliveries = _script_tick.translate_runner_actions(result["actions"])
         self.assertEqual(refusals, [], f"translation refused {refusals!r}")
         bound, bind_refusals = _action_binding.bind_actions([b for b, _ in pairs])
         return bound, bind_refusals, pairs, result
