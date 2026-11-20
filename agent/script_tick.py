@@ -260,11 +260,21 @@ class ScriptTick:
     """
 
     def __init__(self, api, bot, script_source, *, post=None, cache=None,
-                 game_id="minecraft", revision=None, memory=None):
+                 game_id="minecraft", revision=None, memory=None, dry=False):
         self._api = api
         self._bot = bot
         self._source = script_source
         self._game_id = game_id
+        # M3-2 step (a): a dry tick asks the runner to evaluate against a
+        # throwaway botState, so it neither reads nor spends the bot's live
+        # rate windows. The agent cannot do this locally -- botState lives in
+        # the runner process, one long-lived object per cached worker -- so
+        # this flag on the request body IS the mechanism.
+        #
+        # False by default, and the field is omitted from the body entirely
+        # when false: the runner tests `body.dry === true`, and every existing
+        # caller must keep byte-identical behaviour (cardgame shares it).
+        self._dry = dry
         # The runner caches source by revision, so the revision must change
         # whenever the script does or a stale script keeps running. Derived
         # from the source by default rather than left to the caller.
@@ -328,6 +338,11 @@ class ScriptTick:
             "snapshot": envelope,
             "memory": self._memory,
         }
+        # Added only when asked, never as `false`: the runner tests
+        # `body.dry === true`, and a live tick's body must stay byte-identical
+        # to what every existing caller sends.
+        if self._dry:
+            body["dry"] = True
 
         # When no transport was injected, post to SCRIPT_RUNNER_URL. It is
         # deliberately NOT `api._post`: that helper prefixes MOD_API_URL, so it

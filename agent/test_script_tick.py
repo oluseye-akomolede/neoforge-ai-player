@@ -126,6 +126,41 @@ class RequestShapeTest(unittest.TestCase):
         for field in ("health", "position", "inventory"):
             self.assertIn(field, data["snapshot"]["state"])
 
+    def test_dry_flag_reaches_the_runner_body(self):
+        # M3-2 step (a): the runner's dry mode is only reachable if the agent
+        # SENDS the flag. The rate window lives inside the runner process, so
+        # the agent cannot protect it by anything it does locally; the request
+        # body is the whole mechanism.
+        #
+        # KILLS: a _dry_tick that runs the normal tick without asking the
+        # runner for dry. That script spends the bot's real do/say/log slots
+        # (30/30 per minute), and nothing in the agent can see it happen.
+        captured = {}
+        def _capture(p, d=None, **kw):
+            captured.update({"path": p, "data": d})
+            return {"contract_version": 1, "status": "ok", "actions": []}
+        ScriptTick(_FakeApi(), "Scout", "api.log('hi')",
+                   post=_capture, dry=True).tick()
+        self.assertIn("dry", captured["data"],
+                      "the runner cannot run dry if the body never says so")
+        self.assertIs(captured["data"]["dry"], True,
+                      "dry must be the boolean true; the runner tests `=== true`")
+
+    def test_dry_flag_is_absent_unless_asked(self):
+        # The flag must be additive: every existing caller -- the live tick
+        # path, and cardgame's own caller -- keeps today's body byte for byte.
+        # KILLS: a default of `dry: True` (every tick dry, nothing ever
+        # dispatches) or `dry: False` (a field the runner did not receive
+        # before, risking a strict validator). Absent is what "unchanged"
+        # means.
+        captured = {}
+        def _capture(p, d=None, **kw):
+            captured.update({"path": p, "data": d})
+            return {"contract_version": 1, "status": "ok", "actions": []}
+        ScriptTick(_FakeApi(), "Scout", "api.log('hi')", post=_capture).tick()
+        self.assertNotIn("dry", captured["data"],
+                         "a live tick must send exactly the body it sent before")
+
     def test_every_field_the_runner_gates_on_is_present(self):
         # The runner's pre-routing gate, read from source. Each entry here is a
         # condition that REFUSES the request before handleTick is reached:

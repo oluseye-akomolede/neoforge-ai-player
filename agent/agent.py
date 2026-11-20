@@ -2996,26 +2996,23 @@ Respond with ONLY a JSON array. Example:
             src/binding.js:244-251), so a tick whose return value is ignored
             already reaches nothing.
 
-          - SPEND THE RATE BUDGET. **The dry tick DOES spend the live bot's
-            rate window, and this implementation cannot prevent it.** An
-            earlier revision of this docstring claimed a throwaway `botState`
-            made the cost zero. That was wrong, and wrong in the direction that
-            hides a cost: `ScriptTick` does not evaluate JS in-process, it
-            POSTs to the runner (script_tick.py:333), and the `botState` lives
-            inside that service -- one per cached worker (engine.js:238,
-            passed unchanged at :756; worker cached per bot at fleet.js:166).
-            The agent cannot reach it, so it cannot pass a different one.
-            `createApi` taking `botState` as a parameter (binding.js:132-136)
-            is true and irrelevant from here.
-            Consequence, stated rather than hidden: a dry tick may spend up to
-            8 of the bot's 30/min `do` slots, so rejected scripts can
-            rate-limit a working one. Whether to accept that, or to give the
-            runner a real dry mode, is an open decision for the lead -- it is
-            not fixed in this revision.
+          - SPEND THE RATE BUDGET. The tick is sent with the runner's dry
+            flag, so the runner evaluates it against a throwaway `botState` of
+            its own and neither reads nor writes the live window
+            (agent-script-runner worker.js dryEvaluate). The agent cannot
+            achieve this locally and never could: `ScriptTick` does not
+            evaluate JS in-process, it POSTs to the runner
+            (script_tick.py:359), and the `botState` lives inside that
+            service -- one long-lived object per cached worker. An earlier
+            revision of this docstring said the cost was unavoidable and left
+            it as an open decision; the runner gained dry mode (live on test
+            2026-11-20 as the m32a image) and `script_tick.ScriptTick` now
+            carries `dry` on the wire, so the cost is zero and this is the
+            mechanism that makes it zero.
 
           - CARRY MEMORY. `api.remember` writes per-tick `state.memoryOut`
             (binding.js:314), which the sandbox discards -- but script_tick.py
-            :363-364 adopts `result.memory` into `self._memory`. That adoption
+            :387 adopts `result.memory` into `self._memory`. That adoption
             is downstream of the sandbox, so ignoring the returned memory here
             is the whole guard.
 
@@ -3048,7 +3045,7 @@ Respond with ONLY a JSON array. Example:
             if factory is not None:
                 st = factory(source)
             else:
-                st = script_tick.ScriptTick(api, self.name, source)
+                st = script_tick.ScriptTick(api, self.name, source, dry=True)
             handled, actions, refusals, detail = st.tick()
         except Exception as e:  # noqa: BLE001
             print(f"[{self.name}/script] dry tick unavailable: {e}")

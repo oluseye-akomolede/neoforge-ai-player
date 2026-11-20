@@ -888,7 +888,7 @@ class DryTickTest(unittest.TestCase):
         """A dry tick whose script remembers must leave no trace of it.
 
         The stub returns a NON-None memory deliberately: a None here would let
-        the `if result.memory is not None` guard at script_tick.py:364 pass
+        the `if result.memory is not None` guard at script_tick.py:387 pass
         without being exercised, which is the vacuous case.
 
         This scans the agent's whole instance namespace for the dry tick's
@@ -899,9 +899,17 @@ class DryTickTest(unittest.TestCase):
         which I reproduced: an adoption mutant left this method untouched).
 
         `BotRunner` has no `_memory` field at all; memory lives on the
-        ScriptTick instance (script_tick.py:264) and is adopted at :364. So the
+        ScriptTick instance (script_tick.py:282) and is adopted at :387. So the
         property to pin is that the dry tick's instance dies with no reachable
         reference to its memory left on the agent.
+
+        LIMIT, stated so a later reader does not over-read the green: this runs
+        the STUB path. What it proves is that `_dry_tick` never carries the
+        tick's memory onto `self` -- which is the property that matters, since
+        the real `ScriptTick`'s adoption at :387 writes to its OWN instance and
+        `_dry_tick`'s instance is a local that dies on return. The wire-level
+        guard (a dry tick discards the runner's returned `memory_out`) is
+        covered by the runner's dry-mode tests, not here.
         """
         marker = "WRITTEN BY DRY TICK"
         stub, _ = self._script_tick_stub(outcome="ok", memory=marker)
@@ -913,6 +921,40 @@ class DryTickTest(unittest.TestCase):
         self.assertEqual(leaked, [],
                          f"the dry tick left its memory on {leaked}; the dry "
                          f"ScriptTick must die without being adopted")
+
+    def test_dry_tick_asks_the_runner_for_dry(self):
+        """The agent's only lever on the rate window is the request body.
+
+        The window lives inside the runner process (one long-lived botState
+        per cached worker), so no local bookkeeping in _dry_tick can protect
+        it. If _dry_tick constructs a real ScriptTick and does not pass
+        dry=True, the script runs live: it spends real do/say/log slots and a
+        rejected script can rate-limit a working one.
+
+        KILLS: _dry_tick building ScriptTick without the dry flag -- the shape
+        this file had before the runner gained dry mode. The stub factory path
+        is untouched by this test, so it drives the PRODUCTION branch.
+        """
+        seen = {}
+
+        class Recorder:
+            def __init__(_self, api, bot, source, **kw):
+                seen["kw"] = kw
+
+            def tick(_self):
+                return True, [], [], "1 action(s)"
+
+        real = sys.modules["script_tick"].ScriptTick
+        sys.modules["script_tick"].ScriptTick = Recorder
+        try:
+            self.a._dry_script_factory = None
+            self.a._dry_tick("api.do('x')")
+        finally:
+            sys.modules["script_tick"].ScriptTick = real
+        self.assertIn("kw", seen, "the dry tick never constructed a ScriptTick")
+        self.assertIs(seen["kw"].get("dry"), True,
+                      "a dry tick must ask the runner for dry; without it the "
+                      "script spends the bot's real rate budget")
 
     def test_a_say_only_script_still_binds(self):
         """F1: 'all actions refused' is a script that RAN, not a failure.
