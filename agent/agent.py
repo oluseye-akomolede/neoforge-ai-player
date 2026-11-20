@@ -3040,11 +3040,14 @@ Respond with ONLY a JSON array. Example:
         # A test injects a stub here so the gate's decisions can be exercised
         # without a sandbox. Production leaves this absent.
         factory = getattr(self, "_dry_script_factory", None)
+        # Imported here rather than inside the branch below: the refusal carve-
+        # out after the tick compares against a constant from this module, so
+        # the name must be bound on the stub path too.
+        import script_tick
         try:
             if factory is not None:
                 st = factory(source)
             else:
-                import script_tick
                 st = script_tick.ScriptTick(api, self.name, source)
             handled, actions, refusals, detail = st.tick()
         except Exception as e:  # noqa: BLE001
@@ -3053,7 +3056,7 @@ Respond with ONLY a JSON array. Example:
         # A post-run binding refusal is NOT a dry-tick failure: the script ran.
         # Read the refusal apart from a genuine non-run so an `api.say` script,
         # all of whose actions are deliberately undispatchable, still binds.
-        if not handled and detail != "all actions refused":
+        if not handled and detail != script_tick.DETAIL_ALL_ACTIONS_REFUSED:
             print(f"[{self.name}/script] dry tick failed ({detail}); "
                   f"not binding the written script")
             return False

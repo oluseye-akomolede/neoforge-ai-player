@@ -909,7 +909,7 @@ class DryTickTest(unittest.TestCase):
         self.a._dry_tick("api.remember('x')")
 
         leaked = [k for k, v in vars(self.a).items()
-                  if isinstance(v, str) and marker in v]
+                  if marker in repr(v)]
         self.assertEqual(leaked, [],
                          f"the dry tick left its memory on {leaked}; the dry "
                          f"ScriptTick must die without being adopted")

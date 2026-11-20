@@ -30,6 +30,14 @@ from script_client import (
 )
 
 
+# The tick's detail string for "the script ran but every action was refused at
+# binding". Producer and consumer MUST import this rather than repeat the
+# literal: the caller in agent.py carves this case out of dry-tick failure so a
+# `say`-only script still binds, and a reworded literal on either side would
+# kill that carve-out silently, with no error anywhere.
+DETAIL_ALL_ACTIONS_REFUSED = "all actions refused"
+
+
 def no_runner_detail():
     """One wording, used by both the constructor check and the tick."""
     return "no SCRIPT_RUNNER_URL configured"
@@ -387,7 +395,7 @@ class ScriptTick:
             # quietly do something else, which is the opposite of what the
             # script asked. Distinguish the two.
             if refusals:
-                return False, [], refusals, "all actions refused"
+                return False, [], refusals, DETAIL_ALL_ACTIONS_REFUSED
             return True, [], [], "script chose silence"
 
         return True, bound, refusals, f"{len(bound)} action(s)"
