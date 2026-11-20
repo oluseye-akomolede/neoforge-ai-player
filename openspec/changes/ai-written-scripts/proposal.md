@@ -37,11 +37,42 @@ in a second change is how two specs come to disagree.
   tick returns `ok`.
 - **Add** a stated rule for when a written script is used versus the plain
   planner, decided by conditions rather than by the model's preference.
+- **Add** the script output on the path a goal actually takes: one optional
+  field on `call_plan`'s reply, so the L3 orchestrator can bind it. With no
+  script present, the reply, the plan and the logged plan record are
+  byte-identical to today, and no trainer-visible field changes shape.
 - **Not change**: the skill layer's "no arbitrary executable" rule, the
   six-method `api` surface, the runner's limits, the mod's Java skill engine,
   the M3-1g hold, or hand-written scripts.
 
-## The three real gaps for step (a)
+3. **The script output has to reach the path a goal actually runs on.**
+   A player goal is planned by the L3 orchestrator
+   (`plan_orchestrator.execute_task` → `l3_planner.call_plan`), not by
+   `planner.decompose`. Wiring the script into `decompose` alone produced a
+   feature that was reviewed, deployed, and unreachable: three hours of test
+   logs showed `L3 PLAN`/`L3 EXEC` and zero decompose calls. The fix is the
+   smallest one that works — `call_plan`'s reply carries the script as one
+   extra **optional** field. It is not a new `kind` and not a new directive
+   type, so a reply without a script parses, plans, executes and logs exactly
+   as it does today. The script is kept out of the parsed record
+   `trajectory_log` writes, so the DPO export sees no new field.
+
+   The same field is the reason the dry-tick gate and the rebind rule can
+   apply to a real goal at all. Which paths may author a script is stated in
+   that requirement's table; a plan-template hit writes none.
+
+   **A goal's own script is not held by that goal.** The M3-1g hold exists so a
+   running script and a goal's planner cannot both act on one intent. It covers
+   a script that was already bound when the goal arrived. A script the planner
+   writes *for* that goal is the goal's own execution, so holding it would
+   suppress the one run the goal asked for. The two are told apart by
+   ownership: the hold names the goal that owns the pause, and the bound script
+   is that same goal's product.
+
+The three gaps above are the ones the existing change did not say. Gaps 1 and 2
+are answered in full; gap 3 stands as written.
+
+## What happens on the second real gap
 
 The owner's framing — the *planner* writes the script *for a goal*, as a
 programmatic alternative to emitting directives — exposes three things the
@@ -52,9 +83,11 @@ existing change does not say. Each is the subject of one ADDED requirement.
    out-of-band author). Nothing says the L3 planner, while planning a goal, may
    emit a script *as the plan* instead of a list of directives. Step (a) is
    exactly that: a planning outcome of kind "here is a script for this goal".
-   The planner gains a script output kind — a prompt and return-contract change
-   in `agent/planner.py`, which is in scope for step (a) because it *is* the
-   feature; `decompose` and `orchestrate` return step strings today.
+   The planner gains a script output — a prompt and return-contract change in
+   `agent/planner.py`, which is in scope for step (a) because it *is* the
+   feature; `decompose` and `orchestrate` return step strings today. The same
+   output is added to `l3_planner.call_plan` for the reason in the paragraph
+   above.
 
    **The planner's script lives in memory, not on disk.** The agent has no
    write path for script source (see requirement 2), so the emitted source is

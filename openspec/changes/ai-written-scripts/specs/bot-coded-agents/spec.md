@@ -322,3 +322,96 @@ never a reason for the bot to idle.
 - **WHEN** the held goal ends and the script is to resume
 - **THEN** an AI-written script resumes by the same rule as a hand-written one,
   with its remembered value intact
+
+### Requirement: The Script Output Reaches The L3 Goal Path
+
+A player goal is planned by the **L3 orchestrator**
+(`plan_orchestrator.execute_task` → `l3_planner.call_plan`), not by
+`planner.decompose`. A script output that only the decompose path can produce
+is inert for every goal a player actually issues: the deployed agent bound a
+script at the decompose branch while three hours of logs showed the orchestrator
+running `L3 PLAN`/`L3 EXEC` with zero decompose calls. The script output MUST
+therefore be reachable from the path that runs a goal.
+
+**The script rides as one extra OPTIONAL field on `call_plan`'s reply.** It is
+not a new `kind` and not a new directive type. With no script present the
+planner's reply, the resulting `Plan`, and the plan record written by
+`trajectory_log.log_call` MUST be byte-identical to what they are today — same
+`parsed` object, same `plan_ref` side effects, same subtask list. The script
+field is additive on the reply and MUST NOT be copied into the parsed plan
+object the planner logs, so a trainer reading `prompt_system`, `prompt_user`,
+`response_raw`, `parsed`, or `world_state_summary` sees exactly what it sees
+now.
+
+A script the planner authors MUST be bound to the bot that runs the goal, by
+the rules of this capability ("A Written Script MUST Pass A Dry Tick Before It
+Is Bound", "The Agent Decides Script Vs Plain Planner By Stated Conditions"). A
+hand-written binding still wins. A script that fails its dry tick is NOT bound
+and the goal proceeds on the plan the reply carried, unchanged.
+
+**Paths that author a script, and the ones that do not:**
+
+| Path | Authors a script | Why |
+|---|---|---|
+| L3 orchestrator, a fresh L3 plan | yes | the goal path a player actually takes |
+| Decompose (bot-to-bot messages) | yes, kept | reachable, and tested end to end |
+| Plan-template / plan-memory hit | no | reuses a stored plan; there is no planner call to answer with a script |
+| Deterministic skill match | no | no planner call |
+| Clarify / refuse reply | no | the reply declines to plan |
+| Taskboard script answer | yes, kept | already wired and tested |
+
+A plan-template or plan-memory hit takes the Phase 0 return before any planner
+call, so it writes no script. That is accepted for now: a repeated goal replays
+its stored steps rather than being re-scripted.
+
+#### Scenario: The script is bound on the orchestrator path
+- **GIVEN** a bot with no hand-written binding
+- **WHEN** a player's goal reaches L3 and the reply carries a script
+- **THEN** the agent dry-ticks that script, and on success binds it as the bot's
+  in-memory script before the bot's own tick would run it
+- **AND** the bot then runs that script rather than the directive plan
+
+#### Scenario: A reply with no script leaves the plan untouched
+- **GIVEN** any goal
+- **WHEN** the L3 reply carries no script field
+- **THEN** the parsed plan object, the subtasks executed, and the record
+  `trajectory_log.log_call` writes are exactly those the same reply produces
+  today
+- **AND** nothing about the plan's shape changes for a trainer reading it
+
+#### Scenario: The script never enters the logged plan
+- **GIVEN** an L3 reply that carries both a valid plan and a script
+- **WHEN** the planner records the call
+- **THEN** the logged `parsed` object contains no script source
+- **AND** the script is carried in process memory only
+
+#### Scenario: A template hit writes no script
+- **GIVEN** a goal that matches a saved plan template
+- **WHEN** the orchestrator replays it
+- **THEN** no planner call is made, no script is authored, and the template's
+  steps run as they do today
+
+### Requirement: A Goal's Own Script Is Not Held By That Goal
+
+M3-1g holds the bot's running script while a chat goal is planned, so the script
+and the goal's planner cannot both act on one intent. That hold covers a script
+that was **already bound when the goal arrived**. A script the planner authors
+**for this goal** is the goal's own execution and MUST NOT be held by the hold
+that this goal owns: holding it would suppress the one run the goal asked for.
+
+The two are distinguished by ownership, not by timing. The hold names the goal
+that owns the pause; the bound script is the goal's own product. When the agent
+binds a script for goal G, it MUST NOT be suppressed by G's hold. A script
+already bound from an earlier goal, or hand-written, remains held for G exactly
+as today.
+
+#### Scenario: A goal's own script runs under its own hold
+- **GIVEN** a bot whose running script is held by an active chat goal
+- **WHEN** the planner for that same goal authors and binds a script
+- **THEN** that script dispatches its actions while the goal is still running
+- **AND** the hold is not ended or reassigned to make this work
+
+#### Scenario: A pre-existing script stays held
+- **GIVEN** a bot with a bound script when a chat goal arrives
+- **WHEN** the planner for that goal authors no script
+- **THEN** the pre-existing script stays held for that goal, as today

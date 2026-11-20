@@ -76,6 +76,47 @@ Spec only. No code, no build, no deploy until the lead approves this spec.
       `bindings.json` provenance field: in-memory is the design, and no new
       storage is in scope.
 
+## 2a. Sub-step a2 — reach the path a goal actually runs on
+
+The step (a) work above was wired into `planner.decompose`, and deployed. It was
+inert for real goals: a player goal is planned by `plan_orchestrator.execute_task`
+→ `l3_planner.call_plan`, and three hours of test logs showed `L3 PLAN`/`L3 EXEC`
+with zero decompose calls. The lead ruled (A): move the script output onto the
+L3 path rather than limit the spec to the decompose paths.
+
+- [ ] 2a.1 **The script is ONE extra optional field on `call_plan`'s reply** —
+      not a new `kind`, not a new directive type. `Plan` gains an in-memory
+      `script` attribute, populated only when the reply carries one, and NOT
+      serialized by `Plan.to_dict()`.
+- [ ] 2a.2 **No script means byte-identical today.** With the field absent, the
+      reply, the subtasks, the plan shape and the record
+      `trajectory_log.log_call` writes are unchanged. Pinned by a test that
+      compares the logged `parsed` object for a script-carrying reply against a
+      reply with the field removed.
+- [ ] 2a.3 **The script is kept out of the trainer-visible record.** The DPO
+      export may read `call_plan` prompts and replies (asked of dags-lead, row
+      `qitem-20261120145614-65eb3af3994b0a26`); until they answer, the logged
+      `parsed` object must contain no script source.
+- [ ] 2a.4 **The orchestrator binds it.** `execute_task` hands the script to the
+      caller through the existing `on_plan_created` hook, or an equivalent one
+      argument; the agent's hook calls `_bind_planner_script`, which already
+      holds the three orderings (hand-written wins, dry tick before assignment,
+      latch reset).
+- [ ] 2a.5 **Hand-written bindings still win** — unchanged rule, now reachable
+      from the goal path.
+- [ ] 2a.6 **A goal's own script is not held by that goal.** The M3-1g hold
+      covers a script already bound when the goal arrived. The script the
+      planner writes FOR that goal must dispatch under the goal's own hold,
+      without the hold being ended or reassigned. Test both directions: a
+      pre-existing script stays held, the goal's own script runs.
+- [ ] 2a.7 **Which paths author scripts is stated, and matches the code.**
+      Orchestrator: yes. Decompose: yes, kept and reachable. Plan-template and
+      plan-memory hits: no (Phase 0 returns before any planner call).
+      Deterministic skill match: no. Clarify/refuse: no. Taskboard: yes, kept.
+      Drop decompose wiring that nothing reaches — or state that it is
+      unreachable.
+- [ ] 2a.8 Reviewer PASS on this delta before any code, then build test-first.
+
 ## 3. What is deliberately out of scope
 
 - [ ] 3.1 Step (b): read-only lookup functions inside the sandbox. Later change.
