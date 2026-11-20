@@ -2981,6 +2981,68 @@ Respond with ONLY a JSON array. Example:
             print(f"[{self.name}/script] tick error, using planner: {e}")
             return False
 
+    def _dry_tick(self, source):
+        """Run `source` once against the bot's snapshot, dispatching nothing.
+
+        M3-2 step (a). A planner-authored script must survive its first real
+        tick before it is bound. Parsing proves it is code; only running it
+        proves it does not throw, blow the 8-host-call budget, or loop past the
+        CPU budget on tick one.
+
+        Three things this must not do, each of which fails silently:
+
+          - DISPATCH. The queued actions are dropped. `api.do` only pushes onto
+            the runner's per-tick `state.actions` (agent-script-runner
+            src/binding.js:244-251), so a tick whose return value is ignored
+            already reaches nothing.
+
+          - SPEND THE RATE BUDGET. `acceptAction` (binding.js:154-174) filters
+            then either rejects or pushes into `botState.actionTimes`, per-BOT
+            state that survives a tick by design (binding.js:45-52). It has no
+            check-without-spending mode, so a dry tick sharing the live window
+            could only avoid spending by never calling `api.do` -- which would
+            defeat the gate. Instead the dry tick evaluates against a THROWAWAY
+            botState: `createApi` takes `botState` as a parameter
+            (binding.js:126-136) and the default exists only for a direct
+            caller. So the live window is neither read nor written, and a dry
+            tick can never be rate-limited by the bot's own spent budget.
+
+          - CARRY MEMORY. `api.remember` writes per-tick `state.memoryOut`
+            (binding.js:314), which the sandbox discards -- but script_tick.py
+            :363-364 adopts `result.memory` into `self._memory`. That adoption
+            is downstream of the sandbox, so ignoring the returned memory here
+            is the whole guard.
+
+        Returns True iff the tick reported `ok`. Every other outcome -- threw,
+        host_calls_exceeded, cpu_exceeded, no script support -- is False, and
+        the caller falls back to the plain planner while keeping any previously
+        bound script in force.
+        """
+        if not source:
+            return False
+        # A test injects a stub here so the gate's decisions can be exercised
+        # without a sandbox. Production leaves this absent.
+        factory = getattr(self, "_dry_script_factory", None)
+        try:
+            if factory is not None:
+                st = factory(source)
+            else:
+                import script_tick
+                st = script_tick.ScriptTick(api, self.name, source)
+            handled, actions, refusals, detail = st.tick()
+        except Exception as e:  # noqa: BLE001
+            print(f"[{self.name}/script] dry tick unavailable: {e}")
+            return False
+        if not handled:
+            print(f"[{self.name}/script] dry tick failed ({detail}); "
+                  f"not binding the written script")
+            return False
+        # Deliberately NOT adopted: `st` owns its own memory and it dies here.
+        # Nothing is assigned to self._script_memory.
+        print(f"[{self.name}/script] dry tick ok "
+              f"({len(actions)} action(s) dropped, none dispatched)")
+        return True
+
     def _bound_script_path(self):
         """The script file bound to this bot, or None.
 

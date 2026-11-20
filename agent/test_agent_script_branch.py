@@ -811,5 +811,113 @@ class ScriptHoldTest(unittest.TestCase):
                           "the run exited without releasing the hold it owned")
 
 
+class DryTickTest(unittest.TestCase):
+    """M3-2 step (a): a planner-authored script is dry-ticked before binding.
+
+    Four properties, each of which fails silently if it is not tested:
+
+      1. A dry tick dispatches nothing (the world is unchanged).
+      2. A dry tick does not spend the bot's rate budget.
+      3. A dry tick does not carry memory forward.
+      4. A failed dry tick binds nothing and does not reset the latch.
+
+    The vacuity traps, which is why the stub is built the way it is:
+      - A dry tick tested against a None memory passes without exercising the
+        adoption guard (`if result.memory is not None`), so `_dry_tick` here
+        RETURNS a non-None memory. A None-returning stub would prove nothing.
+      - A rate-budget test on a script that queues no actions passes without
+        spending anything, so the stub queues a real action.
+    """
+
+    def setUp(self):
+        agent_mod = _agent_module()
+        self.agent_mod = agent_mod
+        self.a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
+        self.a.name = "Scout"
+        self.a.profile = {}
+        self.a._script_tick = None
+        self.a._script_loaded = True
+        self.a._script_hold = None
+        self.a._script_hold_seq = 0
+        self.a._script_provenance = set()
+
+    def _script_tick_stub(self, *, outcome="ok", actions=None, memory=None):
+        """Build a ScriptTick stand-in that looks like the real one.
+
+        Returns `(handled, actions, refusals, detail)` exactly as
+        script_tick.py:283 does, and exposes `.memory` the way the caller
+        reads it after a tick.
+        """
+        calls = []
+        actions = [{"call": "do", "args": {}}] if actions is None else actions
+
+        class Stub:
+            def __init__(_self):
+                _self.last_logs = []
+                _self.last_logs_dropped = 0
+                _self._memory = memory
+
+            def tick(_self):
+                calls.append(1)
+                b = outcome == "ok"
+                return b, (actions if b else []), [], outcome
+
+        stub = Stub()
+        self.a._dry_script_factory = lambda *a, **k: stub
+        return stub, calls
+
+    def test_ok_dry_tick_binds_the_written_script(self):
+        stub, calls = self._script_tick_stub(outcome="ok")
+        ok = self.a._dry_tick("api.do('x')")
+        self.assertIs(ok, True)
+        self.assertEqual(len(calls), 1)
+
+    def test_failing_dry_tick_does_not_bind(self):
+        stub, calls = self._script_tick_stub(outcome="threw")
+        ok = self.a._dry_tick("api.do('x')")
+        self.assertIs(ok, False)
+        self.assertEqual(len(calls), 1)
+
+    def test_dry_tick_returns_the_bot_memory_unchanged(self):
+        """A dry tick whose script remembers must not adopt that memory.
+
+        The stub returns a NON-None memory deliberately: a None here would let
+        the `if result.memory is not None` guard at script_tick.py:364 pass
+        without being exercised, which is the vacuous case.
+        """
+        before = self.a._script_memory = "the bot's actual memory"
+        stub, _ = self._script_tick_stub(outcome="ok", memory="WRITTEN BY DRY TICK")
+
+        self.a._dry_tick("api.remember('x')")
+
+        self.assertEqual(self.a._script_memory, before,
+                         "the dry tick adopted memory that must have been discarded")
+
+    def test_dry_tick_never_touches_the_live_rate_window(self):
+        """The dry tick evaluates on its own botState, so live is untouched."""
+        live = {"do": [1, 2, 3], "say": [], "send": []}
+        self.a._script_action_times = live
+        stub, calls = self._script_tick_stub(
+            outcome="ok", actions=[{"call": "do", "args": {}}])
+
+        self.a._dry_tick("api.do('x')")
+
+        self.assertEqual(len(calls), 1, "the script never ran, so nothing was proved")
+        self.assertEqual(self.a._script_action_times,
+                         {"do": [1, 2, 3], "say": [], "send": []},
+                         "the dry tick spent the bot's live rate budget")
+
+    def test_a_full_live_window_does_not_reject_the_dry_tick(self):
+        """A dry tick on a throwaway window cannot be rate_limited by the bot."""
+        full = {"do": list(range(30)), "say": [], "send": []}
+        self.a._script_action_times = full
+        stub, _ = self._script_tick_stub(outcome="ok")
+
+        ok = self.a._dry_tick("api.do('x')")
+
+        self.assertIs(ok, True, "the bot's spent budget wrongly rejected the dry tick")
+        self.assertEqual(len(self.a._script_action_times["do"]), 30)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

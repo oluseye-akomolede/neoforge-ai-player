@@ -66,7 +66,11 @@ deliberately survives a tick (`binding.js:45-52`, `resetTickState` does not
 touch it). The budgets are `do:30/min`, `say:30/min`, `send:20/min`
 (`binding.js:44`). A dry tick that spends up to 8 `do` slots for a script that
 is then rejected takes those slots from the bot's real work. The dry tick MUST
-spend no rate budget: `actionTimes` MUST be unchanged by it.
+spend no rate budget: neither `actionTimes` nor `logTimes` may be changed by it.
+Both live on the same `createBotState` object (`binding.js:59-65`) and both
+survive a tick for the same reason; `api.log` spends `logTimes` exactly as
+`api.do` spends `actionTimes` (`binding.js:337-346`), and `log` is one of the
+six `api` methods.
 
 The mechanism that satisfies this is that the dry tick runs against a
 **throwaway `botState`**, not the bot's live one. `createApi` already takes
@@ -110,7 +114,8 @@ nothing, interrupts no task, spends no rate budget and carries no memory.
   bot's live one (`createApi` takes `botState` as a parameter,
   `binding.js:126-136`)
 - **AND** the bot's real script keeps its full budget
-- **AND** `botState.actionTimes` is unchanged by the dry tick
+- **AND** neither `botState.actionTimes` nor `botState.logTimes` is changed by
+  the dry tick
 
 A dry tick therefore never reports `rate_limited` on the bot's live budget: it
 neither reads nor writes it. This is the stronger guarantee, and it is the only
