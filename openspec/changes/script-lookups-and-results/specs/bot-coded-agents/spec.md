@@ -57,7 +57,9 @@ NOT spend a host call, reach the network, or reach the mod.
 
 A script's return value MUST be delivered to the planner when the script
 reports completion, when it errors, or when it states an escalation — and on
-no other tick.
+no other tick. Delivery MUST NOT depend on a player message arriving: a
+finished script's result MUST start a planner call of its own, under the
+per-bot hourly cap and cooldown that bound how often that can happen.
 
 #### Scenario: A completed goal delivers one result
 - **GIVEN** a script that returns `{ done: true, ... }`
@@ -94,12 +96,27 @@ no other tick.
 - **THEN** the result MUST NOT be rendered into that call's prompt
 - **AND** it MUST be discarded with both goal ids logged
 
-#### Scenario: A result does not start a planner call
+#### Scenario: A finished script's result reaches the planner with no player
 - **GIVEN** a script that reaches `done` and releases its binding
 - **WHEN** no player message arrives afterwards
-- **THEN** no planner call MUST be made on account of the result
-- **AND** the result MUST remain pending until a player message starts a
-  planning call for that goal, or the pending window closes
+- **THEN** the result MUST reach `call_plan` for its own goal without waiting
+  for a player
+- **AND** that call MUST be started by the result-triggered entry point, not by
+  `_maybe_plan`
+
+#### Scenario: Result-triggered calls stay under the cap
+- **GIVEN** scripts that finish repeatedly within one hour
+- **WHEN** the results would start more than 4 planner calls for that bot
+- **THEN** at most 4 result-triggered calls MUST be made in the hour
+- **AND** any result beyond the cap MUST be queued in the pending slot rather
+  than dropped
+- **AND** the call suppressed by the cap MUST be logged with the cap named
+
+#### Scenario: A result arriving mid-call is queued, not injected
+- **GIVEN** a planner call in flight for a goal
+- **WHEN** a result for that goal arrives
+- **THEN** the in-flight call MUST NOT be interrupted or given the result
+- **AND** the result MUST be delivered on a later pass under the caps
 
 #### Scenario: A stale result is discarded, not delivered
 - **GIVEN** a pending result older than 30 minutes

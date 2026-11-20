@@ -50,15 +50,31 @@ carries them.
 ## 3. Results (c)
 
 - [ ] 3.1 A later change reads a script's return value and delivers it to the
-      planner on exactly three triggers: `done`, error, `escalate`.
+      planner on exactly three triggers: `done`, error, `escalate`. Delivery
+      does not wait for a player message.
 - [ ] 3.2 Size capped, truncated with a marker rather than dropped. Pinned by a
       test; the mutant drops and must red it.
-- [ ] 3.3 The per-bot 4/hour cap and the 15-minute cooldown. Pinned by a test
-      driving 10 ticks that asserts exactly one delivery; the mutant removes
-      the cooldown and must red it.
-- [ ] 3.4 The result renders into the next `call_plan` prompt as its own
-      observation, with no extra LLM call. Pinned by a test on the rendered
-      prompt and a test that no additional planner call is made.
+- [ ] 3.3 The per-bot 4/hour cap and the per-bot 15-minute cooldown, as the
+      load-bearing guard on result-triggered calls. Pinned by a test driving 10
+      ticks that asserts exactly one delivery; the mutant removes the cooldown
+      and must red it.
+- [ ] 3.4 `_maybe_plan_on_result()` beside `_maybe_plan`: evaluated every pass,
+      acts only when a result is pending for the bot's current goal, so a
+      finished script reaches `call_plan` with no player message. Pinned by a
+      test that a done result with no new messages still produces a
+      `call_plan`; the mutant makes the entry a no-op and must red it. A test
+      also pins that with no result pending it makes no call at all, so it is
+      not a per-tick planner call.
+- [ ] 3.5 The result renders into that call's prompt as its own observation,
+      with no extra LLM call. Pinned by a test on the rendered prompt and a
+      test that no additional planner call is made.
+- [ ] 3.6 Ordering: a player message wins a pass — `_maybe_plan` runs first and
+      the result-triggered call is skipped for that pass. A result arriving
+      mid-call is queued to the slot, never injected. Pinned by tests for both.
+- [ ] 3.7 The caps are the guard, not a backstop: a fifth result within the
+      hour and a second within the cooldown are queued with the suppressing cap
+      logged, not dropped and not called. Pinned by tests; the mutant removes
+      the cap and must red them.
 
 ## 4. Trials on test (run by the lead)
 

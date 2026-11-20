@@ -296,13 +296,44 @@ is only rendered into a `call_plan` for that same `goal_id`.
 **What triggers the planner call that reads it.** Today the only path that
 starts the planner from the world is `_maybe_plan(new_messages)`
 (`agent/agent.py:518`, called at `:3413`), and it returns immediately on
-`if not new_messages: return` (`:520`). **A script that reaches `done` releases
-its binding and says nothing, so no `call_plan` runs until a player next
-speaks.** A result therefore sits unread until someone talks. This is accepted,
-not worked around: waking the planner on a result would be the per-tick planner
-call this design rejected on cost. **A result is delivered on the next player
-message, or not at all** — and §3's "bounding" caps then act as belt and braces
-rather than as the load-bearing guard.
+`if not new_messages: return` (`:520`). A script that reaches `done` releases
+its binding and says nothing, so **without a new entry point a finished
+script's result would go nowhere until a player happened to speak** — which
+defeats step c, whose point is that the planner gets the result back.
+
+So step c adds a second entry point beside `_maybe_plan`:
+`_maybe_plan_on_result()`. The loop at `:3400-3413` is a 10-second
+`_wait_for_idle_or_chat` followed by `_observe`, so this entry is *evaluated*
+every pass but *acts* only when there is a pending result for the bot's current
+goal. That test is what makes it a result-triggered call and not a per-tick
+planner call: with no result pending it returns without calling `call_plan`.
+Results fire only on `done`, `error` or `escalate` — never per tick — so the
+call frequency is set by how often scripts finish, not by the loop interval.
+
+**The caps are the load-bearing guard.** Because this entry can start a planner
+call with no player involved, §3's caps stop being belt and braces and become
+the thing that bounds spend: **4 planner calls per bot per hour and a 15-minute
+cooldown between result-triggered calls**. A result that arrives while the cap
+or cooldown is in force is **queued in the one slot, not discarded** — the caps
+delay delivery, they do not silently drop it — and the delay is logged with the
+cap that caused it. If the slot already holds a result, rule 2's overwrite
+applies.
+
+**Ordering with `_maybe_plan`.** Both entries can want to call `call_plan` on
+the same pass. A player message wins: `_maybe_plan` runs first (it is called
+before the result check), and a result-triggered call is skipped for that pass
+because the player's call will render the pending result anyway (rule 1's
+goal check still applies). This keeps one planner call per pass and keeps new
+player intent ahead of a stale result.
+
+**What the planner does with the result.** The result is passed into
+`call_plan` as context, not as an instruction, and the planner chooses one of
+three outcomes: **continue** (the goal is unfinished — write the next script or
+step toward the same `goal_id`), **finish** (the goal's stated condition is
+met — clear it and say so), or **replace** (the goal is wrong or unachievable as
+stated — write a new script or directive for a new `goal_id`, with the reason
+logged). The planner is told which goal the result belongs to and is not asked
+to infer it.
 
 **The one slot and its eviction rule.** There is one pending result per
 `{bot, goal_id}`. A newer result for the same key **overwrites** the older one,
@@ -315,20 +346,36 @@ and the overwrite is logged with both results' triggers. A result is
   it describes has moved on and the planner should plan fresh;
 - the next planning call is for a different `goal_id` (rule 1).
 
-**What is never done:** a result does not start a planner call, does not
-interrupt a running script, and does not queue more than one entry per key. The
-worst case is one stale observation rendered once, which the discard rules bound.
+**When the result arrives while the bot is busy.** Two cases, both explicit:
+
+- **already planning** (a `call_plan` is in flight) — the result goes into the
+  one slot and is delivered on the next pass, not mid-call. A planner call is
+  never interrupted, and never fed a result it has not asked for.
+- **holding a goal** (the bot has a current `goal_id` and is working it) — this
+  is the normal case for a script that finished inside a live goal: the result
+  matches the current goal, so `_maybe_plan_on_result` renders it on the next
+  pass under the caps. If a new directive arrived in the meantime, the goal ids
+  differ and rule 3's discard applies instead.
+
+**What is never done:** a result does not interrupt a running script, does not
+interrupt an in-flight planner call, and does not queue more than one entry per
+key. The caps bound how often a result can start a planner call, and the
+discard rules bound how long one can sit before it is stale.
 
 ### Bounding the loop
 
 Three caps, each independently sufficient to stop a runaway:
 
-- **Per bot, at most 4 result-driven planner calls per hour.** A fourth within
-  the hour is logged and dropped, with the drop counted. At ~59 ticks an hour
-  this is the difference between 4 planner calls and 59.
-- **A cooldown after each delivered result** — no second result from the same
-  script within 15 minutes, whatever its trigger. This is what stops a script
-  whose `done: true` is a bug from re-planning every tick.
+- **Per bot, at most 4 result-driven planner calls per hour.** A result beyond
+  the cap is queued in the pending slot, not dropped (rule 2), and the
+  suppressed call is logged with the cap named. At ~59 ticks an hour this is
+  the difference between 4 planner calls and 59.
+- **A cooldown after each result-triggered planner call** — no second
+  result-triggered call for the same **bot** within 15 minutes, whatever script
+  produced the result. It is per bot, not per script, because a `done: true`
+  releases the binding and the next script is a different one; a per-script
+  cooldown would bound nothing. This is what stops a planner that keeps
+  writing a script whose `done: true` is a bug from re-planning every tick.
 - **The script stops on completion.** A `done: true` result releases the
   binding, so there is no next tick to trigger on until the planner writes a
   new script.
