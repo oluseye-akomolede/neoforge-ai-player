@@ -61,6 +61,14 @@ in a second change is how two specs come to disagree.
    apply to a real goal at all. Which paths may author a script is stated in
    that requirement's table; a plan-template hit writes none.
 
+   **A path the planner never takes is still not shipping.** Reaching the L3
+   path makes the script *possible* for a goal; nothing in the planner makes it
+   *chosen*. A delta that stops there adds a feature the bots never use, which
+   is the same class of failure as wiring a branch nothing reaches. So the delta
+   also states when a script is the right answer — repeating, waiting on a
+   condition, or reacting over time is a script; a bounded one-shot stays a step
+   list — and requires the `call_plan` prompt to say the same thing.
+
    **A goal's own script is not held by that goal.** The M3-1g hold exists so a
    running script and a goal's planner cannot both act on one intent. It covers
    a script that was already bound when the goal arrived. A script the planner
@@ -200,8 +208,10 @@ requirements lean on.
 
 This change specifies behaviour: the planner's script output, the in-memory
 carriage, the dry-tick gate, and the use-vs-plain-planner rule. Implementation
-follows the spec and covers the planner's script output kind and prompt
-(`planner.py`), the agent's dry-tick call and rebind, and the three conditions —
+follows the spec and covers the planner's script output kind and prompt on both
+planner entry points (`planner.py` for the decompose path, `l3_planner.call_plan`
+for the goal path), the agent's dry-tick call and rebind, and the three
+conditions —
 all test-first, reviewed before any deploy to test. It does not touch the mod's
 Java skill engine, the runner's limits (the runner's dry mode already ships), or
 steps (b)/(c). No new storage: the script lives in memory and is never written.

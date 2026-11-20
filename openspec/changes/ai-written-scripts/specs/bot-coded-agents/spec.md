@@ -391,6 +391,58 @@ its stored steps rather than being re-scripted.
 - **THEN** no planner call is made, no script is authored, and the template's
   steps run as they do today
 
+### Requirement: The Planner Writes A Script For Repeating Or Conditional Goals
+
+A script output that the planner never chooses is a feature the bots never use.
+The planner MUST be given a stated rule for when a script is the right answer,
+and that rule MUST be the same in the spec and in the prompt the planner is
+sent, so the choice is not left to the model's taste.
+
+**A goal is a script when it repeats, waits on a condition, or reacts over
+time.** Those goals have no fixed end, so a list of one-shot steps cannot
+express them: it runs out and stops while the goal is still live. Examples:
+"keep the furnace fed", "keep the chest stocked", "store items whenever your
+inventory fills", "tell me when it gets dark", "until I say stop, mine gravel".
+
+**A goal is a step list when it is a bounded one-shot.** It finishes, and its
+success is checkable at the end: "go to X", "craft Y", "bring me 64 stone",
+"build a 5x5 shelter here". These MUST stay step lists. A script for a one-shot
+goal buys nothing — the plan already ends — and costs the planning and dry-tick
+round trip.
+
+The rule MUST NOT override any other constraint in this capability: a goal that
+is clearly one-shot stays a step list even if it is phrased with a time
+clause, and a script is still subject to the hand-written check and its dry
+tick. When a goal could be read either way, the planner MAY choose, and the
+choice MUST be visible in the logged plan — a script answer and a step-list
+answer are distinguishable in the trajectory log today, because a script answer
+parses as a reply carrying a script.
+
+#### Scenario: A repeating goal is answered with a script
+- **GIVEN** a goal with no fixed end, such as "keep the furnace fed"
+- **WHEN** the planner plans it
+- **THEN** the reply carries a script, and that script is dry-ticked and bound
+  by the rules of this capability
+
+#### Scenario: A conditional goal is answered with a script
+- **GIVEN** a goal that waits on or reacts to a condition, such as "store
+  items whenever your inventory fills"
+- **WHEN** the planner plans it
+- **THEN** the reply carries a script
+
+#### Scenario: A one-shot goal stays a step list
+- **GIVEN** a bounded goal, such as "go to X" or "craft 8 iron ingots"
+- **WHEN** the planner plans it
+- **THEN** the reply carries steps and no script
+- **AND** no dry tick runs and the plan executes as it does today
+
+#### Scenario: The prompt states the same rule as the spec
+- **GIVEN** the prompt the L3 planner is sent
+- **WHEN** it is read
+- **THEN** it names the repeating/conditional goals as script cases and the
+  bounded one-shot goals as step-list cases, and does not leave the choice to
+  preference alone
+
 ### Requirement: A Goal's Own Script Is Not Held By That Goal
 
 M3-1g holds the bot's running script while a chat goal is planned, so the script

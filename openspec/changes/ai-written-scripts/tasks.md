@@ -115,7 +115,21 @@ L3 path rather than limit the spec to the decompose paths.
       Deterministic skill match: no. Clarify/refuse: no. Taskboard: yes, kept.
       Drop decompose wiring that nothing reaches — or state that it is
       unreachable.
-- [ ] 2a.8 Reviewer PASS on this delta before any code, then build test-first.
+- [ ] 2a.8 **The planner is told WHEN to write a script.** The requirement
+      "The Planner Writes A Script For Repeating Or Conditional Goals" states
+      it and the `call_plan` prompt says the same thing: repeating, waiting on
+      a condition, or reacting over time ("keep the furnace fed", "store items
+      whenever your inventory fills", "tell me when it gets dark") is a script;
+      a bounded one-shot ("go to X", "craft Y") stays a step list. Without this
+      the path is real but no bot ever takes it. Test that the rendered prompt
+      contains both halves of the rule, and that a one-shot goal's reply is
+      still a step list.
+- [ ] 2a.9 **Trial on test, run by the lead.** One repeating goal and one
+      one-shot goal to a bot with no hand-written binding. Both must hold: the
+      repeating goal logs a dry-gate accept then a bind then the script runs;
+      the one-shot goal logs a normal L3 plan with no script. Counted from the
+      log with grep, not from a summary.
+- [ ] 2a.10 Reviewer PASS on this delta before any code, then build test-first.
 
 ## 3. What is deliberately out of scope
 
