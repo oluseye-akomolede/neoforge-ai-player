@@ -361,6 +361,14 @@ returns the plan text alone. `raw` — and therefore `response_raw` and `parsed`
 — must then contain no script source, and the two agree because they are
 derived from the same cleaned string.
 
+The script channel MUST be separate from the JSON in the model's TEXT, not a
+key inside that JSON. A key inside the JSON means the model must escape
+arbitrary JavaScript as a JSON string, and a 27B model does not do that
+reliably: on test at 15:57Z it emitted a literal newline inside the string and
+the whole reply became unparseable, losing a plan that a step list would have
+delivered. A fenced block after the JSON — or any delimiter the splitter reads
+before `json.loads` runs — keeps a malformed script from costing the plan.
+
 The alternative, a second planner call, is rejected: it doubles planner
 latency and cost per goal and adds a second reply that can disagree with the
 first, whereas one deterministic split makes `response_raw` clean by
@@ -418,6 +426,29 @@ its stored steps rather than being re-scripted.
 - **AND** the logged `response_raw` parses to a JSON object containing no
   script source
 - **AND** the script is carried in process memory only
+
+#### Scenario: A script that would break the JSON does not lose the plan
+- **GIVEN** a reply whose script contains a character that is illegal raw inside
+  a JSON string — a literal newline, a tab, an unescaped quote — which is what
+  a small model writing multi-line JavaScript inside a JSON string produces
+- **WHEN** the planner splits the script channel
+- **THEN** the plan JSON is recovered intact and the goal proceeds on its steps
+- **AND** the plan is not lost because the script was malformed
+- **AND** a script that cannot be recovered is treated as no script: nothing is
+  bound and the goal runs the plan
+- **REASON** measured on test, 2026-11-20 15:57Z: the model wrote multi-line JS
+  with a literal newline inside the JSON string. The reply was unparseable, so
+  a repeating goal that used to get a step list failed outright. A channel that
+  is a JSON key is not separate from the JSON: when the script is malformed it
+  takes the plan down with it.
+
+#### Scenario: The script channel survives a multi-line quoted script
+- **GIVEN** a script with several lines, single and double quotes, and a regex
+  or string containing braces
+- **WHEN** it is carried through the script channel and split back out
+- **THEN** the script the planner binds is byte-identical to the source the
+  model wrote
+- **AND** the plan text the channel returns still parses as JSON on its own
 
 #### Scenario: No field the trainer reads contains script source
 - **GIVEN** a reply carrying both a plan and a script
