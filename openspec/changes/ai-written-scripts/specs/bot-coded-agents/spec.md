@@ -46,9 +46,9 @@ A planner-authored script MUST be carried **in the process** as source text and
 built into a `ScriptTick` directly. It MUST NOT be written to any file.
 
 This is forced by the capability's own constraint, not chosen for convenience:
-`scripts_dir` is a `SCRIPTS_DIR` mount (`agent.py:3111`) and the agent's only
-accesses to it are reading `bindings.json` (`:3116`) and joining a resolved
-filename (`:3140`) — **there is no write path for script source in the agent
+`scripts_dir` is a `SCRIPTS_DIR` mount (`agent.py:3118`) and the agent's only
+accesses to it are reading `bindings.json` (`:3123`) and joining a resolved
+filename (`:3147`) — **there is no write path for script source in the agent
 at all.** An in-memory script is the only form that exists inside that
 boundary, and it needs no new storage.
 
@@ -96,8 +96,8 @@ that tick returns `ok`.
 **Binding here is a REBIND, and the requirement names the mechanism.** Today a
 bot's script is resolved once for the process lifetime: `_get_script_tick`
 reads `bindings.json` on first call and a `_script_loaded` latch
-(`agent/agent.py:3206-3208`, set `False` at `:235`) returns the cached tick on
-every later call. There is one production caller (`:2909`). An implementer who
+(`agent/agent.py:3213-3215`, set `False` at `:235`) returns the cached tick on
+every later call. There is one production caller (`:2916`). An implementer who
 calls the existing path to "bind" a written script reaches the latch and gets
 the PREVIOUS script for the life of the process. The latch MUST therefore gain
 a defined reset for a planner-authored script, and that reset MUST be the only
@@ -237,7 +237,7 @@ be left to the model's preference:
 
 **Condition 2 is per BOT, not per goal, because that is the binding model.**
 `bindings.json` maps bot name to script and the agent reads
-`bindings.get(self.name)` (`agent/agent.py:3132`); there is no goal-to-script
+`bindings.get(self.name)` (`agent/agent.py:3139`); there is no goal-to-script
 association anywhere, so a condition phrased "no script is driving this bot FOR
 THIS GOAL" names a relationship the code cannot test and would be vacuously
 satisfiable. This does not conflict with the M3-1g hold: the hold records a
@@ -249,7 +249,7 @@ apart deliberately.
 
 **"Hand-written" is decided by `bindings.json`, because that file now names
 only hand-written scripts.** The bindings file is a flat bot-name-to-filename
-map (`{"Scout": "scout.js"}`) and `_bound_script_path` (`agent.py:3070-3121`)
+map (`{"Scout": "scout.js"}`) and `_bound_script_path` (`agent.py:3070-3147`)
 treats the value only as a filename. A planner-authored script is carried in
 memory and is never added to this file (see "A Planner-Authored Script Lives In
 Memory, Not On Disk"), so an entry here can only have been placed by a human.

@@ -34,7 +34,7 @@ Spec only. No code, no build, no deploy until the lead approves this spec.
       `ok`. A failed dry tick falls back to the plain planner and keeps any
       previously bound script in force.
 - [x] 2.4 **Binding is a rebind.** `_script_loaded` is a one-shot latch
-      (`agent/agent.py:235,3206-3208`; one production caller at `:2909`), so a
+      (`agent/agent.py:235,3213-3215`; one production caller at `:2916`), so a
       bot resolves its script once for the process lifetime. The latch gains a
       defined reset for a planner-authored script, and that reset is its ONLY
       writer. Without it, calling the existing path returns the previous
@@ -51,7 +51,7 @@ Spec only. No code, no build, no deploy until the lead approves this spec.
       preference: (1) planning kind allows scripting; (2) no HAND-WRITTEN
       script is currently bound to this bot; (3) dry tick passed. Any failure
       → plain planner. Condition 2 is per BOT because
-      `bindings.get(self.name)` (`agent.py:3132`) is per bot and no
+      `bindings.get(self.name)` (`agent.py:3139`) is per bot and no
       goal-to-script association exists; it does not contradict the M3-1g
       hold, which names the goal that owns a pause, not the script a goal
       owns.
@@ -65,9 +65,9 @@ Spec only. No code, no build, no deploy until the lead approves this spec.
       which leaves no file entry.
 - [x] 2.8 **The script lives in memory, so a restart DROPS it rather than
       freezing it.** The agent has NO write path for script source:
-      `scripts_dir` comes from `SCRIPTS_DIR` (`agent.py:3111`) and the only
-      accesses are reading `bindings.json` (`:3116`) and joining the filename
-      (`:3140`). The emitted script is therefore passed straight to the runner
+      `scripts_dir` comes from `SCRIPTS_DIR` (`agent.py:3118`) and the only
+      accesses are reading `bindings.json` (`:3123`) and joining the filename
+      (`:3147`). The emitted script is therefore passed straight to the runner
       as the tick's source. Consequence: on restart the in-memory script is
       gone and the bot falls back to its `bindings.json` script or the plain
       planner — no error, no missed tick, and NOT silently resumed.
