@@ -85,26 +85,21 @@ with zero decompose calls. The lead ruled (A): move the script output onto the
 L3 path rather than limit the spec to the decompose paths.
 
 - [x] 2a.1 **The script is ONE extra optional part of `call_plan`'s reply,
-      carried outside the plan JSON** — not a new `kind`, not a new directive
-      type, and not a key of the JSON object the trainer sees. It travels in a
-      fenced ```js block AFTER the plan JSON; `split_script_channel` removes
-      that block from the model's text between `l3_planner.py:426` and `:429`,
-      so `raw` (and therefore `response_raw` and `parsed`) never contains it.
-      A fenced block rather than a JSON key because a 27B model does not
-      reliably escape arbitrary JavaScript as a JSON string: on test at
-      2026-11-20 15:57Z one raw newline inside the JSON string made
-      `json.loads` fail and took the plan with it. `Plan` may carry the script
-      in memory for dispatch; `Plan.to_dict()` needs no exclusion, because the
-      script was never in the dict to begin with.
-- [x] 2a.2 **No script means byte-identical today.** With the field absent, the
-      reply, the subtasks, the plan shape and the record
-      `trajectory_log.log_call` writes are unchanged. Pinned by a test that
-      compares the logged `parsed` object for a script-carrying reply against a
-      reply with the field removed. Shipped as: `split_script_channel` returns
-      the text unchanged for a script-free reply, and the script-carrying
-      test asserts the decoded plan and `response_raw` carry no source --
-      the byte-identity property, stated as the absence of a difference
-      rather than by diffing two dumps.
+      fetched in its own call** — not a new `kind`, not a new directive type,
+      and not a key of any JSON object the trainer sees. The plan call keeps
+      JSON mode and its reply shape, gaining one optional `wants_script`
+      boolean; only when it is true does `call_script` make a second, non-JSON
+      call whose whole reply is a fenced ```js block. `extract_script_block`
+      reads it and `Plan` carries it in memory for dispatch; `Plan.to_dict()`
+      needs no exclusion, because the script was never in the dict at all.
+      A JSON key is not a channel: on test at 2026-11-20 15:57Z one raw newline
+      inside the JSON string made `json.loads` fail and took the plan with it.
+- [x] 2a.2 **No script means byte-identical today.** With `wants_script` false
+      or absent, exactly one planner call is made, in the same JSON mode with
+      the same reply shape, and the record `trajectory_log.log_call` writes is
+      unchanged apart from that one field. Pinned by tests that assert the
+      call count is 1, that the plan call still sends `format: "json"`, and that
+      the logged `response_raw` equals the reply verbatim.
 - [x] 2a.3 **The script is kept out of every field the trainer reads, not just
       `parsed`.** `build_dpo_dataset.py:89-93` builds `chosen`/`rejected` from
       `response_raw` verbatim, so a `parsed`-only guard leaves the leak in the
@@ -158,15 +153,25 @@ L3 path rather than limit the spec to the decompose paths.
       log with grep, not from a summary.
 - [x] 2a.10 Reviewer PASS on this delta before any code, then build test-first.
       Delta PASSed at 9a4be21; code PASSed at 7008491.
-- [x] 2a.11 **The channel is outside the JSON, not a key in it.** Added after
-      the 2026-11-20 15:57Z trial failed on test: `split_script_channel`
-      json-decoded the text FIRST, so a script carrying one raw newline inside
-      a JSON string ("Unterminated string ... line 10 column 13") lost the plan
-      with it. The script now travels in a fenced ```js block after the plan
-      JSON; `call_plan` no longer sends `format: "json"`, since a reply of JSON
-      plus fenced block is not one JSON document. Pinned by a test with a real
+- [x] 2a.11 **The channel is a separate call, not a key and not a fence after
+      a shared reply.** Added after the 2026-11-20 15:57Z trial failed on test.
+      Two designs were tried and the first was withdrawn: carrying the script
+      in the plan reply, first as a JSON key and then as a fenced block after
+      the JSON. The JSON key failed on the trial (a raw newline inside the
+      string lost the plan); the fenced block fixed that but forced
+      `format: "json"` off every plan, putting the common step-list path at
+      risk to serve the rare scripted goal. The second call keeps the common
+      path identical
+      and makes a malformed script cost the script alone, because the plan is
+      parsed before the script is fetched. Pinned by tests with a real
       multi-line, quote-, apostrophe- and tab-containing script that must
-      round-trip byte-identically while the plan half still parses alone.
+      round-trip byte-identically, by a call-count test for the one-call case,
+      and by a truncated-script test that keeps the plan.
+- [x] 2a.12 **Every failure in the script call yields no script, never no
+      goal.** Request error, a non-JSON body, and `TruncatedAnswer` all return
+      None so the goal runs the plan it already has. Binding a truncated script
+      would run something the model did not mean. Mutant-checked by letting
+      `TruncatedAnswer` escape.
 
 ## 3. What is deliberately out of scope
 
