@@ -369,10 +369,18 @@ the whole reply became unparseable, losing a plan that a step list would have
 delivered. A fenced block after the JSON — or any delimiter the splitter reads
 before `json.loads` runs — keeps a malformed script from costing the plan.
 
-The alternative, a second planner call, is rejected: it doubles planner
-latency and cost per goal and adds a second reply that can disagree with the
-first, whereas one deterministic split makes `response_raw` clean by
-construction, which is what this requirement wants.
+The script MUST NOT be requested in the plan call itself. The plan call keeps
+JSON mode and the reply shape it has today, gaining one optional boolean,
+`wants_script`. Only when that flag is true does the planner make a SECOND
+call, not in JSON mode, asking for the script alone as a fenced block; that
+reply is dry-gated like any other. When `wants_script` is false the planner
+makes exactly one call, so a step-list goal sees the same mode, the same
+prompt rules and the same reply shape as before this change, plus one field.
+
+This supersedes the earlier single-call design, rejected on the trial of
+2026-11-20: carrying the script in the same reply forced `format: json` to be
+dropped for every plan, putting the common step-list path at risk to serve the
+rare scripted one. An extra call on scripted goals only is the smaller cost.
 
 A trainer reading `prompt_system`, `prompt_user`, `response_raw`, `parsed`, or
 `world_state_summary` sees exactly what it sees now.
@@ -427,36 +435,45 @@ its stored steps rather than being re-scripted.
   script source
 - **AND** the script is carried in process memory only
 
-#### Scenario: A script that would break the JSON does not lose the plan
-- **GIVEN** a reply whose script contains a character that is illegal raw inside
-  a JSON string — a literal newline, a tab, an unescaped quote — which is what
-  a small model writing multi-line JavaScript inside a JSON string produces
-- **WHEN** the planner splits the script channel
-- **THEN** the plan JSON is recovered intact and the goal proceeds on its steps
-- **AND** the plan is not lost because the script was malformed
+#### Scenario: A step-list goal makes exactly one planner call
+- **GIVEN** a goal the planner judges to be a one-shot
+- **WHEN** `call_plan` returns with `wants_script` false or absent
+- **THEN** the planner makes NO second call
+- **AND** the reply is in JSON mode, with the same shape it had before this
+  change, so the step-list path is byte-identical apart from the one field
+
+#### Scenario: A malformed script cannot cost a plan
+- **GIVEN** a goal the planner judges to be a script candidate, so a second call
+  is made for the script alone
+- **WHEN** the script reply contains a character illegal raw inside a JSON
+  string — a literal newline, a tab, an unescaped quote — which is what a small
+  model writing multi-line JavaScript produces
+- **THEN** the plan from the first call is already parsed and is untouched
 - **AND** a script that cannot be recovered is treated as no script: nothing is
   bound and the goal runs the plan
 - **REASON** measured on test, 2026-11-20 15:57Z: the model wrote multi-line JS
   with a literal newline inside the JSON string. The reply was unparseable, so
-  a repeating goal that used to get a step list failed outright. A channel that
-  is a JSON key is not separate from the JSON: when the script is malformed it
-  takes the plan down with it.
+  a repeating goal that used to get a step list failed outright. Moving the
+  script to its own call makes this failure cost the script and nothing else.
 
 #### Scenario: The script channel survives a multi-line quoted script
 - **GIVEN** a script with several lines, single and double quotes, and a regex
   or string containing braces
-- **WHEN** it is carried through the script channel and split back out
+- **WHEN** the second call returns it and the planner extracts it
 - **THEN** the script the planner binds is byte-identical to the source the
   model wrote
-- **AND** the plan text the channel returns still parses as JSON on its own
 
 #### Scenario: No field the trainer reads contains script source
-- **GIVEN** a reply carrying both a plan and a script
-- **WHEN** the call is logged
+- **GIVEN** a goal for which the planner made both calls
+- **WHEN** the plan call is logged
 - **THEN** no field `build_dpo_dataset.py` reads — `prompt_user`,
-  `response_raw`, `parsed` — contains any of the script's source
+  `response_raw`, `parsed` — contains any of the script's source, which cannot
+  reach them: the script arrived in a different call
 - **AND** the `chosen` string a trajectory pair would be built from is
   byte-identical to what the same plan without a script would produce
+- **AND** the script call is either not logged as a trajectory record at all, or
+  is logged in a record whose `parsed` the trainer does not consume as a plan
+  pair
 
 #### Scenario: A template hit writes no script
 - **GIVEN** a goal that matches a saved plan template
