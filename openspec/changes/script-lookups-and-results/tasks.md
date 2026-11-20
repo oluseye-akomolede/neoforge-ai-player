@@ -12,9 +12,29 @@ carries them.
 - [ ] 1.2 Owner has read §3's cost sentence (up to 4 planner calls per hour per
       bot from results) and the §1 restriction (lookups answer only what the
       snapshot already carries), and has approved both.
+- [ ] 1.3 Every radius in `design.md`, `tasks.md` and the spec delta is 5
+      (blocks) / 16 (mobs) — the values `BotPlayer.java:619-620` caches — and no
+      artefact still describes the requested radii as the served ones. Checked
+      by grepping the change's own files for a claim that the snapshot covers
+      radius 8 or radius 24; outside the §1 cost table, which compares cell
+      counts on purpose, both must return nothing.
+- [ ] 1.4 **Count lookup demand before 2.1.** Read the planner's actual scripts
+      from the next trial and count how many would call a lookup at all, and of
+      those how many need more than radius 5/16 or block state. This chooses
+      **which lookups come first**; it does NOT gate step (b), which is the
+      owner's explicit requirement.
+- [ ] 1.5 Measure the cost of a wider radius before proposing one: time
+      `getNearbyBlocks` at radius 5 (1331 cells) and radius 16 (35937 cells) on
+      a test server, and record wall time per refresh. A number, not an
+      estimate.
 
 ## 2. Lookups (b)
 
+- [ ] 2.0 **Grow the snapshot before building `look`.** Add the registry id to
+      each `nearby.blocks` entry and stop deduplicating by name
+      (`BotPlayer.java:895-919`), so a lookup can match a kind and see a second
+      instance. Pinned by a test asserting two chests both appear and each entry
+      carries `minecraft:`-prefixed id.
 - [ ] 2.1 A later change installs a `look` object beside `api`, built from the
       snapshot literal, with no reference to `api` and no host call.
 - [ ] 2.2 Its results are deep copies. Pinned by a test that mutates a result

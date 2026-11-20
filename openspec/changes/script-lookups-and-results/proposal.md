@@ -30,8 +30,10 @@ error into the agent log and the planner never sees it.
 ## The shape of what is proposed
 
 **A lookup is a pure function over data already in the tick.** The agent already
-sends health, food, position, inventory, nearby blocks (radius 8) and nearby
-mobs (radius 24) every tick (`agent/snapshot.py:49-77`). A lookup is a function
+sends health, food, position, inventory, nearby blocks and nearby mobs every
+tick (`agent/snapshot.py:49-77`; the mod serves the block cache at radius 5 and
+the mob cache at radius 16, `BotPlayer.java:619-620`, whatever radius the agent
+requests). A lookup is a function
 over that object, evaluated inside the sandbox. It costs no host call, cannot
 reach the network or the mod, and is read-only by construction rather than by
 promise — see `design.md` §1 and §2 for the alternative considered and why it

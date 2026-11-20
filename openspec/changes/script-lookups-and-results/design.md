@@ -15,22 +15,50 @@ sends a snapshot built by `agent/snapshot.py:49-77`:
 | `food` | `api.status` line 69 | number or null |
 | `position` | `api.status` line 70 | object or null |
 | `inventory` | `api.inventory(bot)` line 71 | list |
-| `nearby.blocks` | `api.blocks(bot, 8)` line 73 | radius 8, list |
-| `nearby.mobs` | `api.entities(bot, 24.0)` line 74 | radius 24, list |
+| `nearby.blocks` | `api.blocks(bot, 8)` line 73 | **radius 5 in practice** — see below |
+| `nearby.mobs` | `api.entities(bot, 24.0)` line 74 | **radius 16 in practice** — see below |
 | `task` | directive line 76 | object or null |
 
 Wrapped by `build_envelope` (`snapshot.py:80-100`) with `tick`, `server_ms`,
 `events`, and sent as the tick request's `snapshot` key
 (`agent/script_tick.py:419`).
 
+**The radii the agent asks for are not the radii the bot gets.** `snapshot.py:49`
+defaults `block_radius=8, entity_radius=24.0`, but the request lands on endpoints
+that ignore the radius: `HttpApiServer.java:505` returns `bot.getCachedBlocks()`
+and `:504` returns `bot.getCachedEntities()`, neither reading a radius from the
+body. Those caches are built in `BotPlayer.refreshCache()`
+(`BotPlayer.java:616-621`) every 40 ticks (`:531-532`):
+
+- `cachedEntities = getNearbyEntities(16.0)` — **radius 16**
+- `cachedBlocks = getNearbyBlocks(5)` — **radius 5**
+
+So the answerable volume is smaller than the request implies in both dimensions.
+Everything below uses 5 and 16, because those are the numbers the product has.
+
+**The shapes of the two nearby lists are fixed by the Java that builds them**
+(`BotPlayer.java:878-919`), not by the Python that forwards them:
+
+- **`nearby.blocks`**: `{block: <display name>, position: <pos>}`. `block` is
+  `state.getBlock().getName().getString()` (`:905`) — a **display name** such as
+  `"Oak Planks"`, not a registry id. One entry per distinct name
+  (`seen.add(blockName)`, `:906`), so the list holds the **first** position seen
+  for each name and no others: a second chest is invisible. Within radius 5 this
+  is the 11×11×11 cube around the bot (`1331` cells).
+- **`nearby.mobs`**: `{type, name, position, distance, health?}`. `distance` is
+  `String.format("%.1f", ...)` — **a string**, not a number (`:886`), so any
+  comparison must parse it. `health` is present only for `LivingEntity`.
+
 **The runner installs it as a read-only global** named `snapshot`
-(`src/engine.js:738-748`), separate from `api`.
+(`src/engine.js:737-750` install comment, `#installSnapshot` at `:752`, called
+at `:418`; the freeze source is built at `:771` and the global is set at
+`:778`), separate from `api`.
 
 **Only six host functions exist** (`src/binding.js:230-330`): `do`, `say`,
 `send`, `recall`, `remember`, `log`.
 
 **The host-call budget is 8 per tick and it is shared**
-(`src/binding.js:31-32` `MAX_HOST_CALLS`, counted in `accept()` at
+(`src/binding.js:32` `MAX_HOST_CALLS`, counted in `accept()` at
 `:138-145`). `do`, `say` and `send` each spend from it. A lookup that spends a
 host call is spending a slot that a game action wanted.
 
@@ -38,10 +66,15 @@ host call is spending a slot that a game action wanted.
 (`src/engine.js:62` `TICK_CPU_MS`), measured with QuickJS's interrupt handler
 (`:65-102`) and checked every 64 calls (`:88`). It is CPU, not wall time.
 
-**What is NOT established:** whether the snapshot's radius-8 blocks and
-radius-24 mobs are wide enough for the lookups the planner actually wanted. I
-have not read the planner's last scripts to find out; §1 lists the lookups the
-task named and says which the current fields already answer.
+**The snapshot is up to 2 seconds old.** The caches refresh every 40 ticks
+(`BotPlayer.java:531-532`), and a tick is 20 ticks/s, so a script reads data
+aged 0–2000 ms. Fine for "nearest sheep" at walking speed; a real hazard for
+"is there lava adjacent". `server_ms` is in the envelope (`snapshot.py:80-100`),
+so the age is reportable rather than merely known.
+
+**What is NOT established:** whether radius 5/16 is wide enough for the lookups
+the planner actually wanted, because the scripts the planner has produced so far
+needed no lookup at all (§1, "Observed demand").
 
 ---
 
@@ -63,10 +96,10 @@ spent walking a list of at most a few hundred entries, well inside the 250 ms
 budget, and the existing interrupt handler already bounds a runaway walk.
 
 **The bound that comes with it.** A pure lookup can only answer questions the
-agent already put in the snapshot. Anything outside radius 8 (blocks) or 24
-(mobs), or anything not in the six fields, is unanswerable — and a lookup that
-silently returns empty for data that was never sent is the failure mode to
-guard against (§2).
+agent already put in the snapshot. Anything outside radius 5 (blocks) or 16
+(mobs), anything whose colour or block state matters, and any second instance of
+a block name are unanswerable — and a lookup that silently returns empty for data
+that was never sent is the failure mode to guard against (§2).
 
 ### Option B — a live read that calls back to the agent or mod during the tick
 
@@ -89,30 +122,81 @@ bot's actions, and the mid-tick round trip has no existing transport to reuse.
 Named by the task; "answered today" means the field is already in the snapshot,
 "needs" means what a pure lookup would additionally require.
 
-| Lookup | Needs | Answered today? |
+| Lookup | Needs | Answered by a snapshot lookup today? |
 |---|---|---|
-| sheep nearby | `nearby.mobs` filtered by type, with distance | **Yes**, radius 24; distance must be computed from positions |
-| flower of a colour | block id + position, radius-wide | **Partly** — `nearby.blocks` is radius 8 and its fields are not listed in the source I read; colour is a block-id property the lookup can parse if the id is present |
+| sheep nearby | mobs filtered by type, with distance | **Yes**, radius 16; `distance` is a string and must be parsed |
+| flower of a colour | block **state**, wide radius | **No.** Neither the cache nor the snapshot carries block state, and colour cannot be recovered from a display name reliably across resource packs and languages. Not "Partly". |
 | inventory contents / count of an item | `inventory` | **Yes** |
 | position | `position` | **Yes** |
-| nearest block of a kind | `nearby.blocks` filtered | **Partly** — only within radius 8 |
+| nearest block of a kind | blocks filtered by name | **Partly** — radius 5, display names only, and only the first of each name |
 
-**The agent can already answer some of these live, just not inside the sandbox.**
-`agent/api.py:110-115` has `find_blocks(bot, block, radius=32)` and
-`block_at`, both reachable from a planner step but not from a script. So the
-radius-8 gap is not a missing capability — it is a capability the script path
-cannot reach. That is the strongest argument for Option A being a *sandbox*
-question and not an *agent* one, and it dates any Option B revival: if the
-planner's scripts need `find_blocks`, the cheaper first move is to grow the
-snapshot from a call the agent already makes, not to give the sandbox a
-callback.
+So of the five lookups the task named, **three are answered in full, one is
+answered badly, and one cannot be answered at all**. That is a thinner result
+than "Option A covers the cases" implies, and it is the fact the
+recommendation below turns on.
 
-**Recommendation:** ship Option A, and make the snapshot's insufficiency
-explicit in two ways — `look` reports what radius it searched, and an
-out-of-range query returns a distinguishable "not searched that far" rather
-than an empty list that reads as "nothing there". If the planner's scripts show
-a recurring need beyond radius 8, that is a snapshot-size decision (§5), not a
-reason to adopt Option B.
+### Observed demand
+
+The scripts the planner has actually produced on test needed **no lookup**: the
+repeating goal (`"<Scout> all clear"`) is a `say` on a timer; the sheep goal
+dry-ticked, bound and "ticked idle"; and the one-shot goal that would have
+needed the richest lookup — "go find a flower nearby and tell me what colour it
+is" — never became a script (2a.9 trial record in
+`openspec/changes/ai-written-scripts/tasks.md`). Demand for (b) is a plausible
+future need, **not an observed one**. Step (b) is still the owner's explicit
+requirement and is not gated on demand (F3); what demand should decide is
+*which lookups come first*, not whether to build the step.
+
+### Option A is too thin as it stands: re-decision
+
+Option A over today's snapshot can answer three of five queries, and the two it
+misses are the ones a script is most likely to want — "find a thing of this
+kind nearby" over a useful distance, and anything about block state. Making A
+adequate needs three changes to what the agent sends:
+
+| Change | Effect | Cost |
+|---|---|---|
+| Real registry ids in `nearby.blocks` | colour or block kind can be matched on `minecraft:poppy` rather than `"Poppy"` | the Java builder must put `BuiltInRegistries.BLOCK.getKey(...)` in each entry; the display name is kept alongside. No extra scan. |
+| Stop deduplicating by name | a second chest becomes visible | the entry count for radius 5 is bounded by distinct **positions**, worst case the 1331-cell cube; today it is bounded by distinct names (tens). The tick payload grows. |
+| Widen the radius | "chest within 16" becomes answerable | scanning is cubic: radius 5 is 1331 cells, radius 8 is 4913, radius 16 is 35937, radius 32 is 274625. At radius 16 the mod scans ~27× more cells than today, every 40 ticks, on the server thread (`BotPlayer.java:616-621` is called from the tick). |
+
+The third row is the expensive one and the one I cannot cost in milliseconds
+from source — §5 makes it a measurement, not an estimate.
+
+### The alternative: expose `find_blocks` as one host-call lookup
+
+`findBlocks(blockName, radius, maxCount)` already exists
+(`BotPlayer.java:1238-1263`) and is already reachable from a planner step as
+`agent/api.py:110` (`find_blocks`, default radius 32). It returns **real
+registry ids** (`info.put("block", id)`, `:1253`), no deduplication, and stops at
+`maxCount` (default 10). It scans the same cube, but **on demand for one query**
+rather than every 40 ticks for all queries.
+
+**Cost, in numbers from source:** one host call out of the 8 shared per tick
+(`binding.js:32`), so a script that calls it twice has spent a quarter of its
+action budget. It is a live read, so it needs the mid-tick transport Option B
+lacks — *unless* it is fetched by the **agent** before the tick and put in the
+snapshot, which is the shape below.
+
+### Recommendation
+
+**Ship (b) as Option A, but grow the snapshot first, and do not build a
+`look` that pretends to search further than it does.** Concretely:
+
+1. **Add real ids and drop the dedup** in the three block/mob fields. This is
+   cheap (same scan, larger payload) and fixes the two failures that make A thin.
+2. **Leave the radii at 5/16 for the first ship**, and have `look` report the
+   radius it searched and return a distinguishable "not searched that far"
+   rather than `[]`. §5 measures whether a wider radius is affordable before any
+   change.
+3. **Do not add a host-call lookup in this change.** If a later trial shows a
+   script asking for something beyond the radius, the answer is to widen the
+   snapshot (§5), not to spend an action slot — but the *task* to count that
+   demand is added (tasks 1.4) so the decision is made on evidence.
+
+This is the lead's F1–F3 applied: A is not sufficient as written, the cheap
+grow-snapshot step is separable from the expensive widen-radius step, and the
+host-call alternative is costed rather than dismissed.
 
 ---
 
@@ -123,12 +207,13 @@ The guarantee is structural, not a policy the lookup code agrees to follow.
 **How a lookup provably cannot act.** `look` has no reference to `api`. It is
 built from the snapshot literal and closes over nothing else. It cannot call
 `api.do`, because `api` is not in its scope; it cannot spend a host call,
-because `accept()` (`binding.js:138-145`) is only reachable through `api`'s
+because `accept()` (`binding.js:138-147`) is only reachable through `api`'s
 methods; and it cannot reach the network or the mod, because QuickJS in this
 runner exposes no I/O and the only path to the agent is the tick response.
 
 **How it cannot write.** The snapshot is installed read-only
-(`engine.js:738-748`). A lookup returns new objects derived from it; it never
+(`engine.js:752`, freeze path `:771-778`). A lookup returns new objects derived
+from it; it never
 returns a live reference the script could mutate back into the shared literal.
 **Design decision:** `look` results are deep copies, not views. A script that
 mutates a returned array must not affect the next lookup in the same tick.
@@ -139,6 +224,14 @@ entities. It carries no token, no game id, no environment. A lookup over it can
 therefore only return data the game already handed the bot. This is the reason
 the snapshot is the right substrate and a live read is not: a live read would
 put the agent's own request path within a script's reach.
+
+**The script must be told how old its data is.** The snapshot is a cache up to
+2 s stale (facts above). A lookup that answers "is there lava adjacent" from
+2000 ms-old data is a hazard, and the script cannot currently tell. `look` gains
+`look.age_ms()` and every result object carries `age_ms`, computed from the
+envelope's `server_ms` (`snapshot.py:80-100`) and the tick's own time — no new
+field on the wire, no extra call. A script that cares can refuse to act on stale
+data; one that does not is at least able to log it.
 
 **What the dry tick sees.** A dry tick runs the same script against the same
 snapshot: `snapshot` is set unconditionally in the tick body at
@@ -188,13 +281,43 @@ Three triggers, and only three:
 with ~61 s ticks that is ~59 an hour per bot, on the owner's shared
 subscription. Rejected on cost alone.
 
-### How the planner reads it
+### The delivery contract
 
-**The next planning call's context**, not a new turn. When a result is
-delivered, the agent stores it as a pending observation; the next `call_plan`
-renders it into the prompt as "your script returned: …". No extra LLM call is
-made — the planner sees the result exactly when it next plans, which is when a
-script has stopped and the planner is needed again.
+"Renders on the next `call_plan`" is not a contract until it says what "next"
+means and what happens when there is none. All four of these are stated here
+because each has a failure mode in the current loop.
+
+**What keys a result: bot + goal.** `bindings.json` is per **bot**, not per goal
+(`ai-written-scripts` spec, condition 2), so a result keyed only by bot can be
+rendered into a call about a *different* goal — the planner would read a result
+from the goal it abandoned. Every result therefore carries `{bot, goal_id}` and
+is only rendered into a `call_plan` for that same `goal_id`.
+
+**What triggers the planner call that reads it.** Today the only path that
+starts the planner from the world is `_maybe_plan(new_messages)`
+(`agent/agent.py:518`, called at `:3413`), and it returns immediately on
+`if not new_messages: return` (`:520`). **A script that reaches `done` releases
+its binding and says nothing, so no `call_plan` runs until a player next
+speaks.** A result therefore sits unread until someone talks. This is accepted,
+not worked around: waking the planner on a result would be the per-tick planner
+call this design rejected on cost. **A result is delivered on the next player
+message, or not at all** — and §3's "bounding" caps then act as belt and braces
+rather than as the load-bearing guard.
+
+**The one slot and its eviction rule.** There is one pending result per
+`{bot, goal_id}`. A newer result for the same key **overwrites** the older one,
+and the overwrite is logged with both results' triggers. A result is
+**discarded**, not delivered, when:
+
+- the goal it belongs to is no longer the bot's current goal (a new directive
+  arrived) — the discard is logged with both goal ids;
+- it has been pending for more than **30 minutes** — older than that, the world
+  it describes has moved on and the planner should plan fresh;
+- the next planning call is for a different `goal_id` (rule 1).
+
+**What is never done:** a result does not start a planner call, does not
+interrupt a running script, and does not queue more than one entry per key. The
+worst case is one stale observation rendered once, which the discard rules bound.
 
 ### Bounding the loop
 
@@ -258,12 +381,21 @@ implementation that turns it red, as every prior test in this path has done):
 ## §5 Out of scope
 
 - Any agent or runner code. This change is design only.
-- A lookup outside the snapshot's data (Option B). If the trial shows a
-  recurring need beyond radius 8, growing the snapshot is a separate decision
-  with its own cost (tick payload size).
+- A lookup outside the snapshot's data (Option B). If a trial shows a recurring
+  need beyond radius 5/16, the first move is to widen the snapshot — a separate
+  decision with its own cost, measured in §5 of the tasks rather than estimated
+  here: scanning is cubic, so radius 8 is 4913 cells and radius 16 is 35937
+  against radius 5's 1331.
+- Adding a host-call lookup (`find_blocks`) inside the sandbox in this change.
+  It is costed in §1 and deferred; the task that would justify it is tasks 1.4.
 - Delivering logs or actions to the planner.
 - Changing the `done`/`escalate` vocabulary into anything richer (a typed
   report schema) before a trial shows the simple object is not enough.
 - The chat-pauses-script rule (M3-1g) and the dry gate's semantics, both
   unchanged.
 - Archiving `ai-written-scripts`. This change is separate and lands on its own.
+  **Noted for the lead (F6.2):** there is no archived `bot-coded-agents` spec —
+  it exists only as a delta target under four unfinished changes, and
+  `openspec/specs/` has no such directory. So `bot-coded-agents` stays
+  unarchived across all of them and there is no live spec to regress against.
+  Not fixed here; recorded so it is not discovered late.

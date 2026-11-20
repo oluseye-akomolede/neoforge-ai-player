@@ -15,10 +15,26 @@ NOT spend a host call, reach the network, or reach the mod.
 - **AND** `hostCalls` for the tick is unchanged by the call
 
 #### Scenario: A lookup beyond the snapshot says so
-- **GIVEN** a snapshot whose `nearby.blocks` covers radius 8
+- **GIVEN** a snapshot whose `nearby.blocks` covers radius 5
 - **WHEN** the script asks for a block within 40 blocks
 - **THEN** the lookup MUST NOT return an empty list that reads as "nothing there"
 - **AND** it MUST report that the search did not extend that far
+
+#### Scenario: A lookup reports the age of what it searched
+- **GIVEN** a tick whose snapshot was refreshed up to 2000 ms before the tick
+- **WHEN** the script asks the snapshot's age
+- **THEN** the lookup MUST report that age in milliseconds
+- **AND** the age MUST be derived from the envelope's `server_ms` with no extra
+  host call
+
+#### Scenario: A block's display name is not its kind
+- **GIVEN** a snapshot whose `nearby.blocks` entry carries a display name such
+  as "Oak Planks" and no registry id
+- **WHEN** the script tries to match a block by its registry id or its state
+  (for example a flower's colour)
+- **THEN** the lookup MUST NOT claim to have answered it
+- **AND** the documented answer MUST be that block state is carried as ids and
+  not names, or the lookup is not attempted
 
 #### Scenario: A lookup cannot act
 - **GIVEN** the `look` object built for a tick
@@ -71,6 +87,32 @@ no other tick.
 - **WHEN** the planner next runs
 - **THEN** the result MUST appear in that call's prompt
 - **AND** no additional planner call MUST be made to carry it
+
+#### Scenario: A result is only read by the goal that produced it
+- **GIVEN** a result keyed to bot and goal id
+- **WHEN** the planner next runs for a different goal id
+- **THEN** the result MUST NOT be rendered into that call's prompt
+- **AND** it MUST be discarded with both goal ids logged
+
+#### Scenario: A result does not start a planner call
+- **GIVEN** a script that reaches `done` and releases its binding
+- **WHEN** no player message arrives afterwards
+- **THEN** no planner call MUST be made on account of the result
+- **AND** the result MUST remain pending until a player message starts a
+  planning call for that goal, or the pending window closes
+
+#### Scenario: A stale result is discarded, not delivered
+- **GIVEN** a pending result older than 30 minutes
+- **WHEN** a planning call for its goal next runs
+- **THEN** the result MUST NOT be rendered
+- **AND** the discard MUST be logged
+
+#### Scenario: A result never enters a field the trainer reads
+- **GIVEN** a delivered result rendered into a `call_plan` prompt
+- **WHEN** the reply is recorded for the DPO trainer
+- **THEN** the result MUST NOT appear in `response_raw`, `parsed`, or any other
+  field the trainer reads
+- **AND** the prompt path that renders it MUST be the only surface it touches
 
 #### Scenario: Logs and actions are not results
 - **GIVEN** a script that calls `api.log` and `api.do` and returns nothing
