@@ -137,6 +137,14 @@ one the mechanism supports — `acceptAction` (`binding.js:154-174`) has no
 check-without-spending mode, so a dry tick sharing the live window could only
 be safe by never calling `api.do` at all, which would defeat the gate.
 
+#### Scenario: A request without the dry flag behaves exactly as it does today
+- **GIVEN** a runner request that does not set the dry flag
+- **WHEN** the runner evaluates it
+- **THEN** the tick runs against the worker's live `botState`, as it does now
+- **AND** the worker is neither replaced nor discarded by the request
+- **AND** every existing caller — including services that predate this change
+  and share the runner — sees byte-identical behaviour
+
 #### Scenario: A dry tick is unaffected by the bot's spent budget
 - **GIVEN** a bot whose `do` window is at its 30/min limit
 - **WHEN** a planner-authored script that calls `api.do` is dry-ticked
