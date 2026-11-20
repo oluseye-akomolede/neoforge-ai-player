@@ -1240,5 +1240,87 @@ class PlannerScriptBindTest(unittest.TestCase):
         self.assertIsNone(self.a._planner_script)
 
 
+class ScriptResultReachesTheSlotTest(unittest.TestCase):
+    """The script's report must arrive in the bot's result slot (task 3.4).
+
+    Driven through `_run_script_tick`, NOT through `_hold_script_result`
+    directly. The method was MISSING while the suite was green: the call site
+    is `getattr(...)`-guarded, so a stub without `last_result` made the absent
+    method indistinguishable from a tick that reported nothing. A test of the
+    method alone would have passed against a tree where nothing called it.
+    """
+
+    def setUp(self):
+        agent_mod = _agent_module()
+        self.agent_mod = agent_mod
+        self.a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
+        self.a._lock = threading.Lock()
+        self.a.name = "Scout"
+        self.a.profile = {}
+        self.a._script_tick = None
+        self.a._script_loaded = True
+        self.a._l3_orchestrator_dispatch = mock.Mock(return_value="COMPLETED")
+        self.a._run_directive = mock.Mock(return_value={"success": True})
+        self.a._result_slot = agent_mod.ResultSlot()
+        self.a._script_hold = None
+        self.a._script_hold_seq = 0
+
+    def _tick_reporting(self, result, goal_id="goal-A"):
+        class Stub:
+            last_result = result
+            last_deliveries = ()
+            last_logs = ()
+            last_logs_dropped = 0
+
+            def tick(_self):
+                return (True, [], [], "ok")
+
+        if goal_id is not None:
+            self.a._script_hold = {"goal_id": goal_id, "goal_text": "t"}
+        self.a._script_tick = Stub()
+
+    def test_a_report_reaches_the_slot(self):
+        # KILLS: the missing `_hold_script_result` -- a getattr-guarded call to
+        # a method that does not exist, which drops every report silently.
+        #
+        # No hold is set, because a held script returns SCRIPT_HELD before it
+        # ticks at all (`_run_script_tick`:3077). The consequence is recorded
+        # honestly here: a tick that runs carries NO goal, so the slot's
+        # goal_id is "" in production and task 3.9's discard rule cannot fire
+        # yet. See the task's note; the goal is kept in the slot so the rule
+        # works the moment identity reaches this point.
+        self._tick_reporting({"text": "a red flower", "truncated": False},
+                             goal_id=None)
+        with mock.patch("builtins.print"):
+            self.a._run_script_tick()
+        self.assertTrue(self.a._result_slot.has_pending(),
+                        "a script's api.result() must be parked, not dropped")
+        goal_id, value, trigger = self.a._result_slot.peek()
+        self.assertEqual(goal_id, "")
+        self.assertEqual(value["text"], "a red flower")
+        self.assertEqual(trigger, "done")
+
+    def test_a_tick_with_no_report_stores_nothing(self):
+        # KILLS: storing a placeholder for every tick, which would make the
+        # planner fire on scripts that never reported.
+        self._tick_reporting(None)
+        with mock.patch("builtins.print"):
+            self.a._run_script_tick()
+        self.assertFalse(self.a._result_slot.has_pending())
+
+    def test_a_result_from_a_superseded_goal_is_discarded_not_delivered(self):
+        # Task 3.9's rule, against the slot directly. It is the rule that
+        # stops a finished script steering a goal it never ran for. NOTE: a
+        # ticking script currently carries no goal id (a held script does not
+        # tick), so this cannot yet fire in production -- the rule is pinned
+        # here so it is correct when identity reaches the store.
+        # KILLS: delivering a pending result regardless of which goal it named.
+        slot = self.a._result_slot
+        slot.store("goal-A", {"text": "found it"}, "done")
+        allowed, reason = slot.may_call(goal_id="goal-B")
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "goal-changed")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

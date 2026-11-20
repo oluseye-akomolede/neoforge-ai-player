@@ -3053,6 +3053,31 @@ Respond with ONLY a JSON array. Example:
             print(f"[{self.name}/script] delivered {delivered} say/send call(s)")
         return delivered
 
+    def _hold_script_result(self, result):
+        """Park a script's `api.result(v)` for the next trigger (task 3.4).
+
+        The call site is `getattr`-guarded so an older ScriptTick still works,
+        which is exactly why this method must EXIST: with it missing, the
+        guarded call returned None and every report was silently dropped while
+        the suite stayed green. The report is held, never acted on here -- a
+        result raises no trigger of its own (task 3.7); `_maybe_plan_on_result`
+        is what turns it into a call, under the per-bot caps.
+
+        `goal_id` is the goal that owned the tick. The slot keeps it so that a
+        result from a superseded goal is discarded rather than delivered into a
+        later one (task 3.9), which would let a finished script steer a goal it
+        never ran for.
+        """
+        if not result:
+            return
+        text = result.get("text") if isinstance(result, dict) else None
+        if not text:
+            return
+        hold = getattr(self, "_script_hold", None) or {}
+        goal_id = hold.get("goal_id", "")
+        value = {"text": text, "truncated": bool(result.get("truncated"))}
+        self._result_slot.store(goal_id, value, "done")
+
     def _note_script_idle(self):
         """Say, at most once per interval, that the script proposed nothing.
 
@@ -3120,6 +3145,13 @@ Respond with ONLY a JSON array. Example:
             # (ScriptTick clears them), so a rehearsal cannot become visible.
             self._deliver_script_deliveries(
                 getattr(st, "last_deliveries", []))
+            # The script's report, if it made one. Stored into the ONE slot for
+            # this bot; a later report replaces it (task 3.4). Placed here so a
+            # report is held whichever branch the tick takes next -- a script
+            # that reports and then proposes nothing still has its report
+            # waiting, which is the ordinary "I finished, here is what I found"
+            # shape. A dry tick never reaches this line.
+            self._hold_script_result(getattr(st, "last_result", None))
             # The script's OWN log lines, whatever the outcome. Before M3-1c
             # this happened not at all: `script_client` did not read the
             # runner's `logs` field, so `api.log()` -- including the action
