@@ -23,7 +23,7 @@ import requests
 import api
 import trajectory_log
 from brain import ollama_lock
-from config import OLLAMA_URL, answer_text, think_field
+from config import OLLAMA_URL, TruncatedAnswer, answer_text, think_field
 from plan_schema import Plan, PlanValidationError, Subtask, validate_plan_dict, validate_subtask_dict
 
 log = logging.getLogger("aibot.l3-planner")
@@ -417,22 +417,45 @@ Output schema (step list — the common case):
 }}
 (or, instead of the above, {{"kind": "clarify"|"refuse", "reason": "..."}})
 
-Output schema (script — for a repeating/conditional goal only):
-{{
-  "task": "<echo the task text>",
-  "subtasks": [{{"id": 1, "description": "...", "criteria": "..."}}]
-}}
-...and then, AFTER that JSON object, on a new line, the script in a fenced
-block, exactly like this and nothing after it:
+Script flag — for a repeating/conditional goal ONLY (see WHEN TO ASK FOR A
+SCRIPT above), add one boolean to the same object:
+
+  "wants_script": true
+
+Nothing else changes about this reply. Do NOT write the script here, and do
+NOT add a "script" key — a separate call is made for the script if and only if
+you set this flag. For a one-shot goal, omit the flag or set it false.
+"""
+
+
+_SCRIPT_SYSTEM_PROMPT = """You are {bot_name}, a {persona}, writing ONE game script.
+
+This is a script-only reply. The player's goal has already been planned; you
+are writing the JavaScript that will run the goal every tick instead of a
+step list.
+
+Script API (this is the whole surface):
+- api.do(action)      — queue one game action this tick
+- api.say(text)       — speak in chat (rate limited)
+- api.send(target, t) — send a chat message
+- api.remember(v)     — persist a value across ticks (read it back via
+                        api.memory)
+- api.get_directive() — the current directive/state
+- api.get_snapshot()  — world snapshot
+Return an array of actions (or [] to do nothing this tick). A script that
+throws is discarded and the step-list path takes over.
+
+Skills you can call from an action:
+{skills}
+
+Write the whole script. Your ENTIRE reply must be one fenced block and nothing
+else — no prose before or after, no JSON:
 
 ```js
 // your javascript here
 ```
 
-The "subtasks" in a script reply are still required and still described as
-above; they are what the plan would have been, and are recorded. The fenced
-script is what actually runs. Do NOT put the script inside the JSON as a
-"script" key — write the JSON object first, close it, then the fenced block.
+Multi-line JavaScript is expected and fine. Keep it under 64 KiB.
 """
 
 
@@ -458,22 +481,19 @@ def call_plan(model: str, bot_name: str, task: str,
                     {"role": "user", "content": user},
                 ],
                 "stream": False,
-                # NOTE: no "format": "json" here, deliberately. The reply is a
-                # plan JSON object followed by an optional ```js script block,
-                # so the whole reply is not a single JSON document and JSON mode
-                # would forbid the script entirely. The plan half is still held
-                # to JSON by json.loads() below and by validate_plan_dict();
-                # _strip_codefence() tolerates a fenced plan. Before a2 this was
-                # "json"; the step-list path is unchanged in every other way.
+                # JSON mode, as before a2. The script is NOT requested here: a
+                # script inside this reply would either have to be escaped into
+                # a JSON string (which a 27B model does unreliably — it emitted
+                # a literal newline at 15:57Z and lost the plan) or force JSON
+                # mode off for every plan. Instead this call may set
+                # wants_script, and only then is a second, non-JSON call made.
+                "format": "json",
                 "options": {"temperature": 0.2, "num_predict": 1024},
             },
             timeout=_OLLAMA_TIMEOUT,
         )
     resp.raise_for_status()
     raw = _strip_codefence(answer_text(resp.json()))
-    # Split BEFORE anything logs or decodes `raw`: `raw` is what becomes
-    # `response_raw`, the field build_dpo_dataset.py trains on verbatim.
-    raw, planner_script = split_script_channel(raw)
     created_at = datetime.datetime.utcnow().isoformat()
     try:
         data = json.loads(raw)
@@ -529,12 +549,19 @@ def call_plan(model: str, bot_name: str, task: str,
         subtasks=[Subtask.from_dict(s) for s in data["subtasks"]],
         current_subtask_id=min((s["id"] for s in data["subtasks"]), default=1),
     )
-    # In memory only. Plan.to_dict() enumerates its fields explicitly, so this
-    # attribute is not written to disk or read by the dashboard. That guarantee
-    # rests on that enumeration: if to_dict ever switches to asdict(), this
-    # field starts being persisted and must be excluded there.
-    if planner_script:
-        plan.script = planner_script
+    # The plan call may have flagged that this goal wants a script. Only then is
+    # a second call made — a step-list goal makes exactly one call and its
+    # reply shape is unchanged apart from the wants_script field itself.
+    if data.get("wants_script") is True:
+        script = call_script(
+            bot_name=bot_name, task=task, plan=data, model=model,
+            world_state_summary=world_state_summary)
+        # In memory only. Plan.to_dict() enumerates its fields explicitly, so
+        # this attribute is not written to disk or read by the dashboard. That
+        # guarantee rests on that enumeration: if to_dict ever switches to
+        # asdict(), this field starts being persisted and must be excluded.
+        if script:
+            plan.script = script
     return plan
 
 
@@ -1243,51 +1270,96 @@ def _strip_codefence(s: str) -> str:
     return s.strip()
 
 
-# The planner's script channel: a fenced ```js block AFTER the plan JSON.
-# Deliberately not a key inside the JSON — see split_script_channel's docstring.
+# The planner's script channel. The script is fetched in its own call and
+# arrives as a fenced ```js block; see extract_script_block's docstring.
 _SCRIPT_FENCE_RE = re.compile(
     r"```(?:js|javascript)\s*\n(.*?)\n?```", re.DOTALL | re.IGNORECASE)
 
 
-def split_script_channel(model_text: str) -> tuple[str, str | None]:
-    """Separate a planner-authored script from the plan JSON it arrives with.
+def extract_script_block(model_text: str) -> str | None:
+    """Pull a planner-authored script out of its own reply.
 
-    Returns (plan_text, script). `plan_text` is what the caller logs as
-    `response_raw` and decodes into `parsed`; the script never appears in it.
+    The script is asked for in a SECOND call, never in the plan call. That
+    keeps `format: json` on the plan (so the common step-list path is unchanged
+    and still held to JSON by the model itself), and it means a script that is
+    malformed costs the script and nothing else: the plan from the first call
+    is already parsed before this ever runs.
 
-    Why this exists at all: `build_dpo_dataset.py`
-    builds its chosen/rejected pairs from `response_raw` verbatim, so a script
-    left in the reply text reaches the DPO trainer twice — once through
-    `parsed` and once more through the field it actually trains on. The only
-    way to keep it out of both is to remove it from the text before anything
-    logs or decodes it. This runs between `_strip_codefence` and `json.loads`
-    in `call_plan` for exactly that reason.
+    Why not one call: `build_dpo_dataset.py` builds its chosen/rejected pairs
+    from `response_raw` verbatim. A script sharing the plan's reply would reach
+    the trainer through `parsed` and again through the field it trains on, and
+    a script inside the JSON string makes a 27B model responsible for escaping
+    arbitrary JavaScript — on test at 2026-11-20 15:57Z it emitted one raw
+    0x0a inside the string and the whole plan was lost. Two calls make both
+    problems unrepresentable rather than merely handled.
 
-    The script is carried in a fenced ```js block AFTER the plan JSON, never as
-    a key inside it. A key inside the JSON makes the model responsible for
-    escaping arbitrary JavaScript as a JSON string, and a 27B model does not do
-    that reliably: on test at 2026-11-20 15:57Z Scout wrote a repeating goal's
-    script with one raw 0x0a inside the JSON string, so `json.loads` failed and
-    the plan was lost with it. Carrying it outside the JSON means a fresh,
-    tabbed, quoted script cannot break the plan at all.
-
-    Cases:
-      - no fenced block          -> (model_text unchanged, None), byte-identical
-      - empty fenced block       -> same as no script
-      - block present            -> (plan JSON text, script source)
-
-    The plan text is returned exactly as it arrived in every case, so the
-    script-free path stays byte-identical to before this change.
+    Returns the script source, or None when the reply carries no usable block.
+    None means "no script": the goal runs its steps and nothing is bound.
     """
     text = model_text or ""
     if not isinstance(text, str):
-        return model_text, None
+        return None
     match = _SCRIPT_FENCE_RE.search(text)
     if match is None:
-        return text, None
+        return None
     script = match.group(1)
-    if not script.strip():
-        return text, None
-    # The plan is whatever precedes the fence; the fenced block itself is
-    # removed, so it cannot reach `response_raw` or `json.loads`.
-    return text[:match.start()].rstrip(), script
+    return script if script.strip() else None
+
+
+def call_script(
+    bot_name: str,
+    task: str,
+    plan: dict | None = None,
+    model: str = "",
+    world_state_summary: str = "",
+) -> str | None:
+    """Ask the planner for the script alone, in a non-JSON call.
+
+    Only called when the plan call set `wants_script`. Everything this returns
+    is dry-gated before it can be bound, so a bad script is refused rather than
+    run. A failure here is not a goal failure: it yields None and the goal
+    proceeds on the plan's steps.
+    """
+    persona = BOT_PERSONAS.get(bot_name, "generalist")
+    log.info("[%s] L3 SCRIPT call — task: %s", bot_name, task[:60])
+    sys_prompt = _SCRIPT_SYSTEM_PROMPT.format(
+        bot_name=bot_name, persona=persona, skills=_skills_lines())
+    user = json.dumps({
+        "task": task,
+        "plan": plan,
+        "world_state": world_state_summary,
+    }, ensure_ascii=False)
+    try:
+        with ollama_lock:
+            resp = requests.post(
+                f"{OLLAMA_URL}/api/chat",
+                json={
+                    **think_field(),
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": user},
+                    ],
+                    "stream": False,
+                    # NOT JSON mode: the reply is one fenced JavaScript block.
+                    "options": {"temperature": 0.2, "num_predict": 1024},
+                },
+                timeout=_OLLAMA_TIMEOUT,
+            )
+        resp.raise_for_status()
+        body = resp.json()
+    except (requests.RequestException, ValueError) as e:
+        # ValueError covers a body that is not JSON.
+        log.warning("[%s] L3 SCRIPT call failed: %s", bot_name, e)
+        return None
+    try:
+        script = extract_script_block(answer_text(body))
+    except TruncatedAnswer as e:
+        # The model hit its budget mid-script. A truncated script would compile
+        # to something that is not what it meant, so treat it as no script and
+        # let the goal run its plan rather than bind a half-written program.
+        log.warning("[%s] L3 SCRIPT call truncated: %s", bot_name, e)
+        return None
+    if script is None:
+        log.info("[%s] L3 SCRIPT call returned no block", bot_name)
+    return script

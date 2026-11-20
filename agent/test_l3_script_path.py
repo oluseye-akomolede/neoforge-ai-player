@@ -32,50 +32,36 @@ import l3_planner
 
 # ── the strip helper ───────────────────────────────────────────────────────
 
-class TestScriptChannelSplit(unittest.TestCase):
-    """`l3_planner.split_script_channel` is the helper the delta names as the
-    insertion point between :426 (_strip_codefence) and :429 (json.loads).
+class TestScriptBlockExtraction(unittest.TestCase):
+    """`l3_planner.extract_script_block` reads the reply of the SECOND,
+    non-JSON planner call and returns the script alone.
 
-    It takes the model's raw text and returns (plan_text, script_or_None),
-    where plan_text parses to the plan JSON with no script in it. Everything
-    downstream — `response_raw`, `parsed`, the DPO pair — is derived from
-    plan_text, so this function is where the leak is prevented or not.
+    The script is fetched in its own call, never in the plan call. That is what
+    keeps `format: json` on the plan (the common step-list path is unchanged)
+    and what makes a malformed script cost the script and nothing else: the
+    plan from the first call is already parsed before this runs. The earlier
+    single-call design failed the 2026-11-20 15:57Z trial for exactly the
+    reason this avoids.
     """
 
-    def test_a_script_is_split_out_of_the_model_text(self):
-        """KILLS: a helper that returns the text unchanged when a script is
-        present, leaving the script in the string that becomes response_raw."""
+    def test_a_fenced_block_is_extracted(self):
+        """KILLS: a helper that returns the whole reply (fence included), which
+        would be bound as JavaScript and fail the dry tick."""
         import l3_planner
-        plan_json = json.dumps({
-            "task": "keep the furnace fed",
-            "subtasks": [{"id": 1, "description": "feed it",
-                          "criteria": "furnace has fuel"}],
-        })
-        model_text = plan_json + "\n```js\nwhile (true) { api.do('feed'); }\n```"
-        plan_text, script = l3_planner.split_script_channel(model_text)
+        script = "while (true) { api.do('feed'); }"
+        got = l3_planner.extract_script_block("```js\n" + script + "\n```")
 
-        self.assertIsNotNone(script, "the script was not extracted")
-        self.assertIn("api.do('feed')", script)
-        self.assertNotIn("api.do", plan_text,
-                         "the script survived into the plan text — this is the "
-                         "string logged as response_raw")
-        plan = json.loads(plan_text)
-        self.assertEqual(plan["task"], "keep the furnace fed")
-        self.assertEqual(len(plan["subtasks"]), 1)
+        self.assertEqual(got, script)
 
-    def test_a_multiline_quoted_tabbed_script_does_not_break_the_plan(self):
-        """KILLS: the JSON-key design that failed the 2026-11-20 15:57Z trial.
+    def test_a_multiline_quoted_tabbed_script_round_trips(self):
+        """KILLS: a fence regex that does not span newlines (no DOTALL) or that
+        stops at the first inner quote/brace, truncating the script it binds.
 
-        Scout wrote a script containing a literal newline inside a JSON
-        string, json.loads raised 'Unterminated string', and the whole plan
-        was lost. The channel must be outside the JSON so the plan survives
-        regardless of what characters the script contains."""
+        This is the 15:57Z script's shape: multi-line, a tab, both quote kinds,
+        an apostrophe and braces. It arrived inside a JSON string then and
+        broke the plan; here it arrives in its own reply and must round-trip
+        byte-identically."""
         import l3_planner
-        plan_json = json.dumps({
-            "task": "whenever inventory is full, store everything",
-            "subtasks": [{"id": 1, "description": "store",
-                          "criteria": "inventory empty"}],
-        })
         script = (
             "function tick(ctx) {\n"
             "\tconst say = \"it's full\";   // tab, quotes, apostrophe\n"
@@ -83,117 +69,183 @@ class TestScriptChannelSplit(unittest.TestCase):
             "\tif (ctx.ticks > 10) { api.say(say); }\n"
             "}"
         )
-        model_text = plan_json + "\n\n```js\n" + script + "\n```"
-        plan_text, got = l3_planner.split_script_channel(model_text)
+        got = l3_planner.extract_script_block(
+            "```js\n" + script + "\n```")
 
         self.assertEqual(got, script,
                          "the script did not round-trip byte-identically")
-        plan = json.loads(plan_text)
-        self.assertEqual(plan["task"], "whenever inventory is full, store everything")
-        self.assertNotIn("api.do", plan_text)
 
-    def test_no_script_leaves_the_text_byte_identical(self):
-        """KILLS: a helper that always re-serialises the JSON (reordering
-        keys, changing spacing) even when there is no script, which would
-        break 'with no script, byte-identical to today'."""
+    def test_a_javascript_fence_tag_is_accepted(self):
+        """KILLS: a regex that only accepts ```js and returns None for
+        ```javascript, silently treating a script the model wrote as absent."""
         import l3_planner
-        model_text = '{"task":"go to X","subtasks":[{"id":1,"description":"walk","criteria":"arrived"}]}'
-        plan_text, script = l3_planner.split_script_channel(model_text)
+        got = l3_planner.extract_script_block(
+            "```javascript\napi.do('x');\n```")
 
-        self.assertIsNone(script)
-        self.assertEqual(plan_text, model_text,
-                         "a script-free reply was altered; the delta requires "
-                         "byte-identical output when no script is present")
+        self.assertEqual(got, "api.do('x');")
 
-    def test_malformed_text_is_returned_untouched(self):
-        """KILLS: a helper that raises (or returns a re-serialised blob) on
-        non-JSON input, turning a plan the caller already handles into a
-        crash. The caller's existing json.JSONDecodeError path must still run.
-        """
+    def test_no_block_means_no_script(self):
+        """KILLS: a helper that returns prose as if it were a script, which
+        would then be bound and fail the dry tick for a goal that never asked
+        for one."""
         import l3_planner
-        model_text = "this is not json at all"
-        plan_text, script = l3_planner.split_script_channel(model_text)
+        self.assertIsNone(l3_planner.extract_script_block("I cannot write that."))
+        self.assertIsNone(l3_planner.extract_script_block(""))
 
-        self.assertIsNone(script)
-        self.assertEqual(plan_text, model_text,
-                         "non-JSON text was modified; the caller's decode-error "
-                         "path needs the original text to report on")
-
-    def test_a_present_but_empty_script_is_not_a_script(self):
-        """KILLS: a helper that returns an empty string for `script`, which is
+    def test_a_present_but_empty_block_is_not_a_script(self):
+        """KILLS: a helper that returns '' for an empty block, which is
         truthy-checked downstream as 'the planner wrote one' and then fails the
         dry tick for no reason."""
         import l3_planner
-        model_text = json.dumps({
-            "task": "go to X",
-            "subtasks": [{"id": 1, "description": "walk", "criteria": "there"}],
-        }) + "\n```js\n   \n```"
-        plan_text, script = l3_planner.split_script_channel(model_text)
+        self.assertIsNone(l3_planner.extract_script_block("```js\n   \n```"))
 
-        self.assertIsNone(script, "whitespace was treated as a script")
+    def test_prose_around_the_block_is_ignored(self):
+        """KILLS: a helper that requires the reply to be exactly one fence,
+        which would discard a usable script when the model adds a courtesy
+        sentence. The prompt asks for a bare block; a model that adds one
+        anyway should not lose the script."""
+        import l3_planner
+        got = l3_planner.extract_script_block(
+            "Here is your script:\n```js\napi.do('x');\n```\nEnjoy.")
 
-class TestCallPlanCarriesTheScript(unittest.TestCase):
-    """call_plan must hand the script back on the returned Plan without
-    letting it into the logged record."""
+        self.assertEqual(got, "api.do('x');")
 
-    def _fake_post(self, payload):
-        """`payload` is a dict (JSON-encoded) or an exact string body — the
-        fenced-script cases need the exact characters the model emitted."""
-        content = payload if isinstance(payload, str) else json.dumps(payload)
+class TestCallPlanTwoCalls(unittest.TestCase):
+    """The plan call keeps JSON mode and its reply shape, gaining one optional
+    `wants_script` boolean. A second, non-JSON call fetches the script only when
+    that flag is true. A step-list goal therefore sees the same mode, prompt and
+    reply shape as before, and its record is unchanged apart from the flag."""
+
+    def _reply(self, content):
+        """`content` is a dict (JSON-encoded) or the exact reply text."""
+        body = content if isinstance(content, str) else json.dumps(content)
         resp = mock.Mock()
         resp.raise_for_status = mock.Mock()
-        resp.json = mock.Mock(return_value={"message": {"content": content}})
+        resp.json = mock.Mock(return_value={"message": {"content": body}})
         return resp
 
-    def test_a_script_lands_on_the_plan_not_in_the_record(self):
-        """KILLS: attaching the script before logging, or logging the raw
-        text before the split — either puts the script in response_raw, which
-        build_dpo_dataset.py:89-93 trains on verbatim."""
+    def _drive(self, plan_reply, script_reply=None):
+        """Run call_plan with a faked transport, recording every call."""
         import l3_planner
-        payload = json.dumps({
-            "task": "keep the furnace fed",
-            "subtasks": [{"id": 1, "description": "feed", "criteria": "fed"}],
-        }) + "\n```js\napi.do('feed');\n```"
-        logged = {}
+        calls = []
+        replies = [self._reply(plan_reply)]
+        if script_reply is not None:
+            replies.append(self._reply(script_reply))
+
+        def fake_post(url, json=None, timeout=None, **kw):
+            calls.append(json)
+            return replies[len(calls) - 1]
+
+        logged = []
 
         def fake_log_call(**kw):
-            logged.update(kw)
-            return "call-1"
+            logged.append(kw)
+            return "call-%d" % len(logged)
 
-        with mock.patch.object(l3_planner.requests, "post",
-                               return_value=self._fake_post(payload)), \
+        with mock.patch.object(l3_planner.requests, "post", side_effect=fake_post), \
              mock.patch.object(l3_planner.trajectory_log, "log_call",
                                side_effect=fake_log_call):
             plan = l3_planner.call_plan("m", "Scout", "keep the furnace fed")
+        return plan, calls, logged
 
-        self.assertEqual(getattr(plan, "script", None), "api.do('feed');",
-                         "the script did not reach the Plan")
-        # The two fields the trainer reads.
-        self.assertNotIn("api.do", logged["response_raw"],
+    PLAN = {"task": "keep the furnace fed",
+            "subtasks": [{"id": 1, "description": "feed", "criteria": "fed"}]}
+
+    def test_a_step_list_goal_makes_exactly_one_call(self):
+        """KILLS: making the script call unconditionally, or on any falsy-flag
+        check that also fires when the field is merely absent. The delta says a
+        wants_script=false reply makes exactly one call, and the common
+        step-list path must not pay for the rare scripted one."""
+        plan, calls, _ = self._drive(dict(self.PLAN))
+
+        self.assertEqual(len(calls), 1,
+                         "a step-list goal made %d planner calls; the delta "
+                         "requires exactly one" % len(calls))
+
+    def test_the_plan_call_stays_in_json_mode(self):
+        """KILLS: dropping format:json for every plan to make room for a
+        script, which is the design that failed the 2026-11-20 trial: it put
+        the common path at risk to serve the rare one."""
+        _, calls, _ = self._drive(dict(self.PLAN))
+
+        self.assertEqual(calls[0].get("format"), "json",
+                         "the plan call lost JSON mode")
+
+    def test_wants_script_true_triggers_a_second_non_json_call(self):
+        """KILLS: ignoring wants_script, so a scripted goal never fetches its
+        script and the feature is inert."""
+        plan, calls, _ = self._drive(
+            dict(self.PLAN, wants_script=True),
+            "```js\napi.do('feed');\n```")
+
+        self.assertEqual(len(calls), 2, "wants_script did not trigger a call")
+        self.assertNotIn("format", calls[1],
+                         "the script call used JSON mode; the reply is a fenced "
+                         "JS block, not a JSON document")
+        self.assertEqual(getattr(plan, "script", None), "api.do('feed');")
+
+    def test_the_script_never_reaches_the_plan_record(self):
+        """KILLS: attaching the script before logging, or logging the raw text
+        before it is extracted — either puts the script in response_raw, the
+        field build_dpo_dataset.py:89-93 trains on verbatim."""
+        _, _, logged = self._drive(
+            dict(self.PLAN, wants_script=True),
+            "```js\napi.do('feed');\n```")
+
+        plan_record = logged[0]
+        self.assertNotIn("api.do", plan_record["response_raw"],
                          "the script reached response_raw — the field DPO trains on")
-        self.assertNotIn("script", logged["parsed"],
+        self.assertNotIn("api.do", json.dumps(plan_record["parsed"] or {}),
                          "the script reached the parsed object")
 
-    def test_no_script_means_a_byte_identical_record(self):
-        """KILLS: a change that alters the logged response_raw or parsed for
-        every reply, script or not."""
-        import l3_planner
-        payload = {"task": "go to X",
-                   "subtasks": [{"id": 1, "description": "walk", "criteria": "there"}]}
-        logged = {}
+    def test_an_unusable_script_reply_costs_only_the_script(self):
+        """KILLS: raising or failing the goal when the script call returns
+        prose or nothing. The plan is already parsed; a bad script means the
+        goal runs its steps, which is the pre-a2 behaviour."""
+        plan, calls, _ = self._drive(
+            dict(self.PLAN, wants_script=True), "I cannot write that.")
 
-        def fake_log_call(**kw):
-            logged.update(kw)
-            return "call-2"
-
-        with mock.patch.object(l3_planner.requests, "post",
-                               return_value=self._fake_post(payload)), \
-             mock.patch.object(l3_planner.trajectory_log, "log_call",
-                               side_effect=fake_log_call):
-            plan = l3_planner.call_plan("m", "Scout", "go to X")
-
+        self.assertEqual(len(calls), 2)
         self.assertIsNone(getattr(plan, "script", None))
-        self.assertEqual(logged["response_raw"], json.dumps(payload),
+        self.assertEqual(len(plan.subtasks), 1,
+                         "the plan did not survive an unusable script reply")
+
+    def test_a_truncated_script_call_costs_only_the_script(self):
+        """KILLS: letting TruncatedAnswer (or a non-JSON body) escape call_script.
+
+        answer_text raises TruncatedAnswer when the model hits its budget with
+        an empty answer. Propagating that would fail the whole goal for a
+        script problem — but the plan from the first call is already parsed, so
+        a truncated script must mean 'no script', not 'no goal'."""
+        import l3_planner
+        calls = []
+        plan_resp = self._reply(dict(self.PLAN, wants_script=True))
+        trunc_resp = mock.Mock()
+        trunc_resp.raise_for_status = mock.Mock()
+        trunc_resp.json = mock.Mock(
+            return_value={"message": {"content": ""},
+                          "done_reason": "length"})
+
+        def fake_post(url, json=None, timeout=None, **kw):
+            calls.append(json)
+            return plan_resp if len(calls) == 1 else trunc_resp
+
+        with mock.patch.object(l3_planner.requests, "post", side_effect=fake_post), \
+             mock.patch.object(l3_planner.trajectory_log, "log_call",
+                               return_value="c"):
+            plan = l3_planner.call_plan("m", "Scout", "keep the furnace fed")
+
+        self.assertEqual(len(calls), 2, "the script call was not made")
+        self.assertIsNone(getattr(plan, "script", None))
+        self.assertEqual(len(plan.subtasks), 1,
+                         "a truncated script reply took the plan down with it")
+
+    def test_a_step_list_record_is_unchanged_apart_from_the_flag(self):
+        """KILLS: altering the logged response_raw or parsed for a script-free
+        reply — the delta's 'sees exactly what it sees now'."""
+        _, _, logged = self._drive(dict(self.PLAN))
+
+        self.assertEqual(logged[0]["response_raw"], json.dumps(self.PLAN),
                          "a script-free reply's logged text was altered")
 
 
