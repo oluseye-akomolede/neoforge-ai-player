@@ -21,6 +21,7 @@ feeds it a tick and binds what comes back.
 from __future__ import annotations
 
 import base64
+import json
 
 import action_binding
 import snapshot as snapshot_mod
@@ -36,6 +37,59 @@ from script_client import (
 # `say`-only script still binds, and a reworded literal on either side would
 # kill that carve-out silently, with no error anywhere.
 DETAIL_ALL_ACTIONS_REFUSED = "all actions refused"
+
+# A script's report is capped at 2 KiB of JSON (design §3). A proposal, not a
+# measurement: it is set against the largest genuinely useful report the trial
+# produces, and this constant is the one place to change when it is.
+RESULT_CAP_BYTES = 2048
+
+# Marks a result that was cut. The planner MUST be able to tell "the script
+# reported this much" from "the script reported exactly this" -- a truncated
+# report read as complete is a report that lies about its own extent.
+RESULT_TRUNCATED_MARKER = "...[truncated]"
+
+
+def cap_result(value):
+    """Return `(text, truncated)` -- the script's report as capped JSON text.
+
+    A truncated result is KEPT, not dropped: a partial report the planner can
+    see beats a missing one. The cap is applied to the serialised text, so it
+    is about what the planner actually receives, not about the object's shape.
+
+    Two things this deliberately does NOT do:
+
+    - It does not deepen the cap by dropping keys. Re-serialising "everything
+      except the big field" would need a rule for which field is expendable,
+      and there is none -- the script decides what is worth reporting.
+    - It does not truncate mid-escape and leave invalid JSON. The cut lands on
+      the serialised text and the marker is appended, so the consumer is
+      always reading a string it can quote, never a broken document it must
+      repair.
+
+    Returns `(None, False)` for a value that is not reportable at all, so the
+    caller can treat "no report" as its own case rather than as an empty one.
+    """
+    if value is None:
+        return None, False
+    try:
+        text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        # Not serialisable. Reported as absent rather than as a repr: a repr
+        # of an unserialisable object is not what the script meant.
+        return None, False
+    raw = text.encode("utf-8")
+    if len(raw) <= RESULT_CAP_BYTES:
+        return text, False
+    # Cut on a UTF-8 boundary, never mid-character: a half character is not a
+    # shorter string, it is invalid bytes.
+    cut = raw[:RESULT_CAP_BYTES]
+    while cut:
+        try:
+            cut.decode("utf-8")
+            break
+        except UnicodeDecodeError:
+            cut = cut[:-1]
+    return cut.decode("utf-8") + RESULT_TRUNCATED_MARKER, True
 
 
 def no_runner_detail():

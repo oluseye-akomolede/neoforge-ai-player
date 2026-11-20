@@ -15,6 +15,7 @@ these tests read the runner's own source so the same drift cannot pass silently.
 
 import base64
 import importlib.util
+import json as _json
 import os
 import re
 import unittest
@@ -697,6 +698,93 @@ class SnapshotWireShapeTest(unittest.TestCase):
         # differently depending on how its ScriptTick happened to be built.
         self.assertEqual(sorted(uncached.keys()), sorted(cached.keys()),
                          "cached and uncached ticks must send the same shape")
+
+
+class TestAScriptReportIsCappedButKept(unittest.TestCase):
+    """Design §3, task 3.2.
+
+    A report larger than the cap is cut and MARKED, not dropped. The planner
+    must be able to tell a cut report from a complete one, because a partial
+    report read as complete is worse than no report at all.
+    """
+
+    def test_a_small_report_passes_through_unchanged(self):
+        # KILLS: an implementation that always truncates, or that re-serialises
+        # with a different shape than the script handed over.
+        text, truncated = _st.cap_result({"colour": "red", "n": 2})
+        self.assertFalse(truncated)
+        self.assertEqual(_json.loads(text), {"colour": "red", "n": 2})
+
+    def test_a_report_over_the_cap_is_marked_not_dropped(self):
+        # KILLS: the version that MAKES THE PLANNER BE LIE says it must drop a
+        # too-large result entirely; the design says keep it, capped and marked.
+        # A dropped result is indistinguishable from a script that reported
+        # nothing, which is a different fact.
+        big = "x" * (_st.RESULT_CAP_BYTES * 4)
+        text, truncated = _st.cap_result({"note": big})
+        self.assertTrue(truncated, "an oversized report must report truncated=True")
+        self.assertIsNotNone(text, "an oversized report must not be dropped")
+        self.assertTrue(text.endswith(_st.RESULT_TRUNCATED_MARKER),
+                        "a cut report must carry the marker, or it reads as complete")
+
+    def test_the_cut_report_is_still_valid_text(self):
+        # KILLS: a byte-slice cut that lands mid-UTF-8-character. That emits a
+        # string SQL/log/JSON consumers cannot decode, and Python only notices
+        # when it tries.
+        # A run of a 3-byte character straddles the cap boundary by construction.
+        text, truncated = _st.cap_result({"note": "€" * 2000})
+        self.assertTrue(truncated)
+        body = text[: -len(_st.RESULT_TRUNCATED_MARKER)]
+        body.encode("utf-8").decode("utf-8")  # must not raise
+
+    def test_the_cut_keeps_every_whole_character_it_can(self):
+        # Pins the cut to the LONGEST valid prefix. NOT a mutant-killer: I tried
+        # decode(errors='ignore') as the mutant and it survives, because on every
+        # input I measured it also yields the longest valid prefix (walk and
+        # ignore agreed at 2046-2048 for six different paddings). The walk is
+        # kept because it states the intent; the two are observationally equal
+        # here, and claiming a kill that does not happen would be worse than
+        # having no claim.
+        value = {"note": "a" + "€" * 2000}
+        text, truncated = _st.cap_result(value)
+        self.assertTrue(truncated)
+        body = text[: -len(_st.RESULT_TRUNCATED_MARKER)]
+        # The longest valid UTF-8 prefix of the first RESULT_CAP_BYTES.
+        raw = _json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        want_len = len(raw[:_st.RESULT_CAP_BYTES])
+        while True:
+            try:
+                raw[:want_len].decode("utf-8")
+                break
+            except UnicodeDecodeError:
+                want_len -= 1
+        self.assertEqual(len(body.encode("utf-8")), want_len,
+                         "the cut must be the LONGEST valid prefix, not a shorter"
+                         " one reached by discarding characters")
+
+    def test_the_cap_counts_bytes_not_characters(self):
+        # KILLS: len(text) instead of len(text.encode('utf-8')). A 2 KiB cap is a
+        # cap on what crosses the wire; for non-ASCII text the character count
+        # is smaller than the byte count, so char-counting overruns.
+        # 1500 three-byte characters is 1500 chars but 4500 bytes.
+        text, truncated = _st.cap_result({"note": "€" * 1500})
+        self.assertTrue(truncated,
+                        "4500 bytes of non-ASCII must exceed a 2048-BYTE cap")
+
+    def test_no_report_is_its_own_case_not_an_empty_one(self):
+        # KILLS: returning ('null', False) for None, which makes "the script
+        # reported nothing" indistinguishable from "the script reported null".
+        text, truncated = _st.cap_result(None)
+        self.assertIsNone(text)
+        self.assertFalse(truncated)
+
+    def test_an_unserialisable_report_is_absent_not_a_repr(self):
+        # KILLS: falling back to repr(value). A repr of an unserialisable object
+        # is not what the script meant to report, and passing it on invents a
+        # result the script never produced.
+        text, truncated = _st.cap_result({"o": object()})
+        self.assertIsNone(text)
+        self.assertFalse(truncated)
 
 
 if __name__ == "__main__":
