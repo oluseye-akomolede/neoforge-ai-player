@@ -1589,13 +1589,24 @@ class BotRunner:
 
             The release is part of the bind, not a separate step, so there is
             no window where the script is bound and still held.
+
+            A REFUSED bind also releases the hold. The hold was taken before
+            this planner thread started (:683), so leaving it set on refusal
+            would let the orchestrator run the plan's steps while the goal
+            stays held -- _run_script_tick (:2947) would then return
+            SCRIPT_HELD and the goal would be driven with its script blocked.
+            On refusal the planner's steps (not a script) drive the goal, so
+            the hold must be gone either way.
             """
-            if not self._bind_planner_script(source):
-                return False
-            print(f"[{self.name}/script] goal {goal_id or '-'} handed to the "
-                  f"planner's script; releasing its hold")
+            bound = self._bind_planner_script(source)
             self._end_script_hold(goal_id or None)
-            return True
+            if bound:
+                print(f"[{self.name}/script] goal {goal_id or '-'} handed to "
+                      f"the planner's script; releasing its hold")
+                return True
+            print(f"[{self.name}/script] goal {goal_id or '-'} bind refused; "
+                  f"running the planner's steps instead")
+            return False
 
         try:
             plan_orchestrator.execute_task(

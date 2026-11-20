@@ -260,7 +260,7 @@ class TestExactlyOneDriver(unittest.TestCase):
                                side_effect=lambda *a, **kw: Subtask(
                                    id=99, description="retry", criteria="fed")), \
              mock.patch.object(plan_orchestrator.plan_store, "write"), \
-             mock.patch.object(plan_orchestrator.plan_store, "archive"), \
+             mock.patch.object(plan_orchestrator.plan_store, "archive") as archive, \
              mock.patch.object(plan_orchestrator.trajectory_log, "log_plan_close"):
             result = plan_orchestrator.execute_task(
                 bot_name="Scout", model="m", task="keep the furnace fed",
@@ -268,6 +268,7 @@ class TestExactlyOneDriver(unittest.TestCase):
                 world_state_fn=lambda: "",
                 on_script=on_script,
             )
+        self.archive = archive
         return result, steps_dispatched, calls
 
     def test_a_script_reply_does_not_execute_the_steps(self):
@@ -279,9 +280,17 @@ class TestExactlyOneDriver(unittest.TestCase):
         self.assertEqual(dispatched, [],
                          "the step list executed even though the script took "
                          "the goal — two drivers on one bot")
-        self.assertEqual(result.status, "complete")
+        # NOT "complete": no subtask ran, so claiming success would be a false
+        # win and would skip the honest-finalize guard.
+        self.assertEqual(result.status, "handed_over",
+                         "a handed-over plan must not claim 'complete': no "
+                         "subtask ran, and skill_author.py:140 widens its "
+                         "success set on status=='complete'")
         self.assertTrue(result.meta.get("handed_to_script"),
                         "the goal did not record the handover")
+        self.assertTrue(self.archive.called,
+                        "the handed-over plan was written but never archived; "
+                        "the normal finalize does both")
 
     def test_a_script_free_reply_still_executes_its_steps(self):
         """KILLS: skipping phase 2 whenever the plan object exists, or
@@ -301,6 +310,112 @@ class TestExactlyOneDriver(unittest.TestCase):
         self.assertTrue(dispatched,
                         "the bind was refused but the steps did not run: the "
                         "goal has no driver at all")
+
+
+# ── the real on_script closure ─────────────────────────────────────────────
+
+class TestTheRealOnScriptClosureReleasesTheHold(unittest.TestCase):
+    """The tests above stub `on_script`, which is the production closure that
+    actually contains the bind-and-release logic. A stub cannot fail the way
+    the real function fails, so these drive the real closure from agent.py
+    with a real goal_id.
+
+    The hold is taken at agent.py:683 BEFORE the planner thread starts. If a
+    refused bind leaves it set, the orchestrator runs the plan's steps while
+    _run_script_tick (:2947) sees the hold and returns SCRIPT_HELD -- the goal
+    is driven by steps and its script is blocked at the same time.
+    """
+
+    def _run_real_closure(self, bind_returns):
+        """Call the real on_script closure with a real hold installed."""
+        import agent as agent_mod
+        import plan_orchestrator
+        from plan_schema import Plan, Subtask
+
+        a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
+        a.name = "Scout"
+        a.model = "m"
+        a.profile = {}
+        a._lock = threading.Lock()
+        a._planner_script = None
+        a._script_tick = None
+        a._script_loaded = False
+        a._script_hold = None
+        a._script_hold_seq = 0
+        a._bind_planner_script = mock.Mock(return_value=bind_returns)
+
+        goal_id = a._new_goal_id("Steve", "keep the furnace fed")
+
+        plan = Plan(
+            task="keep the furnace fed", bot="Scout",
+            created_at="2026-11-20T00:00:00", status="executing",
+            subtasks=[Subtask(id=1, description="feed it", criteria="fed")],
+            current_subtask_id=1,
+        )
+        plan.script = "api.do('feed');"
+        # Capture the closure agent.py builds by running its real orchestrator
+        # branch with execute_task patched to hand us the kwargs. Everything
+        # before that call is the production path; only the call itself is
+        # stubbed, so the closure under test is the real one.
+        captured = {}
+
+        class _Captured(Exception):
+            pass
+
+        def fake_execute(**kwargs):
+            # Capture and stop: returning normally lets _run_orchestrator run
+            # its own failure/release paths, which would clear the hold before
+            # the closure under test ever runs and make this a vacuous test.
+            captured.update(kwargs)
+            raise _Captured()
+
+        # agent.py imports plan_orchestrator inside _run_orchestrator, so
+        # patch the module object itself rather than an attribute of agent.
+        with mock.patch.object(plan_orchestrator, "execute_task",
+                               side_effect=fake_execute):
+            try:
+                a._run_orchestrator("keep the furnace fed", "Steve",
+                                    goal_id=goal_id)
+            except _Captured:
+                pass
+
+        self.assertIn("on_script", captured,
+                      "the orchestrator branch never passed on_script")
+        on_script = captured["on_script"]
+
+        # Install the hold NOW, after capture. _run_orchestrator's own
+        # `except Exception` calls _end_script_hold on the way out (it treats
+        # any crash as terminal, which is correct in production), so a hold
+        # taken before the call would already be gone and the test would
+        # assert on a state the closure never saw.
+        a._begin_script_hold(goal_id, "keep the furnace fed")
+        self.assertIsNotNone(a._script_hold, "fixture: the hold was not set")
+
+        # Drive the REAL closure with the real plan.
+        handed = on_script(plan, "api.do('feed');")
+        return handed, a, goal_id
+
+    def test_a_refused_bind_does_not_leave_the_goal_held(self):
+        """KILLS: releasing the hold only on a successful bind, so a refusal
+        (a hand-written binding won, or the dry tick was rejected) leaves the
+        hold set while the orchestrator runs the steps."""
+        handed, a, goal_id = self._run_real_closure(bind_returns=False)
+
+        self.assertFalse(handed, "a refused bind must report not-handled")
+        self.assertIsNone(
+            a._script_hold,
+            "a refused bind left the goal hold set: the orchestrator runs the "
+            "steps while _run_script_tick returns SCRIPT_HELD, so the goal is "
+            "driven with its script blocked")
+
+    def test_a_successful_bind_releases_the_hold_and_hands_over(self):
+        """KILLS: binding without releasing, so the goal's own script is held
+        by the goal that asked for it and never ticks."""
+        handed, a, goal_id = self._run_real_closure(bind_returns=True)
+
+        self.assertTrue(handed, "a successful bind must report handled")
+        self.assertIsNone(a._script_hold,
+                          "a successful bind left the goal hold set")
 
 
 # ── atomic bind ────────────────────────────────────────────────────────────

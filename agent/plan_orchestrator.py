@@ -350,11 +350,18 @@ def execute_task(
             if handed:
                 log.info("[%s] goal handed to the planner's script; "
                          "not executing the step list", bot_name)
-                plan.status = "complete"
+                # NOT "complete": the subtasks are still pending because they
+                # never ran. "complete" would mean every step succeeded and
+                # would skip the honest-finalize guard below (:410-421) via
+                # this early return -- and skill_author.py:140 keys on
+                # status=="complete" to widen its success set. "handed_over"
+                # says what actually happened.
+                plan.status = "handed_over"
                 plan.meta["handed_to_script"] = True
                 telemetry.push(bot_name, "script",
                                f"handed to planner script for '{task[:80]}'")
                 plan_store.write(plan)
+                plan_store.archive(plan)
                 try:
                     on_finalized(plan)
                 except Exception:
