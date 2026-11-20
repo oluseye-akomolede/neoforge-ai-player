@@ -121,7 +121,7 @@ six `api` methods.
 The mechanism that satisfies this is that the dry tick runs against a
 **throwaway `botState`**, not the bot's live one. `createApi` already takes
 `botState` as a parameter (`binding.js:126-136`); the engine passes its
-long-lived object (`engine.js:756`) and the default exists only so a direct
+long-lived object (`engine.js:783`) and the default exists only so a direct
 caller gets sane behaviour. A dry tick passes its own, so it neither reads nor
 writes the live window. This is deliberate, not incidental: `acceptAction`
 (`binding.js:154-174`) always either rejects or pushes, with no
@@ -131,7 +131,7 @@ avoid spending by never calling `api.do` — which would defeat the gate.
 The throwaway state is created **inside the runner**, not by the agent. The
 agent does not execute the script: it sends it to the runner service, and
 `botState` lives in that process, one long-lived object per cached bot worker
-(`engine.js:238` creates it, `:756` passes it every tick, and `fleet.js:166`
+(`engine.js:249` creates it, `:783` passes it every tick, and `fleet.js:166`
 reuses the worker across requests). A caller therefore cannot hand in a
 `botState` over the wire. The runner request MUST carry an explicit **dry
 flag**; when it is set, the runner evaluates the tick against a throwaway
