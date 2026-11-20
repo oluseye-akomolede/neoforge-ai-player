@@ -66,17 +66,51 @@ NOT spend a host call, reach the network, or reach the mod.
 
 ### Requirement: A Script's Result Reaches The Planner On Stated Triggers Only
 
-A script's return value MUST be delivered to the planner when the script
-reports completion, when it errors, or when it states an escalation — and on
-no other tick. Delivery MUST NOT depend on a player message arriving: a
-finished script's result MUST start a planner call of its own, under the
-per-bot hourly cap and cooldown that bound how often that can happen.
+A script's result MUST be the value passed to `api.result(v)` — NOT its
+top-level return value, which ends the tick and reaches no result field
+(lead rule, 2026-11-10; `worker.js:147`, `32b592a`). The stored result MUST be
+delivered to the planner when the script reports completion, when it errors,
+or when it states an escalation — and on no other tick. Delivery MUST NOT
+depend on a player message arriving: a finished script's result MUST start a
+planner call of its own, under the per-bot hourly cap and cooldown that bound
+how often that can happen.
+
+`api.result(v)` MUST cost one of the tick's 8 host calls. Its value MUST be
+JSON-serialised and capped by the same 2 KiB marked cut as any other result.
+When a script calls `api.result` more than once in a tick, the LAST value MUST
+be the one kept. A call to `api.result` MUST NOT itself raise a delivery
+trigger: it stores a value, and the trigger remains done/error/escalate.
 
 #### Scenario: A completed goal delivers one result
-- **GIVEN** a script that returns `{ done: true, ... }`
+- **GIVEN** a script that calls `api.result({ done: true, ... })`
 - **WHEN** it is ticked repeatedly
 - **THEN** exactly one result MUST be delivered
 - **AND** the binding MUST be released
+
+#### Scenario: The return value is not the result
+- **GIVEN** a script whose top-level `return` carries a value and which never
+  calls `api.result`
+- **WHEN** its tick completes
+- **THEN** no result MUST be delivered from the return value
+- **AND** the tick MUST still end as the return-value rule says it does
+
+#### Scenario: The last result call in a tick wins
+- **GIVEN** a script that calls `api.result` twice in one tick with different
+  values
+- **WHEN** the result is delivered
+- **THEN** the delivered value MUST be the second call's
+- **AND** the first value MUST NOT appear
+
+#### Scenario: Reporting costs a host call
+- **GIVEN** a script that uses all 8 host calls, one of them `api.result`
+- **WHEN** the tick runs
+- **THEN** `api.result` MUST be counted among the 8 and MUST NOT be free
+
+#### Scenario: Reporting does not trigger delivery by itself
+- **GIVEN** a script that calls `api.result` and then keeps ticking, never
+  reaching done, error or escalation
+- **WHEN** several ticks pass
+- **THEN** no planner call MUST be triggered by the `api.result` call
 
 #### Scenario: An error delivers a result rather than only a log line
 - **GIVEN** a script whose tick fails
@@ -84,7 +118,8 @@ per-bot hourly cap and cooldown that bound how often that can happen.
 - **THEN** a result MUST be delivered to the planner
 
 #### Scenario: A loop cannot re-trigger the planner every tick
-- **GIVEN** ten distinct scripts, each returning `done: true` on its first tick
+- **GIVEN** ten distinct scripts, each calling `api.result({ done: true })` on
+  its first tick
 - **WHEN** they are bound and run back to back within one hour, each released
   by its own completion and the next bound in its place
 - **THEN** at most 4 results MUST reach the planner
@@ -93,14 +128,14 @@ per-bot hourly cap and cooldown that bound how often that can happen.
 - **AND** the fifth script MUST NOT start a planner call even though its
   binding and release are the same shape as the first
 
-The shape is deliberate: a `done: true` releases the binding, so "ten ticks of
+The shape is deliberate: a reported `done: true` releases the binding, so "ten ticks of
 one script" can never reach the cap — only ten separate scripts can. That makes
 this scenario the bind/release bypass test, and it is also what proves the
 cooldown is **per bot** rather than per script: ten different scripts must
 still be held off, so any implementation keyed on the script fails it.
 
 #### Scenario: A result has a size cap
-- **GIVEN** a script returning more than 2 KiB of JSON
+- **GIVEN** a script calling `api.result` with more than 2 KiB of JSON
 - **WHEN** the result is delivered
 - **THEN** it MUST be truncated with a marker
 - **AND** it MUST NOT be dropped

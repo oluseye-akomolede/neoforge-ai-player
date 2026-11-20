@@ -75,17 +75,25 @@ document work that preceded them, kept so the reasoning is not lost.
 
 ## 3. Results (c)
 
-- [ ] 3.1 A later change reads a script's return value and delivers it to the
-      planner on exactly three triggers: `done`, error, `escalate`. Delivery
-      does not wait for a player message.
-- [ ] 3.2 Size capped, truncated with a marker rather than dropped. Pinned by a
-      test; the mutant drops and must red it.
+- [ ] 3.1 A later change adds `api.result(v)` to the runner binding and
+      delivers its stored value to the planner on exactly three triggers:
+      `done`, error, `escalate`. Delivery does not wait for a player message.
+      The script's top-level return value is NOT the result (lead rule,
+      2026-11-10; `worker.js:147`); a test must red a version that reads the
+      return value. `api.result` costs one of the 8 host calls, is capped by
+      3.2's marked cut, and the last call in a tick wins.
+- [x] 3.2 Size capped, truncated with a marker rather than dropped. `cap_result`
+      in `script_tick.py`, 6 tests. The drop mutant reds
+      `test_a_report_over_the_cap_is_marked_not_dropped`. The UTF-8 cut uses
+      `decode("utf-8", "ignore")` on the byte prefix: measured identical to a
+      hand boundary walk over six paddings, so the simpler one ships.
 - [ ] 3.3 The per-bot 4/hour cap and the per-bot 15-minute cooldown, as the
       load-bearing guard on result-triggered calls. Pinned by a test that binds
-      10 **distinct** scripts back to back, each returning `done` once, and
-      asserts exactly 4 deliveries — not 10 ticks of one script, which a
-      `done: true` makes impossible since it releases the binding. The mutant
-      keys the cooldown on the script instead of the bot and must red it.
+      10 **distinct** scripts back to back, each calling `api.result({done:
+      true})` once, and asserts exactly 4 deliveries — not 10 ticks of one
+      script, which a reported `done` makes impossible since it releases the
+      binding. The mutant keys the cooldown on the script instead of the bot
+      and must red it.
 - [ ] 3.4 `_maybe_plan_on_result()` beside `_maybe_plan`: evaluated every pass,
       acts only when a result is pending for the bot's current goal, so a
       finished script reaches `call_plan` with no player message. Pinned by a

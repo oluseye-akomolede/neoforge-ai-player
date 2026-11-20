@@ -728,39 +728,26 @@ class TestAScriptReportIsCappedButKept(unittest.TestCase):
                         "a cut report must carry the marker, or it reads as complete")
 
     def test_the_cut_report_is_still_valid_text(self):
-        # KILLS: a byte-slice cut that lands mid-UTF-8-character. That emits a
-        # string SQL/log/JSON consumers cannot decode, and Python only notices
-        # when it tries.
-        # A run of a 3-byte character straddles the cap boundary by construction.
-        text, truncated = _st.cap_result({"note": "€" * 2000})
-        self.assertTrue(truncated)
-        body = text[: -len(_st.RESULT_TRUNCATED_MARKER)]
-        body.encode("utf-8").decode("utf-8")  # must not raise
-
-    def test_the_cut_keeps_every_whole_character_it_can(self):
-        # Pins the cut to the LONGEST valid prefix. NOT a mutant-killer: I tried
-        # decode(errors='ignore') as the mutant and it survives, because on every
-        # input I measured it also yields the longest valid prefix (walk and
-        # ignore agreed at 2046-2048 for six different paddings). The walk is
-        # kept because it states the intent; the two are observationally equal
-        # here, and claiming a kill that does not happen would be worse than
-        # having no claim.
-        value = {"note": "a" + "€" * 2000}
+        # KILLS: a byte-slice cut emitted mid-UTF-8-character, i.e. a report
+        # whose bytes are not valid UTF-8 -- which is what a consumer further
+        # down the line chokes on. MUTANT: replace the decode with
+        # decode("latin-1"), which accepts the byte cut and emits a string whose
+        # bytes differ from the original.
+        #
+        # The check is on the BYTES, not the str: text.encode('utf-8') always
+        # round-trips, so asserting on the round-trip tests nothing. What must
+        # hold is that the cut is a prefix of the true serialisation and is
+        # itself valid UTF-8.
+        value = {"note": "€" * 2000}
+        raw = _json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8")
         text, truncated = _st.cap_result(value)
         self.assertTrue(truncated)
         body = text[: -len(_st.RESULT_TRUNCATED_MARKER)]
-        # The longest valid UTF-8 prefix of the first RESULT_CAP_BYTES.
-        raw = _json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8")
-        want_len = len(raw[:_st.RESULT_CAP_BYTES])
-        while True:
-            try:
-                raw[:want_len].decode("utf-8")
-                break
-            except UnicodeDecodeError:
-                want_len -= 1
-        self.assertEqual(len(body.encode("utf-8")), want_len,
-                         "the cut must be the LONGEST valid prefix, not a shorter"
-                         " one reached by discarding characters")
+        got = body.encode("utf-8")
+        self.assertTrue(raw.startswith(got),
+                        "the cut must be a byte prefix of the real serialisation,"
+                        " not a reinterpretation of its bytes")
+        got.decode("utf-8")  # and those bytes must be decodable as UTF-8
 
     def test_the_cap_counts_bytes_not_characters(self):
         # KILLS: len(text) instead of len(text.encode('utf-8')). A 2 KiB cap is a

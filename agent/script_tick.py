@@ -80,16 +80,12 @@ def cap_result(value):
     raw = text.encode("utf-8")
     if len(raw) <= RESULT_CAP_BYTES:
         return text, False
-    # Cut on a UTF-8 boundary, never mid-character: a half character is not a
-    # shorter string, it is invalid bytes.
-    cut = raw[:RESULT_CAP_BYTES]
-    while cut:
-        try:
-            cut.decode("utf-8")
-            break
-        except UnicodeDecodeError:
-            cut = cut[:-1]
-    return cut.decode("utf-8") + RESULT_TRUNCATED_MARKER, True
+    # errors="ignore" drops the partial character the byte cut lands on, so the
+    # text stays valid UTF-8. Measured against a hand walk that backs up to the
+    # boundary character by character: the two agree on every input tried
+    # (2046-2048 bytes over six paddings), because both yield the longest valid
+    # prefix. Simpler and the same, so this is the one that ships.
+    return raw[:RESULT_CAP_BYTES].decode("utf-8", "ignore") + RESULT_TRUNCATED_MARKER, True
 
 
 def no_runner_detail():

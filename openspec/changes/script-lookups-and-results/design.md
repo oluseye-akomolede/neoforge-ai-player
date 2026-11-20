@@ -307,26 +307,52 @@ without extra work, because a dry tick must not reach the live agent.
 
 ### What the result is
 
-**The script's return value, and nothing else.** Not its logs (already
-delivered through `last_logs` and printed by the agent, `script_tick.py`), not
-its delivered actions (already dispatched), not a separate "final report" API.
+**An explicit `api.result(v)` host call, and nothing else.** Not the script's
+logs (already delivered through `last_logs` and printed by the agent,
+`script_tick.py`), not its delivered actions (already dispatched), and *not*
+the script's top-level return value.
 
-Rationale: the runner already decides how a script's return value is obtained —
-`#evalSource` distinguishes a body with a top-level `return` from a bare
-expression whose value *is* the result (`engine.js:666` onwards). The mechanism
-exists and is tested; a new "report" channel would duplicate it.
-
-**Shape.** A script that wants to report returns an object:
+**Why not the return value.** The runner drops it on purpose.
+`worker.js:147` destructures it off the tick result at the single place that
+result is formed:
 
 ```js
-return { done: true, say: 'furnace is full', items: 64 };
+const { value: _discarded, ...wire } = result;
 ```
 
-**Size cap.** 2 KiB of JSON after serialisation. A script returning more has the
-result truncated with a marker, not dropped — a truncated result the planner can
-see beats a missing one, and the script's 8-host-call and 250 ms budgets are
-untouched either way. (2 KiB is a proposal, not a measurement; it should be set
-against the largest genuinely useful report in the trial, §4.)
+and that is deliberate: it implements the lead's 2026-11-10 rule that a
+script's top-level return value *ends the tick and reaches no result field*
+(`32b592a`, re-affirmed at `6a755d6`). Using the return value for a second
+purpose would reverse a standing decision whose commit records four defects
+behind it. `api.result(v)` leaves the rule intact and makes "this is my
+report" something the script states, rather than something inferred from a
+value that already means "the tick is over".
+
+**Shape.** A script that wants to report calls:
+
+```js
+api.result({ done: true, say: 'furnace is full', items: 64 });
+```
+
+**(a) It costs a host call.** `api.result(v)` counts against the same 8
+host calls per tick as `api.do`/`say`/`send`/`recall`/`remember`/`log` — the
+budget is shared, so reporting spends a slot an action might have wanted.
+
+**(b) Its value is capped by the same 2 KiB marked cut as the rest of this
+section** (`cap_result`, `script_tick.py`; task 3.2). The value is
+JSON-serialised, capped at 2 KiB, and marked with a truncation marker when cut
+— never dropped, never cut mid-character.
+
+**(c) Last call wins.** If a script calls `api.result` more than once in a
+tick, the LAST value is the one kept; earlier calls are overwritten. The
+stored value is what goes back to the planner on the next
+done/error/escalate trigger, under §3's caps.
+
+**(d) A result raises no trigger on its own.** Calling `api.result` does not
+end the tick, does not schedule a planner call, and does not change the
+script's loop state. It stores a value. The trigger that wakes the planner is
+still only done/error/escalate — so a script that reports and keeps ticking is
+reporting into a slot that is read when its script ends, not when it reports.
 
 ### When it goes back
 
