@@ -1002,5 +1002,76 @@ class DryTickTest(unittest.TestCase):
         self.assertEqual(len(self.a._script_action_times["do"]), 30)
 
 
+
+class PlannerScriptBindTest(unittest.TestCase):
+    """M3-2 step (a): a planner-authored script becomes the bot's script.
+
+    The script never touches disk (spec, "A Planner-Authored Script Lives In
+    Memory, Not On Disk"). These pin the three ways that can go wrong silently:
+
+      1. An emitted script that is dry-ticked and bound changes what the bot
+         runs, with no file involvement.
+      2. A dry tick that FAILS binds nothing, so a broken program never
+         replaces a working one.
+      3. A planner script does not displace a hand-written binding -- the
+         condition the spec makes by-construction ("hand-written" is decided by
+         bindings.json alone), but which an implementer could still break by
+         letting the planner overwrite an already-loaded script.
+    """
+
+    def setUp(self):
+        agent_mod = _agent_module()
+        self.agent_mod = agent_mod
+        self.a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
+        self.a.name = "Scout"
+        self.a.profile = {}
+        self.a._script_tick = None
+        self.a._script_loaded = False
+        self.a._script_hold = None
+        self.a._script_hold_seq = 0
+        self.a._planner_script = None
+
+    def test_a_planner_script_is_bound_in_memory(self):
+        # KILLS: storing the planner's script behind a file path, which is the
+        # model the spec explicitly rejects -- it would make the script survive
+        # a restart and silently outlive the process that authored it.
+        src = "api.do('mine_stone', {x:1,y:2,z:3});"
+        with mock.patch.object(self.a, "_dry_tick", return_value=True), \
+             mock.patch.object(self.a, "_bound_script_path", return_value=None), \
+             mock.patch("builtins.open", mock.mock_open()) as fake_open:
+            self.assertTrue(self.a._bind_planner_script(src))
+        # No file was opened for the script: the only open() calls allowed are
+        # bindings.json reads, and _bound_script_path is stubbed to None here.
+        self.assertFalse(fake_open.called,
+                         "binding a planner script must not touch the filesystem")
+        self.assertEqual(self.a._planner_script, src)
+        # The latch is reset so the next tick builds a tick from THIS source.
+        self.assertFalse(self.a._script_loaded,
+                         "binding a new script must reset the one-shot latch")
+
+    def test_a_failed_dry_tick_binds_nothing(self):
+        # KILLS: binding first and dry-ticking after -- or ignoring the dry
+        # result -- so a script that throws on tick one replaces a working bot.
+        src = "throw new Error('boom');"
+        with mock.patch.object(self.a, "_dry_tick", return_value=False):
+            self.assertFalse(self.a._bind_planner_script(src))
+        self.assertIsNone(self.a._planner_script,
+                          "a script that failed its dry tick must not be bound")
+        self.assertFalse(self.a._script_loaded,
+                         "a refused bind must not mark the script as loaded")
+
+    def test_a_planner_script_does_not_displace_a_hand_written_one(self):
+        # KILLS: letting the planner overwrite an already-bound script. The
+        # spec decides "hand-written" by bindings.json alone; a bot named there
+        # is running a human's script and the planner must not take it over.
+        with mock.patch.object(self.a, "_bound_script_path",
+                               return_value="/scripts/hand.js"), \
+             mock.patch.object(self.a, "_dry_tick", return_value=True) as dry:
+            self.assertFalse(self.a._bind_planner_script("api.say('hi');"))
+        self.assertFalse(dry.called,
+                         "a hand-written binding must be checked BEFORE dry-ticking")
+        self.assertIsNone(self.a._planner_script)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

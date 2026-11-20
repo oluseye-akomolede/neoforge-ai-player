@@ -12,6 +12,24 @@ from config import OLLAMA_URL, answer_text, think_field
 import brain
 import openai_brain
 
+
+class PlannerResult(list):
+    """A planner answer: a list of steps, optionally carrying a script.
+
+    It IS a list, so every existing caller that iterates `decompose`'s return
+    value or indexes it behaves exactly as before -- the step path is not
+    migrated to a new type, it simply never sees `script` set.
+
+    `script` is the source text the planner wrote, or None. It is carried in
+    the process only: the agent has no write path for script source (spec,
+    "A Planner-Authored Script Lives In Memory, Not On Disk"), so a script that
+    survives a restart would be a file this type never creates.
+    """
+
+    def __init__(self, steps, script=None):
+        super().__init__(steps)
+        self.script = script
+
 PLANNER_PROMPT = """You are a Minecraft task planner. Break the player's instruction into simple, sequential steps that a bot can execute one at a time.
 
 ## How to decompose
@@ -96,10 +114,59 @@ Output: {{"steps": ["Craft minecraft:stone_pickaxe", "Find and mine minecraft:ir
 
 {inventory_section}
 
-Respond ONLY with a JSON object:
+## Writing a script instead of steps
+
+For goals that are REPETITIVE or CONDITIONAL — "keep the chest stocked",
+"until I say stop, mine whatever you see" — a step list cannot express the
+loop. You may answer with a JavaScript program instead. It runs once per tick
+in a sandbox with no filesystem and no network, and reaches the world ONLY
+through these calls:
+
+- `api.do(directive, args)` — queue one game action. `directive` is an exact
+  name like `"goto"`, `"mine"`, `"attack"`, `"place"`. `args` is a plain object.
+  Returns `{{ok, seq}}` or a rejection.
+- `api.say(text)` — speak in chat.
+- `api.send(otherBot, msg)` — message another bot.
+- `api.remember(blob)` — store a string (≤16 KB) that the NEXT tick's
+  `api.recall()` returns. This is the only state that persists between ticks.
+- `api.recall()` — the string this tick started with, or `null`.
+- `api.log(level, text)` — write one diagnostic line (≤1 KB).
+
+Rules for scripts:
+- At most 8 api calls per tick. Rate limits are enforced: `do` 30/min,
+  `say` 30/min, `send` 20/min. Exceeding them is REFUSED, not queued.
+- A script that returns does nothing further this tick; the next tick runs it
+  again. Do not loop forever inside one tick — it is not a thread.
+- Use `api.recall()` at the top to continue work across ticks.
+- Anything a script `api.do`s is dispatched like a planned step, so use real
+  directive names, not invented ones.
+
+Respond ONLY with ONE JSON object, either:
 {{
   "steps": ["step 1", "step 2", ...]
+}}
+or, for a repetitive/conditional goal:
+{{
+  "script": "const s = api.recall(); ..."
 }}"""
+
+
+def _script_from(parsed):
+    """The planner's script source from a parsed answer, or None.
+
+    Kept deliberately strict: a script is a non-empty string under "script".
+    Anything else -- a list, a dict, "", None -- is not a program, and treating
+    it as one would hand the runner source it cannot run while suppressing the
+    step list that answer actually carried. A model that emits both keys is a
+    contract violation; the script wins because the step list is the older,
+    safer reading and a half-formed program is worth more scrutiny than a plan.
+    """
+    if not isinstance(parsed, dict):
+        return None
+    script = parsed.get("script")
+    if isinstance(script, str) and script.strip():
+        return script
+    return None
 
 
 def decompose(model, instruction, memory_context="", transmute_context="", inventory_context="", sender=""):
@@ -151,7 +218,14 @@ def decompose(model, instruction, memory_context="", transmute_context="", inven
         if start >= 0 and end > start:
             parsed = json.loads(content[start:end])
         else:
-            return [instruction]
+            return PlannerResult([instruction])
+
+    script = _script_from(parsed)
+    if script is not None:
+        # A program answer: there is no step list to execute. Returning it with
+        # zero steps keeps every caller's iteration correct (it does nothing)
+        # and the agent binds the script instead of driving a plan.
+        return PlannerResult([], script=script)
 
     steps = parsed.get("steps", [])
     if not steps or not isinstance(steps, list):
@@ -161,12 +235,12 @@ def decompose(model, instruction, memory_context="", transmute_context="", inven
                 l4_steps = openai_brain.decompose(instruction, prompt)
                 if l4_steps and isinstance(l4_steps, list):
                     print(f"[planner/L4] OpenAI produced {len(l4_steps)} steps")
-                    return [str(s) for s in l4_steps[:8]]
+                    return PlannerResult([str(s) for s in l4_steps[:8]])
             except Exception as e:
                 print(f"[planner/L4] OpenAI fallback failed: {e}")
-        return [instruction]
+        return PlannerResult([instruction])
 
-    return [str(s) for s in steps[:8]]
+    return PlannerResult([str(s) for s in steps[:8]])
 
 
 # ── Orchestrator: specialization-aware decomposition ──

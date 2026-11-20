@@ -29,17 +29,17 @@ Spec only. No code, no build, no deploy until the lead approves this spec.
       (`main.js:51`); stack 256 KiB, heap 32 MiB (`engine.js:32,41`); at most 8
       accepted host calls per tick, else `host_calls_exceeded`
       (`binding.js:31`); the six `api` methods only (`binding.js:225-318`).
-- [ ] 2.3 A dry tick runs once against the bot's snapshot with actions
+- [x] 2.3 A dry tick runs once against the bot's snapshot with actions
       **suppressed** (queued, discarded, not dispatched). It binds only on
       `ok`. A failed dry tick falls back to the plain planner and keeps any
       previously bound script in force.
-- [ ] 2.4 **Binding is a rebind.** `_script_loaded` is a one-shot latch
-      (`agent/agent.py:235,3138-3140`; one production caller at `:2890`), so a
+- [x] 2.4 **Binding is a rebind.** `_script_loaded` is a one-shot latch
+      (`agent/agent.py:235,3204-3206`; one production caller at `:2909`), so a
       bot resolves its script once for the process lifetime. The latch gains a
       defined reset for a planner-authored script, and that reset is its ONLY
       writer. Without it, calling the existing path returns the previous
       script forever.
-- [ ] 2.5 **A dry tick spends no rate budget and carries no memory.**
+- [x] 2.5 **A dry tick spends no rate budget and carries no memory.**
       `acceptAction` records calls in `botState.actionTimes`
       (`binding.js:154-174`), per-BOT state that survives a tick
       (`binding.js:45-52`) against `do:30/min`, `say:30/min`, `send:20/min`
@@ -47,15 +47,15 @@ Spec only. No code, no build, no deploy until the lead approves this spec.
       `api.remember` writes per-tick `state.memoryOut` (`binding.js:314`) so
       the sandbox discards it, but `script_tick.py:387` adopts the returned
       memory — the dry tick's memory must be discarded too.
-- [ ] 2.6 The decision "script vs plain planner" is conditions, not model
+- [x] 2.6 The decision "script vs plain planner" is conditions, not model
       preference: (1) planning kind allows scripting; (2) no HAND-WRITTEN
       script is currently bound to this bot; (3) dry tick passed. Any failure
       → plain planner. Condition 2 is per BOT because
-      `bindings.get(self.name)` (`agent.py:3113`) is per bot and no
+      `bindings.get(self.name)` (`agent.py:3132`) is per bot and no
       goal-to-script association exists; it does not contradict the M3-1g
       hold, which names the goal that owns a pause, not the script a goal
       owns.
-- [ ] 2.7 **"Hand-written" is read from `bindings.json`, which now names only
+- [x] 2.7 **"Hand-written" is read from `bindings.json`, which now names only
       hand-written scripts.** A planner-authored script is carried in memory
       and is never added to `bindings.json`, so an entry there can only have
       been placed by a human. Condition 2 asks "does `bindings.json` name a
@@ -63,11 +63,11 @@ Spec only. No code, no build, no deploy until the lead approves this spec.
       must not overwrite; a no leaves the bot free for a written script. This
       keeps the 2.4 latch reset reachable for the agent's own previous script,
       which leaves no file entry.
-- [ ] 2.8 **The script lives in memory, so a restart DROPS it rather than
+- [x] 2.8 **The script lives in memory, so a restart DROPS it rather than
       freezing it.** The agent has NO write path for script source:
-      `scripts_dir` comes from `SCRIPTS_DIR` (`agent.py:3092`) and the only
-      accesses are reading `bindings.json` (`:3097`) and joining the filename
-      (`:3121`). The emitted script is therefore passed straight to the runner
+      `scripts_dir` comes from `SCRIPTS_DIR` (`agent.py:3111`) and the only
+      accesses are reading `bindings.json` (`:3116`) and joining the filename
+      (`:3140`). The emitted script is therefore passed straight to the runner
       as the tick's source. Consequence: on restart the in-memory script is
       gone and the bot falls back to its `bindings.json` script or the plain
       planner — no error, no missed tick, and NOT silently resumed.

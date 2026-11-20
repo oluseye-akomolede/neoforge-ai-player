@@ -233,6 +233,13 @@ class BotRunner:
         # than in __init__ so a broken script file cannot stop a bot booting.
         self._script_tick = None
         self._script_loaded = False
+        # A script the planner authored, carried as SOURCE TEXT in the process
+        # and never written to disk (spec, "A Planner-Authored Script Lives In
+        # Memory, Not On Disk"). It is the only form available: the agent has
+        # no write path for script source, so a file-backed planner script
+        # cannot exist here. Cleared to None on restart by construction --
+        # there is nothing to reload it from, which is the spec's stated cost.
+        self._planner_script = None
         self._plan_steps = []
         self._plan_step_idx = 0
         self._plan_instruction = ""
@@ -895,6 +902,18 @@ class BotRunner:
                 tc = _transmute.get_context_string() if _transmute else ""
                 inv_context = self._get_my_inventory_summary()
                 steps = planner.decompose(self.model, text, memory_context, tc, inv_context, sender=sender)
+                # M3-2 step (a): the planner may answer with a program instead
+                # of steps. Bind it in memory and let the script path run; do
+                # not fall through to plan execution, which would drive an
+                # empty step list and quietly do nothing.
+                planner_script = getattr(steps, "script", None)
+                if planner_script:
+                    if self._bind_planner_script(planner_script):
+                        self._consume_message(msg)
+                        return
+                    # Not bound (a hand-written script wins, or it failed its
+                    # dry tick). Fall through with whatever steps accompanied
+                    # it -- normally none, so the planner keeps running.
                 self._plan_steps = steps
                 self._plan_step_idx = 0
                 self._plan_instruction = text
@@ -3120,6 +3139,55 @@ Respond with ONLY a JSON array. Example:
             return None
         return _os.path.join(scripts_dir, name)
 
+    def _bind_planner_script(self, source):
+        """Adopt a planner-authored script as this bot's in-memory script.
+
+        Returns True iff the script was dry-ticked successfully and is now what
+        this bot runs. A False return leaves the bot exactly as it was: any
+        previously bound script stays in force, and a bot with none keeps
+        running the planner.
+
+        Three orderings are load-bearing, and each is a test:
+
+          - The hand-written check comes FIRST. `bindings.json` decides what is
+            hand-written (the spec's rule), so a bot named there is running a
+            human's script and the planner must not take it over. Dry-ticking
+            first would spend real CPU to reach a decision already made.
+
+          - The dry tick comes BEFORE the assignment. A program that throws on
+            tick one must never replace a working bot; binding then testing
+            would leave the broken script live between the two.
+
+          - The assignment comes before the latch reset only in the sense that
+            both are needed: setting the source without clearing `_script_loaded`
+            would leave the cached tick from the OLD source running for ever,
+            because the latch is what `_get_script_tick` consults first.
+        """
+        if not source or not source.strip():
+            return False
+        if (self._bound_script_path() or "").strip():
+            # A hand-written binding is deployed for this bot. It wins; this is
+            # the spec's condition 2 made structural rather than remembered.
+            print(f"[{self.name}/script] planner script offered but a "
+                  f"hand-written binding is deployed; keeping it")
+            return False
+        if not self._dry_tick(source):
+            print(f"[{self.name}/script] planner script failed its dry tick; "
+                  f"not bound")
+            return False
+        self._planner_script = source
+        # Reset the one-shot latch so the next tick rebuilds from this source.
+        # This is the single writer the spec requires: nothing else may clear
+        # it, or the cached tick and the source drift apart.
+        self._script_tick = None
+        self._script_loaded = False
+        # NOT the "bound" line. `_get_script_tick` prints exactly one of those,
+        # on the build that succeeds, and it is the line that dates when the
+        # script became live (M3-1c). Printing "bound" here too would put two
+        # bind lines in the log for one bind and make the digest un-datable.
+        print(f"[{self.name}/script] adopting planner script; rebuilt next tick")
+        return True
+
     def _get_script_tick(self):
         """Build the ScriptTick once, or None if this bot has no usable script.
 
@@ -3139,8 +3207,15 @@ Respond with ONLY a JSON array. Example:
             return self._script_tick
         self._script_loaded = True
         source = None
-        path = (self._bound_script_path() or "").strip()
-        if path:
+        # A planner-authored script is already source text; it has no path and
+        # never touched the filesystem. Checked before the binding so the
+        # in-memory script is the one built, not a stale file.
+        if (getattr(self, "_planner_script", None) or "").strip():
+            source = self._planner_script
+            path = "(planner, in memory)"
+        else:
+            path = (self._bound_script_path() or "").strip()
+        if source is None and path:
             try:
                 with open(path, encoding="utf-8") as f:
                     source = f.read()

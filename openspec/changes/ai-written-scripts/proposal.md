@@ -76,7 +76,7 @@ existing change does not say. Each is the subject of one ADDED requirement.
    **The word "bind" hides a mechanism that does not exist yet.** A bot resolves
    its script once for the process lifetime: `_script_loaded` is `False` at
    `agent/agent.py:235`, returns the cached tick at `:3139` and is set `True`
-   at `:3140`, with one production caller at `:2890`. Binding is therefore a
+   at `:3140`, with one production caller at `:2909`. Binding is therefore a
    **rebind**, and the spec says so explicitly: the latch gains a defined reset
    for a planner-authored script, and that reset is its only writer. An
    implementer who calls the existing path without it gets the previous script
@@ -101,7 +101,7 @@ existing change does not say. Each is the subject of one ADDED requirement.
    to script at all. Without a rule, the choice is the model's whim.
 
    The rule is stated as conditions, and the condition is **per BOT**: binding
-   is `bindings.get(self.name)` (`agent.py:3113`), with no goal-to-script
+   is `bindings.get(self.name)` (`agent.py:3132`), with no goal-to-script
    association anywhere, so a per-goal condition would be vacuously satisfiable
    and would pretend to an association the code does not have.
 
@@ -119,9 +119,9 @@ existing change does not say. Each is the subject of one ADDED requirement.
 
    **Provenance is read from `bindings.json`, because the planner's script
    lives in memory.** The agent has no write path for script source at all —
-   `scripts_dir` comes from `SCRIPTS_DIR` (`agent.py:3092`), and the only
-   accesses are reading `bindings.json` (`:3097`) and joining the filename
-   (`:3121`). So the emitted script is carried in the process and never added to
+   `scripts_dir` comes from `SCRIPTS_DIR` (`agent.py:3111`), and the only
+   accesses are reading `bindings.json` (`:3116`) and joining the filename
+   (`:3140`). So the emitted script is carried in the process and never added to
    that file, which therefore names only hand-written scripts a human deployed.
    Condition 2 asks "does `bindings.json` name a script for this bot?". A yes is
    a human deployment a planner must not overwrite; a no leaves the bot free for
