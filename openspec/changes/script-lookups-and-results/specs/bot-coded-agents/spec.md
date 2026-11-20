@@ -146,7 +146,12 @@ still be held off, so any implementation keyed on the script fails it.
 - **THEN** the result MUST appear in that call's prompt
 - **AND** no additional planner call MUST be made to carry it
 
-#### Scenario: A result is only read by the goal that produced it
+#### Scenario: A result is only read by the goal that produced it (DEFERRED)
+**Deferred (task 3.9):** the rule below is implemented and tested on the slot,
+but it cannot fire in production yet, because a tick carries no goal id out of
+the sandbox -- a held script returns SCRIPT_HELD before it ticks, so every
+stored result is keyed to goal `""`. Nothing this change ships depends on the
+discard; it starts working unchanged once a tick reports the goal it ran for.
 - **GIVEN** a result keyed to bot and goal id
 - **WHEN** the planner next runs for a different goal id
 - **THEN** the result MUST NOT be rendered into that call's prompt
@@ -166,7 +171,10 @@ still be held off, so any implementation keyed on the script fails it.
 - **THEN** the in-flight call MUST NOT be interrupted or given the result
 - **AND** the result MUST be delivered on a later pass under the caps
 
-#### Scenario: A stale result is discarded, not delivered
+#### Scenario: A stale result is discarded, not delivered (DEFERRED)
+**Deferred (task 3.9):** not shipped by this change. No age rule is
+implemented, and the requirement below is the target for the step that gives a
+tick its goal id, not a promise about this ship.
 - **GIVEN** a pending result older than 30 minutes
 - **WHEN** a planning call for its goal next runs
 - **THEN** the result MUST NOT be rendered

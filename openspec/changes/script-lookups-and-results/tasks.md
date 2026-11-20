@@ -122,17 +122,17 @@ document work that preceded them, kept so the reasoning is not lost.
       by a test that spends the cap, calls `reset()`, and asserts the fifth
       result is still held off; the mutant clears the counters in `reset()` and
       must red it.
-- [x] 3.9 `replace` keeps the existing `goal_id`; the planner never mints one
-      and `_new_goal_id` stays player-message only. Pinned by a test that a
-      replace outcome keeps the id and that no planner path produces a new one.
-      Part of the rule is NOT reachable yet, recorded here rather than
-      claimed: a tick carries no goal id out of the sandbox (a held script
-      returns SCRIPT_HELD before ticking), so results are stored with goal
-      `""`, and the entry that delivers a result reads its goal from the same
-      hold -- a result and the goal receiving it are compared with
-      themselves, so the `goal-changed` discard cannot fire in production. The
-      slot rule, the replace rule and the no-minting rule are pinned and live;
-      the discard needs a tick that reports which goal it ran for.
+- [ ] 3.9 DEFERRED -- the `goal-changed` discard. Not done, and nothing
+      may promise it. A tick carries no goal id out of the sandbox (a held
+      script returns SCRIPT_HELD before ticking), so every stored result has
+      goal `""`, and the entry that delivers a result reads its goal from the
+      same hold. A result and the goal receiving it are therefore compared
+      with themselves, and the discard can never fire in production. The slot
+      RULE is implemented and tested (`test_a_result_from_a_superseded_goal_is_discarded_not_delivered`),
+      so it starts working unchanged once a tick reports the goal it ran for.
+      The rest of 3.9 is done and live: `replace` keeps the existing
+      `goal_id`, the planner never mints one, and `_new_goal_id` stays
+      player-message only, pinned by tests.
 
 ## 4. Trials on test (run by the lead)
 
