@@ -1279,6 +1279,7 @@ _SCRIPT_FENCE_RE = re.compile(
 
 
 _PREVIEW_CHARS = 600
+_TAIL_CHARS = 200
 
 
 def preview_reply(raw: str) -> str:
@@ -1295,6 +1296,37 @@ def preview_reply(raw: str) -> str:
         return "<no reply>"
     return repr(raw[:_PREVIEW_CHARS]) + (
         f"... [+{len(raw) - _PREVIEW_CHARS} chars]" if len(raw) > _PREVIEW_CHARS else "")
+
+
+def tail_reply(raw: str, n: int = _TAIL_CHARS) -> str:
+    """The last `n` chars of a reply, escaped, for diagnosing a missing fence.
+
+    A head-only preview cannot distinguish "no closing fence at all" from "the
+    fence is there but the block is empty" from "prose follows the fence" --
+    all three look identical in the first 600 chars, and they need three
+    different fixes. Model output only, same escape rule as preview_reply.
+    """
+    if raw is None:
+        return "<no reply>"
+    if len(raw) <= n:
+        return repr(raw)
+    return f"[+{len(raw) - n} chars]..." + repr(raw[-n:])
+
+
+def fence_diagnosis(raw: str) -> str:
+    """Name why extract_script_block found no block, for the warning line.
+
+    Kept separate from the extractor so the extractor stays a pure parser: this
+    only ever describes a reply that already failed, and never decides anything.
+    """
+    text = raw or ""
+    opens = len(re.findall(r"```(?:js|javascript)\s*\n", text, re.IGNORECASE))
+    closes = text.count("```") - opens
+    if opens == 0:
+        return "no-js-fence (```js/```javascript not found)"
+    if closes < opens:
+        return f"missing-closing-fence (opened {opens}, closed {max(closes, 0)})"
+    return f"fence-present-but-block-unusable (opened {opens}, closed {closes})"
 
 
 def extract_script_block(model_text: str) -> str | None:
@@ -1385,6 +1417,15 @@ def call_script(
         log.warning("[%s] L3 SCRIPT call truncated: %s", bot_name, e)
         return None
     if script is None:
-        log.warning("[%s] L3 SCRIPT call returned no block; raw preview: %s",
-                    bot_name, preview_reply(raw))
+        # The first trial's warning showed a real script that this rejected, and
+        # a head-only preview could not say why: every candidate cause (no close,
+        # empty block, trailing prose) looks the same in the first 600 chars.
+        # So log the shape AND the tail, plus what the backend said about the
+        # reply -- if done_reason were 'length' the file would be cut, which is a
+        # different bug from a fence the model failed to close.
+        log.warning(
+            "[%s] L3 SCRIPT call returned no block; %s; done_reason=%r eval_count=%r "
+            "len(content)=%d; head: %s; tail: %s",
+            bot_name, fence_diagnosis(raw), body.get("done_reason"),
+            body.get("eval_count"), len(raw), preview_reply(raw), tail_reply(raw))
     return script

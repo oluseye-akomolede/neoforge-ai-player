@@ -853,6 +853,113 @@ class TestTheRawReplyPreview(unittest.TestCase):
         self.assertEqual(l3_planner.preview_reply(""), "''")
 
 
+class TestTheFenceFormsThatActuallyFailed(unittest.TestCase):
+    """Extraction was rejecting replies that carried a real script (2026-11-20
+    18:57Z trial: 1054 chars, opening '```js\\n// Auto-eat when HP drops below
+    half', done_reason NOT length, and still "returned no block").
+
+    These pin what the extractor accepts and what it rejects, over the fence
+    shapes a model actually emits, so "no block" always has one named cause
+    rather than being a catch-all. The head-only preview could not distinguish
+    them: all of them look the same in the first 600 chars.
+    """
+
+    BODY = 'api.do({ skill: "eat", args: {} });'
+
+    def test_a_properly_closed_block_is_accepted(self):
+        """KILLS: making the regex stricter than the form the prompt asks for."""
+        got = l3_planner.extract_script_block(
+            "```js\n%s\n```" % self.BODY)
+        self.assertEqual(got, self.BODY)
+
+    def test_a_closing_fence_with_no_newline_before_it_is_accepted(self):
+        """KILLS: requiring \\n before the closing fence, which rejects a block
+        the model closed correctly."""
+        got = l3_planner.extract_script_block(
+            "```js\n%s```" % self.BODY)
+        self.assertEqual(got, self.BODY)
+
+    def test_a_missing_closing_fence_is_rejected(self):
+        """The form that matches the 18:57Z shape: opens correctly, runs to the
+        end, never closes. KILLS: accepting an unterminated block, which would
+        bind a program cut short mid-statement."""
+        self.assertIsNone(l3_planner.extract_script_block(
+            "```js\n%s\n" % self.BODY))
+
+    def test_a_fence_with_no_newline_after_the_tag_is_rejected(self):
+        """KILLS: loosening the tag rule to accept '```js <code>' on one line,
+        which would swallow the first statement into the language tag."""
+        self.assertIsNone(l3_planner.extract_script_block(
+            "```js %s\n```" % self.BODY))
+
+    def test_trailing_prose_after_the_fence_still_yields_the_script(self):
+        """KILLS: anchoring to the end of the reply, which drops a good script
+        because the model added a sentence after it."""
+        got = l3_planner.extract_script_block(
+            "```js\n%s\n```\n\nThis script eats when health is low." % self.BODY)
+        self.assertEqual(got, self.BODY)
+
+    def test_an_empty_block_is_no_script(self):
+        """KILLS: returning '' for an empty block, which binds a script that
+        does nothing instead of running the plan's steps."""
+        self.assertIsNone(l3_planner.extract_script_block("```js\n\n```"))
+
+
+class TestTheNoBlockWarningSaysWhy(unittest.TestCase):
+    """Ask 1 from the 19:02Z handoff: the warning must log done_reason,
+    eval_count, len(content), and the LAST chars as well as the head. Without
+    the tail every candidate cause looks identical."""
+
+    def _run_capture(self, reply, body_extra=None):
+        body = {"message": {"content": reply}}
+        if body_extra:
+            body.update(body_extra)
+        resp = mock.MagicMock()
+        resp.json.return_value = body
+        resp.raise_for_status.return_value = None
+        with mock.patch.object(l3_planner.requests, "post", return_value=resp), \
+             mock.patch.object(l3_planner, "ollama_lock", mock.MagicMock()):
+            with self.assertLogs(l3_planner.log.name, level="WARNING") as cm:
+                got = l3_planner.call_script("Scout", "do a thing", None,
+                                             model="qwen3.8:27b")
+        return got, "\n".join(cm.output)
+
+    def test_the_warning_names_the_missing_closing_fence(self):
+        """KILLS: a warning that only says "no block", which is what made the
+        18:57Z failure unactionable."""
+        got, log = self._run_capture("```js\nreturn 1;\n")
+        self.assertIsNone(got)
+        self.assertIn("missing-closing-fence", log)
+
+    def test_the_warning_reports_the_backend_accounting(self):
+        """KILLS: dropping done_reason/eval_count from the warning, which is
+        how a token-limit cut would be mistaken for a model that gave up."""
+        _, log = self._run_capture(
+            "```js\nreturn 1;\n", {"done_reason": "stop", "eval_count": 311})
+        self.assertIn("done_reason='stop'", log)
+        self.assertIn("eval_count=311", log)
+
+    def test_the_warning_includes_the_tail_not_only_the_head(self):
+        """KILLS: logging only the head preview. A 1054-char reply whose head
+        looks perfect is exactly the case that needs its last 200 chars: that
+        is where a missing fence is visible."""
+        long = "```js\n" + ("// filler line\n" * 60) + "return 1;\n"
+        _, log = self._run_capture(long)
+        self.assertIn("tail:", log)
+        tail = l3_planner.tail_reply(long)
+        self.assertIn(repr(long[-200:]), tail,
+                      "the tail does not show the literal end of the reply")
+        # The distinguishing content is at the END, so a head-only preview
+        # cannot contain it.
+        self.assertNotIn(repr(long[-200:]), l3_planner.preview_reply(long))
+
+    def test_an_unclosed_fence_at_the_very_end_shows_in_the_tail(self):
+        """KILLS: a tail that elides the end (e.g. shows from the top)."""
+        long = "```js\n" + ("x" * 300) + "\nBROKEN_END"
+        tail = l3_planner.tail_reply(long)
+        self.assertIn("BROKEN_END", tail)
+
+
 def _agent_module():
     import importlib
     return importlib.import_module("agent")
