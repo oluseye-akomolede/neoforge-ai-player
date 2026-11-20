@@ -33,8 +33,19 @@ NOT spend a host call, reach the network, or reach the mod.
 - **WHEN** the script tries to match a block by its registry id or its state
   (for example a flower's colour)
 - **THEN** the lookup MUST NOT claim to have answered it
-- **AND** the documented answer MUST be that block state is carried as ids and
-  not names, or the lookup is not attempted
+- **AND** the documented answer MUST be that neither the display name nor a
+  registry id carries block state, so the lookup is not attempted
+
+#### Scenario: The nearest K are the nearest, not the first met
+- **GIVEN** a bot at the origin, a chest at (2,0,2) and another at (-5,-5,-5),
+  and K=1 for that block id
+- **WHEN** the cache is refreshed
+- **THEN** the kept entry MUST be (2,0,2), squared distance 8, and not
+  (-5,-5,-5), squared distance 75
+- **AND** an implementation that keeps whichever candidate the x,y,z scan met
+  first MUST fail this scenario
+- **AND** equal squared distances MUST be broken by scan order, stated in the
+  requirement, so the same world always gives the same payload
 
 #### Scenario: A lookup cannot act
 - **GIVEN** the `look` object built for a tick

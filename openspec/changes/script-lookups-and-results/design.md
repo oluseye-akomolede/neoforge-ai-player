@@ -176,13 +176,52 @@ reviewer's estimate under partial fill; 57 KiB is the full-cube bound computed
 from the same 44-byte entry. Sent every 40 ticks that is about 1.5 KiB/s of
 extra egress per bot for a payload most ticks cannot use.
 
-**If that is too big every tick, bound it rather than ship it.** The
-recommended bound is **nearest K per block id** instead of the whole cube:
+**If that is too big every tick, bound it rather than ship it.** The bound is
+**true nearest K per block id** for this ship:
 for K=2 and 40 distinct names, 80 entries ≈ **3.4 KiB**; K=4 gives ≈ 6.9 KiB.
-That keeps "a second chest" answerable (K≥2), stays inside today's order of
-magnitude, and costs one insertion-ordered pass over the cube rather than a
-sort. It needs a per-id counter in the existing `seen` loop (`:898-911`),
-which is a few lines in the same method — not a new scan.
+That keeps "a second chest" answerable (K≥2) and stays inside today's order of
+magnitude.
+
+**It is a ranking, not a counter.** The obvious cheaper reading — "keep the
+first K entries of each id" — is wrong, and wrong in a way that looks fine
+until replayed. `BotPlayer.java:893-897` walks `x`, then `y`, then `z` upward
+from `(-r,-r,-r)` and computes **no distance at all**: `state.getBlock()`,
+`getName()`, and a `position` string, nothing else. So a counter keeps whichever
+K were met first in scan order, which is the K nearest the **far corner**, not
+the bot. Replayed at K=1 that keeps a chest 8.66 blocks away and drops one 2.83
+blocks away — the bound would silently starve the lookups it exists to serve.
+
+What true nearest-K needs, stated as three changes to that method:
+
+1. **A squared distance per candidate**, computed from the bot's block position
+   at cache-refresh time: `dx*dx + dy*dy + dz*dz`. Integer, no square root, no
+   allocation.
+2. **K-bounded insertion per block id** rather than first-K: each id keeps its
+   best K, inserting a candidate and evicting the worst when full. K is tiny
+   (2 or 4), so this is an insertion into a short list, not a sort of the cube.
+3. **A deterministic tie-break**: equal distances are ordered by **scan order**
+   (the existing `x`, `y`, `z` walk), so two runs over the same world produce
+   the same payload and a test can pin it.
+
+**Cost, honestly:** up to **1331 integer distance computations** per refresh
+for the worst-case cube (fewer when air is skipped earlier, which it is not —
+air is tested inside the loop at `:904`), plus a K-bounded insertion for every
+non-air cell. Every 40 ticks. It is real work on the server thread in the same
+walk, but it is arithmetic and short-list insertion, not a sort and not a
+second scan. I am not calling it "a few lines with no sort" — it is a ranking
+with a stated bound, and its cost is the 1331 computations above.
+
+**Pinned by the case that catches it:** a chest at `(2,0,2)` and another at
+`(-5,-5,-5)` from a bot at the origin, K=1. True nearest-K keeps `(2,0,2)`
+(8 squared) and drops `(-5,-5,-5)` (75 squared). Scan-order code keeps the
+opposite. The test asserts the kept position, so it fails on scan-order.
+
+### A named follow-up: `find_blocks` as a script lookup
+
+Exposing `find_blocks` as a host call at radius 32 is **not in this ship**. It
+is recorded here as the follow-up that removes the radius ceiling entirely,
+with its cost, so the decision to defer it is on the page rather than implied.
+Its numbers are in the next section.
 
 ### The alternative: expose `find_blocks` as one host-call lookup
 

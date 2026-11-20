@@ -12,6 +12,11 @@ carries them.
 - [ ] 1.2 Owner has read §3's cost sentence (up to 4 planner calls per hour per
       bot from results) and the §1 restriction (lookups answer only what the
       snapshot already carries), and has approved both.
+- [ ] 1.6 The snapshot bound is true nearest-K per block id, not first-K in
+      scan order: squared distance per candidate, K-bounded insertion, scan
+      order as the tie-break. The cost is 1331 integer distance computations
+      plus K-bounded insertion per refresh. A later change that implements it
+      pins the (2,0,2) vs (-5,-5,-5) case at K=1, which scan-order code fails.
 - [ ] 1.3 Every radius in `design.md`, `tasks.md` and the spec delta is 5
       (blocks) / 16 (mobs) — the values `BotPlayer.java:619-620` caches — and no
       artefact still describes the requested radii as the served ones. Checked
