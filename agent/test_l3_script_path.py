@@ -13,6 +13,7 @@ A test whose KILLS comment cannot be discharged by a concrete mutant is a test
 that is not testing what it claims.
 """
 
+import ast
 import json
 import os
 import sys
@@ -798,6 +799,58 @@ class TestBindIsAtomicAgainstTheTick(unittest.TestCase):
         self.assertEqual(built, ["// new\n[];"],
                          "the tick after the bind was not rebuilt from the "
                          "source the bind installed")
+
+
+class TestTheRawReplyPreview(unittest.TestCase):
+    """The lead asked for raw-reply previews because two trial failures were
+    unactionable from the message alone. These pin the properties that make a
+    preview safe to log: bounded, single-line, and model output only."""
+
+    def test_a_multiline_reply_becomes_one_log_line(self):
+        """KILLS: logging the raw text, which splits one failure across many
+        lines and hides the rest of the log around it."""
+        import l3_planner
+        p = l3_planner.preview_reply("line one\nline two\r\nline three")
+        self.assertNotIn("\n", p)
+        self.assertNotIn("\r", p)
+        self.assertIn("line one", p)
+        self.assertIn("line three", p)
+
+    def test_the_preview_round_trips_to_the_same_bytes(self):
+        """KILLS: escaping that is lossy, so the next reader cannot tell an
+        escaped tab from a literal backslash-t in the model's actual output."""
+        import l3_planner
+        original = 'a\tb\\tc\n\n```js\napi.say("hi");\n```'
+        p = l3_planner.preview_reply(original)
+        self.assertNotIn("\n", p)
+        self.assertEqual(ast.literal_eval(p), original,
+                         "the preview does not decode back to the reply")
+
+    def test_the_preview_is_bounded_and_says_how_much_it_dropped(self):
+        """KILLS: an unbounded preview, which puts many KiB of JavaScript in
+        the log the reader is trying to scan."""
+        import l3_planner
+        raw = "x" * (l3_planner._PREVIEW_CHARS + 250)
+        p = l3_planner.preview_reply(raw)
+        self.assertLess(len(p), len(raw),
+                        "the preview is not shorter than the reply")
+        self.assertIn("+250 chars", p,
+                      "the preview does not say how much it dropped")
+
+    def test_a_short_reply_is_not_truncated(self):
+        """KILLS: always appending a dropped-count, which implies a truncation
+        that did not happen."""
+        import l3_planner
+        p = l3_planner.preview_reply("```js\nreturn 1;\n```")
+        self.assertNotIn("chars]", p)
+        self.assertEqual(ast.literal_eval(p), "```js\nreturn 1;\n```")
+
+    def test_an_empty_reply_is_distinguishable_from_no_reply(self):
+        """KILLS: rendering both as an empty preview, so "the model returned
+        nothing" and "there was no response object" read the same."""
+        import l3_planner
+        self.assertEqual(l3_planner.preview_reply(None), "<no reply>")
+        self.assertEqual(l3_planner.preview_reply(""), "''")
 
 
 def _agent_module():

@@ -505,6 +505,8 @@ def call_plan(model: str, bot_name: str, task: str,
             world_state_summary=world_state_summary,
             plan_ref=created_at, parse_error=f"non-JSON: {e}",
         )
+        log.warning("[%s] L3 PLAN reply was not JSON (%s); raw preview: %s",
+                    bot_name, e, preview_reply(raw))
         raise PlanValidationError(f"L3 PLAN returned non-JSON: {e}") from e
     # Clarify/refuse: when the task cannot honestly be decomposed — it is too
     # vague to act on ("go get some stuff"), impossible on this server, or
@@ -1276,6 +1278,25 @@ _SCRIPT_FENCE_RE = re.compile(
     r"```(?:js|javascript)\s*\n(.*?)\n?```", re.DOTALL | re.IGNORECASE)
 
 
+_PREVIEW_CHARS = 600
+
+
+def preview_reply(raw: str) -> str:
+    """A bounded, newline-escaped preview of a model reply for the log.
+
+    Model output only: never the prompt, never headers. This exists because a
+    parse failure or a missing fence is unactionable from a message like "line
+    9 column 5" — the next reader needs to see the shape of what actually came
+    back (a think tag, prose before the fence, a trailing comma) without the
+    whole reply, which can be many KiB of JavaScript. Newlines are escaped so
+    one line of log decodes back to the same bytes.
+    """
+    if raw is None:
+        return "<no reply>"
+    return repr(raw[:_PREVIEW_CHARS]) + (
+        f"... [+{len(raw) - _PREVIEW_CHARS} chars]" if len(raw) > _PREVIEW_CHARS else "")
+
+
 def extract_script_block(model_text: str) -> str | None:
     """Pull a planner-authored script out of its own reply.
 
@@ -1353,7 +1374,10 @@ def call_script(
         log.warning("[%s] L3 SCRIPT call failed: %s", bot_name, e)
         return None
     try:
-        script = extract_script_block(answer_text(body))
+        # answer_text raises TruncatedAnswer, so it belongs inside the guard:
+        # that exception is the whole reason this block exists.
+        raw = answer_text(body)
+        script = extract_script_block(raw)
     except TruncatedAnswer as e:
         # The model hit its budget mid-script. A truncated script would compile
         # to something that is not what it meant, so treat it as no script and
@@ -1361,5 +1385,6 @@ def call_script(
         log.warning("[%s] L3 SCRIPT call truncated: %s", bot_name, e)
         return None
     if script is None:
-        log.info("[%s] L3 SCRIPT call returned no block", bot_name)
+        log.warning("[%s] L3 SCRIPT call returned no block; raw preview: %s",
+                    bot_name, preview_reply(raw))
     return script
