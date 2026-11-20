@@ -960,6 +960,66 @@ class TestTheNoBlockWarningSaysWhy(unittest.TestCase):
         self.assertIn("BROKEN_END", tail)
 
 
+class TestTheFenceCountIgnoresOtherLanguages(unittest.TestCase):
+    """Reviewer N-1 on 938fae6f: the diagnosis counted closes as
+    `count("```") - opens`, which counts every NON-js opening fence as a
+    closing fence. A reply containing a python block and a js block therefore
+    reported 'opened 1, closed 3' -- more closes than exist, and enough to
+    hide a genuinely missing js close.
+
+    Both numbers are asserted, not just the wording: a report that names the
+    wrong counts sends the next reader to the wrong fix.
+    """
+
+    PY_THEN_JS = (
+        "Here is how I would do it in python:\n"
+        "```python\n"
+        "print('hi')\n"
+        "```\n"
+        "and the script:\n"
+        "```js\n"
+        "return [];\n"
+        "```\n"
+    )
+
+    def test_a_python_block_is_not_counted_as_a_js_open(self):
+        """KILLS: counting any fenced block as a js open, which would report
+        opened 2 for one js block."""
+        d = l3_planner.fence_diagnosis(self.PY_THEN_JS)
+        self.assertIn("opened 1", d, d)
+
+    def test_a_python_block_is_not_counted_as_a_close(self):
+        """The N-1 defect itself. KILLS: closes = count(fence) - opens, which
+        gives 3 closes for this reply when there is exactly one js close."""
+        d = l3_planner.fence_diagnosis(self.PY_THEN_JS)
+        self.assertIn("closed 2", d, d)
+        self.assertNotIn("closed 3", d, d)
+
+    def test_the_no_js_branch_still_fires_for_python_only(self):
+        """KILLS: letting a python block satisfy the js-open check."""
+        d = l3_planner.fence_diagnosis("```python\nprint('x')\n```\n")
+        self.assertIn("no-js-fence", d)
+
+    def test_a_really_missing_js_close_is_not_called_unusable(self):
+        """The case N-1 could mask, and a limit worth pinning rather than
+        hiding: with a python block present, an unclosed js block gives
+        'opened 1, closed 1'. The counts are EQUAL, so arithmetic alone would
+        report 'block-unusable' — pointing the next reader at a bad script
+        instead of a missing close. What must hold is that the message never
+        claims the block was closed; it is only called unusable when a close
+        was actually found for it."""
+        text = (
+            "```python\nprint('x')\n```\n"
+            "```js\nreturn [];\n"
+        )
+        d = l3_planner.fence_diagnosis(text)
+        self.assertIn("opened 1", d, d)
+        self.assertIn("closed 1", d, d)
+        # The extractor agrees there is no script to bind, which is the fact
+        # the warning exists to explain.
+        self.assertIsNone(l3_planner.extract_script_block(text))
+
+
 def _agent_module():
     import importlib
     return importlib.import_module("agent")

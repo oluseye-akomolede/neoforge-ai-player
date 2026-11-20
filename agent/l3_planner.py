@@ -1320,13 +1320,13 @@ def fence_diagnosis(raw: str) -> str:
     only ever describes a reply that already failed, and never decides anything.
     """
     text = raw or ""
-    opens = len(re.findall(r"```(?:js|javascript)\s*\n", text, re.IGNORECASE))
-    closes = text.count("```") - opens
-    if opens == 0:
+    opens_js = len(re.findall(r"```(?:js|javascript)[ \t]*\r?\n", text, re.IGNORECASE))
+    closes = len(re.findall(r"```[ \t]*\r?(?=\n|$)", text))
+    if opens_js == 0:
         return "no-js-fence (```js/```javascript not found)"
-    if closes < opens:
-        return f"missing-closing-fence (opened {opens}, closed {max(closes, 0)})"
-    return f"fence-present-but-block-unusable (opened {opens}, closed {closes})"
+    if closes < opens_js:
+        return f"missing-closing-fence (opened {opens_js}, closed {closes})"
+    return f"fence-present-but-block-unusable (opened {opens_js}, closed {closes})"
 
 
 def extract_script_block(model_text: str) -> str | None:
