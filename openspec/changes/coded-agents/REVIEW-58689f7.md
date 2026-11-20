@@ -1,5 +1,16 @@
 # Review: 58689f7 - M3-2 step (a) spec rev 4 (R1 resolved)
 
+> **Rebase pointer (2026-11-20, 04:10Z).** The content of this review was
+> rebased by the builder onto controlplane/main and 58689f7 no longer exists on
+> the branch. The same content is now **0fcd8e4** (old tip 0d230d2 -> 96ef87f).
+> Verified by me, not taken on report: `git diff --stat 0d230d2 96ef87f --
+> openspec/changes/ai-written-scripts/` is EMPTY, so this review's verdict
+> continues to apply under the new sha. The only differences across the full
+> tree are the three rebased-onto commits (the l3-spec-driven-planning 63-line
+> spec, its change dir, and M2-PLAN.md 8.4.6/8.4.7) which are the lead's work,
+> not the builder's. `openspec validate ai-written-scripts --strict` rc=0 at
+> 96ef87f. Everything below was written against 58689f7 and is unchanged.
+
 **Verdict: PASS.** The accepted cost is acceptable for the owner. Doc-only,
 3 files, `openspec validate ai-written-scripts --strict` rc=0 and
 `show --json` deltaCount 3, both run from `git archive 58689f7`, not a worktree.
