@@ -1167,9 +1167,17 @@ class TestTheScriptCallsTokenBudget(unittest.TestCase):
         self.assertEqual(seen[0]["timeout"], l3_planner._OLLAMA_TIMEOUT)
 
     def test_the_budget_change_is_the_script_calls_alone(self):
-        """KILLS: copying the new value into the plan call or any other prompt,
-        which would change latency and output for calls nobody complained
-        about. The plan call's 1024 is read from the wire, not from source."""
+        """The script budget must not leak into the plan call.
+
+        This test used to pin the plan call at 1024. That was true when only
+        the script call was too small; the 2026-11-20 21:52Z trial then showed
+        the PLAN call hitting the same limit on one-shot goals, and the plan
+        call got its own budget on its own evidence. The invariant that
+        survives is that the two are separately chosen: the plan call reads
+        _PLAN_NUM_PREDICT from the wire, never _SCRIPT_NUM_PREDICT.
+
+        KILLS: sharing one constant between the two calls, or copying the
+        script value into the plan request."""
         import l3_planner
         plan_calls = []
 
@@ -1189,8 +1197,13 @@ class TestTheScriptCallsTokenBudget(unittest.TestCase):
              mock.patch.object(l3_planner.trajectory_log, "log_call",
                                return_value="c-1"):
             l3_planner.call_plan("m", "Scout", "keep the furnace fed")
-        self.assertEqual(plan_calls[0]["options"]["num_predict"], 1024,
-                         "the plan call's budget changed with the script call's")
+        self.assertEqual(plan_calls[0]["options"]["num_predict"],
+                         l3_planner._PLAN_NUM_PREDICT,
+                         "the plan call is not using its own budget")
+        self.assertNotEqual(l3_planner._PLAN_NUM_PREDICT,
+                            l3_planner._SCRIPT_NUM_PREDICT,
+                            "the two calls share one budget; they are chosen "
+                            "on separate evidence and must stay separable")
 
 
 class TestTheFenceCountIgnoresOtherLanguages(unittest.TestCase):
@@ -1480,3 +1493,165 @@ class TestTheClassifyCallHasRoomToAnswer(unittest.TestCase):
         KILLS: pointing classify at _SCRIPT_NUM_PREDICT."""
         self.assertNotEqual(l3_planner._CLASSIFY_NUM_PREDICT,
                             l3_planner._SCRIPT_NUM_PREDICT)
+
+
+class TestThePlanCallHasRoomToThink(unittest.TestCase):
+    """On 2026-11-20 one-shot goals planned on a model that emits a thinking
+    block even under think=false. At num_predict=1024, 4 of 6 measured calls
+    hit done_reason=length, two with no content at all; the thinking block
+    swung from 2093 to 8482 chars. The plan budget is for thinking we cannot
+    see, and a length stop must never be parsed as a plan."""
+
+    def test_the_plan_budget_clears_the_observed_ceiling(self):
+        """KILLS: reverting to 1024, the value that cut off 4 of 6 calls, or to
+        any value at or below the largest eval_count measured (2396)."""
+        self.assertGreater(l3_planner._PLAN_NUM_PREDICT, 2396)
+
+    def test_the_plan_call_sends_that_budget(self):
+        """KILLS: leaving a literal num_predict in call_plan's request."""
+        sent = {}
+
+        class _Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"message": {"content": json.dumps({
+                    "task": "t", "subtasks": [
+                        {"id": 1, "description": "d", "criteria": "c"}]})},
+                    "done_reason": "stop"}
+
+        class _Lock:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        real_post, real_lock = l3_planner.requests.post, l3_planner.ollama_lock
+        l3_planner.requests.post = lambda url, json=None, timeout=None: (
+            sent.update(json), _Resp())[1]
+        l3_planner.ollama_lock = _Lock()
+        try:
+            l3_planner.call_plan("m", "Scout", "t")
+        finally:
+            l3_planner.requests.post, l3_planner.ollama_lock = real_post, real_lock
+        self.assertEqual(sent["options"]["num_predict"],
+                         l3_planner._PLAN_NUM_PREDICT)
+
+    def _drive_partial(self, content, done_reason="length"):
+        class _Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"message": {"content": content},
+                        "done_reason": done_reason, "eval_count": 1024}
+
+        class _Lock:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        real_post, real_lock = l3_planner.requests.post, l3_planner.ollama_lock
+        l3_planner.requests.post = lambda url, json=None, timeout=None: _Resp()
+        l3_planner.ollama_lock = _Lock()
+        try:
+            l3_planner.call_plan("m", "Scout", "t")
+        finally:
+            l3_planner.requests.post, l3_planner.ollama_lock = real_post, real_lock
+
+    def test_a_partial_plan_cut_by_the_limit_is_not_parsed(self):
+        """The 21:52Z trial shape: 92 chars of valid plan prefix. Without the
+        done_reason guard json.loads reports 'not JSON (line 3 column 16)' and
+        sends the reader to the prompt. KILLS: removing the length check ahead
+        of parsing."""
+        try:
+            self._drive_partial('{"task": "mine oak logs", "subtasks": [\n'
+                                '  {"id": 1, "descrip')
+        except l3_planner.TruncatedAnswer as e:
+            self.assertIn("length", str(e))
+        except l3_planner.PlanValidationError as e:
+            self.fail("a truncated plan was reported as malformed JSON: %s" % e)
+        else:
+            self.fail("a plan cut by the token limit was accepted")
+
+    def test_an_empty_plan_cut_by_the_limit_is_truncated_not_validation(self):
+        """A behavioural pin, not a mutant-killer: an empty reply is caught by
+        answer_text's own empty guard, so this passes with or without
+        call_plan's done_reason check. It stays to pin the ERROR TYPE the
+        orchestrator sees, which is what routes it to the failure plan."""
+        with self.assertRaises(l3_planner.TruncatedAnswer):
+            self._drive_partial("")
+
+    def test_a_complete_plan_that_merely_says_length_is_still_refused(self):
+        """A length stop means unusable whatever it contains — the same rule as
+        the script call. KILLS: whitelisting a well-formed body even when the
+        response says the model was cut off."""
+        full = json.dumps({"task": "t", "subtasks": [
+            {"id": 1, "description": "d", "criteria": "c"}]})
+        with self.assertRaises(l3_planner.TruncatedAnswer):
+            self._drive_partial(full, done_reason="length")
+
+    def test_a_normal_plan_is_unaffected(self):
+        """KILLS: a guard keyed on content length or shape rather than
+        done_reason, which would refuse ordinary complete plans."""
+        class _Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"message": {"content": json.dumps({
+                    "task": "t", "subtasks": [
+                        {"id": 1, "description": "d", "criteria": "c"}]})},
+                    "done_reason": "stop", "eval_count": 100}
+
+        class _Lock:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        real_post, real_lock = l3_planner.requests.post, l3_planner.ollama_lock
+        l3_planner.requests.post = lambda url, json=None, timeout=None: _Resp()
+        l3_planner.ollama_lock = _Lock()
+        try:
+            out = l3_planner.call_plan("m", "Scout", "t")
+        finally:
+            l3_planner.requests.post, l3_planner.ollama_lock = real_post, real_lock
+        self.assertEqual(out.task, "t")
+
+
+class TestATruncatedPlanBecomesAFailurePlan(unittest.TestCase):
+    """TruncatedAnswer is a RuntimeError, not a ValueError. Before
+    plan_orchestrator caught it, a plan cut off by the token limit escaped the
+    planning thread as an unhandled exception and the goal died with only a
+    traceback -- no failure plan, nothing for the caller to log."""
+
+    def _run(self, exc):
+        import plan_orchestrator
+
+        def boom(*a, **kw):
+            raise exc
+
+        with mock.patch.object(plan_orchestrator.l3_planner, "call_plan",
+                               side_effect=boom), \
+             mock.patch.object(plan_orchestrator.plan_store, "write"), \
+             mock.patch.object(plan_orchestrator.plan_store, "archive"), \
+             mock.patch.object(plan_orchestrator.trajectory_log, "log_plan_close"):
+            return plan_orchestrator.execute_task(
+                bot_name="Scout", model="m", task="keep the furnace fed",
+                dispatch_fn=lambda d: "COMPLETED",
+                world_state_fn=lambda: "",
+            )
+
+    def test_a_truncated_plan_yields_a_failed_plan_not_an_exception(self):
+        """KILLS: catching only PlanValidationError, which lets the
+        RuntimeError out of execute_task."""
+        plan = self._run(l3_planner.TruncatedAnswer("cut off (done_reason=length)"))
+        self.assertEqual(plan.status, "failed")
+        self.assertEqual(plan.subtasks, [])
+        self.assertEqual(plan.task, "keep the furnace fed")

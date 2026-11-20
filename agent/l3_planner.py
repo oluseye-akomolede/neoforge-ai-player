@@ -502,12 +502,35 @@ def call_plan(model: str, bot_name: str, task: str,
                 # mode off for every plan. Instead this call may set
                 # wants_script, and only then is a second, non-JSON call made.
                 "format": "json",
-                "options": {"temperature": 0.2, "num_predict": 1024},
+                "options": {"temperature": 0.2, "num_predict": _PLAN_NUM_PREDICT},
             },
             timeout=_OLLAMA_TIMEOUT,
         )
     resp.raise_for_status()
-    raw = _strip_codefence(answer_text(resp.json()))
+    body = resp.json()
+    # A length stop is decided BEFORE parsing, and before answer_text.
+    #
+    # answer_text raises TruncatedAnswer only when the content is EMPTY. A
+    # reply cut mid-object has content -- the 2026-11-20 21:52Z trial sent
+    # 92 chars of a valid plan, `{"task": "...", "subtasks": [`, and fell
+    # through to json.loads, which reported "reply was not JSON (Expecting
+    # value: line 3 column 16)". That message sends a reader to fix the prompt
+    # when the prompt was fine and the budget was not.
+    #
+    # The same rule as the SCRIPT call's (G-3): a length stop means the reply
+    # is not a usable answer, whatever it contains. check it first, always.
+    if isinstance(body, dict) and body.get("done_reason") == "length":
+        log.warning(
+            "[%s] L3 PLAN call hit its token limit (done_reason=length, "
+            "eval_count=%s, %d chars of content) — raising _PLAN_NUM_PREDICT "
+            "(%d) does not make this answer usable",
+            bot_name, body.get("eval_count"),
+            len((body.get("message") or {}).get("content") or ""),
+            _PLAN_NUM_PREDICT)
+        raise TruncatedAnswer(
+            "PLAN call hit the token limit before finishing (done_reason=length, "
+            "eval_count=%s)" % body.get("eval_count"))
+    raw = _strip_codefence(answer_text(body))
     created_at = datetime.datetime.utcnow().isoformat()
     try:
         data = json.loads(raw)
@@ -1320,6 +1343,17 @@ _TAIL_CHARS = 200
 # Changing this MUST NOT change any other call's num_predict.
 _SCRIPT_NUM_PREDICT = 6144
 
+# The plan call's budget. Measured 2026-11-20 22:0xZ against the model the
+# agent actually uses (qwen3.8:27b-q4_K_M via the test gateway), with the real
+# _PLAN_SYSTEM_PROMPT: at 1024, 4 of 6 calls were cut off by the limit, two of
+# them with ZERO content. The cost is the model's thinking block, which arrives
+# despite think=false and is not bounded by anything we control: 2093 to 8482
+# characters across six calls, a 4x swing. At 4096 all 3 sampled calls finished
+# (eval_count 698, 959, 2396), so 4096 leaves room over the worst seen while
+# staying well inside _SCRIPT_NUM_PREDICT's footprint. This is a budget for
+# thinking we cannot see, not slack for a longer plan.
+_PLAN_NUM_PREDICT = 4096
+
 # The classify call's budget. The answer is ~20 characters of JSON, but a model
 # served at temperature 0 can still spend tokens restating the question before
 # it emits them, and `format: "json"` constrains the SHAPE of the reply, not
@@ -1328,6 +1362,32 @@ _SCRIPT_NUM_PREDICT = 6144
 # room for a short preamble while staying far below anything that could cost
 # latency on a call made once per inbound message.
 _CLASSIFY_NUM_PREDICT = 128
+
+# The PLAN call's budget. Measured on the deployment (test gateway, model
+# qwen3.8:27b-q4_K_M, the real _PLAN_SYSTEM_PROMPT, 2026-11-20 ~22:2xZ), six
+# real one-shot goals at the old 1024:
+#
+#   done=stop  eval 995   thinking 3262  content 442
+#   done=stop  eval 805   thinking 2593  content 449
+#   done=LENGTH eval 1024 thinking 4037  content 0     <- no reply at all
+#   done=LENGTH eval 1024 thinking 4108  content 0     <- no reply at all
+#   done=LENGTH eval 1024 thinking 3978  content 0     <- no reply at all
+#   done=stop  eval 870   thinking 3059  content 284
+#
+# So four in six failed, and the budget was NOT going on the plan: a plan is
+# 284-879 chars, while 2600-4100 chars of THINKING preceded it. `think: false`
+# is sent by think_field() and the gateway forwards it (app/main.py:319), yet
+# this model still emits thinking for the plan prompt; that is measured, not
+# explained, and is out of scope for this fix.
+#
+# At 4096 the same goals stopped at eval 1040, 2396 (thinking 3515, 8482) with
+# the plan intact. 4096 is four times the largest plan seen and matches the
+# ceiling of what thinking has been observed to spend. Decode at 32-37 tok/s
+# puts the worst case near 120 s, inside the call timeout.
+#
+# This constant is the PLAN call's only. The SCRIPT call has its own
+# (_SCRIPT_NUM_PREDICT); a shared figure would be a coincidence, not a budget.
+_PLAN_NUM_PREDICT = 4096
 
 
 def preview_reply(raw: str) -> str:

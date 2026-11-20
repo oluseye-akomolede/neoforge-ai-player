@@ -289,7 +289,13 @@ def execute_task(
             )
             on_finalized(plan)
             return plan
-        except PlanValidationError as e:
+        except (PlanValidationError, l3_planner.TruncatedAnswer) as e:
+            # A truncated plan is a failed call, not a malformed plan: the
+            # model was cut off before it finished. It is caught HERE because
+            # it is not a ValueError, so without this clause it left the
+            # planning thread as an unhandled exception and the goal died with
+            # only a traceback instead of the failure plan every other
+            # planning error produces.
             log.warning("[%s] planning failed: %s", bot_name, e)
             # Synthetic failure plan so the caller has something to log
             plan = Plan(

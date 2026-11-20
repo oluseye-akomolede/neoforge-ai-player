@@ -839,3 +839,47 @@ snapshot is a read-only global named `snapshot` (`engine.js:660-680`), not an
 - **WHEN** the model follows the prompt
 - **THEN** the resulting dry-tick failure is a prompt defect
 - **AND** the prompt is what MUST change
+
+### Requirement: A Length-Stopped Plan Reply Is Reported As Truncated
+
+When the PLAN call stops because it ran out of tokens, the failure MUST be
+reported as truncation, with `done_reason` and `eval_count` in the log. It MUST
+NOT be reported as "reply was not JSON".
+
+The two are different facts and only one of them is the model's fault. A reply
+cut mid-object is well-formed JSON up to the cut and the model may have been
+about to answer correctly; a reply that is not JSON at all is a prompt or model
+failure that a bigger budget will not fix. The trial of 2026-11-20 21:52Z
+logged `L3 PLAN reply was not JSON (Expecting value: line 3 column 16 (char
+92))` for a reply that was a truncated plan, which sends a reader to fix the
+prompt.
+
+The same rule already applies to the SCRIPT call, where a length stop means
+"no script" before extraction is attempted. `config.answer_text` raises
+`TruncatedAnswer` ONLY when the content is empty, so a reply carrying a partial
+object never reaches that guard; `call_plan` MUST therefore decide on
+`done_reason` itself, before it parses.
+
+The PLAN call's budget MUST be large enough for a normal plan plus whatever
+the model emits before it, measured on the deployment rather than guessed. A
+plan is a JSON object of several subtasks and is larger than the script call's
+one-program reply, which needed 6144.
+
+#### Scenario: A plan cut short by the token limit
+- **GIVEN** an Ollama reply with `done_reason: "length"` whose content is a
+  JSON object cut mid-way
+- **WHEN** the PLAN call processes it
+- **THEN** it MUST fail as truncated, naming `done_reason` and `eval_count`
+- **AND** it MUST NOT be reported as a non-JSON reply
+
+#### Scenario: A complete plan is unaffected
+- **GIVEN** an Ollama reply with `done_reason: "stop"` holding a complete plan
+- **WHEN** the PLAN call processes it
+- **THEN** the plan MUST be built exactly as before
+
+#### Scenario: The budget was measured against the deployed model
+- **GIVEN** the model the agent runs against, asked the real PLAN prompt
+- **WHEN** the plan budget is chosen
+- **THEN** it MUST exceed the largest `eval_count` observed at a higher budget
+- **AND** the recorded measurement MUST say how many calls were cut off at the
+  previous budget
