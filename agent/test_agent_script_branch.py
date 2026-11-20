@@ -23,6 +23,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from unittest import mock
@@ -89,6 +90,9 @@ class ScriptTickBranchTest(unittest.TestCase):
         # __new__ skips __init__ (which starts threads / opens sockets). We set
         # the exact attributes _run_script_tick reads.
         self.a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
+        # __init__ never ran, so supply the lock the bind/tick path holds.
+        # A real lock, not a Mock: the atomicity tests depend on it.
+        self.a._lock = threading.Lock()
         self.a.name = "Scout"
         self.a.profile = {}
         self.a._script_tick = None
@@ -223,6 +227,7 @@ class BindingsTest(unittest.TestCase):
 
     def _runner(self, name):
         a = self.agent_mod.BotRunner.__new__(self.agent_mod.BotRunner)
+        a._lock = threading.Lock()
         a.name = name
         a.profile = {}
         a._script_tick = None
@@ -419,6 +424,9 @@ class ScriptObservabilityTest(unittest.TestCase):
         agent_mod = _agent_module()
         self.agent_mod = agent_mod
         self.a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
+        # __init__ never ran, so supply the lock the bind/tick path holds.
+        # A real lock, not a Mock: the atomicity tests depend on it.
+        self.a._lock = threading.Lock()
         self.a.name = "Scout"
         self.a.profile = {}
         self.a._l3_orchestrator_dispatch = mock.Mock(
@@ -573,6 +581,9 @@ class ScriptHoldTest(unittest.TestCase):
         agent_mod = _agent_module()
         self.agent_mod = agent_mod
         self.a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
+        # __init__ never ran, so supply the lock the bind/tick path holds.
+        # A real lock, not a Mock: the atomicity tests depend on it.
+        self.a._lock = threading.Lock()
         self.a.name = "Scout"
         self.a.profile = {}
         self.a._script_tick = None
@@ -833,6 +844,9 @@ class DryTickTest(unittest.TestCase):
         agent_mod = _agent_module()
         self.agent_mod = agent_mod
         self.a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
+        # __init__ never ran, so supply the lock the bind/tick path holds.
+        # A real lock, not a Mock: the atomicity tests depend on it.
+        self.a._lock = threading.Lock()
         self.a.name = "Scout"
         self.a.profile = {}
         self.a._script_tick = None
@@ -1023,6 +1037,9 @@ class PlannerScriptBindTest(unittest.TestCase):
         agent_mod = _agent_module()
         self.agent_mod = agent_mod
         self.a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
+        # __init__ never ran, so supply the lock the bind/tick path holds.
+        # A real lock, not a Mock: the atomicity tests depend on it.
+        self.a._lock = threading.Lock()
         self.a.name = "Scout"
         self.a.profile = {}
         self.a._script_tick = None

@@ -201,6 +201,7 @@ def execute_task(
     on_subtask_start: OnSubtaskStart | None = None,
     on_subtask_done: OnSubtaskDone | None = None,
     on_finalized: OnFinalized | None = None,
+    on_script: Callable[[Plan, str], bool] | None = None,
     cancel_event=None,
 ) -> Plan:
     """
@@ -324,6 +325,49 @@ def execute_task(
         on_plan_created(plan)
     except Exception:
         log.exception("[%s] on_plan_created hook raised", bot_name)
+
+    # Exactly One Driver Per Goal: when the planner answered with a script, the
+    # script drives the goal and the orchestrator must NOT also execute the
+    # reply's steps. Both would issue directives at the same bot at once.
+    #
+    # This is deliberately checked AFTER on_plan_created so the plan is still
+    # announced and recorded; the step list is a description of the goal, not
+    # the thing that runs it. If on_script takes the goal and returns True the
+    # plan is closed here as handed over, and phase 2 never runs.
+    planner_script = getattr(plan, "script", None)
+    if planner_script:
+        if on_script is None:
+            # No way to hand over: fall back to executing the steps, so the
+            # goal is still driven by exactly one thing.
+            log.info("[%s] plan carries a script but no on_script hook; "
+                     "executing the step list instead", bot_name)
+        else:
+            try:
+                handed = on_script(plan, planner_script)
+            except Exception:
+                log.exception("[%s] on_script hook raised", bot_name)
+                handed = False
+            if handed:
+                log.info("[%s] goal handed to the planner's script; "
+                         "not executing the step list", bot_name)
+                plan.status = "complete"
+                plan.meta["handed_to_script"] = True
+                telemetry.push(bot_name, "script",
+                               f"handed to planner script for '{task[:80]}'")
+                plan_store.write(plan)
+                try:
+                    on_finalized(plan)
+                except Exception:
+                    log.exception("[%s] on_finalized hook raised", bot_name)
+                trajectory_log.log_plan_close(
+                    bot=bot_name, plan_ref=plan.created_at, status=plan.status,
+                    task=task, subtasks_total=len(plan.subtasks),
+                    subtasks_complete=sum(1 for s in plan.subtasks
+                                          if s.status == "complete"),
+                )
+                return plan
+            log.info("[%s] goal not handed to its script; executing the step "
+                     "list", bot_name)
 
     # Phase 2: drive subtasks
     last_subtask_id = -1

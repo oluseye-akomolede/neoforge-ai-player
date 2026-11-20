@@ -1578,6 +1578,25 @@ class BotRunner:
             self._orch_stop_pending = False
             cancel_event.set()
             print(f"[{self.name}/cancel] honoring pending stop at orchestrator start")
+        def on_script(plan, source):
+            """Hand the goal to the planner's own script (a2).
+
+            Return True only if the script is now what this bot runs, in which
+            case the orchestrator must not execute the plan's steps. Binding
+            REPLACES any earlier in-memory script (it does not resume it), and
+            releasing this goal's hold is safe precisely because of that
+            replacement: there is no longer a rival script to hand the bot to.
+
+            The release is part of the bind, not a separate step, so there is
+            no window where the script is bound and still held.
+            """
+            if not self._bind_planner_script(source):
+                return False
+            print(f"[{self.name}/script] goal {goal_id or '-'} handed to the "
+                  f"planner's script; releasing its hold")
+            self._end_script_hold(goal_id or None)
+            return True
+
         try:
             plan_orchestrator.execute_task(
                 bot_name=self.name,
@@ -1589,6 +1608,7 @@ class BotRunner:
                 on_subtask_start=on_subtask_start,
                 on_subtask_done=on_subtask_done,
                 on_finalized=on_finalized,
+                on_script=on_script,
                 cancel_event=cancel_event,
             )
         except Exception as e:
@@ -3182,12 +3202,18 @@ Respond with ONLY a JSON array. Example:
             print(f"[{self.name}/script] planner script failed its dry tick; "
                   f"not bound")
             return False
-        self._planner_script = source
-        # Reset the one-shot latch so the next tick rebuilds from this source.
-        # This is the single writer the spec requires: nothing else may clear
-        # it, or the cached tick and the source drift apart.
-        self._script_tick = None
-        self._script_loaded = False
+        # Atomic against the bot's own tick: these three fields are what
+        # _get_script_tick consults to decide what to run, and the bind happens
+        # on the orchestrator's thread while the tick loop runs. Interleaved,
+        # a tick could see the new source with the old cached ScriptTick. Hold
+        # the lock for the whole swap so a tick observes all three or none.
+        with self._lock:
+            self._planner_script = source
+            # Reset the one-shot latch so the next tick rebuilds from this
+            # source. This is the single writer the spec requires: nothing else
+            # may clear it, or the cached tick and the source drift apart.
+            self._script_tick = None
+            self._script_loaded = False
         # NOT the "bound" line. `_get_script_tick` prints exactly one of those,
         # on the build that succeeds, and it is the line that dates when the
         # script became live (M3-1c). Printing "bound" here too would put two
@@ -3210,17 +3236,24 @@ Respond with ONLY a JSON array. Example:
         as before -- the safe default, and the reason four of the five test
         bots are unaffected when one is bound.
         """
-        if self._script_loaded:
-            return self._script_tick
-        self._script_loaded = True
-        source = None
-        # A planner-authored script is already source text; it has no path and
-        # never touched the filesystem. Checked before the binding so the
-        # in-memory script is the one built, not a stale file.
-        if (getattr(self, "_planner_script", None) or "").strip():
-            source = self._planner_script
-            path = "(planner, in memory)"
-        else:
+        # Read the latch, the cached tick and the source under one lock. A bind
+        # on the orchestrator's thread swaps all three together (_bind_planner_script);
+        # reading them one at a time here could pair the NEW source with the OLD
+        # cached ScriptTick, or a cleared latch with the stale source.
+        with self._lock:
+            if self._script_loaded:
+                return self._script_tick
+            self._script_loaded = True
+            source = None
+            # A planner-authored script is already source text; it has no path
+            # and never touched the filesystem. Checked before the binding so
+            # the in-memory script is the one built, not a stale file.
+            if (getattr(self, "_planner_script", None) or "").strip():
+                source = self._planner_script
+                path = "(planner, in memory)"
+            else:
+                path = None
+        if path is None:
             path = (self._bound_script_path() or "").strip()
         if source is None and path:
             try:
