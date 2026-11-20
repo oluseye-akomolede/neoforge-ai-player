@@ -2,11 +2,13 @@
 
 **Rev:** `8e1b3a5` (on `62f44a0`, branch `minecraft-wt-deepseek`)
 **Row:** `qitem-20261120222639-39a4111722a6189d`
-**Verdict:** **PASS** on the delivered behaviour and the dry-tick guarantee as
-written; **the spec's central bound sentence is false as deployed** (F1), and one
-scenario asserts something the runner cannot do (F2). Neither blocks the repair;
-both must be fixed before the spec is archived, because the spec would otherwise
-claim a rate bound the product does not have.
+**Verdict:** **PASS.** The delivered behaviour and the dry-tick guarantee hold,
+and the spec's rate-bound sentence is accurate for a live sandbox (F1 withdrawn,
+see the amendment). One scenario still asserts something the runner cannot do
+(F2), and the rate bound has one real gap the lead identified — **a recycled
+sandbox starts an empty window (F1b)** — which the runner already documents as an
+accepted v1 limit and which nothing in this change introduces or can fix from
+the agent side.
 
 Everything below was measured at a clean `git archive 8e1b3a5`, against
 `agent-script-runner` at `7855a39` (the rev the runner runs), with no pod exec,
@@ -29,7 +31,52 @@ as non-delivery reds.
 
 ---
 
-## F1 — the spec's rate-bound sentence is not true of the runner we deploy
+## F1 — WITHDRAWN. The spec's rate-bound sentence is true of the runner we deploy
+
+> **Amended 2026-11-20 22:5xZ, before anything was built on F1.** F1 as first
+> written was wrong, and the lead's arithmetic caught it. The original text is
+> kept below, struck through by its own evidence, so the correction can be read
+> against the claim. **What survives from F1 is the sandbox-recycle gap in F1b.**
+>
+> Two errors, both mine, both in the harness:
+>
+> 1. **The "800" was 8 per tick, not 80 per tick** — and 8 calls in a tick are
+>    8 calls in that minute. Over 100 ticks one full minute apart that is 1
+>    `say` per minute, well under the cap. My review text said "80 a tick",
+>    which the `MAX_HOST_CALLS = 8` cap forbids; the script never did 80.
+> 2. **The verdict was an artefact of the wrong test.** My harness counted a
+>    call as accepted with `if (r !== undefined) accepted++`. `api.say`
+>    returns `{ok: true, seq}` on success and a rejection object on failure —
+>    never `null` — so *every* return, acceptances and rejections alike, hit
+>    the "accepted" branch. The 800 was a count of returns, not of successes.
+>    The giveaway is in the same run: `bot.actionTimes.say.length` at the end
+>    is **8**, not 800. The window was never emptied; it correctly held eight
+>    recent timestamps.
+>
+> `acceptAction` (`binding.js:154-174` at `7855a39`) is a genuine rolling
+> filter: it prunes timestamps with `at - t < 60_000` against the call's own
+> `now`, keeping recent ones and dropping old ones. It does **not** reset on
+> silence. Re-measured correctly with one long-lived `botState`:
+>
+> | Trace | ok | rejected |
+> |---|---|---|
+> | 8/tick, 1 s apart, 10 ticks | **30** | 50 `rate_limited` |
+> | 8/tick, 4 s apart, 12 ticks (48 s) | **30** | 66 `rate_limited` |
+> | 8/tick, 0 ms apart, 20 ticks | **30** | 130 `rate_limited` |
+> | 8/tick, 59.999 s apart, 10 ticks | 80 | 0 — 1/min, correctly under 30 |
+> | 1/tick, 61 s apart, 100 ticks | 100 | 0 — the trial cadence, 1/min |
+> | 100 calls in **one** tick | **8** | 92 `host_calls_exceeded` |
+>
+> Every trace through **one long-lived sandbox** caps at 30 accepted `say` in a
+> rolling 60 s. The per-tick `accept()` cap is intact and stricter for a single
+> tick. The spec's sentence is accurate, and the builder was right to drop our
+> side's limiter.
+>
+> The lesson is the one already in my notes: a probe that counts its own
+> return values must be checked against a value the world reports independently
+> — here, the window length, which disagreed with my counter and was right.
+
+### Original F1 text, retained for the record
 
 The spec states:
 
@@ -72,6 +119,49 @@ reviewer who signs it is signing something false. It should be either fixed in
 the runner or restated as "the per-tick cap is 8; the per-minute window refills
 when the bot is silent and is not a hard 30/min", before archive.
 
+> **The paragraph above is wrong and is withdrawn.** The window does not refill
+> on silence; `acceptAction` prunes per call against a rolling 60 s. There is
+> nothing to fix or restate. See the amendment at the head of this section.
+
+## F1b — a recycled sandbox starts with an empty window (confirmed)
+
+The one real gap in the bound, raised by the lead. Confirmed by reading the
+runner, not by the failure mode being described:
+
+- The windows live on the **Sandbox** (`engine.js:251`,
+  `this.#botState = createBotState()`), not on the bot in the game.
+- A worker process holds **one** `Sandbox` (`worker.js:43`), so for a live
+  sandbox the window is genuinely per bot and long-lived — the lead's
+  `engine.js:249` reading is right.
+- Recycle constructs a **new** `Sandbox` and replaces the process
+  (`worker.js` "the process is about to be replaced anyway"), so the new one
+  starts from an empty `actionTimes`.
+
+The runner writes this limit down itself, at `engine.js:399-406`: "the rate
+windows live on the SANDBOX (#botState), so a recycle -- memory_exceeded, a
+guard eviction -- discards them with the sandbox and the bot can log a fresh
+100 lines at once ... Recorded here rather than built around."
+
+Measured, modelling the recycle as a fresh `botState` with everything else
+identical (12 ticks 1 s apart, recycle before tick 6):
+
+| | accepted in the same rolling 60 s |
+|---|---|
+| live sandbox, no recycle | **30** (cap) |
+| one recycle | **60** |
+| N recycles | **30 x (N+1)** |
+
+**Reachability is limited, which is why I do not call it a blocker.** A script
+that throws an ordinary `Error` does not recycle — `mustRecycle`
+(`recycle.js:45-49`) returns false for every kind in `SCRIPT_RAISED`
+(`script_error`, `stack_overflow`, `cpu_exceeded`). The reset needs
+`memory_exceeded`, a guard eviction or a wasm trap: crash shapes a planner can
+reach by accident but cannot ask for. So the bound is "30 per rolling minute,
+plus 30 per crash", not "30 per minute" — worth stating in the spec's own words,
+since the sentence currently reads as an absolute. Not this change's to fix: it
+needs the window in the game or a shared store, and the agent side cannot reach
+it.
+
 ## F2 — "no message MUST reach another bot" is not enforced by the runner
 
 `send` reaches `BotRunner.send_bot_message`, which appends directly to the
@@ -112,8 +202,8 @@ when the dry flag is absent but the runner returns records.
   `from_bot = sender in _all_runners`, and the L3 trigger is
   `USE_L3_PLAN_LAYER and not from_bot`, so a bot-to-bot send never starts the
   other bot's planner; at most an L1 passive reaction or a taskboard claim. The
-  real bound is F1: at one tick per second a script can put ~30 lines into chat
-  per minute, and the per-minute window is not the hard bound the spec claims.
+  bound is the runner's window: at most 30 `say` in any rolling 60 s (see the
+  amendment below; F1 as originally written was wrong).
 - **N-2 The delivery count is not a success count.**
   `_deliver_script_deliveries` returns the number of calls it did not skip.
   `api.chat`'s return value is discarded, so a `say` the mod rejected (HTTP
