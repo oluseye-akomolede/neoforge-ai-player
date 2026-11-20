@@ -84,14 +84,18 @@ inert for real goals: a player goal is planned by `plan_orchestrator.execute_tas
 with zero decompose calls. The lead ruled (A): move the script output onto the
 L3 path rather than limit the spec to the decompose paths.
 
-- [x] 2a.1 **The script is ONE extra optional thing on `call_plan`'s reply,
+- [x] 2a.1 **The script is ONE extra optional part of `call_plan`'s reply,
       carried outside the plan JSON** — not a new `kind`, not a new directive
-      type, and not a field of the JSON object the trainer sees. A helper
-      introduced by this change splits the script out of the model's text
-      between `l3_planner.py:426` and `:429`, so `raw` (and therefore
-      `response_raw` and `parsed`) never contains it. `Plan` may carry the
-      script in memory for dispatch; `Plan.to_dict()` needs no exclusion,
-      because the script was never in the dict to begin with.
+      type, and not a key of the JSON object the trainer sees. It travels in a
+      fenced ```js block AFTER the plan JSON; `split_script_channel` removes
+      that block from the model's text between `l3_planner.py:426` and `:429`,
+      so `raw` (and therefore `response_raw` and `parsed`) never contains it.
+      A fenced block rather than a JSON key because a 27B model does not
+      reliably escape arbitrary JavaScript as a JSON string: on test at
+      2026-11-20 15:57Z one raw newline inside the JSON string made
+      `json.loads` fail and took the plan with it. `Plan` may carry the script
+      in memory for dispatch; `Plan.to_dict()` needs no exclusion, because the
+      script was never in the dict to begin with.
 - [x] 2a.2 **No script means byte-identical today.** With the field absent, the
       reply, the subtasks, the plan shape and the record
       `trajectory_log.log_call` writes are unchanged. Pinned by a test that
@@ -153,7 +157,16 @@ L3 path rather than limit the spec to the decompose paths.
       the one-shot goal logs a normal L3 plan with no script. Counted from the
       log with grep, not from a summary.
 - [x] 2a.10 Reviewer PASS on this delta before any code, then build test-first.
-      Delta PASSed at 9a4be21; code committed at b62293c, code review pending.
+      Delta PASSed at 9a4be21; code PASSed at 7008491.
+- [x] 2a.11 **The channel is outside the JSON, not a key in it.** Added after
+      the 2026-11-20 15:57Z trial failed on test: `split_script_channel`
+      json-decoded the text FIRST, so a script carrying one raw newline inside
+      a JSON string ("Unterminated string ... line 10 column 13") lost the plan
+      with it. The script now travels in a fenced ```js block after the plan
+      JSON; `call_plan` no longer sends `format: "json"`, since a reply of JSON
+      plus fenced block is not one JSON document. Pinned by a test with a real
+      multi-line, quote-, apostrophe- and tab-containing script that must
+      round-trip byte-identically while the plan half still parses alone.
 
 ## 3. What is deliberately out of scope
 

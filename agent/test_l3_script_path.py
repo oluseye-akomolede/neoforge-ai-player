@@ -46,12 +46,12 @@ class TestScriptChannelSplit(unittest.TestCase):
         """KILLS: a helper that returns the text unchanged when a script is
         present, leaving the script in the string that becomes response_raw."""
         import l3_planner
-        model_text = json.dumps({
+        plan_json = json.dumps({
             "task": "keep the furnace fed",
             "subtasks": [{"id": 1, "description": "feed it",
                           "criteria": "furnace has fuel"}],
-            "script": "while (true) { api.do('feed'); }",
         })
+        model_text = plan_json + "\n```js\nwhile (true) { api.do('feed'); }\n```"
         plan_text, script = l3_planner.split_script_channel(model_text)
 
         self.assertIsNotNone(script, "the script was not extracted")
@@ -59,12 +59,38 @@ class TestScriptChannelSplit(unittest.TestCase):
         self.assertNotIn("api.do", plan_text,
                          "the script survived into the plan text — this is the "
                          "string logged as response_raw")
-        # And the plan half must still be valid JSON with the subtasks intact.
         plan = json.loads(plan_text)
         self.assertEqual(plan["task"], "keep the furnace fed")
         self.assertEqual(len(plan["subtasks"]), 1)
-        self.assertNotIn("script", plan,
-                         "the script key survived in the parsed object")
+
+    def test_a_multiline_quoted_tabbed_script_does_not_break_the_plan(self):
+        """KILLS: the JSON-key design that failed the 2026-11-20 15:57Z trial.
+
+        Scout wrote a script containing a literal newline inside a JSON
+        string, json.loads raised 'Unterminated string', and the whole plan
+        was lost. The channel must be outside the JSON so the plan survives
+        regardless of what characters the script contains."""
+        import l3_planner
+        plan_json = json.dumps({
+            "task": "whenever inventory is full, store everything",
+            "subtasks": [{"id": 1, "description": "store",
+                          "criteria": "inventory empty"}],
+        })
+        script = (
+            "function tick(ctx) {\n"
+            "\tconst say = \"it's full\";   // tab, quotes, apostrophe\n"
+            "\tapi.do({ skill: 'STORE_ALL' });\n"
+            "\tif (ctx.ticks > 10) { api.say(say); }\n"
+            "}"
+        )
+        model_text = plan_json + "\n\n```js\n" + script + "\n```"
+        plan_text, got = l3_planner.split_script_channel(model_text)
+
+        self.assertEqual(got, script,
+                         "the script did not round-trip byte-identically")
+        plan = json.loads(plan_text)
+        self.assertEqual(plan["task"], "whenever inventory is full, store everything")
+        self.assertNotIn("api.do", plan_text)
 
     def test_no_script_leaves_the_text_byte_identical(self):
         """KILLS: a helper that always re-serialises the JSON (reordering
@@ -101,30 +127,22 @@ class TestScriptChannelSplit(unittest.TestCase):
         model_text = json.dumps({
             "task": "go to X",
             "subtasks": [{"id": 1, "description": "walk", "criteria": "there"}],
-            "script": "   ",
-        })
+        }) + "\n```js\n   \n```"
         plan_text, script = l3_planner.split_script_channel(model_text)
 
         self.assertIsNone(script, "whitespace was treated as a script")
-        # Text is returned untouched (the byte-identical path), which still
-        # holds the empty key. The property that matters is what reaches the
-        # trainer, and a blank script is not source, so the parsed object is
-        # allowed to keep the key — but no source is in it either way.
-        plan = json.loads(plan_text)
-        self.assertEqual(plan.get("script", "").strip(), "",
-                         "a blank script acquired content on the way through")
-
-
-# ── call_plan plumbing ─────────────────────────────────────────────────────
 
 class TestCallPlanCarriesTheScript(unittest.TestCase):
     """call_plan must hand the script back on the returned Plan without
     letting it into the logged record."""
 
     def _fake_post(self, payload):
+        """`payload` is a dict (JSON-encoded) or an exact string body — the
+        fenced-script cases need the exact characters the model emitted."""
+        content = payload if isinstance(payload, str) else json.dumps(payload)
         resp = mock.Mock()
         resp.raise_for_status = mock.Mock()
-        resp.json = mock.Mock(return_value={"message": {"content": json.dumps(payload)}})
+        resp.json = mock.Mock(return_value={"message": {"content": content}})
         return resp
 
     def test_a_script_lands_on_the_plan_not_in_the_record(self):
@@ -132,11 +150,10 @@ class TestCallPlanCarriesTheScript(unittest.TestCase):
         text before the split — either puts the script in response_raw, which
         build_dpo_dataset.py:89-93 trains on verbatim."""
         import l3_planner
-        payload = {
+        payload = json.dumps({
             "task": "keep the furnace fed",
             "subtasks": [{"id": 1, "description": "feed", "criteria": "fed"}],
-            "script": "api.do('feed');",
-        }
+        }) + "\n```js\napi.do('feed');\n```"
         logged = {}
 
         def fake_log_call(**kw):

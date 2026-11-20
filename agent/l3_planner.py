@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -382,10 +383,11 @@ succeed. Keep the reason to one sentence, in the bot's voice.
 Choose between a STEP LIST and a SCRIPT:
 - A step list is the default. Use it for one-shot goals that finish: "go to X",
   "craft 8 iron ingots", "dig a 3x3 hole here", "bring 16 wheat".
-- Instead of subtasks, you may answer with a SCRIPT for a goal that REPEATS,
-  WAITS on a condition, or REACTS over time, and so never finishes on its own:
-  "keep the furnace fed", "store items whenever your inventory fills", "tell me
-  when it gets dark". A step list cannot express these — it runs once and ends.
+- For goals that REPEAT, WAIT on a condition, or REACT over time, and so never
+  finish on their own — "keep the furnace fed", "store items whenever your
+  inventory fills", "tell me when it gets dark" — answer with the plan JSON as
+  usual and then append a fenced script block after it (see the output schema).
+  A step list cannot express these; it runs once and ends.
 - If a goal is clearly one-shot, use a step list even when it mentions a time
   word ("bring me X before dark" is still one-shot). If a goal could be read
   either way, it is your call.
@@ -418,12 +420,19 @@ Output schema (step list — the common case):
 Output schema (script — for a repeating/conditional goal only):
 {{
   "task": "<echo the task text>",
-  "subtasks": [{{"id": 1, "description": "...", "criteria": "..."}}],
-  "script": "<javascript source>"
+  "subtasks": [{{"id": 1, "description": "...", "criteria": "..."}}]
 }}
+...and then, AFTER that JSON object, on a new line, the script in a fenced
+block, exactly like this and nothing after it:
+
+```js
+// your javascript here
+```
+
 The "subtasks" in a script reply are still required and still described as
-above; they are what the plan would have been, and are recorded. The "script"
-is what actually runs.
+above; they are what the plan would have been, and are recorded. The fenced
+script is what actually runs. Do NOT put the script inside the JSON as a
+"script" key — write the JSON object first, close it, then the fenced block.
 """
 
 
@@ -449,7 +458,13 @@ def call_plan(model: str, bot_name: str, task: str,
                     {"role": "user", "content": user},
                 ],
                 "stream": False,
-                "format": "json",
+                # NOTE: no "format": "json" here, deliberately. The reply is a
+                # plan JSON object followed by an optional ```js script block,
+                # so the whole reply is not a single JSON document and JSON mode
+                # would forbid the script entirely. The plan half is still held
+                # to JSON by json.loads() below and by validate_plan_dict();
+                # _strip_codefence() tolerates a fenced plan. Before a2 this was
+                # "json"; the step-list path is unchanged in every other way.
                 "options": {"temperature": 0.2, "num_predict": 1024},
             },
             timeout=_OLLAMA_TIMEOUT,
@@ -1228,13 +1243,19 @@ def _strip_codefence(s: str) -> str:
     return s.strip()
 
 
+# The planner's script channel: a fenced ```js block AFTER the plan JSON.
+# Deliberately not a key inside the JSON — see split_script_channel's docstring.
+_SCRIPT_FENCE_RE = re.compile(
+    r"```(?:js|javascript)\s*\n(.*?)\n?```", re.DOTALL | re.IGNORECASE)
+
+
 def split_script_channel(model_text: str) -> tuple[str, str | None]:
     """Separate a planner-authored script from the plan JSON it arrives with.
 
     Returns (plan_text, script). `plan_text` is what the caller logs as
     `response_raw` and decodes into `parsed`; the script never appears in it.
 
-    Why this exists rather than reading a dict key: `build_dpo_dataset.py`
+    Why this exists at all: `build_dpo_dataset.py`
     builds its chosen/rejected pairs from `response_raw` verbatim, so a script
     left in the reply text reaches the DPO trainer twice — once through
     `parsed` and once more through the field it actually trains on. The only
@@ -1242,25 +1263,31 @@ def split_script_channel(model_text: str) -> tuple[str, str | None]:
     logs or decodes it. This runs between `_strip_codefence` and `json.loads`
     in `call_plan` for exactly that reason.
 
-    Cases:
-      - no script key            -> (model_text unchanged, None), byte-identical
-      - script key, blank value  -> same as no script
-      - malformed / non-JSON     -> (model_text unchanged, None), so the
-                                    caller's existing JSONDecodeError path
-                                    still reports on the original text
-      - script key with source   -> (re-serialised plan JSON, script)
+    The script is carried in a fenced ```js block AFTER the plan JSON, never as
+    a key inside it. A key inside the JSON makes the model responsible for
+    escaping arbitrary JavaScript as a JSON string, and a 27B model does not do
+    that reliably: on test at 2026-11-20 15:57Z Scout wrote a repeating goal's
+    script with one raw 0x0a inside the JSON string, so `json.loads` failed and
+    the plan was lost with it. Carrying it outside the JSON means a fresh,
+    tabbed, quoted script cannot break the plan at all.
 
-    The re-serialisation only happens when a script is actually present, which
-    is what keeps the script-free path byte-identical to before this change.
+    Cases:
+      - no fenced block          -> (model_text unchanged, None), byte-identical
+      - empty fenced block       -> same as no script
+      - block present            -> (plan JSON text, script source)
+
+    The plan text is returned exactly as it arrived in every case, so the
+    script-free path stays byte-identical to before this change.
     """
     text = model_text or ""
-    try:
-        data = json.loads(text)
-    except (json.JSONDecodeError, TypeError, ValueError):
+    if not isinstance(text, str):
         return model_text, None
-    if not isinstance(data, dict) or "script" not in data:
-        return model_text, None
-    script = data.pop("script")
-    if not isinstance(script, str) or not script.strip():
-        return model_text, None
-    return json.dumps(data), script
+    match = _SCRIPT_FENCE_RE.search(text)
+    if match is None:
+        return text, None
+    script = match.group(1)
+    if not script.strip():
+        return text, None
+    # The plan is whatever precedes the fence; the fenced block itself is
+    # removed, so it cannot reach `response_raw` or `json.loads`.
+    return text[:match.start()].rstrip(), script
