@@ -137,6 +137,42 @@ count to stay at 0. Wiring any accessor through `accept` reds it.
 - **AND** it MUST NOT throw, so a script can test for a missing tool without a
   guard
 
+### Requirement: The Script Prompt Names The Fields Of Every Lookup Entry
+
+`SCRIPT_SURFACE` MUST state the fields of every entry a lookup can return, not
+only the fields of `look.blocks` entries. A script author reads that constant
+and nothing else; a field it does not name is a field the author must guess,
+and a wrong guess reads as an absent value rather than an error.
+
+The three lookups return entries with **different identity fields**, and the
+prompt MUST name each:
+
+- a block entry carries `{id, block, position}`, where `id` is the namespaced
+  registry id;
+- a mob entry carries `{type, name, position, distance}`, where the identity
+  field is `type`, not `id`;
+- an inventory item carries `{slot, item, count, display_name, ...}`, where the
+  identity field is `item`, not `id`.
+
+`look.inventory()` returns the producer's stack objects verbatim; it does not
+normalise them and MUST NOT be changed to do so, because a read-only accessor
+that rewrote the shape would misreport what the bot carries. Naming the fields
+in the prompt is what keeps that faithful copy usable.
+
+#### Scenario: A script author is not left to guess an item's identity field
+
+- **GIVEN** the rendered script prompt built from `SCRIPT_SURFACE`
+- **WHEN** the prompt describes `look.inventory()`
+- **THEN** it MUST name `item` as the field carrying the item id, because that
+  is the field the producer actually sends and the one a script must read
+
+#### Scenario: An author can tell the three entry shapes apart
+
+- **GIVEN** the rendered script prompt
+- **THEN** it MUST state that a block uses `id`, a mob uses `type`, and an
+  inventory item uses `item`, so a script that reads `items[0].id` is a
+  mistake the prompt could have prevented
+
 ### Requirement: A Script's Result Reaches The Planner On Stated Triggers Only
 
 A script's result MUST be the value passed to `api.result(v)` — NOT its

@@ -208,6 +208,20 @@ shears and could not tell).
       tests pin the WHOLE guidance sentence; asserting `"shearing needs"`
       alone stayed green when the instruction was replaced by "Consider what
       the bot carries".
+- [ ] 4.5 **`SCRIPT_SURFACE` names the entry fields of all three lookups.**
+      Raised by the reviewer at 8f9f9f6 as a producer-shape observation and
+      not a runner defect: an inventory item's identity field is `item`, not
+      `id`, so a planner writing `items[0].id` gets `undefined` and sees an
+      empty-looking inventory rather than an error. 4.3 named
+      `look.inventory()` but only documented `look.blocks`' fields, so the
+      prompt told an author the block shape and left the item shape to guess.
+      The three shapes differ (`id` / `type` / `item`) and all three MUST be
+      named. Returning stacks verbatim stays correct; this is prompt
+      documentation, not a change to the accessor. KILLS: a test that asserts
+      the rendered prompt names `item` must red when that word is removed,
+      and a test that pins the three field names must red when any one is
+      replaced by `id`.
+
 - [x] 4.4 Runner suite 189/189 (`npm test`); agent `test_l3_script_path`
       90 OK. Every mutant restored with `diff -q` identical.
 
