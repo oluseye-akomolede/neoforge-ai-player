@@ -110,7 +110,22 @@ Each test gets one mutant that reds it: the window comparison flipped to `<=`
 (or removed), the key ignoring `to`, the key ignoring `text`, the per-tick log,
 and the memory cleared on dry tick.
 
-## 6. What this change does not do
+## 6. Archive ordering
+
+This change carries a MODIFIED delta on `bot-coded-agents`, a capability that
+does not exist in `openspec/specs/` yet — it is created by `ai-written-scripts`
+(15 requirements) and `coded-agents` (23 requirements). `validate --strict`
+accepts the delta (rc=0); the refusal is INFO and lands only at archive time.
+
+**Requirement: `ai-written-scripts` or `coded-agents` MUST archive before
+`script-say-dedupe`.** If this change archives first, `openspec archive`
+refuses it ("target spec does not exist; only ADDED requirements are allowed
+for new specs") and the order must be corrected rather than the delta
+rewritten. All three changes describe the same capability with compatible
+text, so either creator archiving first makes this MODIFIED appliable as
+written.
+
+## 7. What this change does not do
 
 - No runner change.
 - No change to the 30/min cap.
