@@ -90,9 +90,33 @@ def requests_json_format(fn: ast.AST, src: str) -> bool:
     return '"json"' in seg and '"format"' in seg
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    # The root is fixed on purpose: this census counts the deployed agent, not
+    # whatever tree it is pointed at. An unrecognised flag is refused rather
+    # than ignored, because a caller passing --root would otherwise walk
+    # "agent" anyway, print functions=0 for a tree that is not there, and come
+    # away believing it measured that root.
+    args = sys.argv[1:] if argv is None else argv
+    if args:
+        print(
+            f"census_structured_calls takes no arguments; got {args!r}. "
+            "It always walks ./agent. Refusing rather than measuring a "
+            "different tree than the one named.",
+            file=sys.stderr,
+        )
+        return 2
+
     rows = []
-    for path in sorted(pathlib.Path("agent").rglob("*.py")):
+    root = pathlib.Path("agent")
+    if not root.is_dir():
+        print(
+            f"census_structured_calls must run from the repo root; {root}/ "
+            "is not here. Refusing rather than reporting 0 functions for a "
+            "tree it never read.",
+            file=sys.stderr,
+        )
+        return 2
+    for path in sorted(root.rglob("*.py")):
         if "test" in path.name or "test" in path.parent.name:
             continue
         if path.name in OUT_OF_SCOPE:

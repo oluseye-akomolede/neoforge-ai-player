@@ -127,6 +127,34 @@ class CensusTest(unittest.TestCase):
                          f"census drifted:\n{out.stdout}\n{out.stderr}")
         self.assertIn("guarded=9 unguarded=0", out.stdout)
 
+    def _run(self, args, cwd, absolute=False):
+        script = os.path.join("agent", "tools", "census_structured_calls.py")
+        if absolute:
+            script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                  "agent", "tools", "census_structured_calls.py")
+        return subprocess.run([sys.executable, "-B", script, *args],
+                              cwd=cwd, capture_output=True, text=True)
+
+    def test_an_unknown_flag_is_refused_not_ignored(self):
+        """A caller passing --root believes it measured that root. The census
+        walks ./agent regardless, so ignoring the flag hands back a count for a
+        tree nobody named. Refuse, and say so."""
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        out = self._run(["--root", "/tmp/nonexistent"], here)
+        self.assertEqual(2, out.returncode,
+                         f"expected refusal, got {out.returncode}:\n{out.stdout}{out.stderr}")
+        self.assertIn("takes no arguments", out.stderr)
+        self.assertNotIn("functions=0", out.stdout)
+
+    def test_running_outside_the_repo_root_is_refused(self):
+        """Without agent/ the census finds nothing and would print functions=0
+        -- a count for a tree it never read."""
+        out = self._run([], "/tmp", absolute=True)
+        self.assertEqual(2, out.returncode,
+                         f"expected refusal, got {out.returncode}:\n{out.stdout}{out.stderr}")
+        self.assertIn("must run from the repo root", out.stderr)
+        self.assertNotIn("functions=0", out.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
