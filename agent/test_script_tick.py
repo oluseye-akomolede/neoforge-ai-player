@@ -663,13 +663,34 @@ class SnapshotWireShapeTest(unittest.TestCase):
         self.assertIn("task", snap)
 
     def test_the_scripts_inventory_path_resolves(self):
+        # The path scout.js reads is snapshot.state.inventory, and it is a LIST.
+        # This assertion used to pin `state.inventory.inventory` instead, i.e.
+        # it encoded the bug rather than the contract: it passed for as long as
+        # build_state stored the game's wrapper, and went red the moment the
+        # wrapper was unwrapped at the source - which is the correct direction
+        # for it to fail. Assert the contract, then assert the script agrees.
         snap = self._captured_snapshot()
-        inv = (snap.get("state") or {}).get("inventory") or {}
-        items = inv.get("inventory") if isinstance(inv, dict) else None
-        self.assertEqual(1, len(items or []),
-                         "snapshot.state.inventory.inventory is the path "
-                         "scout.js:107 reads; it must hold the bot's items")
-        self.assertEqual("minecraft:cobblestone", items[0]["item"])
+        inv = (snap.get("state") or {}).get("inventory")
+        self.assertIsInstance(
+            inv, list,
+            "snapshot.state.inventory must be a list (snapshot.py _EMPTY_STATE); "
+            "a wrapped dict here is what makes scout's guard never fire")
+        self.assertEqual(1, len(inv),
+                         "it must hold the bot's items")
+        self.assertEqual("minecraft:cobblestone", inv[0]["item"])
+
+    def test_the_scout_script_reads_the_inventory_list_the_snapshot_sends(self):
+        # test_the_scripts_inventory_path_resolves pins the WIRE shape; this one
+        # pins that the script actually reads it, so the two cannot drift apart
+        # again with both suites green.
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "scripts", "scout.js"), encoding="utf-8") as fh:
+            src = fh.read()
+        code = "\n".join(line.split("//")[0] for line in src.splitlines())
+        self.assertNotIn(
+            "inventory.inventory", code,
+            "scout.js reads state.inventory.inventory; state.inventory is a "
+            "list, so that guard never fires and the bot never stores")
 
     def test_health_is_readable_where_the_script_reads_it(self):
         snap = self._captured_snapshot()

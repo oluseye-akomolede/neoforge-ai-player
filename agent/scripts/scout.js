@@ -79,22 +79,24 @@ function tick() {
   // on every tick means a bot that is already unloaded pays for a full store
   // pass every tick, forever, and the mod queues a directive per tick.
   //
-  // WHY THE OBVIOUS GUARD IS WRONG: on a successful read, `state.inventory`
-  // is a WRAPPER OBJECT, not a list. The endpoint returns
-  // `Map.of("inventory", bot.getCachedInventory())` (HttpApiServer.java:469)
-  // and the agent stores that body verbatim (snapshot.py:71; the fetch itself
-  // is api.py:102), so the shape is
-  //   state.inventory = { inventory: [ {slot, item, count, display_name} ] }
-  // Reading `state.inventory.length` on that object yields `undefined`, so a
-  // `length > 0` guard NEVER FIRES - the same silent-never-fire class as the
-  // health guard above (which read the flat shape and so never ran). The list
-  // is `state.inventory.inventory`.
+  // WHY THE OBVIOUS GUARD IS WRONG: a guard that reads the wrong path silently
+  // never fires - the same class as the health guard above. `state.inventory`
+  // is a LIST, and always has been: snapshot.py:43 declares "inventory": [] in
+  // _EMPTY_STATE, and build_state's _obs unwraps the game's one-key envelope
+  // (HttpApiServer.java:469 answers {"inventory": [...]}) before storing it.
   //
-  // NOT AN ABSOLUTE, though: a FAILED inventory read degrades to a bare `[]`
-  // (snapshot.py:71 passes `[]` as the default), so the wrapper is the shape
-  // only on success. The guard below handles that by falling back to `[]`,
-  // which reads as "nothing to store" - under-acting, never over-acting.
-  // Do not tighten this into an assertion that the wrapper is always present.
+  // This code used to read `state.inventory.inventory`, on the theory that the
+  // endpoint's wrapper reached the script verbatim. It never did: the wrapper
+  // is a mod-side transport detail and the contract always promised a list.
+  // When _obs started unwrapping at the source (b9edb63) that read became
+  // undefined and this guard stored nothing, permanently - caught by
+  // test_the_scripts_inventory_path_resolves. Read the list the contract
+  // promises; if a future message carries a wrapper, `state.inventory.inventory`
+  // is an integration bug to fix at the producer, not to paper over here.
+  //
+  // A FAILED inventory read degrades to `[]` (snapshot.py's _read default), and
+  // the fallback below reads that as "nothing to store" - under-acting, never
+  // over-acting.
   //
   // WHEN: only when there is something to store, and not again for the same
   // inventory for a while. The cooldown is stored as the tick number it was
@@ -104,7 +106,7 @@ function tick() {
   // one (agent-script-runner engine.js:398-406). A tick-number stamp needs no
   // decrement and cannot drift if ticks are skipped.
   var STORE_ALL_COOLDOWN_TICKS = 100;
-  var inv = (state.inventory && state.inventory.inventory) || [];
+  var inv = Array.isArray(state.inventory) ? state.inventory : [];
   if (!Array.isArray(inv) || inv.length === 0) {
     // This guard runs before the task check, so this line fires both for a bot
     // carrying nothing and for one mid-store that already deposited everything.

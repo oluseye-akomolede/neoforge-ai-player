@@ -48,10 +48,17 @@ class _FakeApi:
                 "position": {"x": float(len(bot)), "y": 64.0, "z": -3.0,
                              "dim": "minecraft:overworld"}}
 
+    # NOTE the wrappers. Every observation endpoint answers with a one-key
+    # object, not a bare list -- the fake used to return the list directly and
+    # that is exactly why the live scripts came up empty while this suite was
+    # green. Read at source, not from a fixture:
+    #   HttpApiServer.java:469  Map.of("inventory", bot.getCachedInventory())
+    #   HttpApiServer.java:504  Map.of("entities",  bot.getCachedEntities())
+    #   HttpApiServer.java:505  Map.of("blocks",    bot.getCachedBlocks())
     def inventory(self, bot):
         self.calls.append(("inventory", bot))
         self._maybe_fail("inventory")
-        return [{"item": "minecraft:stone", "count": 3}]
+        return {"inventory": [{"item": "minecraft:stone", "count": 3}]}
 
     def blocks(self, bot, radius=8):
         self.calls.append(("blocks", bot, radius))
@@ -59,9 +66,9 @@ class _FakeApi:
         # Copied from NearbyBlockIndex.select's real output, not invented: the
         # mod has never sent `type` on a block. These are the fields a script
         # actually receives (BotPlayer.java getNearbyBlocks -> CacheEntry).
-        return [{"id": "minecraft:chest",
-                 "block": "minecraft:chest",
-                 "position": {"x": 2, "y": 64, "z": -3}}]
+        return {"blocks": [{"id": "minecraft:chest",
+                            "block": "minecraft:chest",
+                            "position": {"x": 2, "y": 64, "z": -3}}]}
 
     def entities(self, bot, radius=24.0):
         self.calls.append(("entities", bot, radius))
@@ -69,11 +76,11 @@ class _FakeApi:
         # Entities DO carry `type` (BotPlayer.java:883) -- unlike blocks. Real
         # shape: distance is a String, formatted "%.1f", because that is what
         # the mod puts on the wire (BotPlayer.java:886).
-        return [{"type": "minecraft:cow",
-                 "name": "Cow",
-                 "position": {"x": 5.0, "y": 64.0, "z": 1.5},
-                 "distance": "4.2",
-                 "health": 10.0}]
+        return {"entities": [{"type": "minecraft:cow",
+                              "name": "Cow",
+                              "position": {"x": 5.0, "y": 64.0, "z": 1.5},
+                              "distance": "4.2",
+                              "health": 10.0}]}
 
     def get_directive(self, bot):
         self.calls.append(("directive", bot))
@@ -113,6 +120,52 @@ class BuildStateTest(unittest.TestCase):
         self.assertEqual(state["inventory"], [])
         self.assertEqual(state["health"], 20.0)
         self.assertEqual(errors, [{"reader": "inventory", "error": "RuntimeError"}])
+
+    # ── The game's wrapper is unwrapped here, once ──────────────────────────
+    # b9edb63: live, state.nearby.blocks held {"blocks": [...]} unchanged, so
+    # `look` -- which requires an Array -- answered ok:true, matches:[] while
+    # the bot stood in front of iron ore. The next four tests fail if the
+    # wrapper ever reaches the script again.
+
+    def test_the_games_wrapped_response_becomes_a_list(self):
+        # Shape taken from HttpApiServer.java:469/504/505, not hand-written.
+        state, errors = build_state(_FakeApi(), "Scout")
+        self.assertEqual(errors, [])
+        for value in (state["inventory"],
+                      state["nearby"]["blocks"],
+                      state["nearby"]["mobs"]):
+            self.assertIsInstance(value, list)
+        self.assertEqual(state["nearby"]["blocks"][0]["id"], "minecraft:chest")
+        self.assertEqual(state["nearby"]["mobs"][0]["type"], "minecraft:cow")
+
+    def test_a_bare_list_is_tolerated(self):
+        # A reader that answers with the list directly must not become
+        # silently empty -- that is the same failure one layer along.
+        api = _FakeApi()
+        api.blocks = lambda bot, radius=8: [{"id": "minecraft:iron_ore"}]
+        state, errors = build_state(api, "Scout")
+        self.assertEqual(errors, [])
+        self.assertEqual(state["nearby"]["blocks"], [{"id": "minecraft:iron_ore"}])
+
+    def test_an_unusable_shape_is_a_reader_error_not_silence(self):
+        # An empty list must never be the way an unreadable world is reported:
+        # that is indistinguishable from "there is nothing here".
+        api = _FakeApi()
+        api.blocks = lambda bot, radius=8: {"blocks": "not-a-list"}
+        state, errors = build_state(api, "Scout")
+        self.assertEqual(state["nearby"]["blocks"], [])
+        self.assertEqual(
+            [e["reader"] for e in errors], ["blocks"],
+            "an unusable block shape was reported as an empty world")
+        self.assertTrue(errors[0]["error"])
+
+    def test_the_wrapper_is_unwrapped_once_for_every_reader(self):
+        # inventory had the identical defect and was not in the original row:
+        # look.inventory() would have returned items: [] on a bot holding shears.
+        api = _FakeApi()
+        api.inventory = lambda bot: {"inventory": [{"item": "minecraft:shears", "count": 1}]}
+        state, _ = build_state(api, "Scout")
+        self.assertEqual(state["inventory"], [{"item": "minecraft:shears", "count": 1}])
 
     def test_every_reader_failing_is_still_a_snapshot(self):
         state, errors = build_state(

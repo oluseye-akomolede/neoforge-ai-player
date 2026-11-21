@@ -294,7 +294,7 @@ def _envelope(health=20.0, task=IDLE_DIRECTIVE, inventory=None, **extra):
            "state": {"health": health, "food": 18,
                      "position": {"x": 0.0, "y": 64.0, "z": 0.0,
                                   "dim": "minecraft:overworld"},
-                     "inventory": {"inventory": []} if inventory is None else inventory,
+                     "inventory": [] if inventory is None else inventory,
                      "nearby": {"blocks": [], "mobs": []}},
            "task": task}
     env.update(extra)
@@ -306,14 +306,16 @@ def _directives(result):
     return [a["directive"] for a in result["actions"]]
 
 
-# A bot that is actually carrying something, in the wrapper shape the endpoint
-# really sends (HttpApiServer.java:469 -> {"inventory": api.inventory(bot)}).
+# A bot that is actually carrying something, in the shape the snapshot
+# contract promises: state.inventory is a LIST (snapshot.py:43 _EMPTY_STATE).
+# The endpoint's {"inventory": [...]} wrapper (HttpApiServer.java:469) is
+# unwrapped by build_state before it is stored, so it must NOT appear here.
 # Tests that pin a CHANNEL or the directive's FORM need the bot to act, and
 # since the store is now gated on having something to store, an empty
 # inventory would leave them asserting a silence that has nothing to do with
 # what they are testing.
-CARRYING = {"inventory": [{"slot": 0, "item": "minecraft:torch", "count": 12,
-                          "display_name": "Torch", "max_stack_size": 64}]}
+CARRYING = [{"slot": 0, "item": "minecraft:torch", "count": 12,
+             "display_name": "Torch", "max_stack_size": 64}]
 
 
 @unittest.skipUnless(shutil.which("node"), "node is required to run scout.js")
@@ -498,14 +500,17 @@ class ActsOnlyWhenThereIsSomethingToDoTest(unittest.TestCase):
     fine, the task was provably idle - so no assertion below could have caught
     it from the existing suite. The missing guard is the subject here.
 
-    THE FIXTURE SHAPE IS THE POINT OF THIS CLASS. The producer's body is
-    HttpApiServer.java:469 `Map.of("inventory", bot.getCachedInventory())`, so
-    `snapshot.state.inventory` is `{"inventory": [...]}` - an OBJECT. A guard
-    written against a bare array (`state.inventory.length > 0`) reads undefined,
-    compares false, and silently never stores anything, which is the direction
-    that looks like a fix in review and is not one. `test_guard_reads_the_wrapper`
-    below is the one that fails against that mistake; the others would pass
-    because an empty bare array and an empty wrapper both mean "nothing".
+    THE FIXTURE SHAPE IS THE POINT OF THIS CLASS. The endpoint's body is
+    HttpApiServer.java:469 `Map.of("inventory", bot.getCachedInventory())`, but
+    that wrapper is a mod-side transport detail: build_state unwraps it, and
+    `snapshot.state.inventory` is a LIST (snapshot.py:43 _EMPTY_STATE). This
+    class used to fixture the wrapper and assert a guard that read
+    `state.inventory.inventory`; when the unwrap landed at the source that
+    guard went permanently silent, and the suite that encoded the wrapper went
+    red - which is how the drift was caught. The fixtures are the contract's
+    shape now, and the guard reads the list. `test_guard_reads_the_list` below
+    is the one that pins it; the others would pass for a guard that ignored
+    inventory entirely, since empty reads as "nothing" either way.
     """
 
     # One real entry, in the shape BotPlayer.serializeItemStack builds
@@ -514,7 +519,7 @@ class ActsOnlyWhenThereIsSomethingToDoTest(unittest.TestCase):
               "display_name": "Torch", "max_stack_size": 64}
 
     def test_empty_inventory_proposes_nothing(self):
-        result = _run(_envelope(20.0, inventory={"inventory": []}))
+        result = _run(_envelope(20.0, inventory=[]))
         self.assertTrue(result["ok"], f"engine rejected: {result['error']}")
         self.assertEqual(_directives(result), [],
                          f"empty inventory still proposed: {result['actions']}")
@@ -522,25 +527,26 @@ class ActsOnlyWhenThereIsSomethingToDoTest(unittest.TestCase):
                         f"held without saying why: {result['logs']!r}")
 
     def test_carried_items_and_idle_propose_one_store(self):
-        result = _run(_envelope(20.0, inventory={"inventory": [self._TORCH]}))
+        result = _run(_envelope(20.0, inventory=[self._TORCH]))
         self.assertTrue(result["ok"], f"engine rejected: {result['error']}")
         self.assertEqual(_directives(result), ["STORE_ALL"])
 
-    def test_guard_reads_the_wrapper_not_a_bare_array(self):
-        """The wrapper is a dict, so `.length` is undefined on it.
+    def test_guard_reads_the_list_the_snapshot_sends(self):
+        """`state.inventory` is a LIST; the guard must read it as one.
 
-        A bare-array guard is the mistake this pins: `state.inventory.length`
-        is absent on an object, so `> 0` is false and the script stores NOTHING
-        while every other test in this class still passes. Both directions are
+        The mirror-image mistake of the original: reading `state.inventory
+        .inventory` on a list is undefined, so the guard never fires and the
+        bot stores nothing, while the suite stays green. Both directions are
         asserted so a script that ignores inventory entirely cannot pass either.
         """
-        full = _run(_envelope(20.0, inventory={"inventory": [self._TORCH]}))
-        empty = _run(_envelope(20.0, inventory={"inventory": []}))
+        full = _run(_envelope(20.0, inventory=[self._TORCH]))
+        empty = _run(_envelope(20.0, inventory=[]))
         self.assertEqual(_directives(full), ["STORE_ALL"],
-                         "a non-empty wrapper did not propose a store: the guard "
-                         "is reading the wrapper as if it were the list")
+                         "a non-empty inventory list did not propose a store: "
+                         "the guard is reading a wrapper the snapshot no "
+                         "longer sends")
         self.assertEqual(_directives(empty), [],
-                         "an empty wrapper proposed a store")
+                         "an empty inventory proposed a store")
 
     def test_cooldown_holds_a_repeat_store(self):
         """One store, then nothing until the cooldown has elapsed.
@@ -551,11 +557,11 @@ class ActsOnlyWhenThereIsSomethingToDoTest(unittest.TestCase):
         game would: tick 5 stored at tick 5, and tick 6 is one tick later.
         """
         first = _run(_envelope(20.0, tick=5,
-                               inventory={"inventory": [self._TORCH]}))
+                               inventory=[self._TORCH]))
         self.assertEqual(_directives(first), ["STORE_ALL"])
 
         soon = _run(_envelope(20.0, tick=6,
-                              inventory={"inventory": [self._TORCH]}),
+                              inventory=[self._TORCH]),
                     memory={"lastStoreAllTick": 5})
         self.assertEqual(_directives(soon), [],
                          "stored again one tick later, so a failing store would "
@@ -566,7 +572,7 @@ class ActsOnlyWhenThereIsSomethingToDoTest(unittest.TestCase):
     def test_cooldown_expires(self):
         """Past the cooldown the bot stores again - otherwise it stores once ever."""
         later = _run(_envelope(20.0, tick=500,
-                               inventory={"inventory": [self._TORCH]}),
+                               inventory=[self._TORCH]),
                      memory={"lastStoreAllTick": 5})
         self.assertEqual(_directives(later), ["STORE_ALL"],
                          "cooldown never expired; the bot would store once and stop")
@@ -579,7 +585,7 @@ class ActsOnlyWhenThereIsSomethingToDoTest(unittest.TestCase):
         counter that dies with the disposable sandbox.
         """
         result = _run(_envelope(20.0, tick=7,
-                                inventory={"inventory": [self._TORCH]}))
+                                inventory=[self._TORCH]))
         blob = result.get("memory")
         self.assertIsNotNone(blob, "stored without remembering the tick")
         # memoryOut is the runner's JSON string, not a live object.

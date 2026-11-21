@@ -379,6 +379,23 @@ envelope constructor, or assert against its output, so a fixture cannot drift
 into a shape the game never sends. A hand-written fixture that happens to match
 the lookup's assumption is not evidence about the live path.
 
+The values **under** those keys are lists, and the agent MUST put them there as
+lists. The game's HTTP handlers wrap every observation in a one-key object —
+`{"blocks": [...]}` from `/bot/{name}/blocks`, `{"entities": [...]}` from
+`/bot/{name}/entities`, `{"inventory": [...]}` from `/bot/{name}/inventory`
+(`HttpApiServer.java:469`, `:504-505`) — and `snapshot.build_state`
+(`agent/snapshot.py`) stores those responses unchanged. A lookup therefore
+receives an object where it requires an array and MUST NOT answer that as an
+empty world.
+
+`build_state` MUST unwrap the game's response: when the value is a mapping it
+MUST take the list under the expected key, when the value is already a list it
+MUST keep it, and anything else MUST become an empty list **and** append a
+reader error rather than pass silently. This is the same failure one level
+down from the depth bug above, and it was silent in the same way: the legacy
+planner already unwraps these responses in `prompts.py`, which is why the
+planner saw the world while every script saw nothing.
+
 #### Scenario: The world is found where the envelope puts it
 - **GIVEN** a tick whose snapshot is the real envelope, carrying
   `state.nearby.blocks` with an `iron_ore` entry and `state.nearby.mobs` with a
@@ -413,3 +430,34 @@ carry MUST NOT be reported as "the game sent no capture time", because it did.
 - **THEN** the first scenario MUST fail
 - **AND** the failure MUST name an empty match list rather than an error, so the
   test that catches it is the scenario above and not an exception
+
+#### Scenario: The game's wrapped response becomes a list
+- **GIVEN** an API whose `blocks()` returns
+  `{"blocks": [{"id": "minecraft:iron_ore", "block": "Iron Ore", "position": …}]}`
+  and whose `entities()` returns
+  `{"entities": [{"type": "sheep", "name": "Sheep", "position": …}]}`
+- **WHEN** `snapshot.build_state` builds the state
+- **THEN** `state.nearby.blocks` MUST be a list holding that one block entry
+- **AND** `state.nearby.mobs` MUST be a list holding that one sheep entry
+- **AND** `look.blocks('minecraft:iron_ore')` MUST return one match from that
+  snapshot
+
+#### Scenario: A bare list is tolerated
+- **GIVEN** an API whose `blocks()` returns a list directly rather than a
+  wrapper
+- **WHEN** `snapshot.build_state` builds the state
+- **THEN** `state.nearby.blocks` MUST be that list, unwrapped and unchanged
+
+#### Scenario: An unusable shape is a reader error, not silence
+- **GIVEN** an API whose `blocks()` returns a string or a number
+- **WHEN** `snapshot.build_state` builds the state
+- **THEN** `state.nearby.blocks` MUST be an empty list
+- **AND** the state's errors MUST name the `blocks` reader, so the tick reports
+  a broken observation rather than a world with nothing in it
+
+#### Scenario: Every reader sees the same unwrapped shape
+- **GIVEN** a reader of `state.nearby` other than the lookup (the legacy
+  planner's prompt, a diagnostic, a tool script)
+- **WHEN** it reads `state.nearby.blocks` or `state.nearby.mobs`
+- **THEN** the value it sees MUST be the same list the lookup reads
+- **AND** no reader MUST be left handling a wrapper the agent no longer stores

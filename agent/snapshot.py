@@ -45,6 +45,15 @@ _EMPTY_STATE = {
     "task": None,
 }
 
+# Sentinel: distinguishes "the fetch itself failed" (already recorded by
+# _read) from "the fetch returned something we cannot read".
+_UNREAD = object()
+
+
+def _shape(value):
+    """Name a value's shape for an error entry without dumping the value."""
+    return type(value).__name__
+
 
 def build_state(api, bot, *, block_radius=8, entity_radius=24.0):
     """Fetch the four reads and assemble contract §3's MINECRAFT `state`.
@@ -61,6 +70,42 @@ def build_state(api, bot, *, block_radius=8, entity_radius=24.0):
             errors.append({"reader": name, "error": type(e).__name__})
             return default
 
+    def _obs(name, fn, key):
+        """Read one observation and unwrap the game's one-key envelope.
+
+        Every observation endpoint on the mod side answers with a wrapper, not
+        the list a script wants:
+
+            /bot/<bot>/blocks    -> {"blocks":    [...]}  (HttpApiServer:505)
+            /bot/<bot>/entities  -> {"entities":  [...]}  (HttpApiServer:504)
+            /bot/<bot>/inventory -> {"inventory": [...]}  (HttpApiServer:469)
+
+        Storing that wrapper unchanged is what made `look` answer
+        `matches: []` on a bot standing in front of iron ore: the runner
+        requires an Array and got an Object, and said so only by finding
+        nothing. So the contract here is a LIST, and this is where it is
+        produced.
+
+        A bare list is accepted too, so a reader that one day answers with the
+        list directly does not become silently empty. Anything else is a reader
+        error: it goes in `errors` rather than turning into an empty list that
+        says "the world is empty" when the truth is "I could not read it".
+        """
+        raw = _read(name, fn, _UNREAD)
+        if raw is _UNREAD:
+            return []          # _read already recorded the fetch failure
+        if isinstance(raw, list):
+            return raw
+        if isinstance(raw, dict):
+            inner = raw.get(key)
+            if isinstance(inner, list):
+                return inner
+            errors.append({"reader": name, "error": "wrapped-value-not-a-list",
+                           "got": _shape(inner)})
+            return []
+        errors.append({"reader": name, "error": "unexpected-shape", "got": _shape(raw)})
+        return []
+
     status = _read("status", lambda: api.status(bot), {}) or {}
     directive = _read("directive", lambda: api.get_directive(bot), None)
 
@@ -68,10 +113,10 @@ def build_state(api, bot, *, block_radius=8, entity_radius=24.0):
         "health": status.get("health"),
         "food": status.get("food"),
         "position": status.get("position"),
-        "inventory": _read("inventory", lambda: api.inventory(bot), []),
+        "inventory": _obs("inventory", lambda: api.inventory(bot), "inventory"),
         "nearby": {
-            "blocks": _read("blocks", lambda: api.blocks(bot, block_radius), []),
-            "mobs": _read("entities", lambda: api.entities(bot, entity_radius), []),
+            "blocks": _obs("blocks", lambda: api.blocks(bot, block_radius), "blocks"),
+            "mobs": _obs("entities", lambda: api.entities(bot, entity_radius), "entities"),
         },
         "task": directive,
     }, errors
