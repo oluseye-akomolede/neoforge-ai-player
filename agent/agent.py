@@ -3291,6 +3291,25 @@ Respond with ONLY a JSON array. Example:
                 # gets the tick: a script that asks for impossible work must
                 # not silently become a dead bot.
                 print(f"[{self.name}/script] no action executed, falling back")
+                # Option 1 (task 2a.14): an all-refused tick is a script that
+                # CANNOT dispatch, not one to wait out. Unbind it so the next
+                # tick does not rebuild and re-propose the same impossible
+                # actions, and drop the stale step list so `call_plan` is asked
+                # again rather than the identical refused script repeating
+                # forever -- trial 4.1 measured 69 refusals and 0 new plans in
+                # six minutes. `refusals` non-empty is the all-refused test:
+                # `actions` was non-empty here (a script that proposed nothing
+                # returned above) and none of them ran.
+                if refusals:
+                    yielded = self._unbind_planner_script()
+                    self._plan_steps = []
+                    self._plan_step_idx = 0
+                    self._plan_instruction = ""
+                    print(
+                        f"[{self.name}/script] option 1: all {len(refusals)} "
+                        f"action(s) refused; "
+                        + ("script unbound" if yielded else "no planner script to unbind")
+                        + ", goal handed back to the planner")
                 return False
             return True
         except Exception as e:  # noqa: BLE001 — a script must never kill the loop
@@ -3498,9 +3517,31 @@ Respond with ONLY a JSON array. Example:
         print(f"[{self.name}/script] adopting planner script; rebuilt next tick")
         return True
 
+    def _unbind_planner_script(self):
+        """Drop a PLANNER-AUTHORED script so the planner is consulted again.
+
+        Task 2a.14 option 1. The mirror of `_bind_planner_script`'s swap: the
+        same three fields under the same lock, so a tick observes either the
+        bound script or none, never a half-cleared pair.
+
+        Returns True only if an in-memory planner script was actually dropped.
+        A hand-written script comes from `bindings.json`, is NOT carried in
+        `_planner_script`, and must survive -- unbinding a human's deployment
+        because one tick refused everything would undo a deliberate choice the
+        planner is not allowed to overwrite (task 2.7).
+        """
+        with self._lock:
+            if not (getattr(self, "_planner_script", None) or "").strip():
+                return False
+            self._planner_script = None
+            # Rebuild from the (now absent) in-memory source next tick, so the
+            # cached ScriptTick cannot outlive the script it was built from.
+            self._script_tick = None
+            self._script_loaded = False
+        return True
+
     def _get_script_tick(self):
         """Build the ScriptTick once, or None if this bot has no usable script.
-
         The bot-to-script map lives in the scripts ConfigMap (`bindings.json`),
         NOT in the bot's profile. A profile key was tried first and abandoned:
         the profiles directory is an emptyDir reseeded from the image on every

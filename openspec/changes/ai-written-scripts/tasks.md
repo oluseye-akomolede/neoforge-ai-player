@@ -208,7 +208,7 @@ L3 path rather than limit the spec to the decompose paths.
       Verified by: a test asserting every example kind, passed through
       `bind_action`, raises no `RefusedAction`; and that removing a kind from
       `BINDABLE_KINDS` without touching the prompt reds.
-- [ ] 2a.14 **An all-refused tick yields the goal, or stops and says why.**
+- [x] 2a.14 **An all-refused tick yields the goal, or stops and says why.**
       Today `_run_script_tick` returns False and the caller falls through
       (`agent/agent.py:3230`), but the script stays bound and `_plan_steps`
       still holds the old reply's steps, so `_check_task_board` is skipped and
@@ -225,6 +225,20 @@ L3 path rather than limit the spec to the decompose paths.
       with no driver, and the reason is in the log; and a script that refuses
       one kind but dispatches another on the same tick STAYS bound, because
       that tick did not refuse every action.
+      IMPLEMENTED. The seam is the existing `if ran == 0:` in
+      `_run_script_tick` (agent.py:3289), reached only when the script handled
+      the tick and dispatched nothing. `refusals` non-empty is the all-refused
+      test; the new `_unbind_planner_script` clears the same three fields as
+      `_bind_planner_script` under the same lock and REFUSES to touch a
+      hand-written binding (2.7), and the stale `_plan_steps`/`_plan_step_idx`/
+      `_plan_instruction` are cleared so `_check_task_board` is no longer gated
+      off. Five tests; a mutant removing the block reds four of them, and the
+      partly-working test stays green because it asserts the absence. Limit,
+      recorded not papered over: "the goal is handed back" is proven only as
+      far as the gate that caused the stall is cleared -- whether `call_plan`
+      re-enters on a yielded goal is the reviewer's open question, and this
+      task does not claim it.
+
 
 ## 3. What is deliberately out of scope
 

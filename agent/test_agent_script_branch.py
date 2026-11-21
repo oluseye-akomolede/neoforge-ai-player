@@ -206,6 +206,112 @@ class ScriptTickBranchTest(unittest.TestCase):
                       "a refused action vanished with no trace")
 
 
+class AllRefusedYieldsTest(unittest.TestCase):
+    """Task 2a.14 option 1: an all-refused tick yields the goal.
+
+    Trial 4.1 measured 69 refusals / 0 new plans in six minutes with the bot
+    stuck, because a refused script stayed bound and the stale step list kept
+    `_check_task_board` from re-planning. Option 1 has no N and no counter: the
+    FIRST all-refused tick unbinds. These tests are the boundary in both
+    directions -- all-refused yields, partly-working stays.
+    """
+
+    def setUp(self):
+        agent_mod = _agent_module()
+        self.agent_mod = agent_mod
+        self.a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
+        self.a._lock = threading.Lock()
+        self.a.name = "Scout"
+        self.a.profile = {}
+        self.a._script_tick = None
+        self.a._script_say_guard = agent_mod.ScriptSayGuard()
+        self.a._script_loaded = True
+        self.a._l3_orchestrator_dispatch = mock.Mock(
+            return_value="COMPLETED STORE_ALL {'stored': 1}")
+        self.a._run_directive = mock.Mock(return_value={"success": True})
+        # A planner-authored script in force, plus the stale steps that kept
+        # the planner from being asked again.
+        self.a._planner_script = "while (true) { api.mine(); }"
+        self.a._plan_steps = ["mine something"]
+        self.a._plan_step_idx = 0
+        self.a._plan_instruction = "keep mining"
+
+    def _with_tick(self, tick_result):
+        class Stub:
+            def tick(_self):
+                return tick_result
+        self.a._script_tick = Stub()
+
+    def test_an_all_refused_tick_unbinds_on_the_first_tick(self):
+        # No second tick, no waiting for a streak: option 1 acts immediately.
+        self.a._l3_orchestrator_dispatch = mock.Mock(
+            return_value="FAILED UNKNOWN_KIND no such kind")
+        self._with_tick((True, [{"kind": "UNKNOWN_KIND"}],
+                         [{"seq": 1, "error": "unknown kind"}], "ok"))
+        self.assertFalse(self.a._run_script_tick(),
+                         "an all-refused tick must still let the planner run")
+        self.assertIsNone(
+            self.a._planner_script,
+            "the refused script stayed bound - the next tick rebuilds and "
+            "re-proposes the same impossible actions")
+
+    def test_the_stale_step_list_is_dropped_so_the_goal_is_re_planned(self):
+        # The real stuck state: `_plan_steps` non-empty gates
+        # `_check_task_board` off (agent.py:3588), so the identical tick
+        # repeats. Clearing it is what hands the goal back to `call_plan`.
+        self.a._l3_orchestrator_dispatch = mock.Mock(
+            return_value="FAILED UNKNOWN_KIND no such kind")
+        self._with_tick((True, [{"kind": "UNKNOWN_KIND"}],
+                         [{"seq": 1, "error": "unknown kind"}], "ok"))
+        self.a._run_script_tick()
+        self.assertEqual(self.a._plan_steps, [],
+                         "stale steps survived - _check_task_board stays gated "
+                         "off and the goal is left with no driver")
+        self.assertEqual(self.a._plan_step_idx, 0)
+
+    def test_the_yield_is_logged_naming_option_1(self):
+        self.a._l3_orchestrator_dispatch = mock.Mock(
+            return_value="FAILED UNKNOWN_KIND no such kind")
+        self._with_tick((True, [{"kind": "UNKNOWN_KIND"}],
+                         [{"seq": 1, "error": "unknown kind"}], "ok"))
+        with mock.patch("builtins.print") as p:
+            self.a._run_script_tick()
+        printed = " ".join(str(c.args[0]) for c in p.call_args_list if c.args)
+        self.assertIn("option 1", printed,
+                      "the spec requires logging which option fired")
+
+    def test_a_tick_that_refuses_one_kind_but_dispatches_another_stays_bound(self):
+        # The boundary that separates option 1's "EVERY" from a naive "any
+        # refusal unbinds". A partly-working script must survive: it is
+        # dispatching, not unable to.
+        self.a._l3_orchestrator_dispatch = mock.Mock(
+            side_effect=["COMPLETED STORE_ALL ok", "FAILED DROP no dirt"])
+        self._with_tick((True,
+                         [{"kind": "STORE_ALL"}, {"kind": "DROP", "target": "dirt"}],
+                         [{"seq": 2, "error": "refused DROP"}], "ok"))
+        self.assertTrue(self.a._run_script_tick())
+        self.assertIsNotNone(
+            self.a._planner_script,
+            "one refused kind among dispatched ones unbound a working script")
+        self.assertEqual(self.a._plan_steps, ["mine something"],
+                         "a partly-working tick must not clear the plan")
+
+    def test_a_hand_written_binding_is_never_unbound_by_a_refusal(self):
+        # A hand-written script comes from bindings.json, not _planner_script.
+        # Unbinding a human's deployment because one tick refused everything
+        # would undo a deliberate choice the planner may not overwrite (2.7).
+        self.a._planner_script = None
+        self.a._l3_orchestrator_dispatch = mock.Mock(
+            return_value="FAILED UNKNOWN_KIND no such kind")
+        self._with_tick((True, [{"kind": "UNKNOWN_KIND"}],
+                         [{"seq": 1, "error": "unknown kind"}], "ok"))
+        with mock.patch("builtins.print") as p:
+            self.a._run_script_tick()
+        printed = " ".join(str(c.args[0]) for c in p.call_args_list if c.args)
+        self.assertIn("no planner script to unbind", printed,
+                      "the tick did not take the hand-written path at all")
+
+
 class BindingsTest(unittest.TestCase):
     """The bot-to-script map, tested against a real file on disk.
 
