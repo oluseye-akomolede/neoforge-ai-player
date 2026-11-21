@@ -1078,3 +1078,47 @@ finds nothing), so this holds only because the script tick clears
 drives a **real** dry tick carrying `say`/`send` records, so the records reach
 the routing and only the clear can empty them; a test that mocks the script
 tick cannot hold this line, because the records it returns are never routed.
+
+### Requirement: A Planner-Written Script's Source Is Logged When It Binds
+
+When the agent binds a script the planner wrote, it MUST log that script's
+source once, at the moment of binding, so a trial's behaviour can be read from
+the log instead of reconstructed. Trial 4.1 could not be diagnosed because the
+agent never logged the source: a script reported "no shears in inventory" while
+the bot held shears, and there was no way to tell from the log which field the
+script had read.
+
+The log entry MUST carry the bot's name and a hash of the source, so two binds
+of the same script are recognisable and two different scripts are
+distinguishable. The source MUST be capped at about 4 KiB with an explicit
+truncation marker, because a script is bounded at 64 KiB and a log line must
+stay readable.
+
+This applies to **planner-written** scripts only. A hand-written binding read
+from `bindings.json` MUST NOT be logged by this path: a human put that file
+there and can read it. Nothing from the snapshot, the bot's memory, or
+`api.remember` output is logged -- only the script source the planner emitted.
+
+Script source carries no secret. It is a program over the six host calls and
+`look`; it cannot contain a credential, because the sandbox has no filesystem,
+no network, and no environment access (`engine.js:2-12`). The only values it
+can name are action kinds, item ids and literals the model wrote. Logging it
+therefore leaks nothing that the planner prompt did not already determine.
+
+#### Scenario: A bound planner script is identifiable in the log
+- **GIVEN** a planner reply carrying a script that passes the dry tick
+- **WHEN** the agent binds it
+- **THEN** the log carries the bot name, a hash of the source, and the source
+  itself, in one entry
+
+#### Scenario: A long script is capped, not dropped
+- **GIVEN** a planner script longer than 4 KiB
+- **WHEN** it binds
+- **THEN** the logged source is cut at the cap with a truncation marker saying
+  it was cut, so a reader can tell a short script from a clipped one
+
+#### Scenario: A hand-written binding is not logged by this path
+- **GIVEN** a bot whose script comes from `bindings.json`
+- **WHEN** that script is loaded
+- **THEN** this logging path MUST NOT emit its source, because the file is the
+  record a human already keeps

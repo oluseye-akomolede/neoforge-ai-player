@@ -119,5 +119,43 @@ class DriftTest(unittest.TestCase):
                          "an example names a kind the binding refuses")
 
 
+class LookupEntryFieldsTest(unittest.TestCase):
+    """Task 4.5: the prompt must state the identity field of every lookup
+    entry, and they DIFFER (block=id, mob=type, item=item). KILLS: documenting
+    one shape and leaving a script to guess `id` for the other two, which
+    reads `undefined` and looks like an empty result."""
+
+    def test_each_lookup_shape_names_its_identity_field(self):
+        s = planner.SCRIPT_SURFACE
+        for field in ("block", "type", "item"):
+            self.assertIn(field, s, f"the {field} identity field is gone")
+        self.assertIn("items[0].item", s, "the inventory read hint is gone")
+        self.assertIn("items[0].count", s)
+        self.assertIn("undefined", s, "the undefined-not-error warning is gone")
+        self.assertIn("a mob entry has `{type, name, position, distance}`", s,
+                      "the mob shape is gone")
+
+    def test_no_shape_substitutes_id_for_its_own_identity_field(self):
+        """KILLS: replacing any one identity field with `id`, which is the
+        exact producer-shape mistake task 4.5 exists to prevent. Presence
+        tests alone stay green when `type` becomes `id`, so each shape line is
+        pinned separately."""
+        s = planner.SCRIPT_SURFACE
+        self.assertIn("a block entry has `{id, block, position}`", s)
+        self.assertIn("a mob entry has `{type, name, position, distance}`", s)
+        self.assertIn("an inventory item has `{slot, item, count, "
+                      "display_name, max_stack_size}`", s)
+        # The two lines that must NOT say `id` say so explicitly.
+        self.assertEqual(2, s.count("NOT `id`"),
+                         "expected two 'NOT id' warnings (mob, item)")
+
+    def test_the_wrong_id_read_is_called_out(self):
+        """KILLS: dropping the explicit "do not use .id" warning while keeping
+        the field list. The warning is what a model actually needs."""
+        s = planner.SCRIPT_SURFACE
+        self.assertIn("NOT `id`", s, "the 'not id' warning is gone")
+        self.assertIn("items[0].id", s, "the concrete wrong-read example is gone")
+
+
 if __name__ == "__main__":
     unittest.main()

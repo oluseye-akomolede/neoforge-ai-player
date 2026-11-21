@@ -1976,5 +1976,79 @@ class PlannerForPassHonoursTheCapsTest(unittest.TestCase):
         self.assertEqual(reason, "hour-cap")
 
 
+
+class BoundScriptSourceIsLoggedTest(unittest.TestCase):
+    """Task 4.5 ask 2: a bound planner script's source is logged once.
+
+    Trial 4.1 could not be diagnosed: a script reported "no shears" while the
+    bot held shears, and no log recorded what the script had been given. These
+    pin the three things that make such a line useful rather than misleading:
+    it carries an identity (hash) and the bot, it is clipped WITH a marker so a
+    short script is not confused with a clipped one, and it never echoes a
+    hand-written binding's file.
+    """
+
+    def setUp(self):
+        agent_mod = _agent_module()
+        self.agent_mod = agent_mod
+        self.a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
+        self.a._script_say_guard = agent_mod.ScriptSayGuard()
+        self.a._lock = threading.Lock()
+        self.a.name = "Scout"
+        self.a.profile = {}
+        self.a._script_tick = None
+        self.a._script_loaded = False
+        self.a._script_hold = None
+        self.a._script_hold_seq = 0
+        self.a._planner_script = None
+
+    def _bind_and_capture(self, src, hand_written=False):
+        import contextlib, io
+        buf = io.StringIO()
+        path = "/bot/scripts/scout.js" if hand_written else None
+        with mock.patch.object(self.a, "_dry_tick", return_value=True), \
+             mock.patch.object(self.a, "_bound_script_path", return_value=path), \
+             contextlib.redirect_stdout(buf):
+            ok = self.a._bind_planner_script(src)
+        return ok, buf.getvalue()
+
+    def test_the_source_is_logged_with_bot_and_hash(self):
+        # KILLS: binding silently, which is exactly what made trial 4.1
+        # un-diagnosable -- nothing recorded the script that ran.
+        src = "const s = look.inventory(); api.say(s.items[0].item);"
+        ok, out = self._bind_and_capture(src)
+        self.assertTrue(ok)
+        self.assertIn("planner script source", out)
+        self.assertIn("Scout", out)
+        digest = self.agent_mod._script_digest(src)
+        self.assertIn(digest, out, f"the hash must identify the source; got:\n{out}")
+        self.assertIn("s.items[0].item", out, "the source itself must be readable")
+
+    def test_a_long_script_is_clipped_and_says_so(self):
+        # KILLS: a silent cut, which makes a clipped script look complete.
+        src = "// pad\n" * 2000
+        self.assertGreater(len(src.encode()), self.agent_mod.SCRIPT_LOG_CAP)
+        ok, out = self._bind_and_capture(src)
+        self.assertTrue(ok)
+        self.assertIn("truncated at bind", out)
+        self.assertLess(len(out.encode()), self.agent_mod.SCRIPT_LOG_CAP + 600,
+                        "the log line must stay near the cap, not echo 64 KiB")
+
+    def test_a_short_script_carries_no_truncation_marker(self):
+        # The complement: the marker must mean something. If it appeared on a
+        # short script a reader could not tell clipped from complete.
+        ok, out = self._bind_and_capture("api.say('hi');")
+        self.assertTrue(ok)
+        self.assertNotIn("truncated at bind", out)
+
+    def test_a_hand_written_binding_is_not_echoed(self):
+        # KILLS: logging a human's file, which the spec forbids -- bindings.json
+        # is the record a person already keeps.
+        src = "// human script\napi.say('mine');"
+        ok, out = self._bind_and_capture(src, hand_written=True)
+        self.assertFalse(ok, "a hand-written binding must win and bind nothing")
+        self.assertNotIn("planner script source", out)
+        self.assertNotIn("human script", out)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -208,7 +208,7 @@ shears and could not tell).
       tests pin the WHOLE guidance sentence; asserting `"shearing needs"`
       alone stayed green when the instruction was replaced by "Consider what
       the bot carries".
-- [ ] 4.5 **`SCRIPT_SURFACE` names the entry fields of all three lookups.**
+- [x] 4.5 **`SCRIPT_SURFACE` names the entry fields of all three lookups.**
       Raised by the reviewer at 8f9f9f6 as a producer-shape observation and
       not a runner defect: an inventory item's identity field is `item`, not
       `id`, so a planner writing `items[0].id` gets `undefined` and sees an

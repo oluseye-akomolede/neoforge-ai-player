@@ -62,6 +62,31 @@ from dashboard.state import shared_state
 import chat_filter
 
 # Chat command patterns (regex, processed before planner)
+# Cap on how much of a planner-written script is echoed to the log at bind
+# time. A script may be 64 KiB (runner MAX_SOURCE_BYTES); a log line must stay
+# readable, so the source is clipped and SAYS it was clipped -- a silent cut
+# would make a truncated script look like a short one.
+SCRIPT_LOG_CAP = 4096
+
+
+def _script_digest(source: str) -> str:
+    """First 16 hex of the source's sha256 -- the same value _revision_of
+    derives (script_tick.py:233) and the bind line prints, so a logged source
+    can be matched to a file's own sha256 prefix without trusting the line."""
+    import hashlib
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
+
+
+def _script_excerpt(source: str, cap: int = SCRIPT_LOG_CAP) -> str:
+    """The source, clipped to `cap` BYTES on a character boundary, with a
+    marker naming how much was dropped."""
+    raw = source.encode("utf-8", "replace")
+    if len(raw) <= cap:
+        return source
+    head = raw[:cap].decode("utf-8", "ignore")
+    return f"{head}\n... [script truncated at bind: {len(raw) - cap} of {len(raw)} bytes omitted]"
+
+
 _CMD_REMEMBER = re.compile(
     r"@(all|\w+)\s+remember:\s*(.+)", re.IGNORECASE | re.DOTALL
 )
@@ -3515,6 +3540,16 @@ Respond with ONLY a JSON array. Example:
         # script became live (M3-1c). Printing "bound" here too would put two
         # bind lines in the log for one bind and make the digest un-datable.
         print(f"[{self.name}/script] adopting planner script; rebuilt next tick")
+        # Log the source once, here, because this is the only moment the agent
+        # knows what it is about to run. Trial 4.1 could not be diagnosed --
+        # a script reported "no shears" while the bot held shears -- because
+        # nothing recorded which field the script had read. Only planner
+        # scripts reach this method; a hand-written binding returns above, so
+        # a human's file is never echoed here.
+        print(f"[{self.name}/script] planner script source "
+              f"sha256={_script_digest(source)} "
+              f"bytes={len(source.encode('utf-8', 'replace'))}\n"
+              f"{_script_excerpt(source)}")
         return True
 
     def _unbind_planner_script(self):
@@ -3595,8 +3630,7 @@ Respond with ONLY a JSON array. Example:
         # looking identical in the log. The digest is of the SOURCE BYTES, the
         # same value `_revision_of` derives (script_tick.py:233), so it can be
         # matched to the file's own sha256 prefix without trusting this line.
-        import hashlib
-        digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
+        digest = _script_digest(source)
         print(f"[{self.name}/script] bound {path} ({digest})")
         return self._script_tick
 

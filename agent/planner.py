@@ -76,6 +76,16 @@ call cost, no network). It answers the world as of THIS tick, not a live query:
   leading `minecraft:` on either side is ignored, so `'iron_ore'` and
   `'minecraft:iron_ore'` both work. A block entry has `{id, block, position}` —
   no block state, so you cannot ask for "a red flower" that way.
+- The three lookups return entries with DIFFERENT identity fields, so read the
+  right one and do not assume `id` works everywhere:
+  a block entry has `{id, block, position}` (`id` is the namespaced registry id);
+  a mob entry has `{type, name, position, distance}` — the identity field is
+  `type`, NOT `id`;
+  an inventory item has `{slot, item, count, display_name, max_stack_size}`
+  (plus `durability`/`max_durability` on a damageable tool) — the identity field
+  is `item`, NOT `id`. Read `items[0].item` and `items[0].count`; reading
+  `items[0].id` gives `undefined`, which looks like an empty inventory rather
+  than an error.
 - Check `look.inventory()` before a task that needs a tool: shearing needs
   shears, mining needs a pickaxe. If the tool is missing, say so or fetch it.
   Do not start an action the bot has no tool for.
