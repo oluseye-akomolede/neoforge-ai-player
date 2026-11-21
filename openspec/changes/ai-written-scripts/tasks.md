@@ -196,6 +196,31 @@ L3 path rather than limit the spec to the decompose paths.
       would run something the model did not mean. Mutant-checked by letting
       `TruncatedAnswer` escape.
 
+- [ ] 2a.13 **The script prompt lists the real bindable kinds.** `planner.py`
+      `SCRIPT_SURFACE` offers `"attack"` and `"place"` as examples; neither is in
+      `action_binding.BINDABLE_KINDS` (45 kinds), so a script following the
+      prompt has its only action refused. Replace the examples with real kinds
+      and name the set, generated from or pinned against `BINDABLE_KINDS` by a
+      test in the pattern of `test_bindable_set_matches_source`, so the prompt
+      and the binding cannot drift. State that `bind_action` upper-cases the
+      kind (`action_binding.py:74`), so case is not significant -- the prompt
+      shows lowercase and a model writing `"Mine"` must not be left guessing.
+      Verified by: a test asserting every example kind, passed through
+      `bind_action`, raises no `RefusedAction`; and that removing a kind from
+      `BINDABLE_KINDS` without touching the prompt reds.
+- [ ] 2a.14 **An all-refused tick yields the goal, or stops and says why.**
+      Today `_run_script_tick` returns False and the caller falls through
+      (`agent/agent.py:3230`), but the script stays bound and `_plan_steps`
+      still holds the old reply's steps, so `_check_task_board` is skipped and
+      the same refused script reruns every tick. Trial 4.1 measured 69 refusals
+      / 69 "falling back" / 1 L3 SCRIPT / 0 new plans in six minutes with the
+      bot stuck. Implement option 1 (yield the goal: unbind, hand back, let
+      `call_plan` be asked again) with a consecutive-tick counter, and log which
+      option fired. Verified by: a script whose only action is an unknown kind
+      stops being the driver within N ticks, the reason is in chat and the log,
+      and the goal still has a driver; plus a test that one dispatching tick
+      resets the count so an intermittent script is not torn down.
+
 ## 3. What is deliberately out of scope
 
 - [ ] 3.1 Step (b): read-only lookup functions inside the sandbox. Later change.

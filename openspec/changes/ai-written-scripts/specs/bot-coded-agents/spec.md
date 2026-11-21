@@ -640,6 +640,54 @@ that record them.
 - **AND** the orchestrator executes the reply's steps, so the goal is still
   driven by exactly one thing
 
+### Requirement: A Script That Never Dispatches Anything Yields The Goal
+
+"Exactly One Driver Per Goal" says what happens when a script *takes* a goal.
+This requirement covers a driver that has taken the goal and can never act on it.
+
+When every action a script proposes in a tick is refused by the binding,
+`_run_script_tick` returns `False` and the caller falls through to the planner
+(`agent/agent.py:3230`). That fall-through does not hand the goal back. The
+script stays bound, and the planner is not asked for a new one: `_plan_steps`
+still holds the steps from the reply that carried the script, and
+`_check_task_board` is skipped because that list is non-empty. The loop then
+repeats identically on the next tick.
+
+Trial 4.1 measured it at 2026-11-21 22:25Z: 69 refusals, 69 "falling back to
+planner" lines, 1 L3 SCRIPT call, 0 new plans, over six minutes, for a goal
+whose only action was an unknown kind. The log said the agent was falling back.
+Nothing was.
+
+An all-refused tick MUST do one of two things, and the implementation MUST
+state which in the log:
+
+1. **Yield the goal.** Unbind the script and hand the goal back so `call_plan`
+   is asked again. Preferred, because the goal is still pursued and the
+   refusals are the signal that the script was wrong.
+2. **Stop and report.** After N consecutive all-refused ticks, unbind the script
+   and say why in chat and in the log.
+
+Silently rerunning a script that cannot dispatch is neither. The counter MUST be
+consecutive: a tick that dispatches something resets it, so a script that
+intermittently succeeds is never torn down.
+
+For 2026-11-21 this requirement is satisfied by option 1, because the goal is
+pursued either way and option 2 leaves the bot idle on a goal a planner could
+have taken.
+
+#### Scenario: A script whose only action is refused stops being the driver
+- **GIVEN** a bound script whose only action is an unknown kind
+- **WHEN** N consecutive ticks refuse every action
+- **THEN** the bot is no longer running that script
+- **AND** the reason is visible in chat and in the log
+- **AND** the goal is not left with no driver
+
+#### Scenario: A tick that dispatches resets the refusal count
+- **GIVEN** a script that refuses every action on some ticks and dispatches one
+  on others
+- **WHEN** the refusals never reach N in a row
+- **THEN** the script stays bound
+
 ### Requirement: Binding A Script Is Atomic Against The Bot's Tick
 Binding happens on the orchestrator's thread while the bot's own tick loop is
 running on another, and the bind touches state the tick reads. `_bind_planner_script`
@@ -839,6 +887,48 @@ snapshot is a read-only global named `snapshot` (`engine.js:660-680`), not an
 - **WHEN** the model follows the prompt
 - **THEN** the resulting dry-tick failure is a prompt defect
 - **AND** the prompt is what MUST change
+
+### Requirement: The Script Prompt Names The Action Kinds The Binding Accepts
+
+`api.do(directive, args)` takes an action kind, and the binding layer accepts a
+closed set of them. The prompt MUST name that set, and MUST NOT offer an example
+kind the binding refuses. This is the same defect as naming an unbound method,
+one level down: a model that follows the prompt exactly gets its only action
+refused, the script proposes nothing dispatchable, and the tick falls through to
+a planner that has no plan for this goal. The bot then reruns the same refused
+script every tick -- a visible stall that reads, in the logs, as the agent
+working.
+
+The set is `action_binding.BINDABLE_KINDS` -- 45 kinds at 2026-11-21, being
+`AGENT_SIDE_KINDS` (10) plus `MOD_DIRECTIVE_KINDS` (35). The prompt's list MUST
+be generated from or pinned against that constant by a test, so the two cannot
+diverge silently; the same pattern as `test_bindable_set_matches_source`.
+
+`bind_action` upper-cases the kind before checking it (`action_binding.py:74`),
+so `"mine"`, `"MINE"` and `"Mine"` all bind. The prompt shows lowercase for
+readability; it MUST say that case is not significant, because a model writing
+`"Mine"` should be told that is fine rather than left to infer it.
+
+#### Scenario: The prompt's action kinds match the binding
+- **GIVEN** the script prompt shipped to the planner
+- **AND** `action_binding.BINDABLE_KINDS`
+- **WHEN** the two are compared
+- **THEN** every kind the prompt names as a bare example is in the set
+- **AND** a test fails if a kind is added to or removed from the set without the
+  prompt changing in the same commit
+
+#### Scenario: Every example kind is dispatchable
+- **GIVEN** the prompt's examples for `api.do`
+- **WHEN** each example kind is passed to `bind_action`
+- **THEN** none raises `RefusedAction`
+- **AND** in particular the prompt does not offer `attack` or `place`, which are
+  not bindable kinds
+
+#### Scenario: A refused kind reaches the fallback, not a stall
+- **GIVEN** a script whose only action is an unknown kind
+- **WHEN** N consecutive ticks refuse every action
+- **THEN** the bot is no longer running that script, and the reason is visible in
+  chat and in the log
 
 ### Requirement: A Length-Stopped Plan Reply Is Reported As Truncated
 
