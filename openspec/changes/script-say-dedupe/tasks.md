@@ -24,4 +24,4 @@
 - [x] 4.1 Run the affected suites by discovery and quote totals: agent suite and runner suite. Name the known `dashboard`/`uvicorn` import error if it appears.
 - [x] 4.2 `openspec validate script-say-dedupe --strict`.
 - [x] 4.3 Mutants, `python3 -B`, one per test: window comparison removed; key ignores `to`; key ignores `text`; log per tick instead of per window; guard cleared on reset; brace gate.
-- [ ] 4.4 Report the shas and the test counts copied from the output; file the reviewer row.
+- [x] 4.4 Report the shas and the test counts copied from the output; file the reviewer row.
