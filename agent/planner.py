@@ -11,6 +11,7 @@ import requests
 from config import OLLAMA_URL, answer_text, think_field
 import brain
 import openai_brain
+from action_binding import BINDABLE_KINDS
 
 
 class PlannerResult(list):
@@ -39,8 +40,15 @@ loop. You may answer with a JavaScript program instead. It runs once per tick
 in a sandbox with no filesystem and no network, and reaches the world ONLY
 through these calls:
 
-- `api.do(directive, args)` — queue one game action. `directive` is an exact
-  name like `"goto"`, `"mine"`, `"attack"`, `"place"`. `args` is a plain object.
+- `api.do(directive, args)` — queue one game action. `directive` MUST be one of
+  the @@N_KINDS@@ bindable kinds, named here in full; anything else is refused:
+
+@@KIND_LIST@@
+
+  Examples: @@EXAMPLES@@. Matching is
+  case-insensitive (`"mine"` works), but the names are the ones above — there
+  is no `"attack"` and no `"place"`; melee is `"COMBAT"` and putting an item in
+  a container is `"CONTAINER_STORE"`. `args` is a plain object.
   Returns `{ok, seq}` or a rejection.
 - `api.say(text)` — speak in chat.
 - `api.send(otherBot, msg)` — message another bot.
@@ -90,6 +98,44 @@ Rules for scripts:
   again within a minute is suppressed, so a repeat is wasted, not harmful.
 - Anything a script `api.do`s is dispatched like a planned step, so use real
   directive names, not invented ones."""
+
+
+def _render_kind_list(kinds):
+    """The bindable kinds as a wrapped backticked list, sorted for stability."""
+    names = [f"`\"{k}\"`" for k in sorted(kinds)]
+    lines, line = [], "  "
+    for name in names:
+        if len(line) + len(name) + 2 > 78:
+            lines.append(line.rstrip())
+            line = "  "
+        line += name + ", "
+    lines.append(line.rstrip(", "))
+    return "\n".join(lines)
+
+
+def _render_examples(kinds):
+    """Four kinds for the prompt's Examples line, taken FROM the binding.
+
+    Named here as candidates only; a candidate the binding does not have is
+    skipped, so removing a kind from the binding removes it from the prompt
+    instead of leaving a stale example behind. Falls back to the first sorted
+    kinds if none of the preferred ones survive, so the line is never empty.
+    """
+    preferred = ["MINE", "GOTO", "COMBAT", "CONTAINER_STORE"]
+    chosen = [k for k in preferred if k in kinds][:4]
+    if len(chosen) < 4:
+        chosen += [k for k in sorted(kinds) if k not in chosen][:4 - len(chosen)]
+    return ", ".join(f'`"{k}"`' for k in chosen)
+
+
+# The kind list is computed from BINDABLE_KINDS, not typed: a hand-written list
+# is exactly the thing that drifted (the prompt offered "attack" and "place",
+# neither of which the binding accepts). Substituted by plain string replace
+# rather than .format, because this surface holds literal braces like {ok, seq}.
+SCRIPT_SURFACE = (SCRIPT_SURFACE
+                  .replace("@@N_KINDS@@", str(len(BINDABLE_KINDS)))
+                  .replace("@@KIND_LIST@@", _render_kind_list(BINDABLE_KINDS))
+                  .replace("@@EXAMPLES@@", _render_examples(BINDABLE_KINDS)))
 
 
 PLANNER_PROMPT = """You are a Minecraft task planner. Break the player's instruction into simple, sequential steps that a bot can execute one at a time.
