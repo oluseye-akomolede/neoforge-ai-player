@@ -3,7 +3,7 @@
 ## 1. Where the memory lives, and why
 
 **One `ScriptSayGuard` object per bot, held on the `BotRunner`, consulted in
-`_deliver_script_deliveries` (`agent/agent.py:3039`).**
+`_deliver_script_deliveries` (`agent/agent.py:3019`).**
 
 The three candidate homes, and why this one:
 
@@ -21,8 +21,11 @@ after a restart is the one a player would expect to see.
 
 ## 2. The rule, exactly
 
-State: for each stream, the last delivered key and the monotonic time it was
-delivered.
+State: one record per key, holding the monotonic time that key was last
+delivered and a `logged` flag saying whether the current window's suppression
+has already been logged. Both fields live in the same record, so the flag
+cannot drift from the window it describes; when a delivery moves the timestamp
+past the window, the same write clears the flag.
 
 - `say` stream key: `("say", text)`.
 - `send` stream key: `("send", to, text)`.
@@ -31,9 +34,10 @@ On each delivery:
 
 1. Compute the key for the call.
 2. Look up the last delivery for **that same key**.
-3. If it exists and `now - then < 60.0` s → **suppressed**. Count it, and log
-   at most one line per key per window.
-4. Otherwise deliver, then record `(key -> now)`.
+3. If it exists and `now - then < 60.0` s → **suppressed**. Count it always;
+   log only if the record's `logged` flag is false, and set that flag in the
+   same record.
+4. Otherwise deliver, then record `(key -> now, logged=False)`.
 
 The lookup is keyed, not "the last line overall": two bots' streams, and the
 `say` and `send` streams, are independent, and `send("A", "go")` must not
@@ -53,7 +57,7 @@ overwritten by the new delivery. No sweep, no timer, no background work.
 
 - **The 30/min cap** (`binding.js:96`) is unchanged and still the rate limit.
   The dedupe removes repeated *content*; a script saying twelve different lines
-  in a minute is delivered in full. The note at `agent/agent.py:3028` (do not
+  in a minute is delivered in full. The note at `agent/agent.py:3028-3031` (do not
   add a second limiter) is therefore not contradicted, and its docstring is
   updated to say dedupe is what is being added and why that is not a limiter.
 - **The delivery contract** — "a delivered `say` or `send` counts toward the

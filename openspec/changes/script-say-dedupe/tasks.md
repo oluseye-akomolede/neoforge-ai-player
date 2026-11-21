@@ -3,13 +3,13 @@
 ## 1. The guard
 
 - [ ] 1.1 Add `agent/script_say_guard.py` with `ScriptSayGuard(clock=time.monotonic, window_seconds=60.0)`: `check(call, text, to=None)` returning whether to deliver and whether this is a first suppression for the key in the window; `deliver(key)` recording the time. Docstring records why it lives per bot and survives `reset()`.
-- [ ] 1.2 Tests for the guard alone with an injected clock: same key inside the window suppressed; at exactly 60.0 s delivered; different text delivered; different recipient delivered; alternating keys each suppressed after the first; the "first suppression in this window" flag true once then false.
+- [ ] 1.2 Tests for the guard alone with an injected clock: same key inside the window suppressed; at exactly 60.0 s delivered and at 59.999 s still suppressed (the comparison is `< 60.0`); different text delivered; different recipient delivered; alternating keys each suppressed after the first; the "first suppression in this window" flag true once then false.
 
 ## 2. Wiring into the delivery loop
 
 - [ ] 2.1 Create the guard per bot beside `ResultSlot` (`agent/agent.py:277` region) so it survives `reset()`; confirm `reset()` does not clear it (test).
-- [ ] 2.2 In `_deliver_script_deliveries` (`agent/agent.py:3039`) consult the guard before delivering; count suppressed separately and return both counts; log at most one suppression line per key per window.
-- [ ] 2.3 Update the docstring at `agent/agent.py:3028` to say the dedupe is content-dedupe, not a rate limit, and that the runner's cap is still the only rate bound.
+- [ ] 2.2 In `_deliver_script_deliveries` (`agent/agent.py:3019`) consult the guard before delivering; count suppressed separately and return both counts; log at most one suppression line per key per window.
+- [ ] 2.3 Update the docstring at `agent/agent.py:3028-3031` to say the dedupe is content-dedupe, not a rate limit, and that the runner's cap is still the only rate bound.
 - [ ] 2.4 A suppressed call still counts toward the tick having handled it, and is not reported as a refusal (test).
 - [ ] 2.5 The call site at `agent/agent.py:3160` reports delivered and suppressed counts (log line).
 - [ ] 2.6 A dry tick neither reads nor writes the memory (test), since it delivers nothing.

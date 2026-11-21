@@ -26,7 +26,7 @@ chat must only carry news.**
 **A 60-second memory of what this bot last put in chat, at the point of
 delivery.** The agent already holds each script delivery in a comparable form
 (`call`, `text`, `to`) and every script `say`/`send` passes through one loop
-(`_deliver_script_deliveries`, `agent/agent.py:3039`). The rule:
+(`_deliver_script_deliveries`, `agent/agent.py:3019`). The rule:
 
 - `say` is keyed on the full text; `send` is keyed on `(to, text)`.
 - If the same key was **delivered within the last 60 seconds**, this one is
@@ -41,7 +41,7 @@ previous line is still that same text — the opposite of what is wanted. The
 window also stops an A/B/A/B alternation from spamming.
 
 This **dedupes content; it does not rate-limit.** The runner's 30/min cap stays
-the rate limit, and the note at `agent/agent.py:3028` (do not add a second
+the rate limit, and the note at `agent/agent.py:3028-3031` (do not add a second
 limiter here) still holds, because dedupe is not a bound on how much is sent
 per minute — it is a rule about repeating the same line. That docstring is
 updated to say so rather than left to look contradicted.
