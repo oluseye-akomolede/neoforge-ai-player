@@ -706,11 +706,14 @@ dispatch.
 
 #### Scenario: Serialising to option 2 replaces the counter behaviour
 
-- **GIVEN** an implementation that chose option 2 instead of option 1
-- **WHEN** the script refuses every action for fewer than `N` consecutive ticks
-  and dispatches on each intervening tick
-- **THEN** the script stays bound
-- **AND** once `N` consecutive all-refused ticks occur it is unbound
+- **GIVEN** an implementation that chose option 2 instead of option 1, and a
+  script whose ticks have so far alternated refused and dispatched, so an
+  all-refused run has started and been reset before
+- **WHEN** fewer than `N` all-refused ticks occur in a row, and then a tick
+  dispatches
+- **THEN** the script stays bound, because that dispatch reset the count
+- **AND** when a later run of `N` all-refused ticks happens with no dispatch
+  between them, the script is unbound and the reason is in chat and in the log
 - **NOTE** this scenario applies only to option 2; the shipped behaviour has no
   counter and unbinds on the first all-refused tick
 
