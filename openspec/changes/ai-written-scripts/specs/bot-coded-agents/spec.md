@@ -671,15 +671,26 @@ Silently rerunning a script that cannot dispatch is neither. The counter MUST be
 consecutive: a tick that dispatches something resets it, so a script that
 intermittently succeeds is never torn down.
 
-For 2026-11-21 this requirement is satisfied by option 1, because the goal is
-pursued either way and option 2 leaves the bot idle on a goal a planner could
-have taken.
+Option 1 is the shipped behaviour for this change. It is recorded here as a
+permanent choice rather than a dated one: the goal is pursued either way, and
+option 2 leaves the bot idle on a goal a planner could have taken. Option 2
+remains the stated alternative for a future implementation that has a reason to
+prefer stopping.
+
+`N` is not fixed by this requirement, because the useful value depends on tick
+length and on how often a script is expected to be transiently refused. It MUST
+be a single named constant rather than a literal at the comparison, and the
+implementation MUST record the observation that chose it. The measured failure
+that prompted this requirement ran 69 consecutive refusals, so any `N` below
+about 30 would have fired; a small value risks tearing down a script that was
+about to dispatch.
 
 #### Scenario: A script whose only action is refused stops being the driver
+
 - **GIVEN** a bound script whose only action is an unknown kind
-- **WHEN** N consecutive ticks refuse every action
+- **WHEN** a tick refuses every action it proposes
 - **THEN** the bot is no longer running that script
-- **AND** the reason is visible in chat and in the log
+- **AND** the reason is visible in the log
 - **AND** the goal is not left with no driver
 
 #### Scenario: A tick that dispatches resets the refusal count
@@ -904,6 +915,15 @@ The set is `action_binding.BINDABLE_KINDS` -- 45 kinds at 2026-11-21, being
 be generated from or pinned against that constant by a test, so the two cannot
 diverge silently; the same pattern as `test_bindable_set_matches_source`.
 
+The failure is intermittent when the example list is MIXED, and that is why this
+survived. The shipped prompt offered four kinds: `goto` and `mine` bind, `attack`
+and `place` do not. A uniformly wrong list refuses every attempt and is noticed on
+the first run; a list that works for half its examples lets a model that samples
+them appear to succeed some of the time, so the trial yields partial progress and
+no single failing line. The requirement is therefore that EVERY example be
+dispatchable, not that some be, and the test MUST cover each one rather than
+asserting membership of the list as a whole.
+
 `bind_action` upper-cases the kind before checking it (`action_binding.py:74`),
 so `"mine"`, `"MINE"` and `"Mine"` all bind. The prompt shows lowercase for
 readability; it MUST say that case is not significant, because a model writing
@@ -925,10 +945,12 @@ readability; it MUST say that case is not significant, because a model writing
   not bindable kinds
 
 #### Scenario: A refused kind reaches the fallback, not a stall
+
 - **GIVEN** a script whose only action is an unknown kind
-- **WHEN** N consecutive ticks refuse every action
-- **THEN** the bot is no longer running that script, and the reason is visible in
-  chat and in the log
+- **WHEN** a tick refuses every action
+- **THEN** the script is unbound and the goal is handed back for `call_plan`,
+  not left bound to rerun the identical tick
+- **AND** the reason is visible in the log
 
 ### Requirement: A Length-Stopped Plan Reply Is Reported As Truncated
 
