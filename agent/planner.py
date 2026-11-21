@@ -30,6 +30,9 @@ class PlannerResult(list):
         super().__init__(steps)
         self.script = script
 
+_SCRIPT_SURFACE_SLOT = "@@SCRIPT_SURFACE@@"
+
+
 SCRIPT_SURFACE = """For goals that are REPETITIVE or CONDITIONAL — "keep the chest stocked",
 "until I say stop, mine whatever you see" — a step list cannot express the
 loop. You may answer with a JavaScript program instead. It runs once per tick
@@ -38,14 +41,14 @@ through these calls:
 
 - `api.do(directive, args)` — queue one game action. `directive` is an exact
   name like `"goto"`, `"mine"`, `"attack"`, `"place"`. `args` is a plain object.
-  Returns `{{ok, seq}}` or a rejection.
+  Returns `{ok, seq}` or a rejection.
 - `api.say(text)` — speak in chat.
 - `api.send(otherBot, msg)` — message another bot.
 - `api.remember(blob)` — store a string (≤16 KB) that the NEXT tick's
   `api.recall()` returns. This is the only state that persists between ticks.
 - `api.recall()` — the string this tick started with, or `null`.
 - `api.log(level, text)` — write one diagnostic line (≤1 KB).
-- `api.result(value)` — report a value to the planner. Returns `{{ok: true}}`
+- `api.result(value)` — report a value to the planner. Returns `{ok: true}`
   or a rejection. The value reaches the planner when the script ENDS (`done`,
   an error, or `escalate`); the LAST call in a tick wins; it is cut at 2 KiB
   with a truncation marker. The script's top-level return value is discarded —
@@ -55,12 +58,12 @@ through these calls:
 `look` — read-only questions about the tick's snapshot, already in hand (no
 call cost, no network). It answers the world as of THIS tick, not a live query:
 
-- `look.blocks(kind, options?)` → `{{ok: true, kind: 'blocks', matches: [...]}}`
-- `look.entities(type, options?)` → `{{ok: true, kind: 'entities', matches: [...]}}`
-- `look.age()` → `{{ok: true, ageMs}}`, how old the snapshot is
-- A failed query answers `{{ok: false, reason, message}}`.
+- `look.blocks(kind, options?)` → `{ok: true, kind: 'blocks', matches: [...]}`
+- `look.entities(type, options?)` → `{ok: true, kind: 'entities', matches: [...]}`
+- `look.age()` → `{ok: true, ageMs}`, how old the snapshot is
+- A failed query answers `{ok: false, reason, message}`.
 - `kind`/`type` match the entry's id or display name, case-insensitive. A block
-  entry has `{{id, block, position}}` — no block state, so you cannot ask for
+  entry has `{id, block, position}` — no block state, so you cannot ask for
   "a red flower" that way.
 - The snapshot covers blocks within 5 blocks and entities within 16. Asking
   for more answers `not-searched-that-far`, which is NOT the same as "none
@@ -196,6 +199,21 @@ def _script_from(parsed):
     return None
 
 
+def render_planner_prompt(memory_section="", transmute_section="", inventory_section=""):
+    """The planner prompt as the model receives it.
+
+    SCRIPT_SURFACE is substituted AFTER .format, not through it: it holds
+    plain single braces (real API shapes like {ok, seq}) which .format would
+    read as fields. l3_planner substitutes the same constant the same way, so
+    one string serves both prompts and they cannot drift apart.
+    """
+    return PLANNER_PROMPT.format(
+        script_section=_SCRIPT_SURFACE_SLOT,
+        memory_section=memory_section, transmute_section=transmute_section,
+        inventory_section=inventory_section,
+    ).replace(_SCRIPT_SURFACE_SLOT, SCRIPT_SURFACE)
+
+
 def decompose(model, instruction, memory_context="", transmute_context="", inventory_context="", sender=""):
     """Break an instruction into a list of step strings."""
     memory_section = ""
@@ -213,7 +231,9 @@ def decompose(model, instruction, memory_context="", transmute_context="", inven
     if sender:
         sender_section = f'\nThe player who sent this instruction is named "{sender}". When steps reference this player (e.g. "come to me"), use their exact name "{sender}" — not a placeholder.\n'
 
-    prompt = PLANNER_PROMPT.format(memory_section=memory_section, transmute_section=transmute_section, inventory_section=inventory_section, script_section=SCRIPT_SURFACE) + sender_section
+    prompt = render_planner_prompt(
+        memory_section=memory_section, transmute_section=transmute_section,
+        inventory_section=inventory_section) + sender_section
 
     with brain.ollama_lock:
         resp = requests.post(

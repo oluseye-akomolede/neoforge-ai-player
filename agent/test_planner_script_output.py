@@ -93,17 +93,33 @@ class ScriptOutputTest(unittest.TestCase):
 def _rendered_prompt():
     """The prompt EXACTLY as the model receives it.
 
-    Rendered through `.format` the way `decompose` renders it, not read off
-    the raw constant: the section uses doubled braces, so a broken literal
-    would still contain the words while reaching the model malformed or
-    raising at call time.
+    Rendered through production's own renderer, `planner.render_planner_prompt`,
+    not re-encoded here: a test that rebuilds the render can share the render's
+    bug and cannot observe it (reviewer F-1, 2026-11-21: my first version did
+    exactly that and passed while both prompts carried {{ok, seq}}).
     """
-    return planner.PLANNER_PROMPT.format(
-        memory_section="", transmute_section="", inventory_section="",
-        script_section=planner.SCRIPT_SURFACE)
+    return planner.render_planner_prompt()
+
+
+def _assert_no_doubled_braces(testcase, rendered, where):
+    testcase.assertNotIn("{{", rendered, f"doubled open brace reaches the model in {where}")
+    testcase.assertNotIn("}}", rendered, f"doubled close brace reaches the model in {where}")
 
 
 class PlannerPromptDocumentsPtcTest(unittest.TestCase):
+    def test_the_rendered_prompt_has_no_doubled_braces(self):
+        """KILLS: the regression where SCRIPT_SURFACE was moved out of the
+        .format template but kept its escaped {{ }}, so the MODEL read
+        "Returns {{ok, seq}} or a rejection." Seven artefacts, on both
+        prompts. Every assertion in this file passed while that shipped,
+        because they render through the same path the bug lived in."""
+        p = _rendered_prompt()
+        _assert_no_doubled_braces(self, p, "the legacy planner prompt")
+        # the real shapes must be there as literals, not just "no braces"
+        self.assertIn("Returns `{ok, seq}` or a rejection", p)
+        self.assertIn("`{ok: true, kind: 'blocks', matches: [...]}`", p)
+        self.assertIn("`{id, block, position}`", p)
+
     def test_the_prompt_documents_look_and_result(self):
         # KILLS: the shipped gap -- the script section listed only the six
         # api.* calls, so no planner-written script could use lookups (b) or

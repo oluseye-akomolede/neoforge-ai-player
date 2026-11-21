@@ -1455,11 +1455,21 @@ class TestTheL3ScriptPromptShowsLookAndResult(unittest.TestCase):
     """
 
     def _rendered(self):
-        # Rendered exactly as call_script does, so a bad brace or a missing
-        # arg fails here rather than at the model.
-        return l3_planner._SCRIPT_SYSTEM_PROMPT.format(
-            bot_name="Scout", persona="scout", skills="- x",
-            script_surface=l3_planner._SCRIPT_SURFACE)
+        # Production's own renderer, the one call_script uses. My first version
+        # re-encoded the render here, and so rendered through the very defect
+        # reviewer F-1 found: both prompts read "{{ok, seq}}" while every test
+        # passed.
+        return l3_planner.render_script_system_prompt("Scout", "scout", "- x")
+
+    def test_the_l3_script_prompt_has_no_doubled_braces(self):
+        """KILLS: the regression where the shared surface kept its escaped
+        {{ }} after leaving the .format template, so the model read
+        "Returns {{ok, seq}} or a rejection." Seven artefacts."""
+        p = self._rendered()
+        self.assertNotIn("{{", p)
+        self.assertNotIn("}}", p)
+        self.assertIn("Returns `{ok, seq}` or a rejection", p)
+        self.assertIn("`{ok: true, ageMs}`", p)
 
     def test_the_l3_script_prompt_names_look_and_result(self):
         """KILLS: the pre-fix prompt ('this is the whole surface' + six calls).

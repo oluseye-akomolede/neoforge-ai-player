@@ -1604,6 +1604,21 @@ def extract_script_block(model_text: str) -> str | None:
     return None
 
 
+def render_script_system_prompt(bot_name: str, persona: str, skills: str | None = None) -> str:
+    """The L3 script prompt as the model receives it.
+
+    The one renderer for this prompt: call_script uses it, and so do the tests,
+    so a test cannot re-encode the render and miss a defect in it (reviewer
+    F-1, 2026-11-21: rendering through the same bug kept a doubled-brace
+    regression green). The script surface carries plain single braces and is
+    spliced in as a value, never through .format.
+    """
+    return _SCRIPT_SYSTEM_PROMPT.format(
+        bot_name=bot_name, persona=persona,
+        skills=_skills_lines() if skills is None else skills,
+        script_surface=_SCRIPT_SURFACE)
+
+
 def call_script(
     bot_name: str,
     task: str,
@@ -1620,9 +1635,7 @@ def call_script(
     """
     persona = BOT_PERSONAS.get(bot_name, "generalist")
     log.info("[%s] L3 SCRIPT call — task: %s", bot_name, task[:60])
-    sys_prompt = _SCRIPT_SYSTEM_PROMPT.format(
-        bot_name=bot_name, persona=persona, skills=_skills_lines(),
-        script_surface=_SCRIPT_SURFACE)
+    sys_prompt = render_script_system_prompt(bot_name, persona)
     user = json.dumps({
         "task": task,
         "plan": plan,
