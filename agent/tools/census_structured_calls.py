@@ -1,11 +1,25 @@
 """Census of every agent function that asks for a structured reply and parses it.
 
 Why this exists: the rule "every structured call checks done_reason before
-parsing" was first written with a scope sentence that enumerated six call sites
-against a real count of ten. A hand-written list is how a MUST ends up not
-covering its own quantifier, and the misses were not obscure -- three of them
-substitute a plausible result on a parse failure, so a truncation there becomes
-an answer that looks like work.
+parsing" was first written with a scope sentence that enumerated six call sites.
+Two independent censuses then disagreed on the population before agreeing on
+nine, with one guarded. A hand-written list is how a MUST ends up not covering
+its own quantifier, and the misses were not obscure -- three of them substitute
+a plausible result on a parse failure, so a truncation there becomes an answer
+that looks like work.
+
+Known limit, deliberate: requests_json_format matches the literal '"format"' in
+the source segment, so it sees the dict form only. A call written as a kwarg --
+client.chat(model=m, format="json") -- is NOT matched, and this file cannot see
+it. Measured, not assumed: a probe in that form left the census at
+"functions=9 guarded=1 unguarded=8", rc=0, with the probe absent from the rows.
+
+So the gate does not red on a kwarg-form call. It is silent about it. That is
+why this limit is written down rather than left to judgement: if the codebase
+ever moves to kwargs, EXPECTED_SOURCES will keep passing while the population it
+claims to count has shrunk underneath it. Widen the detector and re-derive the
+expected counts in the same commit. Do not narrow it into a filter that quietly
+changes what counts.
 
 Run: python3 -B agent/tools/census_structured_calls.py
 Exit 1 if the guarded count differs from EXPECTED_GUARDED, so a new unguarded
@@ -58,6 +72,9 @@ def parses_json(fn: ast.AST) -> bool:
 
 
 def requests_json_format(fn: ast.AST, src: str) -> bool:
+    """True if the segment asks the model for JSON. Dict form only -- see the
+    module docstring's "Known limit". A kwarg call is not matched, and nothing
+    reds: the census simply does not see it. Checked, not assumed."""
     seg = ast.get_source_segment(src, fn) or ""
     return '"json"' in seg and '"format"' in seg
 
