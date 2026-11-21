@@ -1599,6 +1599,20 @@ class PlannerForPassHonoursTheCapsTest(unittest.TestCase):
 
         self.a._run_orchestrator = fake_orchestrator
 
+    def _bot(self, name, calls):
+        """A second bot on the SAME clock, with its own slot and its own calls."""
+        b = self.agent_mod.BotRunner.__new__(self.agent_mod.BotRunner)
+        b._lock = threading.Lock()
+        b.name = name
+        b.profile = {}
+        b._plan_steps = []
+        b._plan_instruction = ""
+        b._result_slot = self.agent_mod.ResultSlot(clock=lambda: self.now[0])
+        b._script_hold = None
+        b._maybe_plan = mock.Mock()
+        b._run_orchestrator = lambda *a, **k: calls.append(a[0])
+        return b
+
     def _pass(self, value="a red flower", goal_id=""):
         """One pass with no message and `value` pending. Returns True if it planned."""
         self.a._result_slot.store(goal_id, {"text": value, "truncated": False}, "done")
@@ -1663,6 +1677,60 @@ class PlannerForPassHonoursTheCapsTest(unittest.TestCase):
                          f"{self.plan_calls!r}")
         self.assertIn("Script result (done)", self.plan_calls[0]["text"])
         self.assertIn("a red flower", self.plan_calls[0]["text"])
+
+
+    def test_two_bots_each_get_a_call_inside_the_same_15_minutes(self):
+        # F-5. The scenario "the cooldown is per bot, not per script" could not
+        # fail: a cooldown keyed BY SCRIPT gave zero reds across 84 tests,
+        # because no test ever had a second bot. Two real BotRunners, each with
+        # its own ResultSlot, both driven through _run_planner_for_pass on one
+        # shared clock.
+        #
+        # KILLS (needs both bots to exist):
+        #  - a cooldown keyed by script name: both bots run the same script, so
+        #    the second is wrongly held;
+        #  - a slot shared at module level: the second bot's result overwrites
+        #    or is refused by the first bot's call.
+        calls_b, calls_c = [], []
+        b = self._bot("B", calls_b)
+        c = self._bot("C", calls_c)
+
+        def one_pass(bot):
+            bot._result_slot.store("", {"text": "r", "truncated": False}, "done")
+            with mock.patch("builtins.print"):
+                bot._run_planner_for_pass([])
+
+        one_pass(b)
+        self.now[0] += 60                # one minute later, well inside 15 min
+        one_pass(c)
+
+        self.assertEqual(len(calls_b), 1, f"bot B: {calls_b!r}")
+        self.assertEqual(len(calls_c), 1,
+                         f"the second bot must not be held by the first "
+                         f"bot's cooldown: {calls_c!r}")
+
+    def test_the_reason_names_the_cooldown_when_both_bounds_refuse(self):
+        # F-6. The cap alone cannot be reached at a 900s cooldown, so when
+        # both would refuse the real reason is the cooldown. Naming the cap
+        # there put 424 of 466 of the reviewer's refusals on the wrong reason.
+        slot = self.a._result_slot
+        slot.store("", {"text": "r", "truncated": False}, "done")
+        slot._call_times = [self.now[0] - 60] * 4   # 4 calls, newest 60s ago
+        allowed, reason = slot.may_call(goal_id="")
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "cooldown",
+                         "both bounds refuse; the binding one must be named")
+
+    def test_the_reason_still_names_the_cap_when_only_the_cap_refuses(self):
+        # The other half: with the cooldown satisfied, a fifth call is still
+        # named "hour-cap". Without this, "always return cooldown" would pass
+        # the test above.
+        slot = self.a._result_slot
+        slot.store("", {"text": "r", "truncated": False}, "done")
+        slot._call_times = [self.now[0] - 1800] * 4  # 4 calls, newest 30m ago
+        allowed, reason = slot.may_call(goal_id="")
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "hour-cap")
 
 
 if __name__ == "__main__":
