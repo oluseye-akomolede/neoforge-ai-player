@@ -903,7 +903,11 @@ script that chats must be able to chat.
 The runner's own rates bound this and remain the only bound: `api.say` 30/min
 and `api.send` 20/min per bot, enforced inside the runner (contract §8), so a
 script that calls them too often is already rate-limited before its records
-reach the agent. The agent adds no second limiter.
+reach the agent. The agent adds no second limiter on how often a script may
+speak: a later content dedupe (change `script-say-dedupe`) suppresses a repeat
+of the *same* line within 60 seconds, which bounds repeats of a line, not the
+number of *distinct* lines per minute, and so does not bound the rate these
+lines arrive at.
 
 One known gap bounds that guarantee: the window lives on the sandbox
 (`engine.js:251`, documented at `engine.js:399-406`), so a sandbox recycle
