@@ -39,17 +39,40 @@ L3 EXEC call, then retried at the same budget. Folds in row
 instruction, so one rule covers both.
 
 - [ ] 4.1 **Check `done_reason` before parsing, in every structured call.**
-      Nine calls in `agent/l3_planner.py` request `num_predict`; only
-      `call_plan` and `call_script` check `done_reason` before parsing.
-      `classify_message` looked like it checked — a grep matched its
-      neighbouring constant's comment, not its code. It does not.
-      The five that parse a reply and do not check, with their literals:
-      `call_exec` 768, `refine_skill` 768, `call_replan` 384,
-      `partition_fleet` 400, `converse` 200; plus `classify_message`
-      (`_CLASSIFY_NUM_PREDICT`, 128).
+      Scope is not a hand-picked list. `agent/tools/census_structured_calls.py`
+      computes it by AST walk and exits 1 on drift: `python3 -B
+      agent/tools/census_structured_calls.py` → `functions=9 guarded=1`.
+      GUARDED (model to follow, leave alone): `call_plan` (`l3_planner.py:473`).
+      UNGUARDED, all eight in scope — the five planner calls named originally:
+      `partition_fleet` (`:879`, 400), `classify_message` (`:932`, 128),
+      `call_exec` (`:1033`, 768), `call_replan` (`:1131`, 384),
+      `refine_skill` (`:1244`, 768);
+      plus three the original draft missed, in other modules:
+      `brain.think` (`brain.py:11`), `planner.decompose` (`planner.py:225`),
+      `planner.orchestrate` (`planner.py:377`).
+      OUT OF SCOPE, named so the exclusion is a decision and not a filter:
+      `call_script` (`:1622`) checks `done_reason` but sends no
+      `format: "json"` and calls no `json.loads` — it parses a JS block from
+      prose, so it is not an instance of this rule; `converse` (`:988`)
+      requests no JSON; `output_evals/run.py:41` is an offline harness.
       KILLS: a test feeding a `done_reason=length` body with NON-EMPTY content
       must red for each call when the check is removed, and the error it
       raises must name the token limit rather than a JSON syntax error.
+
+- [ ] 4.1a **The three silently-substituting sites fail worse than a parse
+      error, and need their own kill.** `brain.py:38-42`,
+      `planner.py:271-274` and `planner.py:435-438` each catch
+      `JSONDecodeError` and return a plausible result — a thought with no
+      actions, a one-step plan, a generic instruction. A truncation there
+      yields no error, no empty result and no log: an answer that looks like
+      work. The brace-salvage branch these handlers try first does NOT rescue
+      them — a reply cut mid-object still fails to parse and falls through to
+      the substitute.
+      KILLS: with the `done_reason` check removed, a truncated reply must
+      produce the substituted plausible result (that is the bug); with the
+      check present, it must raise instead. Asserting only "raises" without
+      the removed-check half pins nothing, because the substitute is a
+      success path.
 
 - [ ] 4.2 **`classify_message` must not swallow a truncation into a default.**
       It parses inside a bare `try` that logs and defaults to `"task"`, so a

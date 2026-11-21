@@ -99,8 +99,59 @@ to the call, not to `answer_text`, because only the call knows whether a cut
 reply is unusable — for a prose call it is merely short.
 
 The rule is stated once, generally, because stating it per call is what let it
-recur: `call_plan` and `call_script` each learned it separately, and four other
-`format: "json"` calls still did not check.
+recur: `call_plan` and `call_script` each learned it separately while the rest
+went on not checking.
+
+The set this binds is not a hand-picked list — a list written by hand is how
+this rule was understated in the first draft, which enumerated six call sites
+against a census of nine. It is **every** function in the agent that sends
+`format: "json"` and parses the reply. `agent/tools/census_structured_calls.py`
+computes the set with an AST walk and exits non-zero if it drifts; at `a80429c`
+it finds nine such functions, one of them guarded:
+
+| Call | File | Guarded before this change |
+|---|---|---|
+| `call_plan` | `l3_planner.py:473` | yes — the model this rule follows |
+| `brain.think` | `brain.py:11` | **no** |
+| `partition_fleet` | `l3_planner.py:879` | **no** |
+| `classify_message` | `l3_planner.py:932` | **no** |
+| `call_exec` | `l3_planner.py:1033` | **no** |
+| `call_replan` | `l3_planner.py:1131` | **no** |
+| `refine_skill` | `l3_planner.py:1244` | **no** |
+| `planner.decompose` | `planner.py:225` | **no** |
+| `planner.orchestrate` | `planner.py:377` | **no** |
+
+Two calls that look like members and are not, stated so the exclusion is
+visible rather than a filter that quietly grew:
+
+- `call_script` (`l3_planner.py:1622`) does check `done_reason`, but it sends
+  no `format: "json"` and calls no `json.loads` — it parses a JavaScript block
+  out of prose. Its check is right for its own reasons; it is not an instance
+  of this rule and does not license the others.
+- `output_evals/run.py:41` sends the same shape but is an offline eval harness
+  that never runs against a bot.
+- `converse` (`l3_planner.py:988`) requests no `format: "json"` and parses
+  nothing, so it is a prose call. This rule does not bind it, and that is the
+  general principle rather than an exception: only the call knows whether a
+  cut reply is unusable, and for prose a cut reply is merely short.
+
+Three of the unguarded sites fail **worse** than a parse error, and an
+implementer working from a task list that stops at the five planner calls will
+leave them open under a requirement that says "every". `brain.py:38-42`,
+`planner.py:271-274` and `planner.py:435-438` each catch `JSONDecodeError` and
+substitute a plausible result — a thought with no actions, a one-step plan, a
+generic single instruction. A truncation there produces no syntax error, no
+empty result and no log: it produces an answer that looks like work. The
+brace-salvage branch those handlers try first does not rescue this, because a
+reply cut mid-object still fails to parse and falls through to the substitute.
+
+`classify_message` is the most easily missed, because it carries `done_reason`
+in its docstring (`l3_planner.py:942`, recounting an earlier trial), which a
+text search for the string counts as a check. Its actual parse at `:978` is
+inside a bare `except Exception` that logs and returns `"task"`. `brain.think`
+carries the name nowhere at all. The check this requirement asks for is a read
+of the response field *before* parsing — not the appearance of the name
+anywhere in or near the function.
 
 #### Scenario: A truncated structured reply is reported as a truncation
 
