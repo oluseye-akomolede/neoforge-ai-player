@@ -71,6 +71,16 @@ COMMENT = (
 
 def main():
     envelope = snapshot.build_envelope(STATE, tick=1, events=[], task=None)
+    # The pin below overwrites a field the producer must still be emitting.
+    # `server_ms` is the one field look.age() reads, so if build_envelope ever
+    # renamed it, the overwrite would silently create the key, and generator,
+    # fixture and age test would all keep agreeing with each other about a
+    # field production no longer sends. Fail here instead.
+    if "server_ms" not in envelope:
+        raise SystemExit(
+            "build_envelope no longer emits 'server_ms'; look.age() reads it. "
+            "Update snapshot.build_envelope, look.js and this pin together."
+        )
     # Pin the clock so the file is stable. build_envelope reads time.time().
     envelope["server_ms"] = 1795292996127
     out = {"_comment": COMMENT}
