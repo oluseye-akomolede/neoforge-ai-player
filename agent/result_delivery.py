@@ -71,10 +71,15 @@ class ResultSlot:
         if goal_id is not None and pending[0] != goal_id:
             return False, "goal-changed"
         recent = self._recent_calls()
-        if len(recent) >= self._max_per_hour:
-            return False, "hour-cap"
+        # The cooldown is checked FIRST because it is the binding limit: at a
+        # 900s cooldown the hourly cap cannot be reached on its own (four
+        # calls span the window exactly), so when both would refuse the real
+        # reason is the cooldown. Naming the cap there sent 424 of 466 of the
+        # reviewer's refusals to the wrong reason.
         if recent and (self._clock() - max(recent)) < self._cooldown:
             return False, "cooldown"
+        if len(recent) >= self._max_per_hour:
+            return False, "hour-cap"
         return True, None
 
     def record_call(self):
