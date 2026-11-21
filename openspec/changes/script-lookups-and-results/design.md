@@ -458,19 +458,22 @@ discard rules bound how long one can sit before it is stale.
 
 ### Bounding the loop
 
-Three caps, each independently sufficient to stop a runaway:
+Two bounds and one stop, in order of what does the work:
 
-- **Per bot, at most 4 result-driven planner calls per hour.** A result beyond
-  the cap is queued in the pending slot, not dropped (rule 2), and the
-  suppressed call is logged with the cap named. At ~59 ticks an hour this is
-  the difference between 4 planner calls and 59.
-- **A cooldown after each result-triggered planner call** — no second
-  result-triggered call for the same **bot** within 15 minutes, whatever script
-  produced the result. It is keyed per bot because the cooldown is per bot:
-  what the planner-call budget protects is the bot's planning rate, and which
-  script produced a result does not change what a planner call costs. This is
-  what stops a planner that keeps writing a script whose `done: true` is a bug
-  from re-planning every tick.
+- **The cooldown is the binding limit** — no second result-triggered planner
+  call for the same **bot** within 15 minutes, whatever script produced the
+  result. That is at most one per 900 seconds, so at most four in any rolling
+  hour, and at ~59 ticks an hour it is the difference between 4 planner calls
+  and 59. It is keyed per bot because the cooldown is per bot: what the
+  planner-call budget protects is the bot's planning rate, and which script
+  produced a result does not change what a planner call costs. This is what
+  stops a planner that keeps writing a script whose `done: true` is a bug from
+  re-planning every tick.
+- **Per bot, at most 4 result-driven planner calls per hour — a backstop.**
+  The cooldown already holds the rate to four an hour; this bound is reachable
+  only if the cooldown is shortened or removed, and it is what bounds the
+  loop then. A result beyond it is queued in the pending slot, not dropped
+  (rule 2), and the suppressed call is logged with the cap named.
 - **The script stops on completion.** A `done: true` result releases the
   binding, so there is no next tick to trigger on until the planner writes a
   new script.
