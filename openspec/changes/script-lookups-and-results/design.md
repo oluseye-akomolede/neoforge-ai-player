@@ -466,10 +466,11 @@ Three caps, each independently sufficient to stop a runaway:
   the difference between 4 planner calls and 59.
 - **A cooldown after each result-triggered planner call** — no second
   result-triggered call for the same **bot** within 15 minutes, whatever script
-  produced the result. It is per bot, not per script, because a `done: true`
-  releases the binding and the next script is a different one; a per-script
-  cooldown would bound nothing. This is what stops a planner that keeps
-  writing a script whose `done: true` is a bug from re-planning every tick.
+  produced the result. It is keyed per bot because the cooldown is per bot:
+  what the planner-call budget protects is the bot's planning rate, and which
+  script produced a result does not change what a planner call costs. This is
+  what stops a planner that keeps writing a script whose `done: true` is a bug
+  from re-planning every tick.
 - **The script stops on completion.** A `done: true` result releases the
   binding, so there is no next tick to trigger on until the planner writes a
   new script.
