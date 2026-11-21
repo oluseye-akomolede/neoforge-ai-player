@@ -233,11 +233,15 @@ L3 path rather than limit the spec to the decompose paths.
       hand-written binding (2.7), and the stale `_plan_steps`/`_plan_step_idx`/
       `_plan_instruction` are cleared so `_check_task_board` is no longer gated
       off. Five tests; a mutant removing the block reds four of them, and the
-      partly-working test stays green because it asserts the absence. Limit,
-      recorded not papered over: "the goal is handed back" is proven only as
-      far as the gate that caused the stall is cleared -- whether `call_plan`
-      re-enters on a yielded goal is the reviewer's open question, and this
-      task does not claim it.
+      partly-working test stays green because it asserts the absence.
+      Re-entry is answered, and traced rather than assumed: the three fields
+      are cleared at `agent.py:3304-3306` BEFORE the `return False`, so on the
+      unbind tick `_check_task_board` is skipped at `:3629` (correct -- there
+      is no plan for an abandoned goal) and on the NEXT tick `_plan_steps` is
+      empty, `:3629`'s guard passes, and `call_plan` is reached. The
+      69-refusals fall-through is closed. This is a code-path argument, not a
+      live observation: no trial has yet shown the re-plan in a log, so treat
+      the re-plan itself as traced-and-tested, not observed.
 
 
 ## 3. What is deliberately out of scope
