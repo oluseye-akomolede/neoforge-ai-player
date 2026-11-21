@@ -934,15 +934,16 @@ exists so that a store which keeps failing to complete — no reachable containe
 a container that fills mid-store — cannot be re-proposed on every tick.
 
 The inventory a script reads is the one the snapshot envelope carries at
-`state.inventory`: on a successful read it is an object whose `inventory` member
-is the list of carried items, each with at least `slot`, `item` and `count`. A
-bot carrying nothing still gets that wrapper, with an empty list.
+`state.inventory`: it is the LIST of carried items, each with at least `slot`,
+`item` and `count`. A bot carrying nothing gets an empty list.
 
-A script MUST NOT rely on the wrapper alone, because a *failed* read degrades to
-a bare array: `snapshot.py` substitutes a default when a reader raises, and the
-inventory default is `[]`. So `state.inventory` is the wrapper on success and a
-bare `[]` on failure, and a script MUST treat both as "no items" rather than
-trusting either shape.
+The game's endpoint body is NOT this shape. `HttpApiServer.java:469` sends
+`Map.of("inventory", ...)`, so the wire carries a one-key wrapper; `build_state`
+MUST unwrap it and MUST NOT hand the wrapper to a script (`a81d5d19`). The same
+holds for `state.nearby.blocks` (`:505`) and `state.nearby.mobs` (`:504`).
+
+A *failed* or unusable read still degrades to an empty list, so a script MUST
+treat an empty list as "no items" rather than inferring presence.
 
 #### Scenario: Empty inventory proposes nothing
 - **WHEN** a bot's snapshot reports an empty inventory and the bot is provably idle
@@ -970,18 +971,25 @@ trusting either shape.
 > container: the condition that stops the first proposal is unchanged on the
 > next tick.
 >
-> **The shape of `state.inventory` is recorded here because it is a trap.** The
-> producer is `BotPlayer.getInventory()`, serialised through
-> `HttpApiServer.java:469` as `Map.of("inventory", ...)`, so the endpoint's body
-> is a wrapper object and `snapshot.state.inventory` is that wrapper — not the
-> item list. A guard written as `state.inventory.length > 0` reads `undefined`
-> on an object, compares false, and proposes nothing forever: the script would
-> appear fixed while never storing anything at all. That is the same failure
-> class as the `snapshot.state` bug this script already carries a comment about,
-> and it fails in the silent direction. Fixtures MUST be copied from the real
-> response shape for this reason — and MUST also cover the degraded case, where a
-> failed read leaves a bare `[]`: a fixture set that only ever builds the wrapper
-> will not exercise it.
+> **The shape of `state.inventory` is recorded here because it is a trap, and the
+> trap was previously recorded backwards.** `BotPlayer.getInventory()` is
+> serialised through `HttpApiServer.java:469` as `Map.of("inventory", ...)`, so
+> the ENDPOINT body is a wrapper object. An earlier revision of this note
+> concluded from that `snapshot.state.inventory` is the wrapper too, and had the
+> guard read `state.inventory.inventory`. That was a fix aimed at the wrong
+> layer: the wrapper never should have reached `state` at all. `build_state` now
+> unwraps it (`a81d5d19`, `snapshot._obs`), and `state.inventory` is the list.
+>
+> Both wrong readings fail silently, in opposite directions, which is why the
+> shape is pinned by a test rather than a comment. Reading the list's
+> `.length` on a wrapper gives `undefined` and proposes nothing forever;
+> unwrapping a list gives `undefined` too. The contract is therefore: the
+> producer sends a wrapper, `build_state` unwraps it, and the SCRIPT sees a list.
+> A fixture that hard-codes either end alone will pass while the pair is broken
+> — the wire shape and the script-visible shape must be asserted together.
+> Fixtures MUST carry the real wrapper from `HttpApiServer.java:469/504-505` into
+> `build_state`, and MUST also cover the degraded case, where an unusable read
+> leaves `[]` plus a reader error.
 
 
 ### Requirement: A script's action gate MUST key on the directive status
@@ -1159,8 +1167,11 @@ error body itself becomes the field.
 
 #### Scenario: The script sees the inventory the bot holds
 - **WHEN** the bot holds 16 cobblestone and the snapshot is built on the uncached path
-- **THEN** `snapshot.state.inventory.inventory` in the script is the stack list, and
-  the guard does not report the inventory as empty
+- **THEN** `snapshot.state.inventory` in the script is the stack list, and
+  the guard does not report the inventory as empty. The game's
+  `{"inventory": [...]}` wrapper MUST NOT reach the script: `build_state` unwraps
+  it, so every `state.*` observation field is a list on both snapshot paths
+  (`a81d5d19`; the wrapper path was tried and reverted)
 
 #### Scenario: Every state field survives both snapshot paths
 - **WHEN** a snapshot is built with a cache and without one

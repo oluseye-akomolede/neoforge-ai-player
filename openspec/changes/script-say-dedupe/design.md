@@ -131,3 +131,17 @@ written.
 - No change to the 30/min cap.
 - No rewrite of a suppressed line.
 - No deploy, no pod exec, nothing in ci.
+
+## 8. Correction to the message on `1b4371b`
+
+`1b4371b`'s commit message says the delta went "MODIFIED -> back to ADDED,
+requirement left unamended". Its tree says the opposite: `specs/bot-coded-agents/spec.md`
+opens `## MODIFIED Requirements` and the requirement IS amended. The message is
+wrong, the tree is right, and the message is not being rewritten — history stays
+as committed, so this note is the correction of record.
+
+Why it matters: the reviewer read that message and reasonably concluded the
+amendment was missing. Anyone resuming this change from the log alone would
+conclude the same and could "fix" a file that is already correct, or treat the
+delta as ADDED-only and archive it into a target spec that does not exist (see
+section 6). Read the tree, not the message, for the state of this delta.

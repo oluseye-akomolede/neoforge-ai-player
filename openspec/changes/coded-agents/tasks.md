@@ -370,10 +370,16 @@ Scripted Bot Acts Only When There Is Something To Do*.
       item, and holds for a named cooldown after proposing. Tests in
       `test_scout_script.py` with fixtures copied from the real snapshot shape.
       `dc45196`, then the spec-shape correction commit. 18/18 green. The guard reads
-      `state.inventory.inventory` (`HttpApiServer.java:469` wraps the list;
-      `snapshot.py:71` stores the body verbatim as `state.inventory`), because a
-      `state.inventory.length` read is undefined on the wrapper and would never
-      fire. Cooldown is a tick stamp, since `recall()` returns the blob the tick
+      `state.inventory` as a LIST. An earlier revision had it read
+      `state.inventory.inventory`, on the theory that `snapshot.py` stored the mod's
+      `{"inventory": [...]}` body verbatim. That was wrong, and it was wrong at the
+      source rather than at the script: `build_state` was passing the game's wrapper
+      through, so no state field was the list the contract promised. `a81d5d19`
+      fixed the producer (`snapshot._obs` unwraps `{blocks|entities|inventory: [...]}`,
+      keeps a bare list, and records a reader error on any other shape), and this
+      guard reads the list. A wrapper read now yields `undefined` and fails closed,
+      which is why the wrapper form is a bug in the reader too, not just the writer.
+      Cooldown is a tick stamp, since `recall()` returns the blob the tick
       started with (`binding.js:293`) and `remember` takes one string
       (`binding.js:312`). Three mutants verified caught: bare-array read 11 red,
       no inventory guard 2 red, no cooldown 1 red.
@@ -477,15 +483,21 @@ Scripted Bot Acts Only When There Is Something To Do*.
       builds `ScriptTick` with no cache, so production always took that path.
       A second, independent degradation sits behind it and is now named in the
       code: the mod answers an unknown bot with HTTP 200 and a body of
-      `{"error": "Bot not found: ..."}` (measured in-pod), so `snapshot._read`
-      records NO error and stores that dict as `state["inventory"]`. The guard's
-      `|| []` turns it into "inventory empty" with nothing in `errors` to say
-      why. `snap_errors` was also received by `tick()` and returned nowhere.
+      `{"error": "Bot not found: ..."}` (measured in-pod), so an error body could
+      be stored as `state["inventory"]`. The guard's `|| []` turns it into
+      "inventory empty" with nothing in `errors` to say why. `a81d5d19` fixed this
+      too: `snapshot._obs` takes the list under the expected key, keeps a bare
+      list, and otherwise stores `[]` AND appends a reader error naming the
+      reader, so an unusable body is reported rather than passed silently.
+      `snap_errors` was also received by `tick()` and returned nowhere.
       Fixed: `_build_snapshot` returns an envelope on both paths, supplying the
       `tick` counter and `task` the contract requires. Tests assert the
-      script-visible path (`snapshot.state.inventory.inventory[0]`), not the
-      tuple's shape -- the old suite stubbed `_FakeApi.inventory` to return a
-      bare list, a shape no producer emits, and so could never have caught this.
+      script-visible path (`snapshot.state.inventory[0]`) as a LIST, not the
+      tuple's shape. The old suite stubbed `_FakeApi.inventory` to return a bare
+      list, a shape no producer emitted then; a later 9.1 revision went the other
+      way and asserted the wrapper, which was equally wrong. The fake now sends
+      what `HttpApiServer.java:469/504-505` actually sends -- a one-key wrapper --
+      so it exercises the real wire shape on both sides.
       Mutant: reverting `_build_snapshot` to the bare state -> 5 red.
       Also fixed 9.5's display: each runner log entry is `{level, line}`, so
       printing it with `%s` emitted a Python dict repr instead of the message.
