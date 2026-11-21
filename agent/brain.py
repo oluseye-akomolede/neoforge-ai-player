@@ -1,7 +1,7 @@
 import json
 import threading
 import requests
-from config import OLLAMA_URL, answer_text, think_field
+from config import OLLAMA_URL, answer_text, ensure_not_truncated, think_field
 
 # Serialize all ollama requests — single GPU can only serve one at a time.
 # Exported so planner and semantic_memory can use the same lock.
@@ -30,7 +30,13 @@ def think(model, system_prompt, observation, history):
             timeout=120,
         )
     resp.raise_for_status()
-    content = answer_text(resp.json())
+    body = resp.json()
+    # A length stop means the reply is not a usable answer, whatever it holds.
+    # Without this the cut content falls through to the brace salvage below and
+    # then to a substituted {"thoughts": ..., "actions": []} -- no syntax error,
+    # no empty result, no log: an answer that looks like work.
+    ensure_not_truncated(body, "brain.think")
+    content = answer_text(body)
 
     try:
         parsed = json.loads(content)

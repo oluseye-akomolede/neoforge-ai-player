@@ -167,6 +167,28 @@ def answer_text(body):
     return content
 
 
+def ensure_not_truncated(body, call_name):
+    """Raise TruncatedAnswer if the reply stopped for length.
+
+    The rule, stated once: a length stop means the reply is not a usable
+    answer, whatever it contains. answer_text only catches the EMPTY case; a
+    reply cut mid-object has content and would otherwise reach json.loads,
+    which reports a syntax error and sends a reader to fix a prompt that was
+    fine. Callers use this BEFORE parsing.
+
+    `call_name` names the call in the message, so a log line says which budget
+    ran out rather than "a call".
+    """
+    if not isinstance(body, dict):
+        return
+    if body.get("done_reason") != "length":
+        return
+    raise TruncatedAnswer(
+        "%s hit the token limit before finishing (done_reason=length, "
+        "eval_count=%s); this is a failed call, not a short answer"
+        % (call_name, body.get("eval_count")))
+
+
 def load_profile():
     with open(PROFILE_PATH) as f:
         return json.load(f)

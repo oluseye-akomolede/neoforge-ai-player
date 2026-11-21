@@ -8,7 +8,7 @@ one at a time.
 
 import json
 import requests
-from config import OLLAMA_URL, answer_text, think_field
+from config import OLLAMA_URL, answer_text, ensure_not_truncated, think_field
 import brain
 import openai_brain
 from action_binding import BINDABLE_KINDS
@@ -309,7 +309,9 @@ def decompose(model, instruction, memory_context="", transmute_context="", inven
             timeout=60,
         )
     resp.raise_for_status()
-    content = answer_text(resp.json())
+    _body = resp.json()
+    ensure_not_truncated(_body, "decompose")
+    content = answer_text(_body)
 
     try:
         parsed = json.loads(content)
@@ -474,7 +476,9 @@ def orchestrate(model, instruction, bot_profiles, memory_context="", transmute_c
             timeout=60,
         )
     resp.raise_for_status()
-    content = answer_text(resp.json())
+    _body = resp.json()
+    ensure_not_truncated(_body, "orchestrate")
+    content = answer_text(_body)
 
     try:
         parsed = json.loads(content)

@@ -36,7 +36,8 @@ OUT_OF_SCOPE = {
 }
 
 EXPECTED_SOURCES = 9
-EXPECTED_GUARDED = 1
+EXPECTED_GUARDED = 9   # every census site guarded by ensure_not_truncated or
+                       # its own inline read (call_plan)
 
 
 def guards_done_reason(fn: ast.AST) -> bool:
@@ -58,6 +59,16 @@ def guards_done_reason(fn: ast.AST) -> bool:
                 a0 = node.args[0]
                 if isinstance(a0, ast.Constant) and a0.value == "done_reason":
                     return True
+        # The shared guard. A call to it IS a read of done_reason: the function
+        # lives in config.py and raises on done_reason == "length" before any
+        # parse. Recognised by name rather than by opening config.py, so this
+        # stays a cheap AST pass; the name is pinned by
+        # test_the_shared_guard_actually_checks_done_reason, which fails if the
+        # helper ever stops reading the field.
+        if isinstance(node, ast.Call):
+            fname = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            if fname == "ensure_not_truncated":
+                return True
     return False
 
 

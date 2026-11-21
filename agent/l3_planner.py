@@ -23,7 +23,8 @@ import requests
 import api
 import trajectory_log
 from brain import ollama_lock
-from config import OLLAMA_URL, TruncatedAnswer, answer_text, think_field
+from config import (OLLAMA_URL, TruncatedAnswer, answer_text,
+                     ensure_not_truncated, think_field)
 from plan_schema import Plan, PlanValidationError, Subtask, validate_plan_dict, validate_subtask_dict
 # One source of truth for the script API surface: the L3 script prompt and the
 # legacy planner's script section must not drift apart (gap seen live 2026-11-21).
@@ -904,7 +905,9 @@ def partition_fleet(model: str, task: str, bots_info: str, bot_names: list) -> d
             timeout=_OLLAMA_TIMEOUT,
         )
     resp.raise_for_status()
-    out = json.loads(answer_text(resp.json()) or "{}")
+    _body = resp.json()
+    ensure_not_truncated(_body, "partition_fleet")
+    out = json.loads(answer_text(_body) or "{}")
     return {k: str(v) for k, v in out.items() if k in bot_names}
 
 
@@ -975,7 +978,9 @@ def classify_message(model: str, bot_name: str, text: str) -> str:
                 timeout=60,
             )
         resp.raise_for_status()
-        data = json.loads(_strip_codefence(answer_text(resp.json())))
+        _body = resp.json()
+        ensure_not_truncated(_body, "classify_message")
+        data = json.loads(_strip_codefence(answer_text(_body)))
         kind = str(data.get("kind", "")).strip().lower()
         if kind in ("chat", "task"):
             return kind
@@ -1058,12 +1063,14 @@ def call_exec(model: str, plan: Plan, subtask: Subtask,
                 ],
                 "stream": False,
                 "format": "json",
-                "options": {"temperature": 0.2, "num_predict": 768},
+                "options": {"temperature": 0.2, "num_predict": _EXEC_NUM_PREDICT},
             },
             timeout=_OLLAMA_TIMEOUT,
         )
     resp.raise_for_status()
-    raw = _strip_codefence(answer_text(resp.json()))
+    _body = resp.json()
+    ensure_not_truncated(_body, "call_exec")
+    raw = _strip_codefence(answer_text(_body))
     plan_ref = getattr(plan, "created_at", None)
     try:
         data = json.loads(raw)
@@ -1159,7 +1166,9 @@ def call_replan(model: str, plan: Plan, failed_subtask: Subtask) -> Subtask:
             timeout=_OLLAMA_TIMEOUT,
         )
     resp.raise_for_status()
-    raw = _strip_codefence(answer_text(resp.json()))
+    _body = resp.json()
+    ensure_not_truncated(_body, "call_replan")
+    raw = _strip_codefence(answer_text(_body))
     plan_ref = getattr(plan, "created_at", None)
     sid = failed_subtask.id
     try:
@@ -1276,7 +1285,9 @@ def refine_skill(model: str, bot_name: str, spec: str, error: str) -> dict | Non
     except Exception as e:
         log.warning("[%s] refine_skill call failed: %s", bot_name, e)
         return None
-    raw = _strip_codefence(answer_text(resp.json()))
+    _body = resp.json()
+    ensure_not_truncated(_body, "refine_skill")
+    raw = _strip_codefence(answer_text(_body))
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as e:
@@ -1380,6 +1391,16 @@ _CLASSIFY_NUM_PREDICT = 128
 # This constant is the PLAN call's only. The SCRIPT call has its own
 # (_SCRIPT_NUM_PREDICT); a shared figure would be a coincidence, not a budget.
 _PLAN_NUM_PREDICT = 4096
+
+# The L3 EXEC call's token budget, extracted from a literal 768 with the value
+# UNCHANGED. On the 2026-11-21 21:55Z rerun both Axiom and Forge logged
+# "subtask 1 exec failed: model hit the token limit (done_reason=length,
+# eval_count=768)", so 768 is a real ceiling that this call actually reaches --
+# but how much room a correct reply needs is NOT measured yet.
+# unmeasured, sized later: the lead measures eval_count on test after deploy
+# and the number is set from that. Do not guess a larger value here.
+# This is the EXEC call's only; it does not move any other call's budget.
+_EXEC_NUM_PREDICT = 768
 
 
 def preview_reply(raw: str) -> str:
