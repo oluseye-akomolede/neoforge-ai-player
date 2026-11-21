@@ -942,6 +942,13 @@ The game's endpoint body is NOT this shape. `HttpApiServer.java:469` sends
 MUST unwrap it and MUST NOT hand the wrapper to a script (`a81d5d19`). The same
 holds for `state.nearby.blocks` (`:505`) and `state.nearby.mobs` (`:504`).
 
+`state.nearby.mobs` reading the `entities` endpoint is deliberate, not a typo.
+Three names are live for one thing at three layers: the endpoint and its wrapper
+key are `entities` (`HttpApiServer.java:504`), the snapshot key is `mobs`
+(`snapshot.py:119` maps them), and the script-facing accessor is `look.entities`.
+A reader that "corrects" `mobs` to `entities` to match the endpoint would leave
+every script reading an undefined key.
+
 A *failed* or unusable read still degrades to an empty list, so a script MUST
 treat an empty list as "no items" rather than inferring presence.
 
@@ -980,11 +987,17 @@ treat an empty list as "no items" rather than inferring presence.
 > layer: the wrapper never should have reached `state` at all. `build_state` now
 > unwraps it (`a81d5d19`, `snapshot._obs`), and `state.inventory` is the list.
 >
-> Both wrong readings fail silently, in opposite directions, which is why the
-> shape is pinned by a test rather than a comment. Reading the list's
-> `.length` on a wrapper gives `undefined` and proposes nothing forever;
-> unwrapping a list gives `undefined` too. The contract is therefore: the
-> producer sends a wrapper, `build_state` unwraps it, and the SCRIPT sees a list.
+> The two wrong readings fail DIFFERENTLY, which is why the shape is pinned by a
+> test rather than a comment. Reading `.length` on a wrapper object gives
+> `undefined`: a silent false, and the guard proposes nothing forever. Unwrapping
+> a list is not silent — `state.inventory.inventory` is `undefined`, and `.length`
+> on that throws. The shipped guard survives it only because it tests
+> `Array.isArray` first, so a throw never happens and a non-type falls closed to
+> `[]`; a guard written as a bare `.length > 0` would raise instead. Quiet failure
+> and a raise are different bugs with different fixes, so a test that only proves
+> "proposes nothing" does not prove the guard is safe on the other shape. The
+> contract is therefore: the producer sends a wrapper, `build_state` unwraps it,
+> and the SCRIPT sees a list.
 > A fixture that hard-codes either end alone will pass while the pair is broken
 > — the wire shape and the script-visible shape must be asserted together.
 > Fixtures MUST carry the real wrapper from `HttpApiServer.java:469/504-505` into

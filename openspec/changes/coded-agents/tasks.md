@@ -489,6 +489,10 @@ Scripted Bot Acts Only When There Is Something To Do*.
       too: `snapshot._obs` takes the list under the expected key, keeps a bare
       list, and otherwise stores `[]` AND appends a reader error naming the
       reader, so an unusable body is reported rather than passed silently.
+      The entry is `{"reader", "error", "got"}` with `error` in
+      `{"wrapped-value-not-a-list", "unexpected-shape"}` for a wrong-shaped body,
+      or the raised exception's type name when the reader throws
+      (`agent/snapshot.py:70`, `:103`, `:106`). Assert on those codes directly.
       `snap_errors` was also received by `tick()` and returned nowhere.
       Fixed: `_build_snapshot` returns an envelope on both paths, supplying the
       `tick` counter and `task` the contract requires. Tests assert the
