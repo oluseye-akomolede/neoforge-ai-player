@@ -26,6 +26,7 @@ import container_db
 import openai_brain
 import waypoints
 from result_delivery import ResultSlot
+from script_say_guard import ScriptSayGuard
 import mc_items
 import terrain_db
 import skill_author
@@ -275,6 +276,11 @@ class BotRunner:
         # A reset ends a plan and releases a script hold, but it is not an
         # amnesty for the planner-call budget -- see result_delivery.py.
         self._result_slot = ResultSlot()
+        # Script say/send content dedupe (change: script-say-dedupe, task 2.1).
+        # Per bot, process-lifetime, for the same reason as the result slot:
+        # `reset()` ends a plan, not the bot's chat presence, so a reset must
+        # not make the bot repeat a line it just said. See script_say_guard.py.
+        self._script_say_guard = ScriptSayGuard()
         self._plan_steps = []
         self._plan_step_idx = 0
         self._plan_instruction = ""
@@ -3030,14 +3036,46 @@ Respond with ONLY a JSON array. Example:
         before the record is queued), so a second limiter here would be a
         second bound to keep in step and would drop what the runner allowed.
 
-        Returns the count delivered, for the caller's log. An individual
+        It DOES dedupe content (change: script-say-dedupe). A script that runs
+        every tick naturally repeats "No diamond ore within 5-block radius.",
+        and a bot re-reading the same line every ten seconds reads as broken.
+        So a line this bot already delivered through this path within the last
+        60 seconds is suppressed. That is not a second limiter and does not
+        contradict the paragraph above: it bounds how often the SAME line
+        reaches chat, not how many DISTINCT lines a script may say per minute
+        -- twelve different lines in a minute are all delivered, and the
+        runner's caps are still the only rate bound.
+
+        Returns `(delivered, suppressed)` for the caller's log. An individual
         delivery failing is caught and logged, never raised: a script must not
         kill the tick loop, and one unsendable `say` must not stop the `do`
         beside it from having already happened.
         """
         delivered = 0
+        suppressed = 0
+        # Not `getattr(..., None)`: an absent guard would silently disable
+        # dedupe, which is exactly the failure mode where the feature looks
+        # present and does nothing. Same reasoning as `_hold_script_result`.
+        guard = self._script_say_guard
         for d in deliveries or []:
             call = d.get("call")
+            text = d.get("text") or ""
+            to = d.get("to") or ""
+            # Checked before delivery, recorded only AFTER a successful send:
+            # a `send` to a bot that is not running did not happen, and must
+            # not open a window that would suppress a later real one.
+            if call in ("say", "send"):
+                should_deliver, first_suppression = guard.check(call, text, to)
+                if not should_deliver:
+                    suppressed += 1
+                    if first_suppression:
+                        # One line per key per window, not one per tick: a
+                        # script repeating itself every tick would otherwise
+                        # bury the log in its own suppression notices.
+                        print(f"[{self.name}/script] suppressed a repeat "
+                              f"{call} {text[:40]!r} (already said within "
+                              f"{guard._window:g}s)")
+                    continue
             try:
                 if call == "say":
                     success = api.chat(self.name, d.get("text") or "")
@@ -3060,10 +3098,13 @@ Respond with ONLY a JSON array. Example:
                 print(f"[{self.name}/script] send seq={d.get('seq')} "
                       f"not delivered: {d.get('to')!r} is not a running bot")
                 continue
+            if call in ("say", "send"):
+                guard.deliver(call, text, to)
             delivered += 1
-        if delivered:
-            print(f"[{self.name}/script] delivered {delivered} say/send call(s)")
-        return delivered
+        if delivered or suppressed:
+            print(f"[{self.name}/script] delivered {delivered} say/send call(s)"
+                  f"{f', suppressed {suppressed} repeat(s)' if suppressed else ''}")
+        return delivered, suppressed
 
     def _hold_script_result(self, result):
         """Park a script's `api.result(v)` for the next trigger (task 3.4).
@@ -3157,7 +3198,12 @@ Respond with ONLY a JSON array. Example:
             # 2026-11-20 22:21Z failure, where a script calling api.say every
             # minute never spoke. A dry tick carries no deliveries at all
             # (ScriptTick clears them), so a rehearsal cannot become visible.
-            self._deliver_script_deliveries(
+            #
+            # Suppressed repeats are NOT a refusal: the script did produce
+            # output and did not fail, so the tick is handled either way. The
+            # counts are logged by the delivery loop itself; kept here so a
+            # suppressed-only tick reads as handled rather than as nothing.
+            _delivered, _suppressed = self._deliver_script_deliveries(
                 getattr(st, "last_deliveries", []))
             # The script's report, if it made one. Stored into the ONE slot for
             # this bot; a later report replaces it (task 3.4). Placed here so a
@@ -3188,6 +3234,13 @@ Respond with ONLY a JSON array. Example:
                 # "bound and never called" and "never bound" identical from the
                 # outside. Rate-limited so a bot that stays idle does not fill
                 # the log: one line on entry, then at most one per minute.
+                # A suppressed repeat is not "nothing to say": the script DID
+                # produce output and it was handled. Without this, a script
+                # repeating one line every tick reads as idle on every tick
+                # after the first -- the 2026-11-20 22:21Z "nothing happened"
+                # fallback in a new costume.
+                if _suppressed:
+                    return True
                 self._note_script_idle()
                 return False
             # `actions` are BOUND actions: `{"kind": KIND, ...allowed args}`

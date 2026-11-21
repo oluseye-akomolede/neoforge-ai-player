@@ -96,6 +96,9 @@ class ScriptTickBranchTest(unittest.TestCase):
         self.a.name = "Scout"
         self.a.profile = {}
         self.a._script_tick = None
+        # __init__ never ran, so supply the guard it would have created.
+        # Real, not a Mock: the dedupe tests depend on its actual window.
+        self.a._script_say_guard = agent_mod.ScriptSayGuard()
         self.a._script_loaded = True   # do not go looking for a profile script
         # Script actions go through the orchestrator, not _run_directive: it
         # is the dispatcher that knows the agent-side vocabulary (EQUIP,
@@ -227,6 +230,8 @@ class BindingsTest(unittest.TestCase):
 
     def _runner(self, name):
         a = self.agent_mod.BotRunner.__new__(self.agent_mod.BotRunner)
+        # __init__ never ran, so supply the guard it would have created.
+        a._script_say_guard = self.agent_mod.ScriptSayGuard()
         a._lock = threading.Lock()
         a.name = name
         a.profile = {}
@@ -429,6 +434,9 @@ class ScriptObservabilityTest(unittest.TestCase):
         self.a._lock = threading.Lock()
         self.a.name = "Scout"
         self.a.profile = {}
+        # __init__ never ran, so supply the guard it would have created.
+        # Real, not a Mock: the dedupe tests depend on its actual window.
+        self.a._script_say_guard = agent_mod.ScriptSayGuard()
         self.a._l3_orchestrator_dispatch = mock.Mock(
             return_value="COMPLETED STORE_ALL {'stored': 1}")
 
@@ -516,9 +524,11 @@ class ScriptObservabilityTest(unittest.TestCase):
         with mock.patch.object(self.agent_mod.BotRunner, "send_bot_message",
                                return_value=False), \
              mock.patch("builtins.print") as p:
-            n = self.a._deliver_script_deliveries(
+            n, suppressed = self.a._deliver_script_deliveries(
                 [{"seq": 3, "call": "send", "to": "ghost", "text": "yo"}])
         self.assertEqual(n, 0)
+        self.assertEqual(suppressed, 0, "a send that never happened is not "
+                                       "a suppression either")
         self.assertIn("not a running bot", " ".join(str(c) for c in p.call_args_list))
 
     def test_one_failing_delivery_does_not_stop_the_next(self):
@@ -526,12 +536,125 @@ class ScriptObservabilityTest(unittest.TestCase):
         # not swallow the say beside it.
         with mock.patch("api.chat", side_effect=[RuntimeError("network"), True]) as chat, \
              mock.patch("builtins.print") as p:
-            n = self.a._deliver_script_deliveries(
+            n, suppressed = self.a._deliver_script_deliveries(
                 [{"seq": 1, "call": "say", "text": "a"},
                  {"seq": 2, "call": "say", "text": "b"}])
         self.assertEqual(n, 1)
+        self.assertEqual(suppressed, 0, "two different lines are not deduped")
         self.assertEqual(chat.call_count, 2)
         self.assertIn("delivery of say failed", " ".join(str(c) for c in p.call_args_list))
+
+    def test_the_same_line_twice_is_delivered_once(self):
+        # Change: script-say-dedupe, task 2.2. A script that repeats itself
+        # must reach chat once, and the repeat must be counted SEPARATELY
+        # from a delivery -- a single count cannot tell "said it" from "said
+        # it already", which is the whole point of the change.
+        # KILLS: consulting the guard but not counting suppressed; not
+        # consulting the guard at all.
+        with mock.patch("api.chat", return_value=True) as chat, \
+             mock.patch("builtins.print"):
+            delivered, suppressed = self.a._deliver_script_deliveries([
+                {"seq": 1, "call": "say", "text": "all clear"},
+                {"seq": 2, "call": "say", "text": "all clear"}])
+        self.assertEqual(chat.call_count, 1, "the repeat reached chat")
+        self.assertEqual((delivered, suppressed), (1, 1))
+
+    def test_a_send_that_failed_does_not_open_a_window(self):
+        # A send to a bot that is not running did not happen. If it recorded a
+        # window anyway, the NEXT attempt to the same bot within 60 s would be
+        # suppressed as a repeat of something never said.
+        # KILLS: calling guard.deliver() before/regardless of the success check.
+        with mock.patch.object(self.agent_mod.BotRunner, "send_bot_message",
+                               return_value=False), \
+             mock.patch("builtins.print"):
+            self.a._deliver_script_deliveries(
+                [{"seq": 1, "call": "send", "to": "ghost", "text": "yo"}])
+        self.assertNotIn(
+            ("send", "ghost", "yo"), self.a._script_say_guard._records,
+            "a failed send opened a dedupe window for a line never delivered")
+
+    def test_a_suppression_is_logged_once_per_window_not_once_per_tick(self):
+        # The spec says at most one suppression line per key per window. A
+        # script that repeats itself every tick would otherwise bury the log
+        # in its own notices.
+        # KILLS: logging on every suppressed call instead of on the first.
+        self.a._script_say_guard.deliver("say", "all clear")
+        with mock.patch("api.chat", return_value=True), \
+             mock.patch("builtins.print") as p:
+            for seq in range(1, 6):
+                self.a._deliver_script_deliveries(
+                    [{"seq": seq, "call": "say", "text": "all clear"}])
+        suppression_lines = [c for c in p.call_args_list
+                             if "suppressed a repeat" in str(c)]
+        self.assertEqual(
+            len(suppression_lines), 1,
+            f"one window produced {len(suppression_lines)} suppression log "
+            f"lines; the spec allows one")
+
+    def test_a_suppressed_only_tick_is_still_handled(self):
+        # Task 2.4. The spec says suppression is not a refusal: the script
+        # produced output and did not fail. Driven through the REAL tick so
+        # the handled flag comes from the production path, not from a value
+        # the test set.
+        # KILLS: treating "everything was suppressed" as "nothing happened",
+        # which is the 2026-11-20 22:21Z fallback in a new costume.
+        self.a._script_say_guard.deliver("say", "all clear")
+        self._real_tick(self._wire(actions=[
+            {"seq": 1, "call": "say", "text": "all clear"}]))
+        with mock.patch("api.chat", return_value=True) as chat, \
+             mock.patch("builtins.print"):
+            result = self.a._run_script_tick()
+        chat.assert_not_called()
+        self.assertTrue(result, "a suppressed-only tick must count as handled")
+
+    def test_a_real_dry_tick_does_not_touch_the_dedupe_memory(self):
+        # Task 2.6, and the reviewer's constraint on it: this drives a REAL
+        # dry tick carrying say records, so the records exist and only the
+        # dry-tick clear can keep them out of the memory. A flag set by the
+        # test would prove nothing about the production path.
+        # KILLS: delivering from a dry tick; recording memory before deciding
+        # to deliver; any path where a rehearsal opens a dedupe window.
+        import script_tick
+
+        def _post(path, data=None, **kw):
+            return self._wire(actions=[
+                {"seq": 1, "call": "say", "text": "LEAK"}])
+
+        self.assertNotIn(("say", "LEAK"), self.a._script_say_guard._records)
+        st = script_tick.ScriptTick(_Any(), "Scout", "x", dry=True, post=_post)
+        st.tick()
+        with mock.patch("api.chat", return_value=True) as chat, \
+             mock.patch("builtins.print"):
+            self.a._deliver_script_deliveries(
+                getattr(st, "last_deliveries", []))
+        chat.assert_not_called()
+        self.assertNotIn(
+            ("say", "LEAK"), self.a._script_say_guard._records,
+            "a dry tick wrote the dedupe memory: a rehearsal changed what "
+            "the next live tick is compared against")
+
+    def test_the_guard_survives_reset(self):
+        # Task 2.1. A reset ends a plan, not the bot's chat presence; if it
+        # cleared the guard the bot would repeat itself after every replan.
+        #
+        # Asserted against the SOURCE of reset(), not by calling it: this
+        # harness builds BotRunner through __new__ with only the attributes
+        # the script path reads, and a real reset() needs a dozen more. A
+        # full fixture here would test the fixture. What has to hold is that
+        # reset() neither rebinds nor clears the guard, which is a property
+        # of its text, and `_result_slot` is the precedent it follows.
+        # KILLS: clearing or re-creating the guard inside reset().
+        import inspect
+
+        reset_src = inspect.getsource(self.agent_mod.BotRunner.reset)
+        self.assertNotIn(
+            "_script_say_guard", reset_src,
+            "reset() touches the dedupe guard: a replan would let the bot "
+            "repeat a line it just said")
+        self.assertIn(
+            "_script_say_guard = ScriptSayGuard()",
+            inspect.getsource(self.agent_mod.BotRunner.__init__),
+            "the guard is not created in __init__, so a real bot has none")
 
     def test_a_real_dry_tick_clears_its_deliveries(self):
         # F2 (review 11c71ac): the dry guarantee is load-bearing in the spec,
@@ -682,6 +805,8 @@ class ScriptHoldTest(unittest.TestCase):
         agent_mod = _agent_module()
         self.agent_mod = agent_mod
         self.a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
+        # __init__ never ran, so supply the guard it would have created.
+        self.a._script_say_guard = agent_mod.ScriptSayGuard()
         # __init__ never ran, so supply the lock the bind/tick path holds.
         # A real lock, not a Mock: the atomicity tests depend on it.
         self.a._lock = threading.Lock()
@@ -945,6 +1070,8 @@ class DryTickTest(unittest.TestCase):
         agent_mod = _agent_module()
         self.agent_mod = agent_mod
         self.a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
+        # __init__ never ran, so supply the guard it would have created.
+        self.a._script_say_guard = agent_mod.ScriptSayGuard()
         # __init__ never ran, so supply the lock the bind/tick path holds.
         # A real lock, not a Mock: the atomicity tests depend on it.
         self.a._lock = threading.Lock()
@@ -1138,6 +1265,8 @@ class PlannerScriptBindTest(unittest.TestCase):
         agent_mod = _agent_module()
         self.agent_mod = agent_mod
         self.a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
+        # __init__ never ran, so supply the guard it would have created.
+        self.a._script_say_guard = agent_mod.ScriptSayGuard()
         # __init__ never ran, so supply the lock the bind/tick path holds.
         # A real lock, not a Mock: the atomicity tests depend on it.
         self.a._lock = threading.Lock()
@@ -1254,6 +1383,8 @@ class ScriptResultReachesTheSlotTest(unittest.TestCase):
         agent_mod = _agent_module()
         self.agent_mod = agent_mod
         self.a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
+        # __init__ never ran, so supply the guard it would have created.
+        self.a._script_say_guard = agent_mod.ScriptSayGuard()
         self.a._lock = threading.Lock()
         self.a.name = "Scout"
         self.a.profile = {}
@@ -1532,6 +1663,8 @@ class NoPlannerPathMintsAGoalIdTest(unittest.TestCase):
         agent_mod = _agent_module()
         self.agent_mod = agent_mod
         self.a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
+        # __init__ never ran, so supply the guard it would have created.
+        self.a._script_say_guard = agent_mod.ScriptSayGuard()
         self.a.name = "Scout"
         self.a._script_hold_seq = 4
         self.a._script_hold = {"goal_id": "chat:Player:mine#4", "goal_text": "mine"}
@@ -1579,6 +1712,8 @@ class PlannerForPassHonoursTheCapsTest(unittest.TestCase):
         self.agent_mod = agent_mod
         self.now = [1000.0]
         self.a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
+        # __init__ never ran, so supply the guard it would have created.
+        self.a._script_say_guard = agent_mod.ScriptSayGuard()
         self.a._lock = threading.Lock()
         self.a.name = "Scout"
         self.a.profile = {}
@@ -1602,6 +1737,8 @@ class PlannerForPassHonoursTheCapsTest(unittest.TestCase):
     def _bot(self, name, calls):
         """A second bot on the SAME clock, with its own slot and its own calls."""
         b = self.agent_mod.BotRunner.__new__(self.agent_mod.BotRunner)
+        # __init__ never ran, so supply the guard it would have created.
+        b._script_say_guard = self.agent_mod.ScriptSayGuard()
         b._lock = threading.Lock()
         b.name = name
         b.profile = {}

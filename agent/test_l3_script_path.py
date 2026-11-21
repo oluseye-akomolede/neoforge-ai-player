@@ -1471,6 +1471,38 @@ class TestTheL3ScriptPromptShowsLookAndResult(unittest.TestCase):
         self.assertIn("Returns `{ok, seq}` or a rejection", p)
         self.assertIn("`{ok: true, ageMs}`", p)
 
+    def test_both_prompts_carry_the_say_guidance_without_new_braces(self):
+        """Change: script-say-dedupe, task 3.2. The dedupe makes a repeated
+        line harmless at runtime, but the planner should not write a script
+        that re-reads the same status every tick in the first place.
+
+        Braces are COUNTED, not eyeballed: the fd5416b regression shipped
+        because a human read "looks right" as a measurement.
+        """
+        import l3_planner
+        import planner
+
+        # Whitespace is normalised before matching: the sentence wraps across a
+        # source line break, and asserting the wrapped form would pin the
+        # prose's line lengths rather than its meaning.
+        def _norm(t):
+            return " ".join(t.split())
+
+        guidance = "only when something changes"
+        for name, rendered in (
+                ("l3", self._rendered()),
+                ("planner", planner.render_planner_prompt())):
+            with self.subTest(prompt=name):
+                flat = _norm(rendered)
+                self.assertIn(guidance, flat,
+                              f"the {name} prompt never tells the planner "
+                              f"when to speak")
+                self.assertIn("never post the same status every tick", flat)
+                self.assertEqual(rendered.count("{{"), 0,
+                                 f"{name}: doubled open braces in rendered output")
+                self.assertEqual(rendered.count("}}"), 0,
+                                 f"{name}: doubled close braces in rendered output")
+
     def test_the_l3_script_prompt_names_look_and_result(self):
         """KILLS: the pre-fix prompt ('this is the whole surface' + six calls).
         Each name is asserted, and api.result is asserted on the CHARGED side
