@@ -192,6 +192,18 @@ class EnvelopeTest(unittest.TestCase):
         env = build_envelope({}, tick="12")
         self.assertIsInstance(env["tick"], int)
 
+    def test_the_world_is_reachable_at_exactly_one_path(self):
+        # The runner reads the world at snapshot.state.nearby, written once in
+        # look.js's __lookWorld. If the envelope ever also grew a TOP-LEVEL
+        # nearby, the runner's tolerant-resolver mutant would become correct by
+        # accident and no behavioural test could tell -- both paths would carry
+        # the same data. Pin the envelope's shape: the world lives in state,
+        # and the top level carries no second copy. This is the producer half
+        # of the 2026-11-21 idle-scripts defect.
+        env = build_envelope({"health": 20.0, "nearby": {"blocks": [1], "mobs": []}}, tick=1)
+        self.assertNotIn("nearby", env, "the envelope must not carry a second, top-level world path")
+        self.assertIn("nearby", env["state"], "the world must stay where the runner reads it")
+
 
 class SnapshotCacheTest(unittest.TestCase):
 
