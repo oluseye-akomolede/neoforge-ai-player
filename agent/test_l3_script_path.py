@@ -1443,7 +1443,66 @@ class TestThePromptsNameTheApiTheSandboxBinds(unittest.TestCase):
         l3_planner._PLAN_SYSTEM_PROMPT.format(
             bot_name="Scout", persona="scout", dimensions="", skills="X")
         l3_planner._SCRIPT_SYSTEM_PROMPT.format(
-            bot_name="Scout", persona="scout", skills="X")
+            bot_name="Scout", persona="scout", skills="X",
+            script_surface=l3_planner._SCRIPT_SURFACE)
+
+
+class TestTheL3ScriptPromptShowsLookAndResult(unittest.TestCase):
+    """Gap 2 (row 58ee29a7): the live path is USE_L3_PLAN_LAYER=on, where a
+    script comes from call_script/_SCRIPT_SYSTEM_PROMPT. That prompt said the
+    old six calls were 'the whole surface', so look() and api.result() were
+    invisible exactly where bots write scripts. Seen live 19:21Z on 566f64f9.
+    """
+
+    def _rendered(self):
+        # Rendered exactly as call_script does, so a bad brace or a missing
+        # arg fails here rather than at the model.
+        return l3_planner._SCRIPT_SYSTEM_PROMPT.format(
+            bot_name="Scout", persona="scout", skills="- x",
+            script_surface=l3_planner._SCRIPT_SURFACE)
+
+    def test_the_l3_script_prompt_names_look_and_result(self):
+        """KILLS: the pre-fix prompt ('this is the whole surface' + six calls).
+        Each name is asserted, and api.result is asserted on the CHARGED side
+        of the budget line, so moving it to 'free' reds this too."""
+        p = self._rendered()
+        for name in ("look.blocks(", "look.entities(", "look.age(",
+                     "api.result("):
+            self.assertIn(name, p, name)
+
+    def test_the_l3_script_prompt_states_the_same_facts_as_planner(self):
+        """The two prompts share one string, so these facts cannot drift; this
+        pins that the shared string is actually spliced in, not bypassed."""
+        p = self._rendered()
+        for fact in ("blocks within 5", "entities within 16",
+                     "not-searched-that-far", "already in hand",
+                     "report a value to the planner",
+                     "LAST call in a tick wins", "cut at 2 KiB",
+                     "top-level return value is discarded"):
+            self.assertIn(fact, p, fact)
+
+    def test_look_and_result_are_free_and_charged_respectively(self):
+        """The budget line is split at 'each count' and each call asserted on
+        its own side: look free, api.result one of the 8 host calls.
+        KILLS: swapping either to the other side."""
+        p = self._rendered()
+        charged, _, free = p.partition("each count")
+        self.assertTrue(free, "budget line missing")
+        # The whole sentence before 'each count', so dropping a name from the
+        # list reds this even though the name still appears in its own bullet.
+        self.assertIn("`api.do`, `api.say`, `api.send`,\n  `api.remember`, "
+                      "`api.log` and `api.result` each count", p)
+        self.assertIn("`look` are free", free)
+        self.assertNotIn("api.result", free.split("Rate limits")[0])
+
+    def test_the_l3_prompt_does_not_claim_a_return_value_reports(self):
+        """worker.js at bdaeeb7 discards a script's top-level return value
+        (32b592a made that deliberate). A prompt that says 'return an array of
+        actions' tells the model to report through a channel that is dropped.
+        KILLS: restoring the old 'Return an array of actions' line."""
+        p = self._rendered()
+        self.assertNotIn("Return an array of actions (or []", p)
+        self.assertIn("return value\nis discarded", p)
 
 
 class TestTheClassifyCallHasRoomToAnswer(unittest.TestCase):

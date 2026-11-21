@@ -25,6 +25,9 @@ import trajectory_log
 from brain import ollama_lock
 from config import OLLAMA_URL, TruncatedAnswer, answer_text, think_field
 from plan_schema import Plan, PlanValidationError, Subtask, validate_plan_dict, validate_subtask_dict
+# One source of truth for the script API surface: the L3 script prompt and the
+# legacy planner's script section must not drift apart (gap seen live 2026-11-21).
+from planner import SCRIPT_SURFACE as _SCRIPT_SURFACE
 
 log = logging.getLogger("aibot.l3-planner")
 
@@ -439,16 +442,9 @@ This is a script-only reply. The player's goal has already been planned; you
 are writing the JavaScript that will run the goal every tick instead of a
 step list.
 
-Script API (this is the whole surface):
-- api.do(action)      — queue one game action this tick
-- api.say(text)       — speak in chat (rate limited)
-- api.send(target, t) — send a chat message to another bot
-- api.recall()        — the memory blob this tick started with (or null)
-- api.remember(v)     — persist a STRING across ticks; read it back next tick
-                        via api.recall(). One blob, 16 KiB, last write wins.
-- api.log(level, t)   — write a line to the agent log ("info"/"warn"/...)
+{script_surface}
 
-The world state is a read-only global named `snapshot`, not an api method:
+The world state is also a read-only global named `snapshot`, not an api method:
 
   const s = snapshot;              // may be undefined if none was sent
   if (s) {{ /* s.self, s.bots, s.inventory, ... */ }}
@@ -456,8 +452,9 @@ The world state is a read-only global named `snapshot`, not an api method:
 Do NOT call api.get_snapshot() or api.get_directive() — they do not exist,
 and a call to a missing method throws and discards your whole script.
 
-Return an array of actions (or [] to do nothing this tick). A script that
-throws is discarded and the step-list path takes over.
+Do not try to report by returning a value: a script's top-level return value
+is discarded. Use api.result(value) to report. A script that throws is
+discarded and the step-list path takes over.
 
 Skills you can call from an action:
 {skills}
@@ -1624,7 +1621,8 @@ def call_script(
     persona = BOT_PERSONAS.get(bot_name, "generalist")
     log.info("[%s] L3 SCRIPT call — task: %s", bot_name, task[:60])
     sys_prompt = _SCRIPT_SYSTEM_PROMPT.format(
-        bot_name=bot_name, persona=persona, skills=_skills_lines())
+        bot_name=bot_name, persona=persona, skills=_skills_lines(),
+        script_surface=_SCRIPT_SURFACE)
     user = json.dumps({
         "task": task,
         "plan": plan,

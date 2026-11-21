@@ -30,6 +30,57 @@ class PlannerResult(list):
         super().__init__(steps)
         self.script = script
 
+SCRIPT_SURFACE = """For goals that are REPETITIVE or CONDITIONAL — "keep the chest stocked",
+"until I say stop, mine whatever you see" — a step list cannot express the
+loop. You may answer with a JavaScript program instead. It runs once per tick
+in a sandbox with no filesystem and no network, and reaches the world ONLY
+through these calls:
+
+- `api.do(directive, args)` — queue one game action. `directive` is an exact
+  name like `"goto"`, `"mine"`, `"attack"`, `"place"`. `args` is a plain object.
+  Returns `{{ok, seq}}` or a rejection.
+- `api.say(text)` — speak in chat.
+- `api.send(otherBot, msg)` — message another bot.
+- `api.remember(blob)` — store a string (≤16 KB) that the NEXT tick's
+  `api.recall()` returns. This is the only state that persists between ticks.
+- `api.recall()` — the string this tick started with, or `null`.
+- `api.log(level, text)` — write one diagnostic line (≤1 KB).
+- `api.result(value)` — report a value to the planner. Returns `{{ok: true}}`
+  or a rejection. The value reaches the planner when the script ENDS (`done`,
+  an error, or `escalate`); the LAST call in a tick wins; it is cut at 2 KiB
+  with a truncation marker. The script's top-level return value is discarded —
+  this call is how a script reports. Use it to say what a goal found, or why
+  it stopped.
+
+`look` — read-only questions about the tick's snapshot, already in hand (no
+call cost, no network). It answers the world as of THIS tick, not a live query:
+
+- `look.blocks(kind, options?)` → `{{ok: true, kind: 'blocks', matches: [...]}}`
+- `look.entities(type, options?)` → `{{ok: true, kind: 'entities', matches: [...]}}`
+- `look.age()` → `{{ok: true, ageMs}}`, how old the snapshot is
+- A failed query answers `{{ok: false, reason, message}}`.
+- `kind`/`type` match the entry's id or display name, case-insensitive. A block
+  entry has `{{id, block, position}}` — no block state, so you cannot ask for
+  "a red flower" that way.
+- The snapshot covers blocks within 5 blocks and entities within 16. Asking
+  for more answers `not-searched-that-far`, which is NOT the same as "none
+  there". `options.radius` only narrows.
+- Use it to look before acting on a block the bot has to be near — check a
+  chest is there before walking to it.
+
+Rules for scripts:
+- At most 8 host calls per tick. `api.do`, `api.say`, `api.send`,
+  `api.remember`, `api.log` and `api.result` each count; `api.recall()` and
+  `look` are free, because they answer from data already in hand.
+  Rate limits are enforced: `do` 30/min, `say` 30/min, `send` 20/min.
+  Exceeding them is REFUSED, not queued.
+- A script that returns does nothing further this tick; the next tick runs it
+  again. Do not loop forever inside one tick — it is not a thread.
+- Use `api.recall()` at the top to continue work across ticks.
+- Anything a script `api.do`s is dispatched like a planned step, so use real
+  directive names, not invented ones."""
+
+
 PLANNER_PROMPT = """You are a Minecraft task planner. Break the player's instruction into simple, sequential steps that a bot can execute one at a time.
 
 ## How to decompose
@@ -116,56 +167,7 @@ Output: {{"steps": ["Craft minecraft:stone_pickaxe", "Find and mine minecraft:ir
 
 ## Writing a script instead of steps
 
-For goals that are REPETITIVE or CONDITIONAL — "keep the chest stocked",
-"until I say stop, mine whatever you see" — a step list cannot express the
-loop. You may answer with a JavaScript program instead. It runs once per tick
-in a sandbox with no filesystem and no network, and reaches the world ONLY
-through these calls:
-
-- `api.do(directive, args)` — queue one game action. `directive` is an exact
-  name like `"goto"`, `"mine"`, `"attack"`, `"place"`. `args` is a plain object.
-  Returns `{{ok, seq}}` or a rejection.
-- `api.say(text)` — speak in chat.
-- `api.send(otherBot, msg)` — message another bot.
-- `api.remember(blob)` — store a string (≤16 KB) that the NEXT tick's
-  `api.recall()` returns. This is the only state that persists between ticks.
-- `api.recall()` — the string this tick started with, or `null`.
-- `api.log(level, text)` — write one diagnostic line (≤1 KB).
-- `api.result(value)` — report a value to the planner. Returns `{{ok: true}}`
-  or a rejection. The value reaches the planner when the script ENDS (`done`,
-  an error, or `escalate`); the LAST call in a tick wins; it is cut at 2 KiB
-  with a truncation marker. The script's top-level return value is discarded —
-  this call is how a script reports. Use it to say what a goal found, or why
-  it stopped.
-
-`look` — read-only questions about the tick's snapshot, already in hand (no
-call cost, no network). It answers the world as of THIS tick, not a live query:
-
-- `look.blocks(kind, options?)` → `{{ok: true, kind: 'blocks', matches: [...]}}`
-- `look.entities(type, options?)` → `{{ok: true, kind: 'entities', matches: [...]}}`
-- `look.age()` → `{{ok: true, ageMs}}`, how old the snapshot is
-- A failed query answers `{{ok: false, reason, message}}`.
-- `kind`/`type` match the entry's id or display name, case-insensitive. A block
-  entry has `{{id, block, position}}` — no block state, so you cannot ask for
-  "a red flower" that way.
-- The snapshot covers blocks within 5 blocks and entities within 16. Asking
-  for more answers `not-searched-that-far`, which is NOT the same as "none
-  there". `options.radius` only narrows.
-- Use it to look before acting on a block the bot has to be near — check a
-  chest is there before walking to it.
-
-Rules for scripts:
-- At most 8 host calls per tick. `api.do`, `api.say`, `api.send`,
-  `api.remember`, `api.log` and `api.result` each count; `api.recall()` and
-  `look` are free, because they answer from data already in hand.
-  Rate limits are enforced: `do` 30/min, `say` 30/min, `send` 20/min.
-  Exceeding them is REFUSED, not queued.
-- A script that returns does nothing further this tick; the next tick runs it
-  again. Do not loop forever inside one tick — it is not a thread.
-- Use `api.recall()` at the top to continue work across ticks.
-- Anything a script `api.do`s is dispatched like a planned step, so use real
-  directive names, not invented ones.
-
+{script_section}
 Respond ONLY with ONE JSON object, either:
 {{
   "steps": ["step 1", "step 2", ...]
@@ -211,7 +213,7 @@ def decompose(model, instruction, memory_context="", transmute_context="", inven
     if sender:
         sender_section = f'\nThe player who sent this instruction is named "{sender}". When steps reference this player (e.g. "come to me"), use their exact name "{sender}" — not a placeholder.\n'
 
-    prompt = PLANNER_PROMPT.format(memory_section=memory_section, transmute_section=transmute_section, inventory_section=inventory_section) + sender_section
+    prompt = PLANNER_PROMPT.format(memory_section=memory_section, transmute_section=transmute_section, inventory_section=inventory_section, script_section=SCRIPT_SURFACE) + sender_section
 
     with brain.ollama_lock:
         resp = requests.post(

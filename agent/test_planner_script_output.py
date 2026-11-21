@@ -99,7 +99,8 @@ def _rendered_prompt():
     raising at call time.
     """
     return planner.PLANNER_PROMPT.format(
-        memory_section="", transmute_section="", inventory_section="")
+        memory_section="", transmute_section="", inventory_section="",
+        script_section=planner.SCRIPT_SURFACE)
 
 
 class PlannerPromptDocumentsPtcTest(unittest.TestCase):
