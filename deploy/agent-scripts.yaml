@@ -122,8 +122,8 @@ data:
       // This code used to read `state.inventory.inventory`, on the theory that the
       // endpoint's wrapper reached the script verbatim. It never did: the wrapper
       // is a mod-side transport detail and the contract always promised a list.
-      // When _obs started unwrapping at the source (a81d5d19) that read became
-      // undefined and this guard stored nothing, permanently - caught by
+      // When _obs started unwrapping at the source, that read became undefined
+      // and this guard stored nothing, permanently - caught by
       // test_the_scripts_inventory_path_resolves. Read the list the contract
       // promises; if a future message carries a wrapper, `state.inventory.inventory`
       // is an integration bug to fix at the producer, not to paper over here.

@@ -122,7 +122,7 @@ class BuildStateTest(unittest.TestCase):
         self.assertEqual(errors, [{"reader": "inventory", "error": "RuntimeError"}])
 
     # ── The game's wrapper is unwrapped here, once ──────────────────────────
-    # a81d5d19: live, state.nearby.blocks held {"blocks": [...]} unchanged, so
+    # Live, state.nearby.blocks held {"blocks": [...]} unchanged, so
     # `look` -- which requires an Array -- answered ok:true, matches:[] while
     # the bot stood in front of iron ore. The next four tests fail if the
     # wrapper ever reaches the script again.
