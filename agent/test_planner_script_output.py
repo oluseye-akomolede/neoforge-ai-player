@@ -140,8 +140,11 @@ class PlannerPromptDocumentsPtcTest(unittest.TestCase):
         # look that far" -- and writing an invented radius here.
         prompt = _rendered_prompt()
 
-        self.assertIn("5 blocks", prompt)
-        self.assertIn("16", prompt)
+        # Both radii tied to their own sentence. A bare assertIn("16") passes
+        # on any of the prompt's other sixteens ("Craft 16x", "Y=16",
+        # "<=16 KB"), so entities 16 -> 15 would stay green (reviewer F-1).
+        self.assertIn("blocks within 5 blocks", prompt)
+        self.assertIn("entities within 16", prompt)
         self.assertIn("not-searched-that-far", prompt)
 
     def test_the_prompt_states_the_result_journey(self):
@@ -173,8 +176,9 @@ class PlannerPromptRendersTest(unittest.TestCase):
             fake_l4.is_available.return_value = False
             planner.decompose("test-model", "chop a tree")
 
-        self.assertIn("look.blocks(", sent["prompt"])
-        self.assertIn("api.result(", sent["prompt"])
+        for needed in ("look.blocks(", "look.entities(", "look.age()",
+                       "api.result("):
+            self.assertIn(needed, sent["prompt"])
 
 
 if __name__ == "__main__":
