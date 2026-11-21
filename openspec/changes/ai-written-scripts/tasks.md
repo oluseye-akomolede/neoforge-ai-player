@@ -214,12 +214,17 @@ L3 path rather than limit the spec to the decompose paths.
       still holds the old reply's steps, so `_check_task_board` is skipped and
       the same refused script reruns every tick. Trial 4.1 measured 69 refusals
       / 69 "falling back" / 1 L3 SCRIPT / 0 new plans in six minutes with the
-      bot stuck. Implement option 1 (yield the goal: unbind, hand back, let
-      `call_plan` be asked again) with a consecutive-tick counter, and log which
-      option fired. Verified by: a script whose only action is an unknown kind
-      stops being the driver within N ticks, the reason is in chat and the log,
-      and the goal still has a driver; plus a test that one dispatching tick
-      resets the count so an intermittent script is not torn down.
+      bot stuck.
+      Implement **option 1** (yield the goal): on the first tick that refuses
+      every action the script proposes, unbind it and hand the goal back so
+      `call_plan` is asked again. Option 1 has no `N` and no counter -- do not
+      add one, and do not wait for a streak; an all-refused tick is a script
+      that cannot dispatch, not one to wait out. Log which option fired.
+      Verified by: a script whose only action is an unknown kind is unbound on
+      its first all-refused tick, the goal is handed back and does not end up
+      with no driver, and the reason is in the log; and a script that refuses
+      one kind but dispatches another on the same tick STAYS bound, because
+      that tick did not refuse every action.
 
 ## 3. What is deliberately out of scope
 

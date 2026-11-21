@@ -661,15 +661,17 @@ Nothing was.
 An all-refused tick MUST do one of two things, and the implementation MUST
 state which in the log:
 
-1. **Yield the goal.** Unbind the script and hand the goal back so `call_plan`
-   is asked again. Preferred, because the goal is still pursued and the
-   refusals are the signal that the script was wrong.
+1. **Yield the goal.** Unbind the script the first time a tick refuses every
+   action it proposes, and hand the goal back so `call_plan` is asked again.
+   Preferred, because the goal is still pursued and the refusals are the signal
+   that the script was wrong. This option needs no counter: an all-refused tick
+   is not a thing to wait out, it is a script that cannot dispatch.
 2. **Stop and report.** After N consecutive all-refused ticks, unbind the script
-   and say why in chat and in the log.
+   and say why in chat and in the log. If this option is chosen, the counter
+   MUST be consecutive -- a tick that dispatches something resets it -- so a
+   script that intermittently succeeds is never torn down.
 
-Silently rerunning a script that cannot dispatch is neither. The counter MUST be
-consecutive: a tick that dispatches something resets it, so a script that
-intermittently succeeds is never torn down.
+Silently rerunning a script that cannot dispatch is neither.
 
 Option 1 is the shipped behaviour for this change. It is recorded here as a
 permanent choice rather than a dated one: the goal is pursued either way, and
@@ -677,27 +679,40 @@ option 2 leaves the bot idle on a goal a planner could have taken. Option 2
 remains the stated alternative for a future implementation that has a reason to
 prefer stopping.
 
-`N` is not fixed by this requirement, because the useful value depends on tick
-length and on how often a script is expected to be transiently refused. It MUST
-be a single named constant rather than a literal at the comparison, and the
-implementation MUST record the observation that chose it. The measured failure
-that prompted this requirement ran 69 consecutive refusals, so any `N` below
-about 30 would have fired; a small value risks tearing down a script that was
-about to dispatch.
+Under option 1 there is no `N` and no counter, so the reset-consecutive property
+below does not apply: a script is unbound on its first all-refused tick whether
+or not earlier ticks dispatched. An implementation that adopts option 2 MUST
+define `N` as a single named constant rather than a literal at the comparison,
+and MUST record the observation that chose it. The measured failure that
+prompted this requirement ran 69 consecutive refusals, so any `N` below about 30
+would have fired; a small value risks tearing down a script that was about to
+dispatch.
 
 #### Scenario: A script whose only action is refused stops being the driver
 
 - **GIVEN** a bound script whose only action is an unknown kind
 - **WHEN** a tick refuses every action it proposes
-- **THEN** the bot is no longer running that script
+- **THEN** the script is unbound and the goal is handed back for `call_plan`
 - **AND** the reason is visible in the log
 - **AND** the goal is not left with no driver
 
-#### Scenario: A tick that dispatches resets the refusal count
-- **GIVEN** a script that refuses every action on some ticks and dispatches one
-  on others
-- **WHEN** the refusals never reach N in a row
+#### Scenario: A tick that dispatches one action is not all-refused (option 1)
+
+- **GIVEN** a script that proposes an unknown kind and a bindable kind on the
+  same tick
+- **WHEN** one action is refused and one dispatches
+- **THEN** the script stays bound, because the tick did NOT refuse every action
+- **AND** this is the boundary that keeps a partly-working script alive
+
+#### Scenario: Serialising to option 2 replaces the counter behaviour
+
+- **GIVEN** an implementation that chose option 2 instead of option 1
+- **WHEN** the script refuses every action for fewer than `N` consecutive ticks
+  and dispatches on each intervening tick
 - **THEN** the script stays bound
+- **AND** once `N` consecutive all-refused ticks occur it is unbound
+- **NOTE** this scenario applies only to option 2; the shipped behaviour has no
+  counter and unbinds on the first all-refused tick
 
 ### Requirement: Binding A Script Is Atomic Against The Bot's Tick
 Binding happens on the orchestrator's thread while the bot's own tick loop is
