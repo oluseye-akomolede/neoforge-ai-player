@@ -284,3 +284,60 @@ apart.
 - **THEN** it MUST say to look before acting on a block the bot has to be near
 - **AND** the `api.result` description MUST say to report what a goal found, or
   why it stopped
+
+### Requirement: A Lookup Reads The World Where The Envelope Puts It
+
+A lookup MUST read the tick's world data from the path the agent actually
+sends, not from a shape assumed beside it. The tick request's `snapshot` is the
+envelope built by `snapshot.build_envelope` (`agent/snapshot.py`), which is
+`{"tick", "server_ms", "state", "events", "task"}`; the world a lookup answers
+from is `snapshot.state.nearby`, with `blocks` and `mobs` beneath it. A lookup
+that reads `snapshot.nearby` directly answers from `undefined` and MUST NOT
+report that as an empty world.
+
+An empty `matches` list MUST mean "I looked where the snapshot covers and there
+was nothing" and MUST NOT be returned because the lookup read the wrong path.
+The failure this requirement exists to stop was silent: every lookup returned
+`{ok: true, matches: []}` on a snapshot that carried the block and the mob, so
+two scripts idled while the trigger was in front of them, and nothing reported
+an error.
+
+Tests for this requirement MUST build their snapshot through the agent's own
+envelope constructor, or assert against its output, so a fixture cannot drift
+into a shape the game never sends. A hand-written fixture that happens to match
+the lookup's assumption is not evidence about the live path.
+
+#### Scenario: The world is found where the envelope puts it
+- **GIVEN** a tick whose snapshot is the real envelope, carrying
+  `state.nearby.blocks` with an `iron_ore` entry and `state.nearby.mobs` with a
+  `sheep` entry
+- **WHEN** the script calls `look.blocks('iron_ore')` and
+  `look.entities('sheep')`
+- **THEN** each MUST return `ok: true` with one match
+- **AND** neither MUST return an empty list
+
+#### Scenario: The fixture is the producer's own output
+- **GIVEN** a test of the lookup
+- **WHEN** its snapshot fixture is built
+- **THEN** it MUST come from `snapshot.build_envelope`, or be asserted equal to
+  what that function produces
+- **AND** a fixture written by hand to the shape the lookup happens to read
+  MUST NOT be accepted as covering the live path
+
+The envelope's capture time is `server_ms`. A lookup that reports the
+snapshot's age MUST read that field; reading a field the envelope does not
+carry MUST NOT be reported as "the game sent no capture time", because it did.
+
+#### Scenario: The snapshot's age comes from the envelope's own stamp
+- **GIVEN** a snapshot carrying `server_ms` and no other timestamp field
+- **WHEN** the script asks the snapshot's age
+- **THEN** the answer MUST carry an `ageMs` number derived from `server_ms`
+- **AND** it MUST NOT answer `null` with "the game sent no capture time"
+
+#### Scenario: The wrong depth is detectable
+- **GIVEN** an implementation that reads `snapshot.nearby` while the envelope
+  nests the world at `snapshot.state.nearby`
+- **WHEN** the lookup runs against the real envelope
+- **THEN** the first scenario MUST fail
+- **AND** the failure MUST name an empty match list rather than an error, so the
+  test that catches it is the scenario above and not an exception
