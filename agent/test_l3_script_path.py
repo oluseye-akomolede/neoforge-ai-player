@@ -412,6 +412,11 @@ class TestTheRealOnScriptClosureReleasesTheHold(unittest.TestCase):
         a._script_loaded = False
         a._script_hold = None
         a._script_hold_seq = 0
+        # A BotRunner built through __new__ skips __init__, and __init__ is
+        # where the say-dedupe guard is created. Without it the delivery loop
+        # raises AttributeError, _run_script_tick swallows it as "tick error,
+        # using planner", and the test passes on a path it never reached.
+        a._script_say_guard = agent_mod.ScriptSayGuard()
         a._bind_planner_script = mock.Mock(return_value=bind_returns)
 
         goal_id = a._new_goal_id("Steve", "keep the furnace fed")
@@ -544,6 +549,11 @@ class TestRefusedBindAgainstARealHandWrittenBinding(unittest.TestCase):
         a._script_loaded = False
         a._script_hold = None
         a._script_hold_seq = 0
+        # A BotRunner built through __new__ skips __init__, and __init__ is
+        # where the say-dedupe guard is created. Without it the delivery loop
+        # raises AttributeError, _run_script_tick swallows it as "tick error,
+        # using planner", and the test passes on a path it never reached.
+        a._script_say_guard = agent_mod.ScriptSayGuard()
         # Real ScriptTick construction talks to the runner over HTTP; the
         # binding decision and the hold check both happen before any tick, so
         # this is only reached if the hold fails to block.
@@ -1488,7 +1498,7 @@ class TestTheL3ScriptPromptShowsLookAndResult(unittest.TestCase):
         def _norm(t):
             return " ".join(t.split())
 
-        guidance = "only when something changes"
+        guidance = "only when something changed since the last tick"
         for name, rendered in (
                 ("l3", self._rendered()),
                 ("planner", planner.render_planner_prompt())):
@@ -1497,7 +1507,14 @@ class TestTheL3ScriptPromptShowsLookAndResult(unittest.TestCase):
                 self.assertIn(guidance, flat,
                               f"the {name} prompt never tells the planner "
                               f"when to speak")
-                self.assertIn("never post the same status every tick", flat)
+                # Reviewer F-1 on 2aabfc5: the guard keys on exact content, so
+                # this line must NOT promise that content dedupe catches a
+                # status report that changes every tick -- it does not. The
+                # line has to say the dedupe is a backstop on repeats.
+                self.assertIn("a repeat is wasted, not harmful", flat,
+                              f"{name}: the guidance must state what the "
+                              f"dedupe actually does, not imply it catches "
+                              f"changing status")
                 self.assertEqual(rendered.count("{{"), 0,
                                  f"{name}: doubled open braces in rendered output")
                 self.assertEqual(rendered.count("}}"), 0,

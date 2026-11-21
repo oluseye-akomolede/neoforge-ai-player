@@ -80,8 +80,8 @@ Rules for scripts:
 - A script that returns does nothing further this tick; the next tick runs it
   again. Do not loop forever inside one tick — it is not a thread.
 - Use `api.recall()` at the top to continue work across ticks.
-- `api.say` only when something changes (found, done, failed); never post the
-  same status every tick.
+- `api.say` only when something changed since the last tick; a line you say
+  again within a minute is suppressed, so a repeat is wasted, not harmful.
 - Anything a script `api.do`s is dispatched like a planned step, so use real
   directive names, not invented ones."""
 

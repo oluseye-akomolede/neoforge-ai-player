@@ -16,7 +16,7 @@
 
 ## 3. Prompt guidance
 
-- [x] 3.1 Add the "use `api.say` only when something changes; never post the same status every tick" line to `planner.SCRIPT_SURFACE`.
+- [x] 3.1 Add the guidance line to `planner.SCRIPT_SURFACE`. Wording was revised after review (F-1 on `2aabfc5`): the first draft said "never post the same status every tick", which over-promises, because a script posting a *literal* status string is not suppressed by an exact-content guard — it has no trigger to change. The line now says a repeat within a minute is suppressed, so a repeat is wasted rather than caught.
 - [x] 3.2 Test: both rendered prompts contain the guidance; both still contain no `{{` and no `}}` (the gate from `fd5416b` stays green with the line present). Count the braces in the output, do not eyeball.
 
 ## 4. Close out
