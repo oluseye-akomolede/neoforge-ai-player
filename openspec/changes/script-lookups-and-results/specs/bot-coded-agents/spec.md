@@ -106,10 +106,16 @@ its work needs. The 2026-11-21 trial had a script written to shear sheep idle
 with no shears in inventory, and `look` offered no way to check.
 
 #### Scenario: The inventory is readable with no host call
-- **GIVEN** a snapshot whose `state.inventory` carries 12 `minecraft:iron_ore`
+- **GIVEN** a snapshot whose `state.inventory` carries 1 `minecraft:shears` and
+  12 `minecraft:iron_ore`
 - **WHEN** the script calls `look.inventory()`
-- **THEN** it returns `{ ok: true, items: [...] }` naming that stack
+- **THEN** it returns `{ ok: true, items: [...] }` naming both stacks
 - **AND** `hostCalls` for the tick is unchanged by the call
+
+The host-call half is measured, not asserted in prose: the binding reports
+`host_calls` per tick, and `look-engine.test.mjs` evaluates 200 calls to every
+`look` accessor — `inventory()` included — on a real sandbox and requires the
+count to stay at 0. Wiring any accessor through `accept` reds it.
 
 #### Scenario: A script cannot change the snapshot through it
 - **GIVEN** a `look.inventory()` result
