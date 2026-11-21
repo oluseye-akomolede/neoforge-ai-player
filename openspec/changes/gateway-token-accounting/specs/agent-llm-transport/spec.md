@@ -81,3 +81,66 @@ two requirements ship together.
 - **WHEN** a reply body has no `done_reason` key at all
 - **THEN** the guard does not report truncation
 - **AND** the absence is not silently treated as `length`
+
+### Requirement: Every Call That Parses A Structured Reply Checks done_reason First
+
+`answer_text` raises `TruncatedAnswer` only when the content is **empty**. A
+reply cut mid-object has content, so it does not raise — it reaches the
+parser, and the parser reports a syntax error. That error names the wrong
+cause: it sends a reader to fix the prompt when the prompt was fine and the
+token budget was not. Observed three times before this rule was written (the
+PLAN call 2026-11-20 21:52Z, the SCRIPT call 2026-11-20 19:10Z, the exec
+call 2026-11-21 21:55Z).
+
+Therefore **every** call that asks the model for a structured reply and then
+parses it MUST check `done_reason == "length"` **before** parsing, and MUST
+report the result as a truncation rather than a parse error. The check belongs
+to the call, not to `answer_text`, because only the call knows whether a cut
+reply is unusable — for a prose call it is merely short.
+
+The rule is stated once, generally, because stating it per call is what let it
+recur: `call_plan` and `call_script` each learned it separately, and four other
+`format: "json"` calls still did not check.
+
+#### Scenario: A truncated structured reply is reported as a truncation
+
+- **GIVEN** a call that requests `format: "json"`
+- **WHEN** the reply body carries `done_reason` equal to `length`
+- **THEN** the call MUST raise `TruncatedAnswer` (or an equivalent truncation
+  error) naming the token limit
+- **AND** it MUST NOT reach the JSON parser, so the failure cannot surface as
+  a syntax error
+
+#### Scenario: A truncated reply with no content is still caught
+
+- **WHEN** the content is empty and `done_reason` is `length`
+- **THEN** the existing `answer_text` guard satisfies this requirement
+- **AND** the call's own check MUST NOT turn that into a different error
+
+#### Scenario: A complete reply is unaffected
+
+- **WHEN** `done_reason` is `stop` and the reply parses
+- **THEN** the call behaves exactly as before and reports no truncation
+
+### Requirement: Each Call's Token Budget Is A Named Constant Sized By Measurement
+
+Each LLM call's `num_predict` MUST be a named module constant, not a literal at
+the request site, and the constant MUST carry a comment recording the
+`eval_count` that justified it. A literal records no reason and cannot be
+reviewed as a number.
+
+Changing one call's constant MUST NOT change any other call's budget: the
+constants are per call, and the existing rule in `l3_planner.py` (the SCRIPT
+call's block, which states that changing it must not change any other call's
+`num_predict`) is the model to follow rather than a single shared knob.
+
+#### Scenario: A call's budget can be traced to a measurement
+
+- **WHEN** a reader opens a call's `num_predict` constant
+- **THEN** its comment MUST state the observed `eval_count` (or equivalent
+  measurement) that the value was chosen from
+
+#### Scenario: Budgets are independent
+
+- **WHEN** one call's constant is changed
+- **THEN** no other call's requested `num_predict` changes
