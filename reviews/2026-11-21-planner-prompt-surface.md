@@ -101,3 +101,46 @@ asserts on the actual request body — good, though it asserts only
 - Builder worktree clean after mutant runs (`git status --short` empty).
 
 No `ollama-l3` requests, no pod exec, nothing in `ci`.
+
+---
+
+## Follow-up — F-1 closed at `88bcb12`
+
+F-1 is fixed. Both radii are now tied to their own sentence:
+
+```python
+self.assertIn("blocks within 5 blocks", prompt)   # :146
+self.assertIn("entities within 16", prompt)       # :147
+```
+
+and `"entities within 16"` is unique in `planner.py` (the literal is at `:151`
+and appears once), so it can no longer be satisfied by a stray sixteen.
+
+Mutants re-run against `88bcb12`, `-B` with `PYTHONDONTWRITEBYTECODE=1`, one at a
+time, restore verified byte-identical (`cmp` against a backup, and the file
+compared equal after each restore):
+
+| mutant | result |
+|---|---|
+| clean baseline | 9 OK, rc=0 |
+| entities 16 → 15 | **red** — `test_the_prompt_states_the_real_radii_and_the_not_searched_answer` |
+| blocks 5 → 8 | **red** — same test |
+| misspelt `look.entities` | **red** — `test_the_prompt_documents_look_and_result` and `test_the_real_prompt_renders_and_reaches_the_model` |
+| clean again | 9 OK, rc=0 |
+
+The builder's claims hold in every particular, including the capture-test
+extension: a misspelt look name now reds two tests, not one.
+
+**Correction to my own method.** My first run of these mutants reported M1 and
+M2 green. That was wrong, and the fault was mine: a stale
+`__pycache__/planner.cpython-312.pyc` (timestamped 19:19, and Python's
+second-granularity pyc check does not notice a rewrite inside the same second)
+shadowed the mutated source, so the suite re-ran the *unmutated* module. I
+caught it by rendering the prompt directly with `-B`: the mutant text
+(`entities within 15`) was present in the output, which proved the edit reached
+the string while the suite still called it green. Re-run with bytecode disabled,
+all three mutants red. Anything further I run in this repo will pass `-B`.
+
+This is the same failure the builder described hitting ("the restore outran the
+read"), from the other side — a cache, not a restore, but the same lesson: a
+mutant result is only a fact if the instrument is proven to see the mutant.
