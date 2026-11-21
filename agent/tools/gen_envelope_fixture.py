@@ -35,7 +35,21 @@ import snapshot  # noqa: E402
 # sheep inside the 16-block entity radius.
 STATE = {
     "position": "16.5, 86.0, -15.5",
-    "inventory": [],
+    # Non-empty so the look.inventory() tests prove something: an empty
+    # inventory would make every inventory assertion pass vacuously, which is
+    # the same defect as a fixture that mirrors the bug it should catch. These
+    # are the shears the 2026-11-21 sheep script lacked, so a test can ask "is
+    # the tool for this task in hand" against data shaped like a real answer.
+    # Field names are BotPlayer.serializeItemStack's (BotPlayer.java:997-1003),
+    # the path the snapshot reads: {slot, item, count, display_name,
+    # max_stack_size}. NOT the {slot, nbt} shape on the other HTTP route.
+    "inventory": [
+        {"slot": 0, "item": "minecraft:shears", "count": 1,
+         "display_name": "Shears", "max_stack_size": 1, "durability": 238,
+         "max_durability": 238},
+        {"slot": 1, "item": "minecraft:iron_ore", "count": 12,
+         "display_name": "Iron Ore", "max_stack_size": 64},
+    ],
     "health": 20.0,
     "nearby": {
         "blocks": [

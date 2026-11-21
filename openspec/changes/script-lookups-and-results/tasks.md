@@ -170,21 +170,64 @@ document work that preceded them, kept so the reasoning is not lost.
       restoring the return-an-array line each red
       `TestTheL3ScriptPromptShowsLookAndResult`.
 
-## 4. Trials on test (run by the lead)
+## 4. Follow-on: namespace-agnostic matching and `look.inventory()` (2026-11-21)
 
-- [ ] 4.1 Lookup within the snapshot: a sheep goal shears only when a sheep is
+Requested by the lead after the trial diagnosis (row 222a6eab). The trial left
+two gaps: a script could not match a block by bare name, and a script could not
+see whether it held the tool it was asked to use (Mystic's sheep script had no
+shears and could not tell).
+
+- [x] 4.0 **What the game actually sends, checked at the producer, not the
+      fixture.** `BotPlayer.java:910` builds block ids from
+      `BuiltInRegistries.BLOCK.getKey(...).toString()`, so the live game always
+      sends `minecraft:iron_ore`. The bare form appears only in hand-written
+      test data, which is how two messages of mine came to disagree. Both
+      forms must work so a script never has to know.
+- [x] 4.1 **Matching ignores one leading `minecraft:`** on both the needle and
+      the entry id, in `look.js::__lookBare`. Nothing else is rewritten:
+      matching stays exact after the strip, so `iron` does not match
+      `minecraft:iron_ore`, and `a:minecraft:b` does not match `minecraft:b`.
+      KILLS: stripping neither side, stripping only the needle, stripping only
+      the id, or a greedy `.*minecraft:` regex each red a lookup test. The
+      id-vs-display-name tests give the entry a display name that matches
+      nothing under test, so the name branch cannot satisfy them.
+- [x] 4.2 **`look.inventory()`**, a read-only lookup returning
+      `{ok: true, items: [...]}` from `state.inventory` as a deep copy. It
+      spends no host call, cannot change the snapshot, and returns
+      `items: []` rather than throwing on an empty inventory. Specced as its
+      own requirement with four scenarios. The producer fixture now carries
+      two real stacks (`serializeItemStack`'s `{slot, item, count,
+      display_name, ...}`, not the `{slot, nbt}` shape the other HTTP route
+      sends), because an empty inventory would make every inventory assertion
+      pass vacuously.
+- [x] 4.3 **`SCRIPT_SURFACE` names `look.inventory()` and the namespace rule**,
+      with the tool-check guidance ("shearing needs shears, mining needs a
+      pickaxe... if the tool is missing, say so or fetch it"). The brace gate
+      still reports zero `{{`/`}}` in both rendered prompts: the new lines use
+      single braces and the constant is not run through `.format`. KILLS: the
+      tests pin the WHOLE guidance sentence; asserting `"shearing needs"`
+      alone stayed green when the instruction was replaced by "Consider what
+      the bot carries".
+- [x] 4.4 Runner suite 189/189 (`npm test`); agent `test_l3_script_path`
+      90 OK. Every mutant restored with `diff -q` identical.
+
+## 5. Trials on test (run by the lead)
+
+- [ ] 5.1 Lookup within the snapshot: a sheep goal shears only when a sheep is
       near. Counted from the log with grep.
-- [ ] 4.2 Lookup beyond the snapshot: a diamonds-within-40 goal reports "not
+- [ ] 5.2 Lookup beyond the snapshot: a diamonds-within-40 goal reports "not
       searched that far" and escalates, rather than silently doing nothing.
-- [ ] 4.3 Result on completion: exactly one delivery, one planner call.
-- [ ] 4.4 Result on error: delivered, not silently logged.
-- [ ] 4.5 Loop bound holds: a script that claims `done` every tick yields at
+- [ ] 5.3 Result on completion: exactly one delivery, one planner call.
+- [ ] 5.4 Result on error: delivered, not silently logged.
+- [ ] 5.5 Loop bound holds: a script that claims `done` every tick yields at
       most 4 planner calls in an hour, with a non-zero drop count.
+- [ ] 5.6 A tool check: a sheep goal with no shears says so (or fetches them)
+      rather than idling, now that `look.inventory()` can see it.
 
-## 5. Out of scope, stated so it cannot drift back in
+## 6. Out of scope, stated so it cannot drift back in
 
-- [ ] 5.1 No live mid-tick lookup (Option B). A later request for one cites
+- [ ] 6.1 No live mid-tick lookup (Option B). A later request for one cites
       `design.md` §1 and the 8-host-call cap.
-- [ ] 5.2 No change to the six-function API, the host-call cap, the rate
+- [ ] 6.2 No change to the six-function API, the host-call cap, the rate
       windows, or the CPU budget.
-- [ ] 5.3 No delivery of logs or actions to the planner.
+- [ ] 6.3 No delivery of logs or actions to the planner.

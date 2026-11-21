@@ -65,6 +65,72 @@ NOT spend a host call, reach the network, or reach the mod.
 - **WHEN** the script is dry-ticked and then live-ticked
 - **THEN** every lookup MUST return the same value in both
 
+#### Scenario: A namespaced kind matches a bare one
+- **GIVEN** a snapshot whose `nearby.blocks` entry carries `id`
+  `minecraft:iron_ore`, the form the game's own producer emits
+- **WHEN** the script calls `look.blocks('iron_ore')` with the bare name
+- **THEN** it MUST match that entry
+- **AND** the answer MUST be the same one `look.blocks('minecraft:iron_ore')`
+  gives for the same snapshot
+
+#### Scenario: An unnamespaced entry matches a namespaced needle
+- **GIVEN** a snapshot whose `nearby.blocks` entry carries a bare `id`
+  `iron_ore`, a form the game does not emit today
+- **WHEN** the script calls `look.blocks('minecraft:iron_ore')`
+- **THEN** it MUST still match that entry
+- **AND** the two forms MUST compare equal in both directions, so a script
+  never has to know which form the game sends
+
+#### Scenario: Only a leading namespace is stripped
+- **GIVEN** a snapshot whose `nearby.blocks` carries `id` `a:minecraft:b`
+- **WHEN** the script calls `look.blocks('minecraft:b')`
+- **THEN** it MUST NOT match, because only one leading `minecraft:` prefix is
+  removed from each side and nothing else is rewritten
+- **AND** matching MUST remain exact after that one strip, so
+  `look.blocks('iron')` MUST NOT match `minecraft:iron_ore`
+
+### Requirement: A Script Can Read Its Own Inventory Through The Lookup
+
+A script MUST be able to ask what the bot is carrying through
+`look.inventory()`, a **read-only** lookup beside `look.blocks`,
+`look.entities` and `look.age`. It MUST return the items in the snapshot's
+`state.inventory` as a deep copy, MUST NOT spend a host call, MUST NOT let the
+script mutate the snapshot by mutating what it receives, and MUST NOT offer any
+way to change the inventory — a script that wants to move items calls the
+existing `do` directives. The inventory the answer describes is the one the
+tick's snapshot carries, so it is as old as the snapshot and is reported
+alongside `look.age()`.
+
+This exists because a script could otherwise not tell whether it held the tool
+its work needs. The 2026-11-21 trial had a script written to shear sheep idle
+with no shears in inventory, and `look` offered no way to check.
+
+#### Scenario: The inventory is readable with no host call
+- **GIVEN** a snapshot whose `state.inventory` carries 12 `minecraft:iron_ore`
+- **WHEN** the script calls `look.inventory()`
+- **THEN** it returns `{ ok: true, items: [...] }` naming that stack
+- **AND** `hostCalls` for the tick is unchanged by the call
+
+#### Scenario: A script cannot change the snapshot through it
+- **GIVEN** a `look.inventory()` result
+- **WHEN** the script mutates the returned list or any item in it
+- **THEN** a second `look.inventory()` in the same tick MUST return the
+  unmodified inventory
+- **AND** the tick's own snapshot MUST be unchanged
+
+#### Scenario: The inventory is read-only
+- **GIVEN** the `look` object built for a tick
+- **WHEN** its properties are enumerated
+- **THEN** every one of them MUST be read-only, and `look.inventory` MUST be a
+  function returning data rather than anything that accepts a change
+
+#### Scenario: An empty inventory says so rather than failing
+- **GIVEN** a snapshot whose `state.inventory` is empty
+- **WHEN** the script calls `look.inventory()`
+- **THEN** it MUST return `{ ok: true, items: [] }`
+- **AND** it MUST NOT throw, so a script can test for a missing tool without a
+  guard
+
 ### Requirement: A Script's Result Reaches The Planner On Stated Triggers Only
 
 A script's result MUST be the value passed to `api.result(v)` — NOT its

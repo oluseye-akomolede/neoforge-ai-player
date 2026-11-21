@@ -61,10 +61,16 @@ call cost, no network). It answers the world as of THIS tick, not a live query:
 - `look.blocks(kind, options?)` → `{ok: true, kind: 'blocks', matches: [...]}`
 - `look.entities(type, options?)` → `{ok: true, kind: 'entities', matches: [...]}`
 - `look.age()` → `{ok: true, ageMs}`, how old the snapshot is
+- `look.inventory()` → `{ok: true, items: [...]}`, what the bot is carrying
+  right now (same snapshot). Read-only: it cannot change the inventory.
 - A failed query answers `{ok: false, reason, message}`.
-- `kind`/`type` match the entry's id or display name, case-insensitive. A block
-  entry has `{id, block, position}` — no block state, so you cannot ask for
-  "a red flower" that way.
+- `kind`/`type` match the entry's id or display name, case-insensitive, and a
+  leading `minecraft:` on either side is ignored, so `'iron_ore'` and
+  `'minecraft:iron_ore'` both work. A block entry has `{id, block, position}` —
+  no block state, so you cannot ask for "a red flower" that way.
+- Check `look.inventory()` before a task that needs a tool: shearing needs
+  shears, mining needs a pickaxe. If the tool is missing, say so or fetch it.
+  Do not start an action the bot has no tool for.
 - The snapshot covers blocks within 5 blocks and entities within 16. Asking
   for more answers `not-searched-that-far`, which is NOT the same as "none
   there". `options.radius` only narrows.

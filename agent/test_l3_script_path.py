@@ -1526,8 +1526,39 @@ class TestTheL3ScriptPromptShowsLookAndResult(unittest.TestCase):
         of the budget line, so moving it to 'free' reds this too."""
         p = self._rendered()
         for name in ("look.blocks(", "look.entities(", "look.age(",
-                     "api.result("):
+                     "look.inventory(", "api.result("):
             self.assertIn(name, p, name)
+
+    def test_the_l3_script_prompt_says_bare_and_namespaced_kinds_both_work(self):
+        """KILLS: a prompt that leaves a script guessing which id form the game
+        sends. The game emits 'minecraft:iron_ore' (BotPlayer builds it from
+        BuiltInRegistries.BLOCK.getKey(...).toString()) but the lookup accepts
+        either form, and the prompt has to say so."""
+        p = self._rendered()
+        self.assertIn("'iron_ore'", p, "the prompt names the bare form")
+        self.assertIn("'minecraft:iron_ore'", p, "the prompt names the namespaced form")
+        self.assertIn("leading `minecraft:`", p,
+                      "the prompt says the namespace is what is ignored")
+
+    def test_the_l3_script_prompt_tells_the_script_to_check_for_its_tool(self):
+        """KILLS: the prompt that never tells a script it can see its own
+        inventory. The 2026-11-21 sheep script had no way to notice it held no
+        shears, and idled."""
+        p = self._rendered()
+        self.assertIn("look.inventory()", p)
+        # The WHOLE guidance sentence, not its fragments: asserting "shearing
+        # needs" alone stayed green when the instruction was replaced by
+        # "Consider what the bot carries" -- the words were present but not the
+        # instruction under test.
+        self.assertIn(
+            "Check `look.inventory()` before a task that needs a tool: shearing "
+            "needs\n  shears, mining needs a pickaxe.", p,
+            "the prompt tells the script to check for its tool, not merely "
+            "mentions shears somewhere")
+        self.assertIn("If the tool is missing, say so or fetch it.", p,
+                      "the prompt says what to do when the tool is absent")
+        self.assertIn("cannot change the inventory", p,
+                      "the prompt says the lookup is read-only")
 
     def test_the_l3_script_prompt_states_the_same_facts_as_planner(self):
         """The two prompts share one string, so these facts cannot drift; this
