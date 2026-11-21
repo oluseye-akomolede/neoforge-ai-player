@@ -72,6 +72,16 @@ document work that preceded them, kept so the reasoning is not lost.
       real output, and `test_state_carries_the_contract_fields` pins the exact
       block key set, so a re-invented field reds instead of drifting. KILLS:
       giving a block a `type` key, or `distance` a float, reds it.
+- [x] 2.7 **The planner prompt documents `look`.** `agent/planner.py`'s script
+      section listed only the six `api.*` calls, so no planner-written script
+      could ever use lookups: a feature the prompt never names is one the model
+      never reaches for. The prompt now names `look.blocks(kind, options)`,
+      `look.entities(type, options)` and `look.age()`, with the return shape
+      copied from `src/look.js` at runner `bdaeeb7`, the real radii (blocks 5,
+      entities 16, `BotPlayer.java:619-620`), the "not searched that far"
+      answer, that the data is the tick's snapshot rather than a live query,
+      and that a lookup spends no host call. KILLS: dropping either call from
+      the prompt reds `test_the_prompt_documents_look_and_result`.
 
 ## 3. Results (c)
 
@@ -88,12 +98,15 @@ document work that preceded them, kept so the reasoning is not lost.
       `decode("utf-8", "ignore")` on the byte prefix: measured identical to a
       hand boundary walk over six paddings, so the simpler one ships.
 - [x] 3.3 The per-bot 4/hour cap and the per-bot 15-minute cooldown, as the
-      load-bearing guard on result-triggered calls. Pinned by a test that binds
-      10 **distinct** scripts back to back, each calling `api.result({done:
-      true})` once, and asserts exactly 4 deliveries — not 10 ticks of one
-      script, which a reported `done` makes impossible since it releases the
-      binding. The mutant keys the cooldown on the script instead of the bot
-      and must red it.
+      load-bearing guard on result-triggered calls. The cooldown is the binding
+      limit: at 900 s it holds the rate to four an hour, so the cap's scenario
+      is "four calls inside one hour refuse a fifth" and, measured, it is
+      reachable only if the cooldown shortens. Per-bot keying is pinned by two
+      real bots each getting a call inside the same 15 minutes (F-5); the
+      mutants key the cooldown on the script, and share one slot across
+      instances, and both must red it. (The earlier ten-distinct-scripts
+      scenario was dropped: the single slot collapses ten results to one, so it
+      proved neither the rate nor the keying.)
 - [x] 3.4 `_maybe_plan_on_result()` beside `_maybe_plan`: evaluated every pass,
       acts only when a result is pending for the bot's current goal, so a
       finished script reaches `call_plan` with no player message. Pinned by a
@@ -133,6 +146,16 @@ document work that preceded them, kept so the reasoning is not lost.
       The rest of 3.9 is done and live: `replace` keeps the existing
       `goal_id`, the planner never mints one, and `_new_goal_id` stays
       player-message only, pinned by tests.
+- [x] 3.10 **The planner prompt documents `api.result(v)`.** Without it the
+      model has no way to know a script can report anything, so step c is
+      unreachable from a planner-written script. The prompt now gives the
+      signature and the `{ ok: true }` return copied from `src/binding.js` at
+      runner `bdaeeb7`, that the value reaches the planner when the script ends
+      (`done`, error, `escalate`), that the last call in a tick wins, that it is
+      cut at 2 KiB with a truncation marker, that the top-level return value is
+      discarded, and that it costs one of the 8 host calls (it calls `accept()`;
+      `look` does not). KILLS: dropping it from the prompt, or leaving it out
+      of the 8-call count, reds `test_the_prompt_documents_look_and_result`.
 
 ## 4. Trials on test (run by the lead)
 

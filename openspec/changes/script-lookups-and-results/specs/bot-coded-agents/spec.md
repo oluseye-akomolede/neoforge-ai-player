@@ -10,8 +10,9 @@ NOT spend a host call, reach the network, or reach the mod.
 
 #### Scenario: A lookup answers from the snapshot
 - **GIVEN** a tick whose snapshot carries `nearby.mobs` including a sheep
-- **WHEN** the script calls `look.nearest({ kind: 'mob', type: 'sheep' })`
-- **THEN** it returns the nearest sheep with its distance
+- **WHEN** the script calls `look.entities('sheep')`
+- **THEN** it returns `{ ok: true, kind: 'entities', matches: [...] }` with each
+  sheep's `distance`
 - **AND** `hostCalls` for the tick is unchanged by the call
 
 #### Scenario: A lookup beyond the snapshot says so
@@ -200,3 +201,60 @@ tick its goal id, not a promise about this ship.
 - **GIVEN** a script that calls `api.log` and `api.do` and returns nothing
 - **WHEN** the tick completes
 - **THEN** no result MUST be delivered
+
+### Requirement: The Planner Prompt Documents The Whole Script Surface
+
+A feature the planner cannot see is a feature no planner-written script can
+use. The planner prompt's script section (the text the LLM is given when it may
+answer with a program instead of steps) MUST document every call a script can
+make, in the shape the runner actually binds: the six `api.*` host calls, the
+`look` global, and `api.result(v)`. It MUST state each one's signature, what it
+returns, and when to reach for it. It MUST NOT describe a call that the runner
+does not bind, because a prompt that offers one teaches the model to write
+scripts that throw.
+
+The section is paid for on every planner call, so it MUST stay short: a line
+or two per call, not a copy of the runner's source.
+
+#### Scenario: The rendered prompt names every call, with its shape
+- **GIVEN** a planner prompt rendered for a goal
+- **WHEN** a script is offered as an answer
+- **THEN** the prompt MUST name `look.blocks(kind, options)`,
+  `look.entities(type, options)` and `look.age()` with the arguments and the
+  return shape the runner binds (`{ ok, matches }`, or `{ ok: false, reason }`)
+- **AND** it MUST name `api.result(v)` with what it returns (`{ ok: true }` or a
+  rejection)
+- **AND** a prompt that no longer names either call MUST fail this scenario
+
+#### Scenario: The prompt states the snapshot's radius limits
+- **GIVEN** the planner prompt's `look` description
+- **WHEN** it states how far a script can see
+- **THEN** it MUST give the real radii, blocks 5 and entities 16
+- **AND** it MUST say that a query beyond them answers "not searched that far"
+  rather than an empty list
+- **AND** it MUST say the answers describe the tick's snapshot, not a live
+  query
+
+#### Scenario: The prompt states the result's journey
+- **GIVEN** the planner prompt's `api.result` description
+- **WHEN** it states what happens to a reported value
+- **THEN** it MUST say the value reaches the planner when the script ends
+  (`done`, an error, or `escalate`)
+- **AND** it MUST say the last call in a tick wins
+- **AND** it MUST say the value is cut at 2 KiB with a truncation marker
+- **AND** it MUST say the script's top-level return value is discarded and is
+  not the result
+
+#### Scenario: The prompt counts only the calls that are host calls
+- **GIVEN** the prompt's line about the per-tick host-call budget
+- **WHEN** it says which calls spend it
+- **THEN** `api.result` MUST be counted among the eight
+- **AND** `look` MUST NOT be counted, because it answers from data already in
+  hand
+
+#### Scenario: The prompt says when to use them
+- **GIVEN** the planner prompt's `look` description
+- **WHEN** it tells the planner when to choose a lookup
+- **THEN** it MUST say to look before acting on a block the bot has to be near
+- **AND** the `api.result` description MUST say to report what a goal found, or
+  why it stopped

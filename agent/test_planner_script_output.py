@@ -90,5 +90,92 @@ class ScriptOutputTest(unittest.TestCase):
                          "decompose must not open any file, for write or read")
 
 
+def _rendered_prompt():
+    """The prompt EXACTLY as the model receives it.
+
+    Rendered through `.format` the way `decompose` renders it, not read off
+    the raw constant: the section uses doubled braces, so a broken literal
+    would still contain the words while reaching the model malformed or
+    raising at call time.
+    """
+    return planner.PLANNER_PROMPT.format(
+        memory_section="", transmute_section="", inventory_section="")
+
+
+class PlannerPromptDocumentsPtcTest(unittest.TestCase):
+    def test_the_prompt_documents_look_and_result(self):
+        # KILLS: the shipped gap -- the script section listed only the six
+        # api.* calls, so no planner-written script could use lookups (b) or
+        # report a result (c). A prompt that does not name a call is a call
+        # the model never writes.
+        prompt = _rendered_prompt()
+
+        for needed in ("look.blocks(", "look.entities(", "look.age()",
+                       "api.result("):
+            self.assertIn(needed, prompt,
+                          f"the planner prompt must name {needed}")
+
+    def test_the_prompt_states_look_is_free_and_result_is_not(self):
+        # KILLS: listing the calls without the budget rule, which would have a
+        # script hoard lookups it does not pay for and spend result calls it
+        # does. api.result calls accept(); look answers from the snapshot.
+        prompt = _rendered_prompt()
+        budget = prompt[prompt.index("At most 8 host calls"):][:400]
+        charged, _, free = budget.partition(" each count")
+        self.assertTrue(free, "the budget line must say which calls count")
+
+        # Each call is asserted on the side of the divide it belongs to. A
+        # bare `assertIn` cannot do this: a mutant that moves api.result into
+        # the free list leaves the word present and the test green.
+        self.assertIn("api.result", charged,
+                      "api.result costs one of the 8 host calls")
+        self.assertNotIn("look", charged,
+                         "look is not a host call and must not be charged")
+        self.assertIn("look", free, "look must be stated as free")
+        self.assertIn("free", free.lower())
+
+    def test_the_prompt_states_the_real_radii_and_the_not_searched_answer(self):
+        # KILLS: a prompt that offers lookups without their reach, so the
+        # model reads an empty answer as "nothing there" instead of "I did not
+        # look that far" -- and writing an invented radius here.
+        prompt = _rendered_prompt()
+
+        self.assertIn("5 blocks", prompt)
+        self.assertIn("16", prompt)
+        self.assertIn("not-searched-that-far", prompt)
+
+    def test_the_prompt_states_the_result_journey(self):
+        # KILLS: naming api.result without saying when it arrives, that the
+        # last call wins, the cap, or that the return value is discarded --
+        # the three facts a script author would otherwise get wrong.
+        prompt = _rendered_prompt()
+
+        self.assertIn("discarded", prompt,
+                      "the top-level return value is not the result")
+        self.assertIn("LAST call", prompt)
+        self.assertIn("2 KiB", prompt)
+        self.assertIn("escalate", prompt)
+
+
+class PlannerPromptRendersTest(unittest.TestCase):
+    def test_the_real_prompt_renders_and_reaches_the_model(self):
+        # KILLS: a brace typo in the new section -- `.format` would raise, or
+        # silently mangle the text. Asserts the model's own request body has
+        # the calls, so this covers the rendered path, not the constant.
+        sent = {}
+
+        def capture(url, json=None, **kw):
+            sent["prompt"] = json["messages"][0]["content"]
+            return _FakeResponse(_ollama_body('{"steps": ["walk"]}'))
+
+        with patch.object(planner.requests, "post", side_effect=capture), \
+                patch.object(planner, "openai_brain") as fake_l4:
+            fake_l4.is_available.return_value = False
+            planner.decompose("test-model", "chop a tree")
+
+        self.assertIn("look.blocks(", sent["prompt"])
+        self.assertIn("api.result(", sent["prompt"])
+
+
 if __name__ == "__main__":
     unittest.main()
