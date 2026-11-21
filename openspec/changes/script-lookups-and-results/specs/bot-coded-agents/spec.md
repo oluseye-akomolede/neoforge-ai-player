@@ -216,6 +216,16 @@ scripts that throw.
 The section is paid for on every planner call, so it MUST stay short: a line
 or two per call, not a copy of the runner's source.
 
+There are two prompts that can produce a script: the legacy planner's script
+section (`planner.PLANNER_PROMPT`) and the L3 script prompt
+(`l3_planner._SCRIPT_SYSTEM_PROMPT`), which is the one the live path uses when
+`USE_L3_PLAN_LAYER` is on. BOTH MUST carry the same facts. Fixing one and
+leaving the other stale is the failure this requirement exists to prevent: the
+L3 prompt told the model "this is the whole surface" and named only the six
+original calls, so a bot on the live path could not see `look` or `api.result`
+at all (seen live 2026-11-21). The two MUST share one text so they cannot drift
+apart.
+
 #### Scenario: The rendered prompt names every call, with its shape
 - **GIVEN** a planner prompt rendered for a goal
 - **WHEN** a script is offered as an answer
@@ -251,6 +261,22 @@ or two per call, not a copy of the runner's source.
 - **THEN** `api.result` MUST be counted among the eight
 - **AND** `look` MUST NOT be counted, because it answers from data already in
   hand
+
+#### Scenario: The L3 script prompt carries the same surface
+- **GIVEN** the L3 script prompt rendered for a goal, as `call_script` renders
+  it
+- **WHEN** the model is asked for a script on the live path
+- **THEN** the rendered prompt MUST name `look.blocks(`, `look.entities(`,
+  `look.age(` and `api.result(`
+- **AND** it MUST carry the same facts as the planner prompt: blocks 5 and
+  entities 16, a beyond-range query answering "not searched that far", the
+  snapshot not being live, `look` free and `api.result` one of the eight host
+  calls, delivery on done/error/escalate, the last call winning, the 2 KiB cut,
+  and the top-level return value not being the result
+- **AND** it MUST NOT tell the model to report by returning an array of
+  actions, because the runner discards a script's return value
+- **AND** dropping either prompt's copy of the surface, or letting the two
+  diverge, MUST fail this scenario
 
 #### Scenario: The prompt says when to use them
 - **GIVEN** the planner prompt's `look` description

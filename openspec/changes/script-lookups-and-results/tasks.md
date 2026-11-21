@@ -72,7 +72,7 @@ document work that preceded them, kept so the reasoning is not lost.
       real output, and `test_state_carries_the_contract_fields` pins the exact
       block key set, so a re-invented field reds instead of drifting. KILLS:
       giving a block a `type` key, or `distance` a float, reds it.
-- [x] 2.7 **The planner prompt documents `look`.** `agent/planner.py`'s script
+- [x] 2.7 **Both script prompts document `look`.** `agent/planner.py`'s script
       section listed only the six `api.*` calls, so no planner-written script
       could ever use lookups: a feature the prompt never names is one the model
       never reaches for. The prompt now names `look.blocks(kind, options)`,
@@ -146,7 +146,7 @@ document work that preceded them, kept so the reasoning is not lost.
       The rest of 3.9 is done and live: `replace` keeps the existing
       `goal_id`, the planner never mints one, and `_new_goal_id` stays
       player-message only, pinned by tests.
-- [x] 3.10 **The planner prompt documents `api.result(v)`.** Without it the
+- [x] 3.10 **Both script prompts document `api.result(v)`.** Without it the
       model has no way to know a script can report anything, so step c is
       unreachable from a planner-written script. The prompt now gives the
       signature and the `{ ok: true }` return copied from `src/binding.js` at
@@ -156,6 +156,19 @@ document work that preceded them, kept so the reasoning is not lost.
       discarded, and that it costs one of the 8 host calls (it calls `accept()`;
       `look` does not). KILLS: dropping it from the prompt, or leaving it out
       of the 8-call count, reds `test_the_prompt_documents_look_and_result`.
+- [x] 3.11 **The L3 script prompt carries the same surface.** The live path
+      (`USE_L3_PLAN_LAYER` on) writes scripts from
+      `l3_planner._SCRIPT_SYSTEM_PROMPT`, which still said "this is the whole
+      surface" and listed only the six original calls, so `look` and
+      `api.result` were invisible where bots actually run (seen 19:21Z on agent
+      `566f64f9`). Rather than a second copy, the script section is now one
+      constant, `planner.SCRIPT_SURFACE`, imported by `l3_planner`, so the two
+      prompts cannot drift. The L3 prompt's "Return an array of actions" line
+      was false at `worker.js:147` (the return value is discarded) and is
+      replaced by the `api.result` guidance. KILLS: moving a call to the free
+      side, dropping it from the charged list, changing a radius, or
+      restoring the return-an-array line each red
+      `TestTheL3ScriptPromptShowsLookAndResult`.
 
 ## 4. Trials on test (run by the lead)
 
