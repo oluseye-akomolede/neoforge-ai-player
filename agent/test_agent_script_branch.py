@@ -370,6 +370,62 @@ class AllRefusedYieldsTest(unittest.TestCase):
         self.assertEqual(self.a._plan_steps, ["mine something"],
                          "a partly-working tick must not clear the plan")
 
+    def test_an_idle_script_yields_its_goal_at_the_bound(self):
+        # Trial 4.2 retry (TEST, 2026-11-22 04:28Z): Forge's script waited on a
+        # completion it could never read, dispatched nothing, and the bot idled
+        # until a human restarted the agent -- with the goal still unfinished.
+        # A bound script that dispatches nothing this many ticks in a row must
+        # hand the goal back, not respin the same impossible wait.
+        self._idle_tick()
+        bound = self.agent_mod.SCRIPT_IDLE_MAX
+        for _ in range(bound - 1):
+            self.a._run_script_tick()
+        self.assertEqual(
+            self.a._run_orchestrator.call_count, 0,
+            "the goal must not be yielded before the bound")
+        self.a._run_script_tick()
+        self.assertEqual(
+            self.a._run_orchestrator.call_count, 1,
+            f"an idle script must yield at SCRIPT_IDLE_MAX={bound} ticks")
+        args, kwargs = self.a._run_orchestrator.call_args
+        self.assertEqual(args[0], "keep mining",
+                         "the re-plan must carry the goal's text")
+        self.assertEqual(kwargs.get("goal_id"), "g-1")
+
+    def test_a_dispatching_tick_resets_the_idle_run(self):
+        # The bound counts CONSECUTIVE idle ticks. A script that acts every few
+        # ticks -- the normal shape for one polling a long walk -- is not a hung
+        # wait, and must never be yielded for it.
+        self._idle_tick()
+        bound = self.agent_mod.SCRIPT_IDLE_MAX
+        for _ in range(bound - 1):
+            self.a._run_script_tick()
+        # One dispatching tick, then the run starts over.
+        self._with_tick((True, [{"kind": "STORE_ALL"}], [{"seq": 1}], "ok"))
+        self.a._l3_orchestrator_dispatch = mock.Mock(
+            return_value="COMPLETED STORE_ALL {'stored': 1}")
+        self.a._run_script_tick()
+        self._idle_tick()
+        for _ in range(bound - 1):
+            self.a._run_script_tick()
+        self.assertEqual(
+            self.a._run_orchestrator.call_count, 0,
+            "a single dispatch must reset the idle run, not accumulate across it")
+
+    def test_the_idle_yield_names_the_bound_and_the_goal(self):
+        self._idle_tick()
+        with mock.patch("builtins.print") as p:
+            for _ in range(self.agent_mod.SCRIPT_IDLE_MAX):
+                self.a._run_script_tick()
+        printed = " ".join(str(c.args[0]) for c in p.call_args_list if c.args)
+        self.assertIn("idle", printed)
+        self.assertIn(str(self.agent_mod.SCRIPT_IDLE_MAX), printed,
+                      "the log must name the bound that fired")
+
+    def _idle_tick(self):
+        """A tick where the script ran, handled it, and proposed no actions."""
+        self._with_tick((True, [], [], "ok"))
+
     def test_a_hand_written_binding_is_never_unbound_by_a_refusal(self):
         # A hand-written script comes from bindings.json, not _planner_script.
         # Unbinding a human's deployment because one tick refused everything

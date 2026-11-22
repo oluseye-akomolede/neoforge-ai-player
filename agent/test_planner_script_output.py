@@ -146,6 +146,26 @@ class PlannerPromptDocumentsPtcTest(unittest.TestCase):
                           f"SCRIPT_SURFACE must name {field}, which look.task() "
                           f"returns to a script")
 
+    def test_the_prompt_forbids_the_nested_directive_field(self):
+        # KILLS (trial 4.2 retry, 2026-11-22): Forge's script waited on
+        # `task.directive === 'GOTO'`. There is no nested `directive` key -- the
+        # fields are top-level -- so that read `undefined` and the wait could
+        # never end. The old prompt invited it by writing "answers `directive:
+        # null`". A prompt that names the nested field again fails here.
+        surface = planner.SCRIPT_SURFACE
+        self.assertNotIn("answers `directive: null`", surface,
+                         "this wording invented the `directive` key scripts read")
+        self.assertIn("never `task.directive`", surface,
+                      "the prompt must warn against the field, not only omit it")
+
+    def test_the_prompt_says_a_finished_directive_stays_readable(self):
+        # KILLS: the retention is the whole reason a wait can end. A prompt that
+        # does not say so invites a script to believe the completion is only
+        # visible on one tick and re-issue instead of polling to a terminal
+        # status.
+        surface = planner.SCRIPT_SURFACE
+        self.assertIn("FINISHED directive keeps being reported", surface)
+
     def test_the_prompt_says_do_ok_is_acceptance_not_completion(self):
         # KILLS: the whole reason F-1 went unnoticed -- `{ok: true, seq}` reads
         # like success. A prompt that omits this leaves a script believing

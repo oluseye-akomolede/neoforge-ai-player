@@ -92,8 +92,14 @@ call cost, no network). It answers the world as of THIS tick, not a live query:
   actually stopped), and `adjusted_from`/`adjusted_to` when the target was
   lifted. `result` is `{}` before anything is reported, so
   `result.arrived_at` is `undefined` rather than an error; `failure_reason` is
-  where a failure explains itself (e.g. `target_enclosed`). With no directive
-  running it answers `directive: null`, `result: {}`, `status: null`.
+  where a failure explains itself (e.g. `target_enclosed`).
+  A FINISHED directive keeps being reported until you dispatch another one, so
+  a wait on `status === 'COMPLETED'` ends instead of polling forever.
+  Every field is a TOP-LEVEL field of what `look.task()` returns: read
+  `task.type` and `task.status`, never `task.directive` (no such field — there
+  is no nested `directive` object, and reading it gives `undefined`, so a wait
+  written on it never ends). With no directive yet it answers `ok: true` with
+  `id: null`, `type: null`, `status: null` and `result: {}`.
 - A failed query answers `{ok: false, reason, message}`.
 - `kind`/`type` match the entry's id or display name, case-insensitive, and a
   leading `minecraft:` on either side is ignored, so `'iron_ore'` and

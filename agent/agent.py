@@ -95,6 +95,17 @@ SCRIPT_REPLAN_MAX = 3
 # Unmeasured against live trials.
 SCRIPT_REPEAT_MAX = 5
 
+# Consecutive ticks a bound script may dispatch NOTHING while its goal is
+# unfinished before the goal is handed back to the planner. Trial 4.2 retry
+# (2026-11-22, TEST, bot Forge) idled until a human restarted the agent: the
+# script's wait condition could never become true, so it dispatched nothing on
+# every tick and the goal sat unfinished behind it. This is the complement of
+# SCRIPT_REPEAT_MAX -- that bounds a script that acts too much, this one a
+# script that acts not at all. Sized at 5 for the same reason: a script
+# legitimately waits a tick or two for an action it just sent to be reflected,
+# but a wait that outlives five consecutive ticks is not going to end.
+SCRIPT_IDLE_MAX = 5
+
 
 def _script_action_key(directive: dict) -> str:
     """A stable identity for one bound action, for the spin counter.
@@ -392,6 +403,9 @@ class BotRunner:
         # different action. Bound is SCRIPT_REPEAT_MAX.
         self._script_repeat_key = None
         self._script_repeat_count = 0
+        # Consecutive ticks the bound script dispatched nothing. Reset by any
+        # dispatch. Bound is SCRIPT_IDLE_MAX.
+        self._script_idle_run = 0
         self._terrain_tick = 0
         self._lock = threading.Lock()
         self._memory_file = os.path.join(
@@ -2739,19 +2753,22 @@ class BotRunner:
                 progress = brain_state.get("progress", {})
                 print(f"[{self.name}/L1] Directive COMPLETED: {progress.get('counters', {})}")
                 shared_state.push_event({"bot": self.name, "type": "directive_done", "status": "completed", "counters": progress.get("counters", {})})
-                try:
-                    api.cancel_directive(self.name, directive_id)
-                except Exception:
-                    pass
+                # Deliberately NO cancel_directive here. The directive is already
+                # terminal and BotBrain.activeDirective is null, so a cancel had
+                # nothing to cancel -- but it DID clear lastDirective/lastProgress
+                # (BotBrain.cancelDirective, BotBrain.java:62-64), destroying the
+                # record a script reads. A script polling look.task() for
+                # status == COMPLETED therefore never saw it and hung (trial 4.2
+                # retry on TEST, 2026-11-22 04:28Z). The mod retains the terminal
+                # directive on purpose; leave it for the scripts.
                 return {"success": True, "progress": progress}
             elif status in ("FAILED", "CANCELLED"):
                 reason = directive_info.get("failure_reason", status.lower())
                 print(f"[{self.name}/L1] Directive {status}: {reason}")
                 shared_state.push_event({"bot": self.name, "type": "directive_done", "status": status.lower(), "reason": reason[:100]})
-                try:
-                    api.cancel_directive(self.name, directive_id)
-                except Exception:
-                    pass
+                # No cancel here either -- same reason as COMPLETED above: the
+                # terminal record is what makes look.task() able to report this
+                # outcome to a script.
                 return {"success": False, "reason": reason}
 
             progress = brain_state.get("progress", {})
@@ -3310,6 +3327,26 @@ Respond with ONLY a JSON array. Example:
         self._script_idle_ticks = ticks
         print(f"[{self.name}/script] idle: no actions ({ticks} idle log point(s))")
 
+    def _note_script_idle_tick(self) -> bool:
+        """Count CONSECUTIVE ticks with no action; True at SCRIPT_IDLE_MAX.
+
+        Trial 4.2 retry (TEST, 2026-11-22 04:28Z): Forge's script waited on a
+        completion that had already happened but was unreadable, so it
+        dispatched nothing, every tick, until a human restarted the agent. The
+        goal was unfinished the whole time. A wait that can never end must not
+        be able to hold a bot.
+
+        Counted per TICK, unlike `_note_script_idle`'s log points, so the bound
+        is a real duration rather than a side effect of the log rate limit. Any
+        dispatch resets the run, so a script that acts intermittently -- the
+        normal shape for one polling a long walk -- is never idle for long
+        enough to trip it. Returns True when the bound is reached; the caller
+        yields the goal through the same path as the repeat guard.
+        """
+        ticks = getattr(self, "_script_idle_run", 0) + 1
+        self._script_idle_run = ticks
+        return ticks >= SCRIPT_IDLE_MAX
+
     def _run_script_tick(self):
         """Run one script-mode tick. Return True if the script handled it.
 
@@ -3401,6 +3438,16 @@ Respond with ONLY a JSON array. Example:
                 if _suppressed:
                     return True
                 self._note_script_idle()
+                # A wait that can never end must not hold the goal forever. The
+                # planner gets the tick either way (this returns False), but on
+                # its own that leaves the SAME bound script polling the same
+                # impossible condition next tick -- which is trial 4.2 retry.
+                # At the bound, yield the goal so it is unbound and re-planned
+                # instead of respinning the identical wait.
+                if self._note_script_idle_tick():
+                    self._yield_script_to_planner(
+                        f"idle: dispatched nothing for {SCRIPT_IDLE_MAX} "
+                        "consecutive ticks while its goal was unfinished")
                 return False
             # `actions` are BOUND actions: `{"kind": KIND, ...allowed args}`
             # (action_binding.py:82) -- not `{"directive": {...}}`. An earlier
@@ -3421,6 +3468,10 @@ Respond with ONLY a JSON array. Example:
             # raising, so it is also the honest place to learn whether anything
             # actually ran.
             print(f"[{self.name}/script] {len(actions)} action(s) this tick")
+            # Dispatching anything resets the idle run: the bound is consecutive
+            # idle ticks, and a script that acts at all is not the hung wait it
+            # exists to catch.
+            self._script_idle_run = 0
             # The runner's seq for each bound action, in the same order. It is
             # NOT inside the action dict: bind_action refuses unknown keys and
             # _l3_orchestrator_dispatch strips anything outside the mod call's
@@ -3750,6 +3801,7 @@ Respond with ONLY a JSON array. Example:
         self._plan_instruction = ""
         self._script_repeat_key = None
         self._script_repeat_count = 0
+        self._script_idle_run = 0
         print(
             f"[{self.name}/script] yielding goal ({why}); "
             + ("script unbound" if yielded else "no planner script to unbind"))

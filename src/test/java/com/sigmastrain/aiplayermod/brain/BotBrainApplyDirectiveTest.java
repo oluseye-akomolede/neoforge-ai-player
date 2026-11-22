@@ -59,6 +59,16 @@ class BotBrainApplyDirectiveTest {
                 "toMap() must still report the failed directive");
     }
 
+    // NOT ATTEMPTED HERE: that cancelDirective WIPES the retained directive.
+    // It does (BotBrain.java:62-64), and that is the mechanism behind trial
+    // 4.2 retry -- the agent cancelled a completion it had just read, erasing
+    // the record the script polls. But cancelDirective's first statement logs
+    // through bot.getPlayer() (BotBrain.java:52-55), so with the null bot this
+    // test can build it throws NPE before reaching the clear. Pinning it needs
+    // a live ServerPlayer, so it belongs to a game-test or the live trial. The
+    // AGENT half -- that no cancel is sent after a completion is read -- is
+    // covered server-free by agent/test_poll_directive_retention.py.
+
     // NOT TESTED HERE: that a later good directive still applies. The success
     // path of applyDirective logs through bot.getPlayer() (BotBrain.java:208),
     // which needs a live ServerPlayer, so it cannot be reached with a null bot

@@ -803,12 +803,12 @@ route to its outcome at all. That is review F-1 on `465b61e`: the GOTO emitted
 
 The lookup is `look.task()`, read from `state.task`. `state.task` IS the mod's
 whole `GET /bot/{name}/directive` body (`HttpApiServer.java:1338` answers it with
-`BotBrain.toMap()`, `BotBrain.java:212-229`), so it carries the directive
+`BotBrain.toMap()`, `BotBrain.java:213-230`), so it carries the directive
 (`Directive.toMap()`) AND `progress` (`ProgressReport.toMap()`), and
 `progress.result` is where a behaviour's `putResult` fields land. Passing only
 the inner `directive` map here is what made `result` unreadable, and the
 envelope's `events` field is NOT the carrier: nothing populates it
-(`snapshot.py:125-146` defaults it to `[]` and no caller passes it).
+(`snapshot.py:150` defaults it to `[]` and no caller passes it).
 
 `look.task()` MUST return `{ok: true, id, type, status, result, phase,
 failure_reason}`:
@@ -819,8 +819,17 @@ failure_reason}`:
   not `undefined`, when the directive has reported nothing, so reading
   `result.arrived_at` is `undefined` rather than a throw.
 - With no snapshot the answer is `{ok: false, reason: "no-snapshot"}`; with no
-  directive it is `{ok: true, directive: null, result: {}, status: null}`. These
-  are different facts and MUST NOT be reported as each other.
+  directive it is `{ok: true, id: null, type: null, status: null, result: {},
+  phase: null, failure_reason: null}` -- the SAME key set as the populated
+  branch, with every value null or empty. These are different facts and MUST
+  NOT be reported as each other (no-snapshot is `ok: false`).
+- `look.task()` MUST NOT nest a `directive` key on either branch. The idle
+  branch used to emit `{directive: null, ...}` while the populated branch
+  emitted the directive's fields at the top level, so a script written against
+  `task.directive` saw a running directive as `undefined` and an idle bot as
+  an object -- the reading was inverted, and trial 4.2's retry hung on it
+  (Forge waited for `task.directive === "GOTO"` forever while its GOTO ran).
+  The kind is `task.type`; the completion is `task.status`.
 
 `SCRIPT_SURFACE` MUST document `look.task()`, naming `result` and the fields a
 completed action puts there. It MUST NOT tell a script to write an arrival check
@@ -844,7 +853,64 @@ against a field no lookup returns.
 #### Scenario: An idle bot reports no directive, not a missing snapshot
 - **GIVEN** a snapshot whose `state.task` is `null`
 - **WHEN** a script calls `look.task()`
-- **THEN** it MUST return `ok: true` with `directive: null` and `result: {}`
+- **THEN** it MUST return `ok: true` with `id`, `type`, `status`, `phase` and
+  `failure_reason` all `null` and `result` an empty object -- the same key set
+  a populated answer has, so one wait condition works against both
+
+### Requirement: A Finished Directive Stays Readable Until The Next One
+
+`look.task()` MUST keep answering for a directive that has finished
+(`COMPLETED`, `FAILED` or `CANCELLED`), with its own `status` and `result`,
+until a different directive is dispatched. A script waits for its own work to
+finish; if the answer vanishes at the moment it becomes `COMPLETED`, the script
+can never observe the transition it is polling for.
+
+Trial 4.2 retried on TEST (2026-11-22 04:28Z) hung exactly this way: the script
+dispatched `GOTO (-139, -35, -151)`, the mod completed it, and every subsequent
+`look.task()` saw no directive, so the wait condition
+`type === 'GOTO' && status === 'COMPLETED'` was never once true and the bot
+idled until the agent was restarted.
+
+The mod ALREADY retains the terminal directive: `BotBrain.toMap()` answers from
+`lastDirective`/`lastProgress` once `activeDirective` is null
+(`BotBrain.java:222-225`), which `agent.py:2718` relies on -- that branch is
+the "Directive lost after connection errors" fallback, which is only safe
+because the mod answers from `lastDirective`. The retention was destroyed by
+the agent, not the mod: on seeing `COMPLETED` the L1 poller called
+`api.cancel_directive`, and `BotBrain.cancelDirective` clears all three
+retention fields (`BotBrain.java:62-64`). Those calls are REMOVED by this
+change, so the line numbers moved with them: the `COMPLETED` branch's now-gone
+cancel sat immediately before the `print(f"...Directive COMPLETED...")` at
+`agent.py:2754`, and the `FAILED`/`CANCELLED` branch is at `agent.py:2765`.
+The fix belongs where the damage was: a completion or failure that the agent
+has FINISHED observing MUST NOT be followed by a cancel that wipes the record
+the scripts read. Cancellation for a directive still running (stuck,
+interrupted, user requested) is unaffected and MUST keep clearing, because
+that directive has no terminal outcome to retain.
+
+This requirement is about OBSERVABILITY, not about the directive's life. The
+bot is idle either way; what changes is whether a script can see that its work
+ended and where.
+
+#### Scenario: A script sees its GOTO complete, then acts
+- **GIVEN** a script waiting on `type === 'GOTO' && status === 'COMPLETED'`
+- **WHEN** the GOTO's last tick returns SUCCESS
+- **THEN** on at least the next tick `look.task()` MUST report that directive
+  with `status` `COMPLETED`
+- **AND** it MUST keep reporting it until a different directive is dispatched
+
+#### Scenario: The retained record survives a full poll cycle
+- **GIVEN** a directive the agent has observed complete
+- **WHEN** the agent's poll loop finishes handling that completion
+- **THEN** a read of `GET /bot/{name}/directive` MUST still carry the directive
+  and its `progress.result`
+- **AND** this MUST be tested against the real post-completion body, not only
+  a hand-made fixture
+
+#### Scenario: A cancelled running directive is still cleared
+- **GIVEN** a directive cancelled while still ACTIVE (stuck, interrupted)
+- **WHEN** the cancel completes
+- **THEN** `look.task()` MUST NOT report that directive afterwards
 
 ### Requirement: GOTO Fails Rather Than Silently Relocating An Enclosed Target
 
@@ -884,7 +950,7 @@ half of this requirement; a script that cannot read it is the other half, and
 an arrival check written against an unreadable field is the re-issuing-forever
 shape of trial 4.3.
 
-A distance-teleport (`GotoBehavior.java:171`, beyond `TELEPORT_THRESHOLD`)
+A distance-teleport (`GotoBehavior.java:175`, beyond `TELEPORT_THRESHOLD`)
 MUST use the same bounded, reported target. It reads `targetY`, which `start`
 sets to the bounded lift result, so a far target can no longer be teleported to
 a lifted surface position.
