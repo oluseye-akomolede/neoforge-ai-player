@@ -593,7 +593,7 @@ def call_plan(model: str, bot_name: str, task: str,
         )
         raise PlanClarification(str(data["kind"]), reason)
     try:
-        validate_plan_dict(data)
+        validate_plan_dict(data, goal=task)
     except PlanValidationError as e:
         trajectory_log.log_call(
             phase="plan", bot=bot_name, model=model,

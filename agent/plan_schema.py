@@ -121,17 +121,30 @@ def _signals_a_script(d: dict) -> bool:
     return isinstance(script, str) and bool(script.strip())
 
 
-def validate_plan_dict(d: Any) -> None:
+def validate_plan_dict(d: Any, goal: str | None = None) -> None:
     if not isinstance(d, dict):
         raise PlanValidationError("plan must be a JSON object")
+    # A script reply need not echo the goal back as `task`. The model omits it
+    # sometimes, and prod Mystic (2026-11-22 12:55-13:00Z, try 1) failed a
+    # complete plan on "plan missing required field: task". The goal text is
+    # already known to the caller, so it is filled in rather than demanded
+    # twice. A step-list reply keeps the full contract: there, `task` is the
+    # ordinary case and a missing one is a real model error.
+    #
+    # `d` is mutated, not copied: the caller reads `data["task"]` when it
+    # builds the Plan (l3_planner.py:614), so a fill that only satisfied this
+    # function would validate and then KeyError one line later.
+    script_plan = _signals_a_script(d)
     if "task" not in d:
-        raise PlanValidationError("plan missing required field: task")
+        if script_plan and goal:
+            d["task"] = goal
+        else:
+            raise PlanValidationError("plan missing required field: task")
     # Subtasks are required only for a STEP LIST. A reply that signals a script
     # may legitimately carry none, and rejecting it failed a goal that never
     # needed steps at all. A reply that signals NO script keeps the full
     # contract: a steppable goal with no steps is a broken plan, and accepting
     # it would dispatch nothing while looking successful.
-    script_plan = _signals_a_script(d)
     if "subtasks" not in d:
         if script_plan:
             return

@@ -256,9 +256,9 @@ class TestAScriptPlanNeedsNoSteps(unittest.TestCase):
     validator must accept the shape the prompt asks for.
     """
 
-    def _validate(self, d):
+    def _validate(self, d, goal=None):
         import plan_schema
-        plan_schema.validate_plan_dict(d)
+        plan_schema.validate_plan_dict(d, goal=goal)
 
     def test_a_script_plan_with_no_subtasks_is_accepted(self):
         # KILLS: treating `subtasks` as required for every plan, which failed
@@ -293,6 +293,46 @@ class TestAScriptPlanNeedsNoSteps(unittest.TestCase):
         with self.assertRaises(plan_schema.PlanValidationError):
             self._validate({"task": "tell me when it gets dark",
                             "wants_script": True, "subtasks": "three dirt"})
+
+    # ── A missing `task` echo on a script reply ───────────────────────────
+    #
+    # Prod Mystic 2026-11-22 try 1: "planning failed: plan missing required
+    # field: task" -- the model omitted the goal echo on an otherwise complete
+    # script reply. The goal text is known to the caller, so it is filled.
+
+    def test_a_script_reply_with_no_task_is_filled_from_the_goal(self):
+        # Asserts the FILL, not just that validation passed: the caller builds
+        # the Plan from data["task"] (l3_planner.py:614), so a validator that
+        # accepted a taskless dict without filling it would validate and then
+        # KeyError on the next line.
+        d = {"wants_script": True}
+        self._validate(d, goal="tell me when it gets dark")
+        self.assertEqual(d["task"], "tell me when it gets dark")
+
+    def test_a_step_list_reply_with_no_task_is_still_rejected(self):
+        # The direction that must NOT change. A step plan that also omits its
+        # own name is a broken reply, and filling it in would let a malformed
+        # plan through on the script branch's excuse.
+        import plan_schema
+        with self.assertRaises(plan_schema.PlanValidationError):
+            self._validate({"subtasks": [{"id": 1, "description": "d",
+                                          "criteria": "c"}]},
+                           goal="gather three dirt")
+
+    def test_a_script_reply_with_no_task_and_no_goal_is_still_rejected(self):
+        # No goal to fill from means the field is genuinely absent and cannot
+        # be invented. Accepting it here would store a Plan whose task is None.
+        import plan_schema
+        with self.assertRaises(plan_schema.PlanValidationError):
+            self._validate({"wants_script": True})
+
+    def test_a_script_reply_keeps_its_own_task_when_it_has_one(self):
+        # The fill must not overwrite a task the model DID provide. A blanket
+        # `d["task"] = goal` would discard the model's own (often more
+        # specific) wording.
+        d = {"task": "watch the sky until dark", "wants_script": True}
+        self._validate(d, goal="tell me when it gets dark")
+        self.assertEqual(d["task"], "watch the sky until dark")
 
 
 if __name__ == "__main__":
