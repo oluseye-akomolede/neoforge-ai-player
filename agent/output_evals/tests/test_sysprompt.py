@@ -351,3 +351,49 @@ class TheJobRebuildsFromItsOwnCodeConfigMap(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIsNotNone(sent.call_args)
         self.assertGreater(len(sent.call_args[0][1]), 1000)
+
+
+class ScriptSectionRecovery(unittest.TestCase):
+    """The recorded prompt is the only record of whether a call offered scripts.
+
+    Returning "" for everything passes every fixture that was never offered a
+    section, so the positive direction needs its own fixtures: one carrying this
+    build's section (recovers verbatim) and one carrying another build's (a
+    real offer this build cannot read, which must not be scored as an absence).
+    """
+
+    def test_a_recorded_offer_recovers_the_section_verbatim(self):
+        recorded = (RECORDED_PLAN_PROMPT.format(bot="scout")
+                    + l3_planner._PLAN_SCRIPT_SECTION)
+        self.assertEqual(
+            sysprompt._script_section_from_prompt(l3_planner, recorded),
+            l3_planner._PLAN_SCRIPT_SECTION)
+
+    def test_a_recorded_absence_stays_empty(self):
+        recorded = RECORDED_PLAN_PROMPT.format(bot="scout")
+        self.assertEqual(
+            sysprompt._script_section_from_prompt(l3_planner, recorded), "")
+
+    def test_another_builds_section_is_unscorable_not_empty(self):
+        """An older rev's wording is still an offer; scoring "" would lie.
+
+        The heading survives a rewrite even when the body does not, so its
+        presence with unrecognised text means this build cannot rebuild what
+        the model saw. Empty would send the candidate a prompt without the
+        section and compare it to one that had it.
+        """
+        recorded = (RECORDED_PLAN_PROMPT.format(bot="scout")
+                    + sysprompt._SCRIPT_HEADING + ":\n"
+                    "- an older build worded this differently\n")
+        with self.assertRaises(sysprompt.Unscorable) as cm:
+            sysprompt._script_section_from_prompt(l3_planner, recorded)
+        self.assertIn("offered scripts", str(cm.exception))
+
+    def test_the_offer_reaches_the_rebuilt_prompt(self):
+        """End to end: a recorded offer is rebuilt WITH the section."""
+        recorded = (RECORDED_PLAN_PROMPT.format(bot="scout")
+                    + l3_planner._PLAN_SCRIPT_SECTION)
+        case = plan_case(prompt_system=recorded)
+        sysprompt.rebuild(case, l3_planner)
+        self.assertIn(norm(sysprompt._SCRIPT_HEADING),
+                      norm(case.prompt_system))

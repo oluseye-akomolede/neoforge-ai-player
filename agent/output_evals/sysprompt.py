@@ -147,6 +147,12 @@ _DIM_SECTION = re.compile(
     r"(Available dimensions[^\n]*\n)((?:[ \t]*-[^\n]*\n)+)")
 
 
+# The heading _PLAN_SCRIPT_SECTION opens with. A recorded prompt carrying this
+# heading WAS offered scripts, whatever the exact wording that rev used -- which
+# is what separates a real absence from a section this build cannot recognise.
+_SCRIPT_HEADING = "Choose between a STEP LIST and a SCRIPT"
+
+
 def _script_section_from_prompt(planner, text):
     """The script section the recorded plan prompt carried, or "" if it had none.
 
@@ -154,10 +160,22 @@ def _script_section_from_prompt(planner, text):
     rather than an unbuildable case: a bot not offered scripts was sent a plan
     prompt with this section deliberately blanked. So a record without it
     rebuilds to "" -- exactly what that call sent.
+
+    Presence and recognition are different questions, and folding them together
+    is the trap this function exists to avoid. If the heading is there but the
+    section text is not, the record was offered scripts by a build whose wording
+    this one does not hold: returning "" would rebuild a prompt the model never
+    saw and score the candidate against it. That case is unbuildable, not empty,
+    and says so.
     """
     section = getattr(planner, "_PLAN_SCRIPT_SECTION", "")
     if section and section in text:
         return section
+    if _SCRIPT_HEADING in text and section:
+        raise Unscorable(
+            "plan: the recorded prompt offered scripts, but its section text "
+            "does not match this build's _PLAN_SCRIPT_SECTION -- rebuilding "
+            "would measure against a prompt the model never saw")
     return ""
 
 

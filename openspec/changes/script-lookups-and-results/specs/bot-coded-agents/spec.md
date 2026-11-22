@@ -1378,3 +1378,36 @@ exactly as a stray `script` field is ignored rather than failed.
 - **WHEN** its plan prompt is rendered and the reply sets `wants_script`
 - **THEN** the prompt MUST teach `wants_script` and contain the surface
 - **AND** `call_plan` MUST make the second, script-writing call
+
+### Requirement: A Rebuilt Prompt Must Recover Whether Scripts Were Offered
+
+The eval harness rebuilds a recorded plan prompt to score a candidate against
+it, and the section is per bot, so the bot's name does not say whether the
+recorded call offered scripts. The recorded prompt is the only place that says.
+Recovery MUST therefore distinguish three cases rather than two: the section is
+present and matches this build (recovers verbatim); the section was never sent
+(rebuilds to empty, which is what that call sent); and the prompt carries the
+section heading but not this build's text, meaning another build offered scripts
+with wording this one does not hold.
+
+The third case MUST be reported unscorable, not rebuilt as empty. An empty
+section sends the candidate a prompt the model never saw and compares it to one
+that carried the surface -- a plausible substitution, which this harness treats
+as a lie everywhere else it can distinguish the cases.
+
+#### Scenario: A recorded offer is recovered verbatim
+- **GIVEN** a recorded plan prompt carrying this build's script section
+- **WHEN** the prompt is rebuilt
+- **THEN** the rebuilt prompt MUST contain that section unchanged
+
+#### Scenario: A recorded absence rebuilds to empty
+- **GIVEN** a recorded plan prompt with no script section
+- **WHEN** the prompt is rebuilt
+- **THEN** the rebuilt prompt MUST contain no script section
+
+#### Scenario: Another build's section makes the case unscorable
+- **GIVEN** a recorded plan prompt carrying the script heading with text this
+  build does not hold
+- **WHEN** the prompt is rebuilt
+- **THEN** the case MUST be reported unscorable rather than rebuilt as empty
+- **AND** the reason MUST say the recorded prompt offered scripts
