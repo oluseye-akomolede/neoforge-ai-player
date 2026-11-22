@@ -1182,6 +1182,60 @@ a lifted surface position.
 - **AND** it MUST NOT suggest that GOTO into a solid block is adjusted for the
   caller
 
+### Requirement: A Stop Or Reset Cancels The Work That Would Outlive It
+
+A stop and a reset MUST beat a re-plan that is already in flight, not only the
+one running when the player typed. Both terminal transitions MUST cancel work
+that was already on its way to re-binding the goal they ended, and a plan that
+completes after one of them MUST NOT bind a script or set a plan for the
+stopped goal.
+
+The failure this requirement exists to stop: on 2026-11-22 at 07:01:40Z a
+player sent `stop` while a script had yielded its goal and the agent was
+re-planning it. The log order was the abort, then the nav stop, and only then
+`[script] bound (planner, in memory) (0b62fe044f914f1b)` -- a script bound to a
+goal the player had just stopped. The stopped goal then re-planned again and
+bound a second one (`7df52ecc6ec16e7a`), and the loop continued until the
+re-plan bound stopped it. Those scripts dispatched nothing; a mining or
+walking script would have acted after the stop.
+
+`_cancel_orchestrator` alone cannot close this. It signals the orchestrator run
+that is executing NOW, and a re-plan started after the stop is a new run that
+never observes an event set before it began. The cancellation therefore MUST
+carry something that outlives a single run:
+
+- A stop and a reset MUST each advance a generation counter.
+- A re-plan or plan run MUST capture the generation it was started under and
+  MUST refuse to bind a script or set a plan once that generation is stale.
+- The yield re-plan MUST NOT start for a goal that was stopped or reset: the
+  check MUST be on the path that re-submits the goal, so a running
+  orchestrator that finishes after the stop cannot create it either.
+
+The refusal MUST be logged, naming the goal and the fact that a stop or reset
+superseded it, so a later log read can tell "nothing happened" from "something
+was correctly stopped".
+
+#### Scenario: A stop during an in-flight yield re-plan binds nothing
+- **GIVEN** a planner-authored script that yielded its goal G
+- **AND** a re-plan of G is running
+- **WHEN** the player sends exactly `stop`
+- **THEN** no script MUST bind afterwards for G
+- **AND** no further re-plan of G MUST start
+- **AND** the refusal MUST be logged with G's id
+
+#### Scenario: A reset during an in-flight yield re-plan binds nothing
+- **GIVEN** a planner-authored script that yielded its goal G
+- **AND** a re-plan of G is running
+- **WHEN** the bot is reset
+- **THEN** no script MUST bind afterwards for G
+- **AND** no further re-plan of G MUST start
+
+#### Scenario: A new goal after a stop is unaffected
+- **GIVEN** a stop superseded goal G while a re-plan of G was in flight
+- **WHEN** the player gives a new goal H
+- **THEN** H MUST be planned normally
+- **AND** H MUST be able to bind a planner script
+
 ### Requirement: A Planner Script Is Unbound When Its Work Ends Without Succeeding
 
 A planner-authored script MUST NOT outlive the work it was written for. Three

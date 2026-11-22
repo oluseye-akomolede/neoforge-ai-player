@@ -271,6 +271,32 @@ all five prod bots at once.
       flag-only, the pre-change behaviour -> 5 red. Restored, `MUTANT` count 0.
       Adjacent suites 137 OK.
 
+## 4b. A stop supersedes work already in flight (2026-11-22)
+
+- [x] 4b.1 Spec: "A Stop Or Reset Cancels The Work That Would Outlive It",
+      with three scenarios (stop, reset, new goal after a stop). Found live on
+      test at 07:01:40Z: a stop aborted the running orchestrator, then a yield
+      *re-plan* (a NEW thread, started after the stop) bound a planner script
+      to the stopped goal, twice.
+- [x] 4b.2 `_goal_generation`: stop and reset each advance it; nothing else
+      does. `_cancel_orchestrator` cannot close this -- it signals only the run
+      executing when the player typed.
+- [x] 4b.3 `_run_orchestrator` captures the generation it started under;
+      `_resubmit_yielded_goal` and `_bind_planner_script` refuse when it is
+      stale, each logging the goal id and the supersession.
+- [x] 4b.4 The stop/follow/goto distinction is load-bearing and now tested:
+      all four nav phrase tables moved to module scope with `is_stop_instruction`,
+      proven equal to the original inline expression on a 22-input corpus
+      (0 disagreements).
+- [x] 4b.5 `test_goal_generation_stop` (13 tests). Five mutants, each red on
+      the intended test: resubmit guard removed, bind guard removed, stop call
+      site removed, stop method body gutted, and the predicate (covered by the
+      corpus equivalence). Note: the first two attempts at the stop-advance
+      mutant SURVIVED -- the tests called `_supersede_goal` directly, so a stop
+      path that never advanced it stayed green. Fixed by extracting
+      `_note_stop_supersedes` and driving production's own method; both
+      mutants then went red.
+
 ## 5. Trials on test (run by the lead)
 
 - [ ] 5.1 Lookup within the snapshot: a sheep goal shears only when a sheep is
