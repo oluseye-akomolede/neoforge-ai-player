@@ -41,6 +41,17 @@ synchronously on the calling thread, so the bind can block for up to 2 s. `TICK_
 at a goal boundary, on the orchestrator thread. Acceptable: it replaces a path that
 discarded a whole goal on a cold sandbox.
 
+**The one-pass figure is conditional, and the coupling is unwritten** (raised by the
+builder after this review, verified here). `TICK_DELAY` is `float(os.getenv("TICK_DELAY",
+"2.0"))` — overridable. `DRY_TICK_TIMEOUT` is a flat `2.0`
+(`script_client.py:122`) and `bound = DRY_TICK_TIMEOUT if dry else SCRIPT_TIMEOUT`
+(`:263`) never consults `TICK_DELAY`. So the dry bound is under one loop pass **only while
+`TICK_DELAY >= 2.0`**; set `TICK_DELAY=1.0` and a cold bind blocks two passes. Latent, not
+live: no `TICK_DELAY` appears in any `deploy/` manifest (only `deploy/agent.env.example`
+carries the 2.0 line) and the live prod Deployment sets none — its only env beyond the
+thread vars is the four script entries. Deriving the constant was not done, correctly: it
+would be over-building for a variable nobody sets.
+
 ## 2. Task fill: scoped to script replies, filled from the caller's own goal
 
 `plan_schema.py`: `script_plan = _signals_a_script(d)`, then
