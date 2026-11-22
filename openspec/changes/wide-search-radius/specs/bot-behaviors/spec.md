@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Escalating Search
-Behaviors that search for blocks MUST use escalating search radii: 32 → 64 → 128 → 256 → 512 → 1024 blocks. When the caller supplies no radius, the search MUST stop at 512 blocks, which is the default maximum and the last shell an unconfigured search ever sweeps. A behavior MUST treat a caller-supplied radius as a maximum distance to search rather than as a starting shell: when the supplied radius is smaller than the first shell, the first shell MUST be clamped to it and the search MUST stop there rather than escalate past it.
+Behaviors that search for blocks MUST use escalating search radii: 32 → 64 → 128 → 256 → 512 → 1024 blocks. Default starting radius is 256. A behavior MUST treat a caller-supplied radius as a maximum distance to search rather than as a starting shell: when the supplied radius is smaller than the first shell, the first shell MUST be clamped to it and the search MUST stop there rather than escalate past it.
 
 #### Scenario: Search radius escalates on failure
 - GIVEN a MineBehavior searching for diamond_ore starting at radius 256
@@ -39,9 +39,7 @@ The behavior MUST report the radius it actually searched. A search stopped by a 
 - GIVEN a directive with no top-level radius and no `extra.radius`
 - WHEN the search starts
 - THEN the first shell radius is 32
-- AND escalation proceeds 32 → 64 → 128 → 256 → 512, stopping at 512
-- AND the radius 1024 shell is never reached, because the walk stops as soon as the clamped next radius does not grow
-- AND the whole search sweeps 25 + 81 + 289 + 1089 + 4225 = 5709 cells, the same total as before the change
+- AND escalation proceeds 32 -> 64 -> 128 -> 256 -> 512, with a default ceiling of 512
 
 #### Scenario: Failure reports the radius actually searched
 - GIVEN a search with a maximum radius of 4
