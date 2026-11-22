@@ -14,7 +14,8 @@ Spec only. No code, no build, no deploy until the lead approves this spec.
       only a parse check; (iii) a stated rule for script vs plain planner.
       Each is one ADDED requirement in `specs/bot-coded-agents/spec.md`.
 - [x] 1.3 Write the proposal, the delta and these tasks. No code.
-- [ ] 1.4 Validate: `openspec validate ai-written-scripts --strict`.
+- [x] 1.4 Validate: `openspec validate ai-written-scripts --strict`.
+      (rc=0, 2026-11-22, after the three PTC prod deltas below.)
 - [ ] 1.5 Reviewer pass on the delta. Findings are spec findings until the lead
       rules otherwise.
 
@@ -274,6 +275,20 @@ L3 path rather than limit the spec to the decompose paths.
 - [ ] 3.4 Implementation follows this spec: the planner's script output kind and
       prompt, the agent's dry-tick call, the rebind latch reset and the three
       conditions. Test-first, reviewed before any deploy to test.
+
+## 3b. PTC prod defects (2026-11-22 12:55-13:00Z, prod Mystic on aeab1dab)
+
+Three defects seen on a live prod goal. Spec first, then code, one commit each.
+
+- [x] 3b.1 The bind-time dry tick gets its own 2 s bound; the live tick keeps
+      0.3 s. Requirement "The Dry Tick's Time Bound Is Its Own And Is Longer
+      Than A Live Tick's". Code `2770f32`.
+- [x] 3b.2 A script reply with no `task` echo is filled from the goal instead
+      of rejected; a step-list reply keeps the full contract. Requirement "A
+      Script Reply Without A Task Echo Is Not A Rejected Plan". Code `6c9255b`.
+- [x] 3b.3 A refused script bind with no steps fails the goal and tells the
+      player; a refused bind that HAS steps still runs them. Requirement "A
+      Refused Script Bind With Nothing To Run Fails The Goal". Code `8017888`.
 
 ## 4. Known precondition, recorded not acted on
 
