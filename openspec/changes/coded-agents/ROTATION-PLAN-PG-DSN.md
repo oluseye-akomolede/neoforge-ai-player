@@ -427,11 +427,15 @@ for p in $pods; do
   #    whose except arm printed 0 and turned an unreadable surface into a hard fail).
   #    The query runs in the pod, but the verdict is decided HERE, from its exit status.
   #
-  #    Endpoint and shape are read from the code, not guessed:
-  #      agent/config.py:116        DASHBOARD_PORT defaults to 5000, and prod sets it to 5000
-  #      agent/dashboard/server.py  @app.get("/api/state") -> shared_state.snapshot()
-  #      agent/dashboard/state.py   snapshot() -> {"bots": {name: snapshot}, "server": {...}}
-  #      agent/agent.py:4576        each entry carries "status" (not "state")
+  #    Endpoint and shape are read from the code, not guessed. Each cite names the symbol,
+  #    because line numbers drift with the file: all of these are true at 3c8561d, where
+  #    agent/agent.py is 6204 lines and config.py holds DASHBOARD_* at 115-116.
+  #      agent/config.py:115-116     DASHBOARD_ENABLED (default true), DASHBOARD_PORT (default 5000).
+  #                                  Prod overrides PORT to 5000; verified read-only on the Secret.
+  #      agent/dashboard/server.py   get_state() at ~98: @app.get("/api/state") -> snapshot()
+  #      agent/dashboard/state.py    snapshot() at ~56: -> {"bots": {name: snapshot}, ...}
+  #      agent/dashboard/state.py    ~31: self._bots[name] = snapshot
+  #      agent/agent.py:4576         shared_state.push_bot_snapshot(self.name, {... "status": ...})
   #    /api/bots returns only NAMES, so it cannot answer a liveness count.
   out=$(kubectl -n $ns exec "$p" -- python3 -c '
 import json,sys,urllib.request
