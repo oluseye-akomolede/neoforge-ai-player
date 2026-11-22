@@ -877,6 +877,12 @@ resetting and climbing again is the same unbounded repeat in a quieter form.
 The log MUST NOT say a goal was unfinished unless one exists: the same
 predicate decides both, so they cannot disagree.
 
+The refusal MUST live in the yield itself, not only at the idle caller. The
+idle path returns before the counter, so it never reaches the yield; the SPIN
+caller does, and arrives goal-less for the same reasons. Guarding the callee
+covers all three callers with one predicate, so they cannot disagree about
+whether a goal exists.
+
 Second, a tick where the bot's own directive is still running is NOT idle. A
 script polling a 30-block `GOTO` dispatches nothing on every tick of the walk;
 counting those would yield the goal mid-walk, replacing the wait the script

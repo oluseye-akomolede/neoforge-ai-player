@@ -462,6 +462,35 @@ class AllRefusedYieldsTest(unittest.TestCase):
         self.assertNotIn("not yielding", printed,
                          "a goal-less bot must not reach the yield path at all")
 
+    def test_the_yield_refuses_a_goal_less_bot_at_its_own_seam(self):
+        # The idle path returns before the counter, so it never reaches
+        # `_yield_script_to_planner`. The SPIN caller does, and can arrive
+        # goal-less for the same reasons (a bindings.json script survives
+        # unbinding; `_script_hold` outlives the goal). The reviewer drove this
+        # at 7c92a43 as their own evidence rather than as coverage; this pins
+        # it (reviewer, 2026-11-22 04:56Z).
+        self.a._active_goal_id = ""
+        self.a._active_goal_text = ""
+        self.a._script_hold = None
+        self.a._plan_instruction = ""
+        self.a._plan_steps = ["mine something"]
+        self.a._script_idle_run = 3
+        with mock.patch("builtins.print") as p:
+            self.a._yield_script_to_planner("spin: repeated completed MINE")
+        self.assertEqual(self.a._run_orchestrator.call_count, 0,
+                         "a goal-less bot has nothing to hand back")
+        self.assertEqual(self.a._plan_steps, ["mine something"],
+                         "the refusal must not clear the live plan")
+        self.assertEqual(self.a._plan_step_idx, 0)
+        self.assertIsNotNone(self.a._planner_script,
+                             "the refusal must not unbind the script")
+        self.assertEqual(self.a._script_idle_run, 0,
+                         "the refusal must reset the idle run")
+        printed = " ".join(str(c.args[0]) for c in p.call_args_list if c.args)
+        self.assertIn("no active goal", printed)
+        self.assertNotIn("unfinished", printed,
+                         "a goal-less yield must not claim a goal was unfinished")
+
     def test_a_running_directive_is_not_idle(self):
         # A script polling a long GOTO dispatches nothing on every tick of the
         # walk. Counting those yields the goal mid-walk -- replacing the wait
