@@ -15,7 +15,7 @@
 ## 4. Tests
 - [x] 4.1 Small radius scans 1 cell, not the 25-cell sweep
 - [x] 4.2 `extra.radius` overrides the top-level field
-- [x] 4.3 No radius preserves the 25-cell first shell
+- [x] 4.3 No radius keeps the default maximum at 512 and the shells 32..512, 5709 cells total
 - [x] 4.4 Failure message states the searched radius, not 32
 - [x] 4.5 Each test red with the fix removed (mutant: 4 of 5 assertions red, incl. 4 blocks -> 25 cells)
 
