@@ -19,6 +19,8 @@ the `load_profile` citation and the stale retry constant.
 """
 from __future__ import annotations
 
+import math
+
 # Kinds `Agent._dispatch` handles agent-side, before any mod call.
 #
 # EQUIP and EQUIP_ALL both map to the mod's synchronous equip_all action.
@@ -103,15 +105,23 @@ _COORD_HINT = ("{kind} moves the bot to the position you give; without one it "
 def _missing_coords(kind, bound):
     """Name the first coordinate this kind lacks a number for, or None.
 
-    A coordinate must be sent as a number: `{"x": "16"}` is refused rather than
-    coerced, because the mod takes a double and a string there is a script bug
-    worth surfacing. `bool` is excluded even though Python counts it as int --
-    `true` is not a coordinate. A numeric 0 is valid and binds: the refusal is
-    about an absent coordinate, never one that happens to equal zero.
+    A coordinate must be sent as a finite number: `{"x": "16"}` is refused
+    rather than coerced, because the mod takes a double and a string there is a
+    script bug worth surfacing. `bool` is excluded even though Python counts it
+    as int -- `true` is not a coordinate. A numeric 0 is valid and binds: the
+    refusal is about an absent coordinate, never one that happens to equal zero.
+
+    Non-finite values are refused too. `json.loads` accepts the bare tokens
+    `NaN`, `Infinity` and `-Infinity` by default, so a model reply carrying one
+    parses to a float here; it is a real number to `isinstance` and binds, then
+    reaches the mod as a position it cannot use. Finiteness is part of "is a
+    coordinate", so it is checked where the other coordinate rules live.
     """
     for field in _REQUIRED_COORDS.get(kind, ()):
         value = bound.get(field)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return field
+        if not math.isfinite(value):
             return field
     return None
 
@@ -178,11 +188,13 @@ def bind_action(action):
         )
     bad_coord = _missing_coords(kind, bound)
     if bad_coord is not None:
-        sent = sorted(k for k in bound if k != "kind")
+        got = bound.get(bad_coord, "<not sent>")
+        # Say what arrived, not just which keys were present: a NaN or a string
+        # WAS sent, and "it was not sent" would send the author looking in the
+        # wrong place.
         raise RefusedAction(
-            f"action {kind} needs coordinate {bad_coord!r} as a number; it "
-            f"was not sent (got {sent}). "
-            + _COORD_HINT.format(kind=kind)
+            f"action {kind} needs coordinate {bad_coord!r} as a finite number; "
+            f"got {got!r}. " + _COORD_HINT.format(kind=kind)
         )
     return bound
 

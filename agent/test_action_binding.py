@@ -12,6 +12,7 @@ Loaded by path (no `agent` package import) so it runs without psycopg2/uvicorn.
 
 import ast
 import importlib.util
+import json
 import os
 import unittest
 
@@ -299,6 +300,31 @@ class RequiredCoordsTest(unittest.TestCase):
         for bad in ("16", True, None):
             with self.assertRaises(RefusedAction, msg=repr(bad)):
                 bind_action({"kind": "GOTO", "x": bad, "y": 64, "z": 0})
+
+    def test_a_non_finite_coordinate_is_refused(self):
+        # From the 7e72410 review. isinstance() calls all three of these
+        # numbers, so a type check alone binds them.
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            with self.assertRaises(RefusedAction, msg=repr(bad)):
+                bind_action({"kind": "GOTO", "x": bad, "y": 64, "z": 0})
+
+    def test_a_nan_from_a_model_reply_is_refused_at_ingress(self):
+        # Reachability, testable without a model: json.loads accepts the bare
+        # tokens NaN/Infinity, which is how a reply reaches bind_action. If
+        # this ever stops raising, the ingress parser gained a guard and the
+        # binding check became belt-and-braces rather than the only control.
+        parsed = json.loads('{"kind": "GOTO", "x": NaN, "y": 64, "z": 0}')
+        with self.assertRaises(RefusedAction):
+            bind_action(parsed)
+
+    def test_the_refusal_shows_the_bad_value_not_just_the_keys(self):
+        # A NaN WAS sent. "it was not sent" would be a false statement that
+        # sends the script's author looking for a missing key.
+        with self.assertRaises(RefusedAction) as ctx:
+            bind_action({"kind": "GOTO", "x": float("nan"), "y": 64, "z": 0})
+        self.assertIn("nan", str(ctx.exception))
+        self.assertIn("finite", str(ctx.exception))
+        self.assertNotIn("was not sent", str(ctx.exception))
 
     def test_build_is_not_in_the_coordinate_table(self):
         # BuildBehavior treats all-zero as "build here", so requiring coords
