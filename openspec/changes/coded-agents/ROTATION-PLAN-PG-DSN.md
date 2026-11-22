@@ -1,4 +1,10 @@
-# PG_DSN rotation — TEST (plan only)
+# PG_DSN rotation — SHARED STACK (plan only)
+
+> **This is not a TEST-only rotation.** Prod's database `botmemory` lives on the `pgvector`
+> Deployment in namespace `minecraft-test`: one server, one role `aibot`, one password. The
+> `ALTER ROLE` this plan describes moves prod's credential too. Option (A) is the plan;
+> prod's backup (§4), restart (§6b), pass check (§6e) and rollback (§8b) are all mandatory
+> parts of it, not follow-ups. Read §0.1 before reviewing any other section.
 
 **Status: PLAN ONLY. Nothing in this document has been executed.**
 No secret value was read to produce it; every number below is a *fingerprint*, a *length*,
@@ -6,6 +12,37 @@ a *key name*, or a *device name*. See "What this plan deliberately does not do".
 
 Row: `qitem-20261122072349-...` (PG_DSN rotation, TEST). Modelled on the MOD_API_KEY plan
 at `ad229b3` (`ROTATION-PLAN-MOD-API-KEY.md`), which is the shape the reviewer holds this to.
+
+### Evidence basis (read-only, 2026-11-22T08:56Z)
+
+The lead required every consumer of role `aibot` in **both** namespaces, found by grepping
+manifests and deployment env-var **names**, never values. The enumeration below was done by
+reading the live workload specs through `controlplane`, matching only on secret **names**:
+
+    kubectl -n <ns> get deploy,statefulset,cronjob -o json
+    # for each: containers[] and initContainers[] -> env[].valueFrom.secretKeyRef.name,
+    #           envFrom[].secretRef.name, and volumes[].secret.secretName
+
+matched against `agent-config`, `hive-credentials`, `pgvector-secret`. Result, verbatim:
+
+| namespace | workload | reference |
+|---|---|---|
+| minecraft-test | `deploy/aibot-agent-test` | `envFrom: secret/agent-config` |
+| minecraft-test | `deploy/hive-service` | `env PG_DSN <- secretKeyRef hive-credentials/PG_DSN` |
+| minecraft-test | `deploy/llm-gateway` | `env OPENAI_API_KEY`, `OPENAI_MODEL <- secret/agent-config` |
+| minecraft-test | `deploy/pgvector` | `envFrom: secret/pgvector-secret` (bootstrap, §0.2) |
+| **minecraft** | `deploy/aibot-agent` | `envFrom: secret/agent-config` (**prod**) |
+
+No CronJob (3 exist, all in `minecraft`) references any of the three secrets. No
+StatefulSet does. `llm-gateway` reaches `agent-config` but not the `PG_DSN` key — it is
+listed because it shares the secret object, and a `patch` of `agent-config` must not be
+mistaken for a DSN-only change.
+
+**Method note.** A first pass of this enumeration returned "no consumers". That was wrong
+and it was my query: `env` and `envFrom` live under `containers[]`, not at the pod-spec
+top level, so the traversal silently matched nothing. An empty result from a hand-built
+traversal is evidence about the traversal first. The table above comes from the corrected
+pass, which was spot-checked against `jsonpath` on a single deployment.
 
 ---
 
@@ -174,12 +211,29 @@ done
 REMOTE
 ```
 
-If option (A) is ruled, **also** copy the prod secret before writing it:
-`minecraft/agent-config → pgdsn-backup-agent-config-prod` (same shape). A prod write
-without an in-cluster backup is not permitted.
+Under (A), the prod secret is copied in the same step, into namespace **`minecraft`**:
+`minecraft/agent-config → minecraft/pgdsn-backup-agent-config-prod`. It is a required
+backup, not an optional one — §8b restores prod from exactly this object, and a prod write
+without an in-cluster backup is not permitted. Confirm the copy before writing anything:
+
+```bash
+ssh controlplane 'bash -s' <<'REMOTE'
+set -eu
+# Key NAMES and base64 lengths only -- .data is still base64, so this decodes nothing.
+for s in agent-config pgdsn-backup-agent-config-prod; do
+  kubectl -n minecraft get secret "$s" -o json | python3 -c '
+import json,sys
+o=json.load(sys.stdin)["data"]
+print(sys.argv[1], {k: len(v) for k, v in sorted(o.items())})
+' "$s"
+done
+REMOTE
+# expect: both lines carry PG_DSN at the SAME length.
+```
 
 Delete the `pgdsn-backup-*` copies at the end of the run once verification passes, and
-record the deletion on the queue row.
+record the deletion on the queue row. Delete them **only** after 6a–6e and, under (A),
+8b has been confirmed unnecessary — deleting them first removes the only rollback path.
 
 ---
 
@@ -262,9 +316,10 @@ for t in "minecraft-test aibot-agent-test" "minecraft-test hive-service"; do
 done
 ssh controlplane "kubectl -n minecraft-test rollout status deploy/aibot-agent-test --timeout=180s"
 ssh controlplane "kubectl -n minecraft-test rollout status deploy/hive-service --timeout=180s"
-# under (A) only:
-# ssh controlplane "kubectl -n minecraft rollout restart deploy/aibot-agent"
-# ssh controlplane "kubectl -n minecraft rollout status deploy/aibot-agent --timeout=180s"
+# PROD. This is section 6b of a SHARED-STACK rotation (option A): prod's DSN is stale
+# the instant ALTER ROLE runs, so this restart is unconditional, not optional.
+ssh controlplane "kubectl -n minecraft rollout restart deploy/aibot-agent" || { echo "ABORT: prod restart failed"; exit 1; }
+ssh controlplane "kubectl -n minecraft rollout status deploy/aibot-agent --timeout=180s"
 ```
 
 ### 6c. A stale or half-rotated consumer must 401, not half-work
@@ -299,12 +354,86 @@ REMOTE
 **Expect `1` for both.** Anything else (including no output) is a FAIL — an empty result
 is the empty-read trap again.
 
-**A second, independent check that the OLD password is now rejected**, from the backup
-copy, proves the rotation took rather than merely that *a* connection works. Expect
-`password authentication failed`.
+**A second, independent check that an OLD password is now rejected** proves the rotation
+took rather than merely that *a* connection works — and it must **not** use the value held
+in the backup. Reading the old password back out of the backup only re-uses the material
+the rotation exists to retire; it also means the check cannot run after the backup is
+deleted. Feed the server a deliberately wrong password instead:
 
-**Pass requires:** 6a three identical new fingerprints ≠ old; 6b all restarts complete;
-6c zero password-failure lines; 6d `1` from both DSNs and old password rejected.
+```bash
+ssh controlplane 'bash -s' <<'REMOTE'
+set -u
+# 32 hex chars that were never a credential for anyone. Not derived from any secret.
+WRONG=00000000000000000000000000000000
+for db in botmemory_test hivemind_test botmemory; do
+  out=$(kubectl -n minecraft-test exec -i deploy/pgvector -- \
+    env PGPASSWORD="$WRONG" psql -h 127.0.0.1 -U aibot -d "$db" -tAc 'select 1' 2>&1 | tail -1)
+  case "$out" in
+    *"password authentication failed"*) echo "$db -> rejected (ok)" ;;
+    *) echo "$db -> NOT rejected: $out" ;;
+  esac
+done
+REMOTE
+```
+
+**Expect `rejected (ok)` for all three databases.** Any other line — including `1`, which
+would mean the server accepted a wrong password, or an empty result — is a FAIL. This also
+covers prod's database `botmemory`, which is the same server and the same role.
+
+### 6e. PROD's own pass check — the prod agent connects and its bots come back
+
+**This is a shared-stack rotation, not a TEST-only one.** Prod's database `botmemory` lives
+on the `pgvector` Deployment in namespace `minecraft-test` — the same server, the same role
+`aibot`, the same password. There is no prod-side database host to fall back on: rotating
+`aibot` rotates prod's credential whether or not this plan says "TEST". So prod needs its
+own pass check, not an inference from the TEST consumers being healthy.
+
+Read-only: it prints one word per line and never prints a credential or a bot's contents.
+
+```bash
+ssh controlplane 'bash -s' <<'REMOTE'
+set -u
+ns=minecraft
+# 1. The pod is up after the restart in 6b.
+pods=$(kubectl -n $ns get pods -l app=aibot-agent --no-headers 2>/dev/null | awk '$2 ~ /^[0-9]+\/[0-9]+$/ && $3=="Running" {print $1}')
+[ -n "$pods" ] || { echo "fail: no Running prod agent pod"; exit 0; }
+
+for p in $pods; do
+  # 2. The agent authenticated to Postgres after the restart. A stale DSN shows up here
+  #    as a password-authentication failure and nothing else.
+  bad=$(kubectl -n $ns logs "$p" --since=10m 2>/dev/null \
+        | grep -ciE 'password authentication failed|FATAL:  *password' )
+  [ "${bad:-1}" -eq 0 ] || { echo "fail: $p has $bad password failures"; exit 0; }
+
+  # 3. Its bots are alive: the agent's own status must list at least one connected bot.
+  bots=$(kubectl -n $ns exec "$p" -- python3 -c '
+import json,sys
+try: d=json.load(sys.stdin)
+except Exception: print(0); sys.exit()
+b=d.get("bots") or d.get("players") or []
+print(sum(1 for x in b if str(x.get("state","")).lower() in ("online","spawned","connected") or x.get("connected") is True))
+' < /dev/null 2>/dev/null)
+  # The agent exposes bot state over its own HTTP surface; if that surface is absent this
+  # step reports "unknown" rather than a pass -- see the note below.
+  case "${bots:-unknown}" in
+    ''|*[!0-9]*) echo "unknown: $p exposes no bot count" ;;
+    0) echo "fail: $p reports no connected bots" ;;
+    *) echo "ok: $p authenticated, $bots bot(s) connected" ;;
+  esac
+  exit 0
+done
+REMOTE
+```
+
+**Expect exactly one line: `ok: <pod> authenticated, N bot(s) connected`.** A `fail:` line
+is a FAIL and triggers §8. An `unknown:` line is **not a pass** — it means the bot-count
+read did not work from here, and the operator must confirm bot presence by their own means
+before this plan is called done. Do not let absence of an error stand in for presence of
+bots.
+
+**Pass requires:** 6a three identical new fingerprints ≠ old; 6b all restarts complete
+including prod; 6c zero password-failure lines; 6d `1` from both TEST DSNs, `1` from the
+prod DSN, and a wrong password rejected on all three databases; 6e prod's bots back up.
 
 ---
 
@@ -352,14 +481,46 @@ OLD=$(python3 -c 'from urllib.parse import urlsplit;print(urlsplit(open("/tmp/pg
 rm -f /tmp/pgdsn.rb
 kubectl -n minecraft-test exec deploy/pgvector -- psql -U aibot -d postgres -v ON_ERROR_STOP=1 -c "ALTER ROLE aibot PASSWORD '$OLD'"
 REMOTE
-for t in "minecraft-test aibot-agent-test" "minecraft-test hive-service"; do
+for t in "minecraft-test aibot-agent-test" "minecraft-test hive-service" "minecraft aibot-agent"; do
   set -- $t
   ssh controlplane "kubectl -n $1 rollout restart deploy/$2" || exit 1
 done
 ```
 
-Then re-run §3 and require all four fingerprints to return to `d71ad15a7e8e`. Under (A),
-prod's secret must be restored too.
+Then re-run §3 and require all four fingerprints to return to `d71ad15a7e8e`.
+
+### 8b. Prod rollback — one restorable field per holder
+
+The TEST backups cover TEST. **Prod is restored from its own backup**, taken in §4 under
+(A), and it is a Secret in namespace `minecraft` — a different namespace from the source
+Secret's shape but the same one-field (`PG_DSN`) content:
+
+```bash
+ssh controlplane 'bash -s' <<'REMOTE'
+set -eu
+# Restore exactly one field, PG_DSN, from the prod backup. Nothing else in the secret
+# moves: a whole-object apply would carry back whatever else the backup held.
+kubectl -n minecraft get secret pgdsn-backup-agent-config-prod -o jsonpath='{.data.PG_DSN}' > /tmp/prod.b64
+[ -s /tmp/prod.b64 ] || { echo "ABORT: prod backup PG_DSN field is empty"; exit 1; }
+kubectl -n minecraft patch secret agent-config --type=merge \
+  -p "{\"data\":{\"PG_DSN\":\"$(cat /tmp/prod.b64)\"}}"
+rm -f /tmp/prod.b64
+# Read the field back and confirm it is non-empty before restarting prod.
+back=$(kubectl -n minecraft get secret agent-config -o jsonpath='{.data.PG_DSN}' | wc -c)
+[ "$back" -gt 0 ] || { echo "ABORT: prod PG_DSN read back empty"; exit 1; }
+echo "prod PG_DSN restored, $back base64 chars"
+REMOTE
+```
+
+Each holder therefore restores one field from one backup: `agent-config`→`pgdsn-backup-agent-config`,
+`hive-credentials`→`pgdsn-backup-hive-credentials`, prod `agent-config`→`pgdsn-backup-agent-config-prod`.
+Both the role (`ALTER ROLE`, above) and the prod secret are put back in the same order as the
+forward run — role first, then secrets, then restarts — so no consumer ever starts against a
+password the server has already replaced.
+
+**Rollback order matters and is the reverse hazard of the forward run:** restore the role
+and both TEST secrets and the prod secret *before* restarting any consumer. A restart between
+two restores authenticates against a half-restored state and looks like a failed rollback.
 
 **The rollback itself must be rehearsed** before this plan is executed: the ALTER ROLE
 from a backup DSN has the same quoting hazards as the forward direction, and a rollback

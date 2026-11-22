@@ -17,7 +17,7 @@
 - [x] 4.2 `extra.radius` overrides the top-level field
 - [x] 4.3 No radius keeps the default maximum at 512 and the shells 32..512, 5709 cells total
 - [ ] 4.4 Failure message states the searched radius, not 32 -- code reviewed by inspection; untestable without the mod suite, could not instantiate BotPlayer/progress
-- [x] 4.5 Mutants bite: reverting the extra parse to top-level-only reds 4 of 9 tests (incl. 4 blocks -> 1 cell); the 512->256 default mutant reds 4 assertions (incl. the 5709 count); a cap of 64 reds 5; clamping 0/negative to 1 reds only the test named for it
+- [x] 4.5 Mutants bite: reverting the extra parse to top-level-only reds 4 of 9 tests (radius 4 reports 25 cells, not 1); the 512->256 default mutant reds 4 assertions (incl. the 5709 count); a cap of 64 reds 5; clamping 0/negative to 1 reds only the test named for it
 
 ## 5. Verify
 - [ ] 5.1 Mod tests pass under the JVM exception -- BLOCKED: no gradle wrapper jar in the worktree, no system gradle. Logic exercised directly instead.
