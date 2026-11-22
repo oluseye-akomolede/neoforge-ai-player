@@ -857,6 +857,50 @@ against a field no lookup returns.
   `failure_reason` all `null` and `result` an empty object -- the same key set
   a populated answer has, so one wait condition works against both
 
+### Requirement: An Idle Script Yields Only A Goal It Actually Has, And Only When Nothing Is Running
+
+A script that dispatches nothing, tick after tick, MUST NOT be able to hold a
+goal forever -- trial 4.2's retry waited on a completion it could not read and
+never dispatched again. The bound on that is `SCRIPT_IDLE_MAX` consecutive
+ticks, after which the goal is yielded to the planner like a repeated action.
+
+The bound MUST apply only where yielding means something, in two ways.
+
+First, a bot with NO active goal has nothing to yield. A script bound from
+`bindings.json` survives `_unbind_planner_script` by design and `_script_hold`
+only clears when the goal ends, so a hand-written script on a goal-less bot is
+reachable. Yielding there unbinds nothing, clears a live `_plan_steps`, and
+resubmits an empty goal -- every `SCRIPT_IDLE_MAX` ticks, forever. With no
+goal, the idle line is the correct output and nothing else MUST happen. Such a
+tick MUST NOT even be COUNTED (`agent.py:3462`): climbing to the bound,
+resetting and climbing again is the same unbounded repeat in a quieter form.
+The log MUST NOT say a goal was unfinished unless one exists: the same
+predicate decides both, so they cannot disagree.
+
+Second, a tick where the bot's own directive is still running is NOT idle. A
+script polling a 30-block `GOTO` dispatches nothing on every tick of the walk;
+counting those would yield the goal mid-walk, replacing the wait the script
+wants with a re-plan it does not. A directive counts as in progress when
+`look.task()` reports it with status `ACTIVE` (`DirectiveStatus`,
+`Directive.java:22`); a `COMPLETED` directive is a result to read, not work in
+flight. Such a tick MUST NOT advance the idle run. The status is read from the
+envelope that same tick already built, recorded as `ScriptTick.last_task`
+(`script_tick.py:471`), not from a second request: a fresh `GET` would answer
+for a different moment than the script was given.
+
+#### Scenario: A goal-less bot does not yield
+- **GIVEN** a bound script that dispatches nothing and no active goal
+- **WHEN** `SCRIPT_IDLE_MAX` consecutive ticks pass
+- **THEN** `_plan_steps` MUST be unchanged
+- **AND** the script MUST stay bound
+- **AND** the log MUST NOT claim a goal was unfinished
+
+#### Scenario: A walk in progress is not idleness
+- **GIVEN** a script that dispatches nothing while its directive reports `ACTIVE`
+- **WHEN** many ticks pass, more than `SCRIPT_IDLE_MAX`
+- **THEN** the goal MUST NOT be yielded
+- **AND** the idle run MUST NOT reach the bound while the directive runs
+
 ### Requirement: A Finished Directive Stays Readable Until The Next One
 
 `look.task()` MUST keep answering for a directive that has finished

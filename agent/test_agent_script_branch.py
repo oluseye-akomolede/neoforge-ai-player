@@ -248,11 +248,12 @@ class AllRefusedYieldsTest(unittest.TestCase):
         # without running a planner. A real thread would race the assertions.
         self.a._run_orchestrator = mock.Mock()
 
-    def _with_tick(self, tick_result):
+    def _with_tick(self, tick_result, last_task=None):
         class Stub:
             def tick(_self):
                 return tick_result
         self.a._script_tick = Stub()
+        self.a._script_tick.last_task = last_task
 
     def _all_refused(self):
         # Re-establish the in-force planner script each pass. The unbind sets
@@ -422,9 +423,78 @@ class AllRefusedYieldsTest(unittest.TestCase):
         self.assertIn(str(self.agent_mod.SCRIPT_IDLE_MAX), printed,
                       "the log must name the bound that fired")
 
-    def _idle_tick(self):
+    def _idle_tick(self, last_task=None):
         """A tick where the script ran, handled it, and proposed no actions."""
-        self._with_tick((True, [], [], "ok"))
+        self._with_tick((True, [], [], "ok"), last_task=last_task)
+
+    @staticmethod
+    def _task(status):
+        return {"directive": {"id": 7, "type": "GOTO", "status": status}}
+
+    def test_a_goal_less_bot_does_not_yield_and_keeps_its_plan(self):
+        # Reviewer F-1 (2026-11-22 04:48Z): driven with no goal set, the idle
+        # guard yielded every SCRIPT_IDLE_MAX ticks forever, cleared a live
+        # plan, and logged "while its goal was unfinished" about a goal that
+        # never existed. Reachable: a bindings.json script survives unbinding
+        # by design and `_script_hold` only clears when the goal ends.
+        self.a._active_goal_id = ""
+        self.a._active_goal_text = ""
+        self.a._script_hold = None
+        self.a._plan_instruction = ""
+        self.a._plan_steps = ["mine something"]
+        self._idle_tick()
+        with mock.patch("builtins.print") as p:
+            for _ in range(self.agent_mod.SCRIPT_IDLE_MAX * 4):
+                self.a._run_script_tick()
+        self.assertEqual(self.a._run_orchestrator.call_count, 0,
+                         "a bot with no goal has nothing to yield")
+        self.assertEqual(self.a._plan_steps, ["mine something"],
+                         "a goal-less idle tick must not clear the live plan")
+        self.assertIsNotNone(self.a._planner_script,
+                             "a goal-less idle tick must not unbind the script")
+        self.assertEqual(
+            getattr(self.a, "_script_idle_run", 0), 0,
+            "a goal-less tick must not be COUNTED: climbing to the bound and "
+            "resetting is an unbounded repeat of its own")
+        printed = " ".join(str(c.args[0]) for c in p.call_args_list if c.args)
+        self.assertNotIn("while its goal was unfinished", printed,
+                         "the log must not name a goal the bot never had")
+        self.assertNotIn("not yielding", printed,
+                         "a goal-less bot must not reach the yield path at all")
+
+    def test_a_running_directive_is_not_idle(self):
+        # A script polling a long GOTO dispatches nothing on every tick of the
+        # walk. Counting those yields the goal mid-walk -- replacing the wait
+        # the script wants with a re-plan it does not.
+        self._idle_tick(last_task=self._task("ACTIVE"))
+        for _ in range(self.agent_mod.SCRIPT_IDLE_MAX * 4):
+            self.a._run_script_tick()
+        self.assertEqual(self.a._run_orchestrator.call_count, 0,
+                         "a directive in progress must never reach the bound")
+        self.assertEqual(self.a._plan_steps, ["mine something"],
+                         "a walk in progress must not clear the plan")
+
+    def test_a_completed_directive_is_not_in_progress(self):
+        # ACTIVE is work in flight; COMPLETED is a result to read. A script
+        # waiting on a finished directive that dispatches nothing IS idle, and
+        # must still yield -- the trial 4.2 retry shape.
+        self._idle_tick(last_task=self._task("COMPLETED"))
+        for _ in range(self.agent_mod.SCRIPT_IDLE_MAX):
+            self.a._run_script_tick()
+        self.assertEqual(self.a._run_orchestrator.call_count, 1,
+                         "a completed-but-unread directive must not suppress the bound")
+
+    def test_a_goal_less_run_is_not_inherited_by_a_new_goal(self):
+        self.a._active_goal_id = ""
+        self.a._active_goal_text = ""
+        self.a._script_hold = None
+        self.a._plan_instruction = ""
+        self._idle_tick()
+        for _ in range(self.agent_mod.SCRIPT_IDLE_MAX * 2):
+            self.a._run_script_tick()
+        self.assertEqual(
+            getattr(self.a, "_script_idle_run", 0), 0,
+            "a goal-less bot must not accumulate a run it hands to the next goal")
 
     def test_a_hand_written_binding_is_never_unbound_by_a_refusal(self):
         # A hand-written script comes from bindings.json, not _planner_script.

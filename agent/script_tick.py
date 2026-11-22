@@ -459,11 +459,16 @@ class ScriptTick:
         self.last_logs_dropped = 0
         self.last_deliveries = []
         self.last_result = None
+        self.last_task = None
 
         if not self._source:
             return False, [], [], "no script"
 
         envelope, snap_errors = self._build_snapshot()
+        # The directive this tick is running, if any, so the caller can tell an
+        # idle script from one waiting on its own work in flight. Read from the
+        # envelope it already built: a second GET would be a different moment.
+        self.last_task = envelope.get("task")
         # The body is the runner's §2.1 tick request, read from its actual
         # validation (agent-script-runner src/server.js:151-164), not invented
         # here. That function is the authority and runs BEFORE routing:

@@ -1753,6 +1753,9 @@ class BotRunner:
         if goal_id:
             self._active_goal_id = goal_id
         self._active_goal_text = task_text
+        # A goal-less bot's idle run must not be inherited by this one: the
+        # run that reaches the bound must belong to the goal it yields.
+        self._script_idle_run = 0
         print(f"[{self.name}/orchestrator] starting plan for: {task_text[:80]}")
 
         def on_plan_created(plan):
@@ -3437,6 +3440,12 @@ Respond with ONLY a JSON array. Example:
                 # fallback in a new costume.
                 if _suppressed:
                     return True
+                if self._directive_in_progress(st):
+                    # Not idle: the script dispatched nothing because the bot is
+                    # walking a GOTO. Reset rather than hold the run, so a walk
+                    # never contributes to the bound that yields the goal.
+                    self._script_idle_run = 0
+                    return False
                 self._note_script_idle()
                 # A wait that can never end must not hold the goal forever. The
                 # planner gets the tick either way (this returns False), but on
@@ -3444,6 +3453,14 @@ Respond with ONLY a JSON array. Example:
                 # impossible condition next tick -- which is trial 4.2 retry.
                 # At the bound, yield the goal so it is unbound and re-planned
                 # instead of respinning the identical wait.
+                #
+                # A bot with NO goal is not counted at all. Counting it would
+                # climb to the bound, reset, and climb again -- a "not yielding"
+                # line every SCRIPT_IDLE_MAX ticks forever, which is the same
+                # unbounded repeat this guard exists to end, only quieter. The
+                # idle log line above is already the right output for it.
+                if not self._has_active_goal():
+                    return False
                 if self._note_script_idle_tick():
                     self._yield_script_to_planner(
                         f"idle: dispatched nothing for {SCRIPT_IDLE_MAX} "
@@ -3776,6 +3793,37 @@ Respond with ONLY a JSON array. Example:
             self._script_loaded = False
         return True
 
+    def _has_active_goal(self) -> bool:
+        """True if a goal is in flight, so a yield has something to hand back.
+
+        ONE definition, used by both the idle guard's log line and the yield
+        itself: the two disagreeing is how a bot with no goal gets told its
+        goal was unfinished.
+        """
+        hold = self._script_hold or {}
+        goal_id = (getattr(self, "_active_goal_id", "")
+                   or hold.get("goal_id", ""))
+        goal_text = (getattr(self, "_active_goal_text", "")
+                     or hold.get("goal_text", "")
+                     or self._plan_instruction)
+        return bool(goal_id or (goal_text or "").strip())
+
+    def _directive_in_progress(self, st) -> bool:
+        """True if the bot is running a directive RIGHT NOW.
+
+        A tick that dispatches nothing while a 30-block GOTO is walking is the
+        NORMAL shape for a script polling for completion, not idleness: counting
+        it would yield the goal mid-walk. `st.last_task` is the envelope's task
+        -- the mod's GET /directive body (snapshot.py) -- whose
+        `directive.status` is DirectiveStatus.ACTIVE while the behaviour runs
+        and a terminal value once it stops (Directive.java:22/:50-57). Only
+        ACTIVE is in progress: a COMPLETED directive is a result to read, not
+        work in flight.
+        """
+        task = getattr(st, "last_task", None) or {}
+        directive = task.get("directive") or {}
+        return directive.get("status") == "ACTIVE"
+
     def _yield_script_to_planner(self, why: str) -> None:
         """Unbind the script and put the goal back in front of the planner.
 
@@ -3786,15 +3834,29 @@ Respond with ONLY a JSON array. Example:
         IMPLEMENTATION comment exists to prevent.
 
         `why` is the logged cause; it says which bound yielded.
+
+        A bot with NO goal has nothing to yield. Guarded here rather than at
+        each caller because there are three, and every one of them has to agree
+        (reviewer F-1, 2026-11-22 04:48Z): a script bound from bindings.json
+        survives `_unbind_planner_script` by design and `_script_hold` only
+        clears when the goal ends, so a hand-written script running with no
+        goal is reachable, and an idle yield there unbinds nothing, clears a
+        live plan, and resubmits an empty goal -- every SCRIPT_IDLE_MAX ticks,
+        forever, while logging that "its goal was unfinished" when it had none.
         """
-        # Capture the goal BEFORE clearing the plan. The ACTIVE goal is read,
-        # not `_script_hold`: the bind released that hold (2a.6), so it is None.
+        # Capture the goal BEFORE clearing the plan. The ACTIVE goal is read
+        # first, then `_script_hold`, which the bind released (2a.6) but which
+        # can outlive `_active_goal_id`.
         hold = self._script_hold or {}
         hold_goal_id = (getattr(self, "_active_goal_id", "")
                         or hold.get("goal_id", ""))
         goal_text = (getattr(self, "_active_goal_text", "")
                      or hold.get("goal_text", "")
                      or self._plan_instruction)
+        if not self._has_active_goal():
+            print(f"[{self.name}/script] not yielding ({why}): no active goal")
+            self._script_idle_run = 0
+            return
         yielded = self._unbind_planner_script()
         self._plan_steps = []
         self._plan_step_idx = 0
