@@ -244,7 +244,7 @@ L3 path rather than limit the spec to the decompose paths.
       separate, unimplemented obligation: see "A Yielded Goal Returns To The
       Planner" (spec.md) and task 2a.15 below. 2a.14 is UNTICKED pending that
       work: it was previously ticked on the withdrawn re-entry claim.
-- [ ] 2a.15 **A yielded goal returns to the planner, under a spin bound.**
+- [x] 2a.15 **A yielded goal returns to the planner, under a spin bound.**
       The obligation 2a.14 withdraws: after an all-refused yield the goal goes
       back to the main planner and exactly one new `call_plan` happens, with
       the anti-spin bound the requirement names. `execute_task` is a
@@ -254,6 +254,15 @@ L3 path rather than limit the spec to the decompose paths.
       and a mutant that removes the re-submit reds that test. The spin bound is
       part of the requirement, so a test must show a repeatedly-yielded goal
       stops rather than re-planning forever.
+      IMPLEMENTED at 487c820. The re-submit is bounded by `SCRIPT_REPLAN_MAX`
+      and counted per goal. The goal identity is read from `_active_goal_id`
+      (set by `_run_orchestrator`), NOT from `_script_hold`: the bind releases
+      the goal's hold (`2a.6`), so the hold is already `None` at yield time --
+      reading it would have shipped a re-plan that never fires. Verified by
+      mutants: removing the re-submit reds 3 tests, removing the bound reds 1,
+      and the per-goal reset has its own test. `2a.14` stays unticked: its
+      own wording ("no driver") is superseded by this requirement, which is
+      now the one that carries the obligation.
 
 
 ## 3. What is deliberately out of scope
