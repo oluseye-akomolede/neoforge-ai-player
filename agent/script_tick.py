@@ -112,10 +112,19 @@ def result_verdict(text):
     script reporting `{done: false}` must not have to avoid the word "failed"
     in a message, and a successful result is free to contain it.
 
-    Returns True (succeeded), False (reported failure), or None (no verdict:
-    not a JSON object, or no boolean `done`). None is NOT success -- callers
-    must treat "the script did not say" as distinct from "the script said
-    done", so a plain-text result keeps whatever handling it had before.
+    Returns True (the goal is met), False (the script reports it is still
+    WORKING -- e.g. `{done: false, reason: "waiting for night"}`), or None (no
+    verdict: not a JSON object, or no boolean `done`). None is NOT success --
+    callers must treat "the script did not say" as distinct from "the script
+    said done", so a plain-text result keeps whatever handling it had before.
+
+    `False` is NOT a failure. It answers "is the goal met", not "did this tick
+    throw"; a waiting script returns it every tick until its condition arrives.
+    A real failure is a throw or a non-ok runner status, which this function
+    cannot see -- that is carried separately as `result["error"]`. Conflating
+    the two unbound a working script on its first tick (TEST 2026-11-22 12:28Z:
+    Mystic's `{done:false,"reason":"waiting for night"}` was delivered as
+    "Script result (error)" and the goal was lost).
     """
     try:
         parsed = json.loads(text)
@@ -573,6 +582,14 @@ class ScriptTick:
                         # `done` would let a half-written result claim
                         # success over the throw that ended it.
                         "ok": False,
+                        # This is the ONLY place a result is marked as an
+                        # error, because it is the only path where the
+                        # runtime observed a failure (the runner's status).
+                        # `ok: False` alone is ambiguous: a script reporting
+                        # `{done: false}` is still WORKING, and says so
+                        # through the same field. Carrying the reason lets the
+                        # caller deliver an error only for a real one.
+                        "error": True,
                     }
             return False, [], [], f"runner {result.state}: {result.detail}"
 

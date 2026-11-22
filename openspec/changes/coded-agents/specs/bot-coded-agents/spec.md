@@ -1284,3 +1284,137 @@ and MUST build the tick object the way production builds it.
 > null. A future reader should read the carry as protecting the agent's copy of
 > the blob across a tick that returned nothing, not as making script memory
 > read-only.
+
+### Requirement: A Script That Reports It Is Still Working Keeps Its Binding
+
+A script reports progress by passing an object to `api.result(...)`. The
+`done` field answers "is the goal met", not "did this tick throw". A script
+watching for night returns `{done: false, reason: "waiting for night"}` on every
+tick until dawn; that is the script doing its job, not failing at it.
+
+A `{done: false}` result MUST therefore keep the script bound to its goal and
+MUST NOT be handed to the planner as an error. Measured on TEST 2026-11-22
+12:28Z (image `eb5498f`): the first tick returned `{"done":false,"reason":
+"time=1, waiting for night (13000-23000)"}`, the agent logged "delivering error
+result ... unbound the planner's script as its result is handed back (error)",
+and the planner answered "Script result (error)" with a clarify question. The
+one case this framework exists for -- hold a goal until a condition arrives --
+could not run at all.
+
+Treating a wait as a failure is not merely mislabelled; it is unrecoverable. The
+planner has no execution context the script lacks and cannot express a wait, so
+the goal is lost and the script -- which was working -- is discarded.
+
+A **failure** is an error the runtime observed: a throw, or a tick the runner
+reported as an error. Status a script reports about its own progress is not a
+failure.
+
+| the script this tick... | delivered to the planner as | binding |
+|---|---|---|
+| reports success (`{done: true}`) | success, goal closed | released |
+| reports it is still working (`{done: false}`) | nothing | kept |
+| throws, or the tick is an error | error, bounded by the caps | released |
+
+#### Scenario: A waiting script keeps its binding
+- **GIVEN** a bound script whose tick returned `{done: false, reason: "waiting for night"}`
+- **WHEN** the tick completes and the result is handed to the result slot
+- **THEN** the script MUST remain bound to its goal
+- **AND** no planner call MUST be made on account of that result
+- **AND** the goal MUST remain open
+- **AND** the script MUST run again on the next tick with its memory intact
+
+#### Scenario: A successful result still closes the goal
+- **GIVEN** a bound script whose tick returned `{done: true}`
+- **WHEN** the tick completes
+- **THEN** the goal MUST be closed and its outcome reported to the player
+- **AND** the binding MUST be released
+
+#### Scenario: A real error still reaches the planner
+- **GIVEN** a bound script whose tick threw, or that the runner reported as an error
+- **WHEN** the tick completes
+- **THEN** the result MUST be delivered as an error, bounded by the per-bot caps
+
+### Requirement: A Holding Script Is Not An Idle Script
+
+The idle bound exists to stop a script that can never make progress: trial 4.2
+retry, where a script waited on a completion that had already happened and was
+unreadable, dispatched nothing every tick, and held a bot until a human
+restarted the agent. That failure is a wait that can never end.
+
+A wait the script has REPORTED is the opposite: it is evidence the script is
+working, and it says what it is waiting for. The idle bound MUST NOT unbind such
+a script. The bound exists for a script that is genuinely silent -- one that
+neither dispatches an action nor reports why not.
+
+| the script this tick... | counts toward the idle bound? |
+|---|---|
+| dispatched an action | no (resets the run, as today) |
+| returned `{done: false, reason: ...}` | no -- a reported wait is work |
+| dispatched nothing and reported nothing | yes |
+
+A reported wait MUST NOT be bounded by a shorter timer either. The wait is the
+goal: a bound on "until it gets dark" would fire within a few game-seconds.
+
+#### Scenario: A script waiting on a condition is not unbound as idle
+- **GIVEN** a bound script that dispatches nothing and returns `{done: false, reason: "waiting for night"}`
+- **WHEN** more than the idle bound's ticks pass
+- **THEN** the script MUST remain bound
+- **AND** it MUST be given the next tick
+
+#### Scenario: A silent script is still bounded
+- **GIVEN** a bound script that dispatches nothing and reports no wait
+- **WHEN** the idle bound's ticks pass consecutively
+- **THEN** the goal MUST be yielded to the planner, as before
+
+### Requirement: A Plan Offering A Script Does Not Need Subtasks
+
+A goal that never finishes on its own -- "tell me when it gets dark" -- has no
+natural step list. Requiring one makes the model either fabricate a step or omit
+the field and fail validation. Both were seen for the same goal: on TEST
+12:25:50Z it produced a 1-subtask plan and reached the SCRIPT call; on PROD
+12:21:56Z the same goal (same model) answered "planning failed: plan missing
+required field: subtasks" and no SCRIPT call was made.
+
+The step list is a fallback for a goal that turns out not to want a script. A
+reply that signals a script -- `wants_script: true`, or a fenced script block in
+the reply -- MUST be accepted with absent, empty, or trivial `subtasks`, and
+MUST proceed to the SCRIPT call.
+
+A reply that signals NO script MUST still satisfy the existing plan contract: a
+missing or empty `subtasks` there remains a validation error, because a
+steppable goal with no steps is a broken plan and accepting it dispatches
+nothing.
+
+#### Scenario: A script-signalling plan with no subtasks proceeds
+- **GIVEN** a plan reply with `wants_script: true` and no `subtasks` field
+- **WHEN** the plan reply is validated
+- **THEN** validation MUST succeed
+- **AND** the SCRIPT call MUST be made
+
+#### Scenario: A script-signalling plan with empty subtasks proceeds
+- **GIVEN** a plan reply with `wants_script: true` and `subtasks: []`
+- **WHEN** the plan reply is validated
+- **THEN** validation MUST succeed
+- **AND** the SCRIPT call MUST be made
+
+#### Scenario: A step-list plan with no subtasks still fails
+- **GIVEN** a plan reply with no script signal and no `subtasks` field
+- **WHEN** the plan reply is validated
+- **THEN** validation MUST fail with a missing-field error, as before
+
+### Requirement: The Script Plan Prompt Gives One Instruction
+
+The plan prompt told the model both to write the script and not to write it, in
+one reply. The prose (`agent/l3_planner.py` `_PLAN_SCRIPT_SECTION`) said to
+"append a fenced script block after" the plan; the response-format schema in the
+same rendered prompt said set only `"wants_script": true` and "Do NOT write the
+script here". A model reading both was instructed to do and not do the same
+thing.
+
+The two passages MUST name one instruction. Rendered output MUST NOT contain
+both an instruction to write the script in the reply and an instruction not to.
+
+#### Scenario: The rendered prompt does not contradict itself
+- **GIVEN** the script plan prompt rendered with all fields
+- **WHEN** its prose and its output schema are compared
+- **THEN** they MUST NOT instruct the model both to write and not to write the script in the plan reply

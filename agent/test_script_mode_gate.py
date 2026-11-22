@@ -248,5 +248,52 @@ class TestThePlanPromptDoesNotInviteWhatIsNotOffered(unittest.TestCase):
         self.assertIsNotNone(getattr(plan, "script", None))
 
 
+class TestAScriptPlanNeedsNoSteps(unittest.TestCase):
+    """PTC step 4, PROD 12:21:56Z: "plan missing required field: subtasks".
+
+    A goal with no natural end -- "tell me when it gets dark" -- has no step
+    list to give. The prompt offers a script for exactly these, so the
+    validator must accept the shape the prompt asks for.
+    """
+
+    def _validate(self, d):
+        import plan_schema
+        plan_schema.validate_plan_dict(d)
+
+    def test_a_script_plan_with_no_subtasks_is_accepted(self):
+        # KILLS: treating `subtasks` as required for every plan, which failed
+        # a goal that never needed steps at all.
+        self._validate({"task": "tell me when it gets dark",
+                        "wants_script": True})
+
+    def test_a_script_plan_with_an_empty_subtask_list_is_accepted(self):
+        # The other shape seen: the model emits the key and leaves it empty
+        # rather than omitting it. Same goal, same outcome.
+        self._validate({"task": "tell me when it gets dark",
+                        "wants_script": True, "subtasks": []})
+
+    def test_a_fenced_script_alone_signals_a_script_plan(self):
+        # The prompt has asked for both shapes across versions; a model
+        # following the older wording emits a fenced script and no flag.
+        self._validate({"task": "tell me when it gets dark",
+                        "script": "sleep(600);\napi.result('dawn');"})
+
+    def test_a_step_plan_with_no_subtasks_is_still_rejected(self):
+        # The direction that must NOT change. A steppable goal with no steps
+        # dispatches nothing while looking successful.
+        import plan_schema
+        with self.assertRaises(plan_schema.PlanValidationError):
+            self._validate({"task": "gather three dirt"})
+
+    def test_a_script_plan_with_malformed_subtasks_is_rejected(self):
+        # A script plan may omit steps; it may not ship nonsense in the field.
+        # KILLS: `return`ing early on script_plan regardless of what
+        # `subtasks` actually holds.
+        import plan_schema
+        with self.assertRaises(plan_schema.PlanValidationError):
+            self._validate({"task": "tell me when it gets dark",
+                            "wants_script": True, "subtasks": "three dirt"})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -206,6 +206,7 @@ class ScriptTickBranchTest(unittest.TestCase):
                       "a refused action vanished with no trace")
 
 
+
 class AllRefusedYieldsTest(unittest.TestCase):
     """Task 2a.14 option 1: an all-refused tick yields the goal.
 
@@ -392,6 +393,41 @@ class AllRefusedYieldsTest(unittest.TestCase):
         self.assertEqual(args[0], "keep mining",
                          "the re-plan must carry the goal's text")
         self.assertEqual(kwargs.get("goal_id"), "g-1")
+
+    def test_a_script_that_reports_a_wait_is_never_yielded(self):
+        # PTC step 4, TEST 12:28Z: a script returning
+        # `{"done": false, "reason": "waiting for night"}` dispatched nothing
+        # every tick, so the idle bound discarded it exactly when its
+        # condition was about to arrive -- converting the one case the
+        # framework exists for into trial 4.2's failure.
+        #
+        # KILLS: counting a REPORTED wait as idleness. The bound is for a
+        # script that says nothing at all; a wait that reports is working.
+        # The setup must not set `_script_hold`: a player goal holds the
+        # script and returns SCRIPT_HELD before the tick runs, so a fixture
+        # with a hold never reaches the idle branch and would assert nothing.
+        # `_idle_tick` binds the script the way production does.
+        self._idle_tick()
+        self.a._script_hold = None
+        self.a._result_slot = self.agent_mod.ResultSlot()
+        self.a._active_goal_id = "g-1"
+        self.a._goal_text = "keep mining"
+
+        class WaitStub:
+            last_result = {"text": '{"done": false, "reason": "waiting"}',
+                           "truncated": False}
+            last_task = None
+
+            def tick(_self):
+                return (True, [], [], "ok")
+
+        self.a._script_tick = WaitStub()
+        for _ in range(self.agent_mod.SCRIPT_IDLE_MAX * 3):
+            self.a._run_script_tick()
+        self.assertEqual(
+            self.a._run_orchestrator.call_count, 0,
+            "a script reporting a wait must never be yielded, however long "
+            "the wait lasts")
 
     def test_a_dispatching_tick_resets_the_idle_run(self):
         # The bound counts CONSECUTIVE idle ticks. A script that acts every few
@@ -2205,6 +2241,58 @@ class ScriptResultReachesTheSlotTest(unittest.TestCase):
         self.assertEqual(value["text"], "a red flower")
         self.assertEqual(trigger, "done")
 
+    def test_a_reported_wait_is_not_a_reported_failure(self):
+        # Live evidence (PTC step 4): a script that reports
+        # {"done": false, "reason": "waiting for night"} came back with
+        # trigger "error" and the bot re-planned over a script that was
+        # working exactly as written.
+        #
+        # KILLS: `"error" if verdict is False else "done"` -- one ternary for
+        # two different states. result_verdict() returns False for done:false
+        # as well as for unparseable text, so the caller could not tell a wait
+        # from a failure. The tick now carries `last_error`, and only that
+        # maps to "error".
+        # The fixture is the shape ScriptTick ACTUALLY produces: `text` holds
+        # the JSON string the script passed to api.result(), and `ok` is
+        # result_verdict(text). Passing `{"done": false}` as the whole result
+        # made `text` None, so _hold_script_result returned before the
+        # mapping and the test passed for the wrong reason.
+        import json as _j
+        self.a._active_goal_id = "goal-A"
+        # Call the mapping directly. Driving it through `_run_script_tick`
+        # with an empty action list sends the tick down the IDLE branch, which
+        # never reaches the verdict mapping -- the test then passed with the
+        # bug present (mutant M1 survived). The mapping is what changed, so the
+        # mapping is what the test must call.
+        out = self.a._hold_script_result(
+            {"text": _j.dumps({"done": False, "reason": "waiting for night"}),
+             "truncated": False, "ok": False})
+        self.assertIsNone(out)
+        self.assertFalse(
+            self.a._result_slot.has_pending(),
+            "a script waiting for dawn reports done:false every tick; "
+            "delivering that as an error unbinds it and loses the goal")
+        self.assertEqual(self.a._active_goal_id, "goal-A",
+                         "the goal must stay bound while the script waits")
+
+    def test_a_runtime_error_still_reports_error(self):
+        # The other direction. Without this, the fix above could be satisfied
+        # by mapping every reported result to "done", which would hide real
+        # script crashes from the planner forever.
+        #
+        # KILLS: a fix that drops the "error" trigger entirely. The tick must
+        # carry BOTH a result (so there is something to deliver) and
+        # `error`; a throw with no result delivers nothing, which is correct
+        # -- `_hold_script_result` returns early on an empty result.
+        out = self.a._hold_script_result(
+            {"text": "a red flower", "truncated": False,
+             "ok": False, "error": True})
+        self.assertIsNone(out)
+        self.assertTrue(self.a._result_slot.has_pending(),
+                        "a runtime error with a result must reach the planner")
+        _goal_id, _value, trigger = self.a._result_slot.peek()
+        self.assertEqual(trigger, "error")
+
     def test_a_report_carries_the_active_goal_not_the_hold(self):
         # Live evidence (lead, 03:22Z): "delivering done result for goal ''"
         # for a script bound while running `chat:dashboard:...#1`. The hold is
@@ -2327,14 +2415,20 @@ class ScriptResultReachesTheSlotTest(unittest.TestCase):
         # The seam between script_tick's `ok` field and the slot's trigger.
         # KILLS: hard-coding "done" at the store -- every script result then
         # closes its goal whatever the script said.
+        #
+        # INVERTED on 2026-11-22 (PTC step 4, TEST 12:28Z). This used to
+        # assert `done: false` -> trigger "error". That was the bug: a script
+        # waiting for night reports {"done": false, "reason": "waiting..."}
+        # every tick, and delivering it as an error unbound the script and
+        # lost the goal. A reported `done: false` now delivers NOTHING and
+        # keeps the binding; only a runtime throw (`error`) reports "error".
+        # The old assertion is preserved below as the no-verdict case.
         self.a._script_hold = {"goal_id": "goal-A"}
         self.a._active_goal_id = "goal-A"
         self.a._hold_script_result(
             {"text": '{"done": false}', "truncated": False, "ok": False})
-        _, _, trigger = self.a._result_slot.peek()
-        self.assertEqual(trigger, "error",
-                         "the script's own `done: false` must not be stored "
-                         "as a successful trigger")
+        self.assertFalse(self.a._result_slot.has_pending(),
+                         "a script still working must not deliver a result")
 
     def test_a_result_with_no_verdict_keeps_the_old_done_trigger(self):
         # Every script written before the flag existed reports a plain string.

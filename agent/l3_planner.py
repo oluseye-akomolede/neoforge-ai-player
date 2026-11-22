@@ -292,8 +292,9 @@ _PLAN_SCRIPT_SECTION = """Choose between a STEP LIST and a SCRIPT:
   "craft 8 iron ingots", "dig a 3x3 hole here", "bring 16 wheat".
 - For goals that REPEAT, WAIT on a condition, or REACT over time, and so never
   finish on their own — "keep the furnace fed", "store items whenever your
-  inventory fills", "tell me when it gets dark" — answer with the plan JSON as
-  usual and then append a fenced script block after it (see the output schema).
+  inventory fills", "tell me when it gets dark" — answer with the plan JSON and
+  set "wants_script": true (see the output schema). Do not write the script in
+  this reply: a separate call asks for it, and only if you set the flag.
   A step list cannot express these; it runs once and ends.
 - If a goal is clearly one-shot, use a step list even when it mentions a time
   word ("bring me X before dark" is still one-shot). If a goal could be read
@@ -336,7 +337,11 @@ SCRIPT above), add one boolean to the same object:
 
 Nothing else changes about this reply. Do NOT write the script here, and do
 NOT add a "script" key — a separate call is made for the script if and only if
-you set this flag. For a one-shot goal, omit the flag or set it false."""
+you set this flag. For a one-shot goal, omit the flag or set it false.
+
+When you set "wants_script": true, "subtasks" may be empty or omitted: a goal
+that never finishes has no steps, and the script is the work. Leave it out
+rather than inventing a step to satisfy the shape."""
 
 
 _PLAN_SYSTEM_PROMPT = """You are {bot_name}, an AI bot in Minecraft.
@@ -610,8 +615,14 @@ def call_plan(model: str, bot_name: str, task: str,
         bot=bot_name,
         created_at=created_at,
         status="executing",
-        subtasks=[Subtask.from_dict(s) for s in data["subtasks"]],
-        current_subtask_id=min((s["id"] for s in data["subtasks"]), default=1),
+        # A script-signalling reply may carry no subtasks at all. Reading
+        # `data["subtasks"]` there raised KeyError, and indexing it below would
+        # too -- the goal never reached the SCRIPT call below. An empty list is
+        # the honest representation: the plan has no steps because the script
+        # is the work.
+        subtasks=[Subtask.from_dict(s) for s in (data.get("subtasks") or [])],
+        current_subtask_id=min((s["id"] for s in (data.get("subtasks") or [])),
+                               default=1),
     )
     # The plan call may have flagged that this goal wants a script. Only then is
     # a second call made — a step-list goal makes exactly one call and its

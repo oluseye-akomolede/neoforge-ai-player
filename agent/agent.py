@@ -207,6 +207,34 @@ def _script_action_key(directive: dict) -> str:
     return json.dumps(directive, sort_keys=True, default=str)
 
 
+def _reported_a_wait(result) -> bool:
+    """True when the script reported it is still working, not failing.
+
+    A script says "I am waiting" by returning `{done: false, reason: ...}`
+    through `api.result`. That is the script doing its job -- the wait IS the
+    goal -- and it is what an idle bound must never treat as a hang, and what
+    the result slot must never deliver as an error.
+
+    Distinguishes a REPORTED wait from a SILENT tick: `done: true` is a
+    finished goal (not a wait), a throw carries `error: True` (a real failure,
+    not a wait), and a plain-text result carries no verdict at all (silent).
+    Only an explicit boolean `done` of False qualifies.
+
+    Reads the same `last_result` the result slot reads, so the idle bound and
+    the delivery path cannot disagree about whether a wait was reported.
+    """
+    if not isinstance(result, dict) or result.get("error"):
+        return False
+    # `st.last_result` is the RAW slot {"text", "truncated"}, not the tick's
+    # verdict dict -- it has no `ok` key. Reading `result.get("ok")` here
+    # returned None for every call and the exemption never fired, so the idle
+    # bound still discarded waiting scripts while the test above stayed green
+    # (it asserted a branch the fixture never reached). Delegate to the same
+    # parser the delivery path uses, so the two cannot disagree.
+    from script_tick import result_verdict
+    return result_verdict(result.get("text")) is False
+
+
 def _script_digest(source: str) -> str:
     """First 16 hex of the source's sha256 -- the same value _revision_of
     derives (script_tick.py:233) and the bind line prints, so a logged source
@@ -3556,13 +3584,30 @@ Respond with ONLY a JSON array. Example:
         hold = getattr(self, "_script_hold", None) or {}
         goal_id = (getattr(self, "_active_goal_id", "")
                    or hold.get("goal_id", ""))
-        # The script's own verdict decides the trigger, so a `{done: false}`
-        # result re-plans instead of closing the goal as done. A result that
-        # carries no verdict keeps the old `"done"` -- that is the behaviour
-        # every already-written script was tested against, and silently
-        # re-planning a plain-text result would change it under them.
+        # Three outcomes, not two. The script's `done` flag says whether the
+        # GOAL is met; it does not say whether the tick threw. A script
+        # waiting for night returns `{done: false, reason: "waiting..."}`
+        # every tick until dawn -- that is the script working, and delivering
+        # it as an error unbound it and lost the goal (TEST 2026-11-22 12:28Z:
+        # "delivering error result ... unbound the planner's script as its
+        # result is handed back (error)", then a clarify question).
+        #
+        #   }`done: true`              -> deliver "done" (close the goal)
+        #   }`done: false`             -> deliver NOTHING; keep the binding
+        #   }runtime error / throw     -> deliver "error", bounded by the caps
+        #   }no verdict (plain text)   -> keep the old "done" trigger
+        #
+        # `error` is set only where the runtime observed a failure
+        # (script_tick._use_tick_result), never from a reported status.
         verdict = result.get("ok")
-        trigger = "done" if verdict is None else ("done" if verdict else "error")
+        if result.get("error"):
+            trigger = "error"
+        elif verdict is False:
+            # Still working: no delivery at all. Returning here keeps
+            # `_script_hold` and the goal intact for the next tick.
+            return
+        else:
+            trigger = "done"
         self._result_slot.store(goal_id, value, trigger)
 
     def _note_script_idle(self):
@@ -3721,6 +3766,19 @@ Respond with ONLY a JSON array. Example:
                 # No directive in flight: whatever ACTIVE run was counted is
                 # over, so this bound is on CONSECUTIVE ticks, not a total.
                 self._script_active_run = 0
+                # A REPORTED wait is not idleness. A script that returns
+                # `{done: false, reason: "waiting for night"}` dispatched
+                # nothing because it is doing its job -- the wait IS the goal.
+                # Counting it toward the bound would discard the script right
+                # before its condition arrives, converting the one case the
+                # framework exists for into trial 4.2's failure. The bound is
+                # for a script that is SILENT: nothing dispatched, nothing
+                # reported. `_reported_a_wait` reads the same tick result the
+                # result slot does, so the two cannot disagree.
+                if _reported_a_wait(getattr(st, "last_result", None)):
+                    self._script_idle_run = 0
+                    self._note_script_idle()
+                    return False
                 self._note_script_idle()
                 # A wait that can never end must not hold the goal forever. The
                 # planner gets the tick either way (this returns False), but on

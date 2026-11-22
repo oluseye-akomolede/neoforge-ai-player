@@ -99,14 +99,53 @@ class PlanValidationError(ValueError):
     pass
 
 
+def _signals_a_script(d: dict) -> bool:
+    """Whether this plan reply is asking for a script rather than a step list.
+
+    A goal that never finishes on its own -- "tell me when it gets dark", "keep
+    the furnace fed" -- has no natural subtasks. Requiring one makes the model
+    either fabricate a step or omit the field and fail validation; both were
+    seen for the SAME goal (TEST 12:25:50Z produced a 1-subtask plan and
+    reached the SCRIPT call; PROD 12:21:56Z answered "plan missing required
+    field: subtasks" and no SCRIPT call was made).
+
+    Either signal counts: the explicit `wants_script: true`, or a fenced
+    `script` field, since the prompt has asked for both shapes and a model
+    following the older wording emits the latter.
+    """
+    if not isinstance(d, dict):
+        return False
+    if d.get("wants_script") is True:
+        return True
+    script = d.get("script")
+    return isinstance(script, str) and bool(script.strip())
+
+
 def validate_plan_dict(d: Any) -> None:
     if not isinstance(d, dict):
         raise PlanValidationError("plan must be a JSON object")
-    for req in ("task", "subtasks"):
-        if req not in d:
-            raise PlanValidationError(f"plan missing required field: {req}")
+    if "task" not in d:
+        raise PlanValidationError("plan missing required field: task")
+    # Subtasks are required only for a STEP LIST. A reply that signals a script
+    # may legitimately carry none, and rejecting it failed a goal that never
+    # needed steps at all. A reply that signals NO script keeps the full
+    # contract: a steppable goal with no steps is a broken plan, and accepting
+    # it would dispatch nothing while looking successful.
+    script_plan = _signals_a_script(d)
+    if "subtasks" not in d:
+        if script_plan:
+            return
+        raise PlanValidationError("plan missing required field: subtasks")
     subs = d.get("subtasks")
     if not isinstance(subs, list) or not subs:
+        if script_plan:
+            # Absent steps are fine for a script, but a PRESENT malformed
+            # `subtasks` is a model error either way and must not slip
+            # through unread: only an empty list is excused here.
+            if subs not in (None, []):
+                raise PlanValidationError(
+                    "plan.subtasks must be a list, got %r" % (subs,))
+            return
         raise PlanValidationError("plan.subtasks must be a non-empty list")
     seen = set()
     for s in subs:
