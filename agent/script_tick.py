@@ -555,7 +555,15 @@ class ScriptTick:
             # succeed, so the planner runs. Holding the result is about what
             # the bot LEARNED this tick, not about who acts next.
             if result.failed and result.result:
-                text, cut = cap_result(text=str(result.result["text"]))
+                # `text` may be None: a script that calls api.result(null) then
+                # throws sends {"text": null}, which cap_result reports as
+                # (None, False) -- "no report", the same case as reporting
+                # nothing at all (binding.js:253-258 says the two must agree).
+                # Coercing it first with str() would turn None into the string
+                # "None" and hold a phantom report the planner would read as the
+                # bot's own words. Only coerce a value that is actually there.
+                raw_text = result.result["text"]
+                text, cut = cap_result(text=None if raw_text is None else str(raw_text))
                 if text is not None:
                     self.last_result = {
                         "text": text,

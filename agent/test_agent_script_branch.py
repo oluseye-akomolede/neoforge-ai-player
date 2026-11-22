@@ -1043,6 +1043,25 @@ class ScriptObservabilityTest(unittest.TestCase):
                          "an error tick that reported nothing must hold "
                          "nothing")
 
+    def test_a_carried_null_report_holds_nothing(self):
+        # api.result(null) throws: the runner sends {"text": null}, which
+        # binding.js:257-262 says is the SAME case as "not reportable at all",
+        # and cap_result reports both as (None, False). The parser gate accepts
+        # the payload because the "text" key is present -- so the call site is
+        # the only place that can tell them apart, and str()-ing the value
+        # first turned it into the four-character string "None": a phantom
+        # report the planner would read as the bot's own words. Pinned here
+        # because test_script_tick pins the callee's half and neither is a
+        # substitute for the other.
+        self._error_tick_carrying(None)
+        self.a._active_goal_id = "goal-A"
+        self.a._result_slot = self.agent_mod.ResultSlot()
+        with mock.patch("builtins.print"):
+            self.a._run_script_tick()
+        self.assertFalse(self.a._result_slot.has_pending(),
+                         "a null report reached the slot; str(None) is not a "
+                         "report the bot made")
+
     # ── say/send delivery ────────────────────────────────────────────────
     # Until 2026-11-20 22:21Z a script's api.say was refused at translation,
     # so a bot whose script chatted every minute never spoke. Routing them is
