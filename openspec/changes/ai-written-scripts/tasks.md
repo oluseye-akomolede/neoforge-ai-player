@@ -296,3 +296,34 @@ Three defects seen on a live prod goal. Spec first, then code, one commit each.
       prod it will be archived into `openspec/specs/`, and this change's delta
       then becomes a MODIFIED delta on the live `bot-coded-agents` capability,
       not an ADDED one. This change is written to be additive either way.
+
+## 5. Testing note: a wrong module name looks like a red suite
+
+Recorded 2026-11-22 after two seats in one night made the same mistake.
+
+The script tests do not live in one place, and there are no
+`agent/test_plan_schema.py` or `agent/test_plan_orchestrator.py`. Running a
+module that does not exist prints `Ran 1 test ... FAILED (errors=1)`, which is
+an **import error wearing a test result** -- it reads as "this test is red"
+when nothing was tested. Do not quote that as a failure, and do not chase it.
+
+Scope a test or a mutant by **what reaches the changed field**, never by the
+module's name or the set of files you edited. Grep for the symbol (counts at
+`07d21bd`):
+
+    grep -ln 'validate_plan_dict' agent/test_*.py  # 1: test_script_mode_gate.py
+    grep -ln 'execute_task'       agent/test_*.py  # 2: test_agent_script_branch, test_l3_script_path
+    grep -ln 'call_runner'        agent/test_*.py  # 3: test_agent_script_branch, test_script_client, test_script_tick
+
+No filename pattern works: `plan_schema`'s only test is
+`test_script_mode_gate.py`, and `plan_orchestrator`'s are
+`test_agent_script_branch.py` and `test_l3_script_path.py`. A glob like
+`test_script_*` would have missed the second of those, and one like
+`test_plan_*` matches nothing at all.
+
+Two traps in the grep itself, both hit while writing this note. Grep the
+**symbol**, not the module name: `plan_orchestrator` as a string appears in
+imports and inflates the count, and there is no `PlanOrchestrator` class to
+anchor on -- the module's entry point is the function `execute_task`. And a
+zero from a guessed symbol is a bad query, not an absence: list the module's
+`class`/`def` lines before concluding a test does not exist.
