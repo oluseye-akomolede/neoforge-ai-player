@@ -44,6 +44,15 @@ public class WideSearchBehavior implements Behavior {
 
     private static final int[] SHELL_RADII = {32, 64, 128, 256, 512, 1024};
     private static final int CELL_SIZE = 16;
+    /** Ceiling for a caller-supplied radius. Unlike AreaLootBehavior — whose
+     *  MAX_RADIUS is 64 because a loot cube grows in all three dimensions — a
+     *  wide search exists to reach the far shells, so the ceiling is the last
+     *  shell rather than a small constant. */
+    private static final int MAX_RADIUS = SHELL_RADII[SHELL_RADII.length - 1];
+    /** Radius the current shell was actually clamped to. The unclamped
+     *  SHELL_RADII entry is not what the bot searched, so the failure message
+     *  must use this instead. */
+    private int currentRadius;
     private int shellIndex;
 
     // Cell grid for current shell
@@ -87,7 +96,13 @@ public class WideSearchBehavior implements Behavior {
         searchType = extra.getOrDefault("search_type", "block");
         botIndex = parseIntOr(extra.get("bot_index"), 0);
         botCount = parseIntOr(extra.get("bot_count"), 1);
-        maxRadius = directive.getRadius() > 0 ? directive.getRadius() : 512;
+        // A caller-supplied radius is a maximum distance to search, not a
+        // starting shell. extra.radius wins over the top-level field because
+        // the skill surface teaches extra for AREA_LOOT and the model reuses
+        // that shape here; the top-level field stays supported for direct API
+        // callers. Absent means the directive default (256) and today's
+        // escalation, unchanged.
+        maxRadius = resolveMaxRadius(extra.get("radius"), directive.getRadius());
 
         if (directive.hasLocation()) {
             center = new BlockPos((int) directive.getX(), (int) directive.getY(), (int) directive.getZ());
@@ -113,6 +128,7 @@ public class WideSearchBehavior implements Behavior {
     private void beginShell() {
         int radius = SHELL_RADII[Math.min(shellIndex, SHELL_RADII.length - 1)];
         radius = Math.min(radius, maxRadius);
+        currentRadius = radius;
 
         int minX = center.getX() - radius;
         int maxX = center.getX() + radius;
@@ -343,8 +359,12 @@ public class WideSearchBehavior implements Behavior {
         int prevRadius = SHELL_RADII[Math.min(shellIndex - 1, SHELL_RADII.length - 1)];
 
         if (nextRadius <= prevRadius || shellIndex >= SHELL_RADII.length) {
-            progress.logEvent("Search exhausted at radius " + prevRadius + " — target not found");
-            progress.setFailureReason("Target '" + searchTarget + "' not found within " + prevRadius + " blocks");
+            // Report what was actually searched. prevRadius is the unclamped
+            // shell value, so a search capped at 4 blocks would otherwise
+            // claim "not found within 32 blocks".
+            int searchedRadius = Math.max(currentRadius, 0);
+            progress.logEvent("Search exhausted at radius " + searchedRadius + " — target not found");
+            progress.setFailureReason("Target '" + searchTarget + "' not found within " + searchedRadius + " blocks");
             bot.systemChat("Search failed: " + searchTarget + " not found", "red");
             phase = Phase.DONE;
             return BehaviorResult.FAILED;
@@ -442,6 +462,31 @@ public class WideSearchBehavior implements Behavior {
 
         player.move(MoverType.SELF, new Vec3(direction.x * SPRINT_SPEED, yVelocity, direction.z * SPRINT_SPEED));
         bot.lookAt(target.x, target.y, target.z);
+    }
+
+    /** Resolve the maximum search radius from the two places a caller can put
+     *  it. {@code extraRadius} (the skill/script surface) wins when present and
+     *  parseable; {@code topLevelRadius} (the direct API field) is the fallback.
+     *  The result is clamped to [1, MAX_RADIUS].
+     *
+     *  <p>A zero or negative value means "unset" on both surfaces — Directive's
+     *  builder default is 256 and the HTTP layer only records a radius when it
+     *  is positive — so a non-positive input must fall through, not clamp to 1.
+     *  Clamping 0 to 1 would silently turn "no radius given" into a 1-block
+     *  search. */
+    static int resolveMaxRadius(String extraRadius, int topLevelRadius) {
+        int requested = topLevelRadius;
+        if (extraRadius != null) {
+            try {
+                int parsed = Integer.parseInt(extraRadius.trim());
+                if (parsed > 0) requested = parsed;
+            } catch (NumberFormatException ignored) {
+                // Unparseable extra falls back to the top-level field, which is
+                // strictly better than failing the whole directive over a typo.
+            }
+        }
+        if (requested <= 0) requested = 256;
+        return Math.max(1, Math.min(requested, MAX_RADIUS));
     }
 
     private static int parseIntOr(String val, int def) {

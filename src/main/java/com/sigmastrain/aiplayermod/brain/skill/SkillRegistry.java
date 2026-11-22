@@ -139,14 +139,14 @@ public final class SkillRegistry {
                 """,
                 "target:item_id", "count:int");
 
-        seed("goto_and_scan", "Teleport to a location, then wide-search for a target.",
+        seed("goto_and_scan", "Teleport to a location, then wide-search for a target. radius is the maximum distance to search from that location; the search stops there instead of walking further.",
                 """
                 { "type": "sequence", "children": [
                     { "type": "directive", "kind": "TELEPORT", "x": "${x}", "y": "${y}", "z": "${z}" },
-                    { "type": "directive", "kind": "WIDE_SEARCH", "target": "${target}", "extra": { "bot_index": "${bot_index}", "bot_count": "${bot_count}" } }
+                    { "type": "directive", "kind": "WIDE_SEARCH", "target": "${target}", "extra": { "bot_index": "${bot_index}", "bot_count": "${bot_count}", "radius": "${radius}" } }
                 ] }
                 """,
-                "x:int", "y:int", "z:int", "target:block_or_entity", "bot_index:int", "bot_count:int");
+                "x:int", "y:int", "z:int", "target:block_or_entity", "bot_index:int", "bot_count:int", "radius:int");
 
         seed("search_and_loot", "Loot every spawnable container in an area, then store everything.",
                 """
