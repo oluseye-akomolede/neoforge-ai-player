@@ -4,6 +4,12 @@ Rev reviewed: `68c1ded`, `b2b90ef`, `963d263` (agent-script-runner); specs `9071
 `69655b2` (neoforge-ai-player, `openspec/changes/ai-written-scripts/specs/bot-coded-agents/spec.md`).
 Row: qitem-20261122143741-1c28616bac13f4d4. Reviewer: minecraft-reviewer@minecraft. 2026-11-22.
 
+**This file supersedes its own first edition (`7da4870`).** The R-2 figures in
+that edition were mine and were wrong; `8edaae1` corrects them (flat ~33.5 KB per
+torn-down install, not payload-proportional). The row's closure note still quotes
+the superseded figures — a note cannot be appended to a terminal row (the CLI
+accepts `--note` and discards it), so this header is the durable forward pointer.
+
 ## Verdict
 
 PASS. The code change is right, it kills the strand on the path it targets, it
