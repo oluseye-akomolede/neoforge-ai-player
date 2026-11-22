@@ -171,3 +171,75 @@ defect. Recorded so a later reader does not inherit them:
   missing data.
 - Port `7433` when the runner is on `8080/8081` — carried into my own earlier step-1
   report as a wrong figure.
+
+---
+
+## Follow-up: `1073535`, and two corrections from the builder
+
+Reviewed `1073535` ("the carried-error expectation includes `error: True`"), which
+closes the one required fix. Verified in my own clean worktree, not the builder's.
+
+### The fix is right, and it is expectation-only
+
+- `git show 1073535 --stat`: one file, `agent/test_script_tick.py`, +11/-3. **No
+  production file.** Production behaviour untouched, which is what was asked.
+- `test_script_tick`: `Ran 62`, `OK`, rc=0.
+- **Mutant (the builder's own claim, reproduced):** delete `"error": True` from the
+  expectation → `Ran 62`, `FAILED (failures=1)`. The assertion is load-bearing.
+- **Full suite, this rev:** `Ran 674`, `FAILED (failures=30, errors=1, skipped=1)`.
+- **Full suite, parent `0eea399~1`:** `Ran 666`, `FAILED (failures=30, errors=1, skipped=1)`.
+- **Failure sets diffed by name: 31 lines each, `IDENTICAL_FAILURE_SET`.** The one new
+  failure is gone; nothing was introduced. (My first attempt at this diff compared
+  against a baseline file I had already deleted, so it printed the whole set as
+  additions. Rebuilt the baseline at the parent rev before reading the result.)
+
+### Correction to my own review: the code-hours cap
+
+I wrote that a waiting script "should still bite" the cap and filed the Java
+enforcement as unverified. The builder read the source and is right; I am wrong
+on both edges, and this amends the section above rather than standing beside it.
+
+- **There is no Java metering.** 176 files under `src/main` (the builder said 177;
+  the count here is 176 — immaterial, and I am recording my own number), zero hits
+  for `3600` / `SECONDS_PER_HOUR` / `MS_PER_HOUR` / `code.?hour` in any of them.
+- **The unit is ticks, not actions.** `openspec/changes/coded-agents/specs/bot-coded-agents/spec.md:419`
+  — "The cap counts ticks… an active script that is simply not ticked accrues
+  nothing"; `:440` — "Metering MUST run in the first release, even while the daily
+  cap is unlimited". (The builder cited `:507-511` and `:528`; those are the Script
+  Swap and Unreachable Runner requirements. Their quoted wording is real, at `:419`
+  and `:440`. Line drift, not a false claim.)
+- **A waiting script is ticked.** The `done:false` branch returns before
+  `_result_slot.store` (`agent.py:3608-3611`), but `handled` is still True, so
+  `_run_script_tick` returns True and the loop waits `TICK_DELAY` (=2.0 s) at
+  `agent.py:4444` like any other pass. It saves planner calls and delivery slots,
+  **not code hours**.
+
+So the exemption does not make a waiting script free, which is what I suspected, but
+my reason for thinking so was wrong: I had not read the unit, and "actions
+dispatched" is not what the cap counts. Whether waiting *should* be free is a spec
+question nobody asked me, and I am not raising it as a defect — `0eea399` behaves
+consistently with spec `:419` as written.
+
+The real gap the builder surfaced is upstream of this change: spec `:128` sets the
+daily cap and `:440` requires metering in v1, and **no metering exists at any rev.**
+That is a defect in the spec's own terms and belongs on a row; it is not `0eea399`'s,
+and it does not change this verdict.
+
+### A test name that states the old semantics (builder's point, agreed)
+
+`test_script_tick.py:905 test_done_false_is_a_failure` — after `0eea399`, `False`
+from `result_verdict` means *still working*, not *failed*. The assertion
+(`assertIs(..., False)`) and the KILLS comment ("treating any result as done — the
+goal closes and the bot stops with the work unfinished") are both still correct.
+Only the **name** carries the pre-`0eea399` reading. The builder declined to rename
+because renaming changes what that mutant claims to kill, and a fix commit is the
+wrong place for it. Agreed — recorded here so the next reader does not take the name
+for the semantics.
+
+## Verdict, restated
+
+**PASS.** `0eea399` is behaviourally correct and `1073535` closes its one defect
+without touching production code. The bounded-exit exemption, the error/wait
+distinction, the narrowed subtask rule, and the prompt fix all held under mutants.
+The one red test was real, is now green, and the suite is back to its parent
+baseline. The code-hours gap is pre-existing, spec-level, and untracked on any row.
