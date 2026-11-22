@@ -1330,13 +1330,15 @@ survives past 30,000 once its two inner refs are disposed.
 
 The install path MUST dispose the refs it created on both the success and the
 failure path. `evaluate()` catches a throw from the install, so without this a
-failed install is silent and its refs leak. The leaked size is proportional to
-the installed payload, because QuickJS retains that payload inside the stranded
-handle: measured against the real runtime at ~209.5 KB per failed install for
-the 40-bot, 200-message snapshot used above, and ~68 KB for a single bot. It is
-not one fixed figure, and an earlier draft's "~480 KB, enough to exhaust a
-32 MiB runtime in about 66 of them" was not reproducible and is withdrawn (R-2,
-2026-11-22). The failure path is reachable in production, not only in tests — a
+failed install is silent and its refs leak. That leak is a FIXED ~33.5 KB
+(33496 bytes, measured against the real runtime on 2026-11-22) per failed
+install, and it is independent of payload size: a 1825-byte and an 79807-byte
+snapshot produced byte-identical deltas, because what is stranded is one HostRef
+entry rather than a copy of the JSON. Two figures were stated here before and
+both were wrong — an original "~480 KB, enough to exhaust a 32 MiB runtime in
+about 66 of them" (R-2) and a "~209.5 KB at 40 bots, ~68 KB at one bot,
+proportional to payload" (R-3), each withdrawn on 2026-11-22 after
+re-measurement. The failure path is reachable in production, not only in tests — a
 tick can tear down between install and bind, which is why `#installApi` gained a
 `try/finally` on 2026-11-13.
 
