@@ -192,44 +192,61 @@ places) is stale and must be re-derived before use.
 The live password never reaches this VM's filesystem (same ruling as the MOD_API_KEY plan).
 Copies are made wholly on controlplane and live in the cluster.
 
+All three copies — both TEST holders and, under (A), prod — are made by **one loop**, so
+each copy goes through the same write and the same whole-`.data` fingerprint check. The
+prod copy is a required backup, not an optional one: §8b restores prod from exactly
+`minecraft/pgdsn-backup-agent-config-prod`, and a prod write without an in-cluster backup
+is not permitted.
+
+`NS` is per-row rather than a loop-wide variable, because prod lives in `minecraft`. The
+`minecraft` row only runs under (A); leaving it in under (B) costs nothing and keeps one
+code path.
+
 ```bash
 ssh controlplane 'bash -s' <<'REMOTE'
 set -eu
-NS=minecraft-test
-for src in "agent-config pgdsn-backup-agent-config" "hive-credentials pgdsn-backup-hive-credentials"; do
-  set -- $src
-  SRC=$1; DST=$2
+# "namespace source destination" -- the prod row is required under option (A).
+for row in \
+  "minecraft-test agent-config      pgdsn-backup-agent-config" \
+  "minecraft-test hive-credentials  pgdsn-backup-hive-credentials" \
+  "minecraft      agent-config      pgdsn-backup-agent-config-prod"
+do
+  set -- $row
+  NS=$1; SRC=$2; DST=$3
   kubectl -n $NS get secret "$SRC" -o json \
     | python3 -c 'import json,sys;o=json.load(sys.stdin);[o["metadata"].pop(k,None) for k in ("resourceVersion","uid","creationTimestamp","selfLink","immutable")];o["metadata"]["name"]=sys.argv[1];print(json.dumps(o))' "$DST" \
-    | kubectl apply -f - >/dev/null
+    | kubectl -n $NS apply -f - >/dev/null
   # verify the COPY, not the source: compare whole .data, still base64, so nothing decodes
   a=$(kubectl -n $NS get secret "$SRC" -o json | python3 -c 'import json,sys,hashlib;print(hashlib.sha256(json.dumps(json.load(sys.stdin)["data"],sort_keys=True).encode()).hexdigest()[:16])')
   b=$(kubectl -n $NS get secret "$DST" -o json | python3 -c 'import json,sys,hashlib;print(hashlib.sha256(json.dumps(json.load(sys.stdin)["data"],sort_keys=True).encode()).hexdigest()[:16])')
-  [ -n "$a" ] && [ "$a" = "$b" ] || { echo "ABORT: copy $DST .data differs from $SRC"; exit 1; }
-  echo "$DST verified whole .data fp=$b"
+  [ -n "$a" ] && [ -n "$b" ] && [ "$a" = "$b" ] || { echo "ABORT: copy $NS/$DST .data differs from $NS/$SRC"; exit 1; }
+  echo "$NS/$DST verified whole .data fp=$b"
 done
 REMOTE
+# expect exactly three lines. Under (A) the third is minecraft/pgdsn-backup-agent-config-prod.
 ```
 
-Under (A), the prod secret is copied in the same step, into namespace **`minecraft`**:
-`minecraft/agent-config → minecraft/pgdsn-backup-agent-config-prod`. It is a required
-backup, not an optional one — §8b restores prod from exactly this object, and a prod write
-without an in-cluster backup is not permitted. Confirm the copy before writing anything:
+Key **names and lengths only** — `.data` is still base64, so this decodes nothing:
 
 ```bash
 ssh controlplane 'bash -s' <<'REMOTE'
 set -eu
-# Key NAMES and base64 lengths only -- .data is still base64, so this decodes nothing.
-for s in agent-config pgdsn-backup-agent-config-prod; do
-  kubectl -n minecraft get secret "$s" -o json | python3 -c '
+for row in "minecraft-test agent-config" "minecraft-test pgdsn-backup-agent-config" \
+           "minecraft-test hive-credentials" "minecraft-test pgdsn-backup-hive-credentials" \
+           "minecraft agent-config" "minecraft pgdsn-backup-agent-config-prod"; do
+  set -- $row
+  kubectl -n $1 get secret "$2" -o json | python3 -c '
 import json,sys
 o=json.load(sys.stdin)["data"]
 print(sys.argv[1], {k: len(v) for k, v in sorted(o.items())})
-' "$s"
+' "$1/$2"
 done
 REMOTE
-# expect: both lines carry PG_DSN at the SAME length.
+# expect: each copy line carries PG_DSN at the SAME length as its source line.
 ```
+
+Under (B) the `minecraft` pair will not exist; that is expected for (B) and a STOP under
+(A).
 
 Delete the `pgdsn-backup-*` copies at the end of the run once verification passes, and
 record the deletion on the queue row. Delete them **only** after 6a–6e and, under (A),
@@ -405,31 +422,64 @@ for p in $pods; do
         | grep -ciE 'password authentication failed|FATAL:  *password' )
   [ "${bad:-1}" -eq 0 ] || { echo "fail: $p has $bad password failures"; exit 0; }
 
-  # 3. Its bots are alive: the agent's own status must list at least one connected bot.
-  bots=$(kubectl -n $ns exec "$p" -- python3 -c '
-import json,sys
-try: d=json.load(sys.stdin)
-except Exception: print(0); sys.exit()
-b=d.get("bots") or d.get("players") or []
-print(sum(1 for x in b if str(x.get("state","")).lower() in ("online","spawned","connected") or x.get("connected") is True))
-' < /dev/null 2>/dev/null)
-  # The agent exposes bot state over its own HTTP surface; if that surface is absent this
-  # step reports "unknown" rather than a pass -- see the note below.
-  case "${bots:-unknown}" in
-    ''|*[!0-9]*) echo "unknown: $p exposes no bot count" ;;
-    0) echo "fail: $p reports no connected bots" ;;
-    *) echo "ok: $p authenticated, $bots bot(s) connected" ;;
+  # 3. Its bots are alive. Two distinguishable outcomes, so "could not read" can never
+  #    collapse into "read a zero" (an earlier version piped /dev/null into json.load,
+  #    whose except arm printed 0 and turned an unreadable surface into a hard fail).
+  #    The query runs in the pod, but the verdict is decided HERE, from its exit status.
+  #
+  #    Endpoint and shape are read from the code, not guessed:
+  #      agent/config.py:116        DASHBOARD_PORT defaults to 5000, and prod sets it to 5000
+  #      agent/dashboard/server.py  @app.get("/api/state") -> shared_state.snapshot()
+  #      agent/dashboard/state.py   snapshot() -> {"bots": {name: snapshot}, "server": {...}}
+  #      agent/agent.py:4576        each entry carries "status" (not "state")
+  #    /api/bots returns only NAMES, so it cannot answer a liveness count.
+  out=$(kubectl -n $ns exec "$p" -- python3 -c '
+import json,sys,urllib.request
+port=sys.argv[1] if len(sys.argv)>1 else "5000"
+try:
+    d=json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state",timeout=5))
+except Exception as e:
+    print(f"unreadable: {type(e).__name__}",file=sys.stderr); sys.exit(3)
+b=d.get("bots")
+if not isinstance(b,dict):
+    print("unreadable: no bots map",file=sys.stderr); sys.exit(3)
+# A bot is live if its snapshot has a status at all; the dashboard only pushes
+# snapshots for a running bot.
+live=[k for k,v in b.items() if isinstance(v,dict) and v.get("status")]
+print(len(live))
+' "$(kubectl -n $ns get secret agent-config -o jsonpath='{.data.DASHBOARD_PORT}' | base64 -d 2>/dev/null || echo 5000)" 2>/dev/null) && rc=0 || rc=$?
+  case "$rc" in
+    0) case "${out:-x}" in
+         # rc 0 with a non-integer means the query itself is broken: still unknown, not zero.
+         ''|*[!0-9]*) echo "unknown: $p bot-query returned rc=0 but no count" ;;
+         0) echo "fail: $p reports no connected bots" ;;
+         *) echo "ok: $p authenticated, $out bot(s) connected" ;;
+       esac ;;
+    *) echo "unknown: $p exposes no readable bot count (rc=$rc)" ;;
   esac
   exit 0
 done
 REMOTE
 ```
 
-**Expect exactly one line: `ok: <pod> authenticated, N bot(s) connected`.** A `fail:` line
-is a FAIL and triggers §8. An `unknown:` line is **not a pass** — it means the bot-count
-read did not work from here, and the operator must confirm bot presence by their own means
-before this plan is called done. Do not let absence of an error stand in for presence of
-bots.
+**Expect exactly one line: `ok: <pod> authenticated, N bot(s) connected`.** Only that line
+is a pass. A `fail:` line is a FAIL and triggers §8. An `unknown:` line is **not** a pass
+and **not** a failure: it means the count could not be read from here, and the operator
+confirms bot presence by their own means (the prod dashboard, or `/list` on the game
+server) before this plan is called done.
+
+Two honest limits of this block, since neither has been run:
+
+- The endpoint, port and JSON shape come from the code paths cited in step 3, and the prod
+  secret's `DASHBOARD_ENABLED`/`DASHBOARD_PORT` were read read-only and confirm the surface
+  is enabled on 5000. What has **not** been done is executing this query against a live pod,
+  so whether `/api/state` answers inside the container is unproven. That is why the absent
+  case is wired to `unknown` — a wrong guess lands there, not on `fail`.
+- `status` is used only as "this bot has a snapshot", not as a health judgement: the
+  snapshot is pushed by a running bot, so a bot with no status is one the dashboard never
+  saw. It deliberately does not try to interpret status words.
+- Everything in this section is read-only and prints counts and status words only. It never
+  prints a DSN, a password, or a bot's contents.
 
 **Pass requires:** 6a three identical new fingerprints ≠ old; 6b all restarts complete
 including prod; 6c zero password-failure lines; 6d `1` from both TEST DSNs, `1` from the
