@@ -1,0 +1,119 @@
+# PROD agent Deployment -- PTC rollout step 4 (Mystic, first scripted prod bot).
+#
+# GENERATED FROM LIVE, not hand-written and not derived from
+# deploy/agent-deployment.yaml (that file is behind live: no step-3 image).
+# Source: `kubectl -n minecraft get deploy aibot-agent -o json` at
+# 2026-11-22 12:0xZ. Server-populated fields (status, uid, resourceVersion,
+# generation, creationTimestamp, managedFields) stripped. Everything else is
+# what live had.
+#
+# THE ONLY DIFFERENCES FROM LIVE:
+#   1. env SCRIPT_BOTS=Mystic
+#   2. env SCRIPT_RUNNER_URL -> prod runner Service :8080
+#   3. env SCRIPTS_DIR=/srv/aibot-scripts + volume `scripts` (ConfigMap
+#      agent-scripts, see deploy/agent-scripts-prod.yaml) + its mount
+#   4. env RUNNER_TOKEN via secretKeyRef {agent-script-runner-token, minecraft}
+#      -- a REFERENCE only; no value appears here or in any diff.
+# Everything else (image aea76462, envFrom, the three OMP/MKL/OPENBLAS env
+# vars, resources, volumes, securityContext, imagePullSecrets, strategy
+# Recreate, selector) is byte-equal to live.
+#
+# NOTE: envFrom is a SECRET ref, not a ConfigMap ref -- `agent-config` is a
+# Secret in this namespace. Read from live, not assumed.
+#
+# PORTS: 8080 API / 8081 health, read from the reviewed prod runner manifest at
+# 4eb9e4f (containerPort 8080, 8081) and confirmed against the live prod
+# Service's spec.ports.
+#
+# WHY agent-scripts IS IN PROD: agent.py:4297-4306 -- a bot in SCRIPT_BOTS but
+# absent from bindings.json has no script and runs the planner as before.
+# Without the ConfigMap, SCRIPT_BOTS=Mystic would change nothing observable.
+#
+# ROLLBACK: re-apply the object recorded after step 3 and before this step,
+# then verify the env list matches the record. `set env NAME-` is NOT used
+# (a missing name reports success and removes nothing).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: aibot-agent
+    app.kubernetes.io/part-of: aiplayermod
+    tier: prod
+  name: aibot-agent
+  namespace: minecraft
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: aibot-agent
+      tier: prod
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/restartedAt: '2026-11-22T10:09:36Z'
+      labels:
+        app: aibot-agent
+        tier: prod
+    spec:
+      containers:
+      - env:
+        - name: OMP_NUM_THREADS
+          value: '1'
+        - name: MKL_NUM_THREADS
+          value: '1'
+        - name: OPENBLAS_NUM_THREADS
+          value: '1'
+        - name: SCRIPT_BOTS
+          value: Mystic
+        - name: SCRIPT_RUNNER_URL
+          value: http://agent-script-runner.minecraft.svc.cluster.local:8080
+        - name: SCRIPTS_DIR
+          value: /srv/aibot-scripts
+        - name: RUNNER_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: agent-script-runner-token
+              key: minecraft
+        envFrom:
+        - secretRef:
+            name: agent-config
+        image: harbor.arcadia-ecs.local/aiplayermod/agent@sha256:aea764626a55846920d032d6844d706e3ef3b256039c8479c73c341ec27c0f9a
+        imagePullPolicy: IfNotPresent
+        name: agent
+        ports:
+        - containerPort: 5000
+          name: dashboard
+          protocol: TCP
+        resources:
+          limits:
+            cpu: '1'
+            memory: 512Mi
+          requests:
+            cpu: 250m
+            memory: 256Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /opt/aibot-agent/data
+          name: agent-data
+        - name: scripts
+          mountPath: /srv/aibot-scripts
+      dnsPolicy: ClusterFirst
+      imagePullSecrets:
+      - name: harbor-creds
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: agent-data
+        persistentVolumeClaim:
+          claimName: agent-data
+      - name: scripts
+        configMap:
+          name: agent-scripts
+          defaultMode: 420
