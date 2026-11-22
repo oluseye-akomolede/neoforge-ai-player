@@ -1109,6 +1109,19 @@ dispatch.
 - **WHEN** that tick runs
 - **THEN** the script stays bound, because the tick did not refuse every action
 
+#### Scenario: Serialising to option 2 replaces the counter behaviour
+
+- **GIVEN** an implementation that chose option 2 instead of option 1, and a
+  script whose ticks have so far alternated refused and dispatched, so an
+  all-refused run has started and been reset before
+- **WHEN** fewer than `N` all-refused ticks occur in a row, and then a tick
+  dispatches
+- **THEN** the script stays bound, because that dispatch reset the count
+- **AND** when a later run of `N` all-refused ticks happens with no dispatch
+  between them, the script is unbound and the reason is in chat and in the log
+- **NOTE** this scenario applies only to option 2; the shipped behaviour has no
+  counter and unbinds on the first all-refused tick
+
 ### Requirement: A Yielded Goal Returns To The Planner
 
 Yielding a goal off a script MUST NOT leave the bot with no driver. After an

@@ -208,40 +208,52 @@ L3 path rather than limit the spec to the decompose paths.
       Verified by: a test asserting every example kind, passed through
       `bind_action`, raises no `RefusedAction`; and that removing a kind from
       `BINDABLE_KINDS` without touching the prompt reds.
-- [x] 2a.14 **An all-refused tick yields the goal, or stops and says why.**
+- [ ] 2a.14 **An all-refused tick unbinds the script.**
       Today `_run_script_tick` returns False and the caller falls through
       (`agent/agent.py:3230`), but the script stays bound and `_plan_steps`
       still holds the old reply's steps, so `_check_task_board` is skipped and
       the same refused script reruns every tick. Trial 4.1 measured 69 refusals
       / 69 "falling back" / 1 L3 SCRIPT / 0 new plans in six minutes with the
       bot stuck.
-      Implement **option 1** (yield the goal): on the first tick that refuses
-      every action the script proposes, unbind it and hand the goal back so
-      `call_plan` is asked again. Option 1 has no `N` and no counter -- do not
-      add one, and do not wait for a streak; an all-refused tick is a script
-      that cannot dispatch, not one to wait out. Log which option fired.
+      Implement **option 1**: on the first tick that refuses every action the
+      script proposes, unbind the script and clear its stale plan. Option 1 has
+      no `N` and no counter -- do not add one, and do not wait for a streak; an
+      all-refused tick is a script that cannot dispatch, not one to wait out.
+      Log which option fired.
       Verified by: a script whose only action is an unknown kind is unbound on
-      its first all-refused tick, the goal is handed back and does not end up
-      with no driver, and the reason is in the log; and a script that refuses
-      one kind but dispatches another on the same tick STAYS bound, because
-      that tick did not refuse every action.
-      IMPLEMENTED. The seam is the existing `if ran == 0:` in
-      `_run_script_tick` (agent.py:3289), reached only when the script handled
-      the tick and dispatched nothing. `refusals` non-empty is the all-refused
-      test; the new `_unbind_planner_script` clears the same three fields as
-      `_bind_planner_script` under the same lock and REFUSES to touch a
-      hand-written binding (2.7), and the stale `_plan_steps`/`_plan_step_idx`/
+      its first all-refused tick, the stale plan is cleared, and the reason is
+      in the log; and a script that refuses one kind but dispatches another on
+      the same tick STAYS bound, because that tick did not refuse every action.
+      IMPLEMENTED (unbinding half only). The seam is the existing `if ran == 0:`
+      in `_run_script_tick` (agent.py:3289), reached only when the script
+      handled the tick and dispatched nothing. `refusals` non-empty is the
+      all-refused test; the new `_unbind_planner_script` clears the same three
+      fields as `_bind_planner_script` under the same lock and REFUSES to touch
+      a hand-written binding (2.7), and the stale `_plan_steps`/`_plan_step_idx`/
       `_plan_instruction` are cleared so `_check_task_board` is no longer gated
       off. Five tests; a mutant removing the block reds four of them, and the
       partly-working test stays green because it asserts the absence.
-      Re-entry is answered, and traced rather than assumed: the three fields
-      are cleared at `agent.py:3304-3306` BEFORE the `return False`, so on the
-      unbind tick `_check_task_board` is skipped at `:3629` (correct -- there
-      is no plan for an abandoned goal) and on the NEXT tick `_plan_steps` is
-      empty, `:3629`'s guard passes, and `call_plan` is reached. The
-      69-refusals fall-through is closed. This is a code-path argument, not a
-      live observation: no trial has yet shown the re-plan in a log, so treat
-      the re-plan itself as traced-and-tested, not observed.
+      WHAT THIS DOES NOT DO: yielding does NOT return the goal to a planner.
+      `execute_task` runs once per goal on a worker thread (`agent.py:954` /
+      `:1754`) and returns; clearing `_plan_steps` leaves the bot with no plan
+      and no worker, and nothing re-submits the goal. An earlier version of
+      this task claimed the opposite from a `_check_task_board` trace at
+      `:3629`; that gate belongs to the TASKBOARD path, not to a chat goal, so
+      the trace answered "which gate does the next tick pass" rather than "who
+      owns the goal". That claim was false and is withdrawn. The re-plan is a
+      separate, unimplemented obligation: see "A Yielded Goal Returns To The
+      Planner" (spec.md) and task 2a.15 below. 2a.14 is UNTICKED pending that
+      work: it was previously ticked on the withdrawn re-entry claim.
+- [ ] 2a.15 **A yielded goal returns to the planner, under a spin bound.**
+      The obligation 2a.14 withdraws: after an all-refused yield the goal goes
+      back to the main planner and exactly one new `call_plan` happens, with
+      the anti-spin bound the requirement names. `execute_task` is a
+      once-per-goal worker target (`agent.py:954` / `:1754`); the tick loop
+      must re-submit the goal to it rather than only clearing `_plan_steps`.
+      Verified by: a yielded chat goal produces exactly one new `call_plan`;
+      and a mutant that removes the re-submit reds that test. The spin bound is
+      part of the requirement, so a test must show a repeatedly-yielded goal
+      stops rather than re-planning forever.
 
 
 ## 3. What is deliberately out of scope
