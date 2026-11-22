@@ -556,3 +556,84 @@ before `resolveDrop`.
 - THEN it says `target` (a non-blank block id) is required
 - AND it says `target` is never a position, so `x`/`y`/`z` do not stand in for it
 - AND the field names in the prompt come from the same table the binding checks
+
+### Requirement: A Directive Needing Coordinates Is Refused Without Them
+
+A kind whose coordinates are always meaningful MUST be refused at binding when
+it omits `x`, `y` or `z`, with a reason the script log shows. It MUST NOT bind
+and act on an implied origin.
+
+The failure this requirement exists to stop: `Directive`'s `x`, `y` and `z` are
+primitive doubles defaulting to `0.0`
+(`src/main/java/com/sigmastrain/aiplayermod/brain/Directive.java:86`), and
+`hasLocation` is set only by the builder's `location(...)` (`:98-100`).
+`GOTO` and `TELEPORT` read `directive.getX()` unconditionally in `start()`
+(`GotoBehavior.java:36-38`, `TeleportBehavior.java:22-24`), so a script sending
+`{"kind": "GOTO"}` with no coordinates binds, and the bot walks to — or
+teleports to — `0,0,0`, including into another dimension for `TELEPORT`. It does
+not throw and is bounded by `MAX_TICKS`, so it is less severe than the MINE
+wedge, but it is still an action the script never asked for.
+
+The rule applies to a kind only where a missing coordinate is never valid. Every
+bindable kind that reads directive coordinates was checked:
+
+- `GOTO`, `TELEPORT` — read `getX()`/`getY()`/`getZ()` with no `hasLocation()`
+  guard, in `start()`. Refused without coordinates.
+- `BUILD` — `BuildBehavior.java:99-107` treats an all-zero location as "build
+  here", building at the player's feet. A missing coordinate IS valid here, so
+  `BUILD` is deliberately NOT in the rule; adding it would refuse a working call.
+- `WIDE_SEARCH` (`WideSearchBehavior.java:92-97`), `AREA_LOOT`
+  (`AreaLootBehavior.java:102-110`), `FUSE_BLOCK` (`FuseBlockBehavior.java:80`),
+  `DRIVE_VEHICLE` (`DriveVehicleBehavior.java:42`), `STORE_ALL`
+  (`StoreAllBehavior.java:63`), `CONTAINER_STORE`
+  (`ContainerStoreBehavior.java:89`), `CONTAINER_WITHDRAW`
+  (`ContainerWithdrawBehavior.java:68`) — each reads coordinates only under
+  `hasLocation()` and otherwise falls back to the bot's position or `extra`.
+  Left alone: their missing-coordinate behaviour is a deliberate fallback.
+- Every other bindable kind does not read directive coordinates at all.
+
+The coordinate rule MUST be a per-kind table, pinned by a test against this
+enumeration, so a new kind that reads coordinates unguarded is a test failure
+rather than a silent walk to origin. The script prompt MUST say which kinds need
+`x`/`y`/`z`, from that same table.
+
+A kind may require `target` and coordinates both; the two tables are separate
+because they answer different questions.
+
+#### Scenario: GOTO without coordinates is refused, not walked to origin
+- GIVEN a script that dispatches `{"kind": "GOTO"}`
+- WHEN the tick binds the action
+- THEN it is refused with a reason naming `x`, `y` and `z`
+- AND the script log shows that reason
+- AND no directive reaches the mod
+- AND no bot moves
+
+#### Scenario: TELEPORT without coordinates is refused
+- GIVEN a script that dispatches `{"kind": "TELEPORT", "extra": {"dimension": "minecraft:the_nether"}}`
+- WHEN the tick binds the action
+- THEN it is refused with a reason naming `x`, `y` and `z`
+- AND the bot is not teleported
+
+#### Scenario: BUILD with no coordinates still builds where the bot stands
+- GIVEN a script that dispatches `{"kind": "BUILD", "target": "shelter"}`
+- WHEN the tick binds the action
+- THEN it binds
+- AND the mod builds at the bot's position, as its all-zero fallback intends
+
+#### Scenario: Coordinates that are present and real bind
+- GIVEN a script that dispatches `{"kind": "GOTO", "x": 16, "y": 89, "z": -16}`
+- WHEN the tick binds the action
+- THEN it binds
+- AND the bound action carries all three coordinates
+
+#### Scenario: A zero coordinate is a coordinate
+- GIVEN a script that dispatches `{"kind": "GOTO", "x": 0, "y": 64, "z": 0}`
+- WHEN the tick binds the action
+- THEN it binds
+- AND the refusal is about an absent coordinate, never about one that equals zero
+
+#### Scenario: The prompt says which kinds need coordinates
+- GIVEN the rendered script prompt
+- WHEN a planner reads it
+- THEN it names `GOTO` and `TELEPORT` as needing `x`, `y` and `z`
+- AND the kinds it names come from the same table the binding checks

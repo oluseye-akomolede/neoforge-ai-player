@@ -71,6 +71,50 @@ _REQUIRED_FIELDS = {
     "FOLLOW": ("target",),
 }
 
+# Per-kind required coordinates. Separate from _REQUIRED_FIELDS because it asks
+# a different question -- not "which field" but "is this action meaningful
+# without a destination at all".
+#
+# `Directive`'s x/y/z are primitive doubles defaulting to 0.0, and hasLocation
+# is set only by the builder's location(...). GOTO and TELEPORT read getX()/
+# getY()/getZ() unconditionally in start(), so a targetless GOTO binds and the
+# bot walks to 0,0,0 -- and a targetless TELEPORT moves it there, across
+# dimensions if `dimension` was given. Neither throws; both are actions the
+# script never asked for.
+#
+# BUILD is deliberately absent: BuildBehavior treats an all-zero location as
+# "build here" and builds at the player's feet, so requiring coordinates there
+# would refuse a working call. Every other kind that reads directive
+# coordinates does so only under hasLocation() and otherwise falls back to the
+# bot's position or `extra` -- see the spec's enumeration.
+#
+# Pinned by test_script_prompt_kinds, which re-derives this set from the Java
+# behaviour sources: a new kind that reads coordinates unguarded fails the
+# test rather than silently walking to origin.
+_REQUIRED_COORDS = {
+    "GOTO": ("x", "y", "z"),
+    "TELEPORT": ("x", "y", "z"),
+}
+
+_COORD_HINT = ("{kind} moves the bot to the position you give; without one it "
+               "would move to 0,0,0.")
+
+
+def _missing_coords(kind, bound):
+    """Name the first coordinate this kind lacks a number for, or None.
+
+    A coordinate must be sent as a number: `{"x": "16"}` is refused rather than
+    coerced, because the mod takes a double and a string there is a script bug
+    worth surfacing. `bool` is excluded even though Python counts it as int --
+    `true` is not a coordinate. A numeric 0 is valid and binds: the refusal is
+    about an absent coordinate, never one that happens to equal zero.
+    """
+    for field in _REQUIRED_COORDS.get(kind, ()):
+        value = bound.get(field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return field
+    return None
+
 
 def _missing_required(kind, bound):
     """Name the first required field this action lacks, or None.
@@ -131,6 +175,14 @@ def bind_action(action):
         raise RefusedAction(
             f"action {kind} needs a non-blank {missing!r}; it was not sent "
             f"(got {sent})." + (f" {hint}" if hint else "")
+        )
+    bad_coord = _missing_coords(kind, bound)
+    if bad_coord is not None:
+        sent = sorted(k for k in bound if k != "kind")
+        raise RefusedAction(
+            f"action {kind} needs coordinate {bad_coord!r} as a number; it "
+            f"was not sent (got {sent}). "
+            + _COORD_HINT.format(kind=kind)
         )
     return bound
 

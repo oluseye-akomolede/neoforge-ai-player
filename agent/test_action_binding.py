@@ -34,6 +34,7 @@ RefusedAction = _ab.RefusedAction
 bind_action = _ab.bind_action
 bind_actions = _ab.bind_actions
 _REQUIRED_FIELDS = _ab._REQUIRED_FIELDS
+_REQUIRED_COORDS = _ab._REQUIRED_COORDS
 to_directive = _ab.to_directive
 
 
@@ -166,6 +167,8 @@ class BindingTest(unittest.TestCase):
             action = {"kind": kind}
             for field in _REQUIRED_FIELDS.get(kind, ()):
                 action[field] = "minecraft:stone"
+            for field in _REQUIRED_COORDS.get(kind, ()):
+                action[field] = 0
             self.assertEqual(bind_action(action)["kind"], kind)
 
 
@@ -183,6 +186,40 @@ class RequiredFieldTest(unittest.TestCase):
         with self.assertRaises(RefusedAction) as ctx:
             bind_action({"kind": "MINE", "x": 16, "y": 89, "z": -16})
         self.assertIn("target", str(ctx.exception))
+
+    def test_every_required_field_kind_refuses_a_missing_one(self):
+        # Parametrised over the table, not just MINE: a row with no test
+        # survives an edit that special-cases its kind, and the other three
+        # kinds in _REQUIRED_FIELDS would then be unchecked.
+        self.assertTrue(_REQUIRED_FIELDS, "empty table proves nothing")
+        for kind, fields in sorted(_REQUIRED_FIELDS.items()):
+            for field in fields:
+                with self.assertRaises(RefusedAction,
+                                       msg=f"{kind} without {field}") as ctx:
+                    bind_action({"kind": kind})
+                self.assertIn(field, str(ctx.exception),
+                              f"{kind} refusal must name {field}")
+
+    def test_every_required_field_kind_refuses_a_blank_one(self):
+        # Same rule as MINE's blank case, applied to every row: blank is the
+        # absent value that survives a presence check.
+        for kind, fields in sorted(_REQUIRED_FIELDS.items()):
+            for field in fields:
+                with self.assertRaises(RefusedAction,
+                                       msg=f"{kind} with blank {field}"):
+                    bind_action({"kind": kind, field: "   "})
+
+    def test_every_required_field_kind_binds_when_supplied(self):
+        # The refusal must be about the missing field, not the kind: supplying
+        # every required field (and any coordinates) binds.
+        for kind, fields in sorted(_REQUIRED_FIELDS.items()):
+            action = {"kind": kind}
+            for field in fields:
+                action[field] = "minecraft:stone"
+            for field in _REQUIRED_COORDS.get(kind, ()):
+                action[field] = 1
+            self.assertEqual(bind_action(action)["kind"], kind,
+                             f"{kind} with its required fields should bind")
 
     def test_the_refusal_names_coordinates_as_the_likely_mistake(self):
         # The script that wedged the bot looked plausible. Saying only "missing
@@ -216,6 +253,65 @@ class RequiredFieldTest(unittest.TestCase):
         for kind in _REQUIRED_FIELDS:
             self.assertIn(kind, BINDABLE_KINDS,
                           f"_REQUIRED_FIELDS names {kind}, which cannot be dispatched")
+
+
+class RequiredCoordsTest(unittest.TestCase):
+    """A kind whose coordinates are always meaningful is refused without them.
+
+    From the 21b2ec4 review: `Directive`'s x/y/z are primitive doubles
+    defaulting to 0.0 and hasLocation is set only by location(...). GOTO and
+    TELEPORT read getX/getY/getZ unconditionally in start(), so a targetless
+    GOTO bound and the bot walked to 0,0,0 -- an action never asked for.
+    """
+
+    def test_goto_without_coordinates_is_refused(self):
+        # The reason names the first gap and says what the action would have
+        # done. It is not asserted to list all three: the "0,0,0" in the hint
+        # would match 'y'/'z' by accident, so a "names every field" check here
+        # would pass even if only one were ever named.
+        with self.assertRaises(RefusedAction) as ctx:
+            bind_action({"kind": "GOTO"})
+        self.assertIn("coordinate 'x'", str(ctx.exception))
+        self.assertIn("0,0,0", str(ctx.exception))
+
+    def test_teleport_without_coordinates_is_refused(self):
+        with self.assertRaises(RefusedAction) as ctx:
+            bind_action({"kind": "TELEPORT",
+                         "extra": {"dimension": "minecraft:the_nether"}})
+        self.assertIn("coordinate 'x'", str(ctx.exception))
+
+    def test_teleport_with_a_partial_triple_is_refused_and_names_the_gap(self):
+        # y given, x and z not: the reason must name the first absent one
+        # rather than repeat a generic "needs coordinates".
+        with self.assertRaises(RefusedAction) as ctx:
+            bind_action({"kind": "GOTO", "y": 64})
+        self.assertIn("'x'", str(ctx.exception))
+
+    def test_zero_is_a_coordinate_not_an_absence(self):
+        # The bug this guards: treating 0 like "unset" would refuse a real
+        # destination on an axis, so a bot could never be sent to x=0.
+        bound = bind_action({"kind": "GOTO", "x": 0, "y": 64, "z": 0})
+        self.assertEqual(bound, {"kind": "GOTO", "x": 0, "y": 64, "z": 0})
+
+    def test_a_string_coordinate_is_refused_not_coerced(self):
+        # The mod takes a double; "16" there is a script bug worth surfacing,
+        # not something to guess at.
+        for bad in ("16", True, None):
+            with self.assertRaises(RefusedAction, msg=repr(bad)):
+                bind_action({"kind": "GOTO", "x": bad, "y": 64, "z": 0})
+
+    def test_build_is_not_in_the_coordinate_table(self):
+        # BuildBehavior treats all-zero as "build here", so requiring coords
+        # would refuse a working call. The table must not grow to include it.
+        self.assertNotIn("BUILD", _REQUIRED_COORDS)
+        self.assertEqual(bind_action({"kind": "BUILD", "target": "shelter"})["kind"],
+                         "BUILD")
+
+    def test_every_coordinate_kind_is_bindable(self):
+        self.assertTrue(_REQUIRED_COORDS, "empty table proves nothing")
+        for kind in _REQUIRED_COORDS:
+            self.assertIn(kind, BINDABLE_KINDS,
+                          f"_REQUIRED_COORDS names {kind}, which cannot be dispatched")
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ import requests
 from config import OLLAMA_URL, answer_text, ensure_not_truncated, think_field
 import brain
 import openai_brain
-from action_binding import BINDABLE_KINDS, _REQUIRED_FIELDS
+from action_binding import BINDABLE_KINDS, _REQUIRED_FIELDS, _REQUIRED_COORDS
 
 
 class PlannerResult(list):
@@ -149,7 +149,7 @@ def _render_examples(kinds):
     return ", ".join(f'`"{k}"`' for k in chosen)
 
 
-def _render_required_fields(required):
+def _render_required_fields(required, coords=None):
     """Say which arguments a kind cannot do without, taken FROM the binding.
 
     The wedge this prevents: `MINE` sent with coordinates and no `target` bound
@@ -159,27 +159,43 @@ def _render_required_fields(required):
     exactly how "attack" and "place" got into the Examples line. Kinds whose
     arguments are optional are not listed. Returns the lines without their
     indent, or [] -- so a caller can emit nothing rather than a stray bullet.
+
+    `coords` is the separate coordinate table. It is rendered here, by the same
+    join against `BINDABLE_KINDS`, rather than in a second function, so the two
+    tables can never disagree about which kinds survive into the prompt.
     """
     # Only kinds the binding can still dispatch. A required entry for a kind
     # that is gone would be a prompt line about an action nothing accepts; the
     # required table and the bindable set are separate declarations, so they
     # are joined here rather than assumed to agree.
-    required = {k: v for k, v in required.items() if k in BINDABLE_KINDS and v}
-    if not required:
-        return []
+    required = {k: v for k, v in (required or {}).items()
+                if k in BINDABLE_KINDS and v}
+    coords = {k: v for k, v in (coords or {}).items()
+              if k in BINDABLE_KINDS and v}
     items = []
     for kind in sorted(required):
         named = " and ".join(f'`"{f}"`' for f in required[kind])
         items.append(f'`"{kind}"` needs {named}.')
-    return ["Some kinds also NEED an argument; an action without one is "
-            "not dispatched at all:",
-            *[f"- {item}" for item in items],
-            "`target` is a block, item or entity id "
-            "(`\"minecraft:iron_ore\"`), never a position: x/y/z are "
-            "coordinates and do not stand in for it."]
+    for kind in sorted(coords):
+        named = ", ".join(f'`{f}`' for f in coords[kind])
+        items.append(f'`"{kind}"` needs {named}, as numbers.')
+    if not items:
+        return []
+    lines = ["Some kinds also NEED an argument; an action without one is "
+             "not dispatched at all:",
+             *[f"- {item}" for item in items]]
+    if required:
+        lines.append("`target` is a block, item or entity id "
+                     "(`\"minecraft:iron_ore\"`), never a position: x/y/z are "
+                     "coordinates and do not stand in for it.")
+    if coords:
+        lines.append("Coordinates are where the bot ends up, so a zero is a "
+                     "real position: send x, y and z as numbers or the action "
+                     "is refused (it will NOT default to 0,0,0).")
+    return lines
 
 
-def _fill_required_fields(surface, required):
+def _fill_required_fields(surface, required, coords=None):
     """Replace the required-argument slot in `surface` with its rendered lines.
 
     The slot occupies a line of its own, so it is replaced together with its
@@ -188,7 +204,7 @@ def _fill_required_fields(surface, required):
     "nothing here": a prompt line about a rule that does not exist would be a
     claim the binding does not make.
     """
-    lines = _render_required_fields(required)
+    lines = _render_required_fields(required, coords)
     if not lines:
         return surface.replace("\n" + _REQUIRED_FIELDS_SLOT, "")
     block = "".join("  " + line + "\n" for line in lines)
@@ -205,7 +221,8 @@ SCRIPT_SURFACE = (SCRIPT_SURFACE
                   .replace("@@N_KINDS@@", str(len(BINDABLE_KINDS)))
                   .replace("@@KIND_LIST@@", _render_kind_list(BINDABLE_KINDS))
                   .replace("@@EXAMPLES@@", _render_examples(BINDABLE_KINDS)))
-SCRIPT_SURFACE = _fill_required_fields(SCRIPT_SURFACE, _REQUIRED_FIELDS)
+SCRIPT_SURFACE = _fill_required_fields(SCRIPT_SURFACE, _REQUIRED_FIELDS,
+                                       _REQUIRED_COORDS)
 
 
 PLANNER_PROMPT = """You are a Minecraft task planner. Break the player's instruction into simple, sequential steps that a bot can execute one at a time.

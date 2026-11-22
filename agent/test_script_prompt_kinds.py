@@ -32,13 +32,29 @@ def _prompt_required_fields():
     Parsed from the rendered surface rather than read off `_REQUIRED_FIELDS`, so
     a renderer that drops or mangles an entry is caught by comparing against
     the binding, not by comparing the binding with itself.
+
+    Only the `target`-style lines: a field is rendered in double quotes and the
+    line ends in a full stop. Coordinate lines render bare and end in "as
+    numbers." -- those go through `_prompt_required_coords`, so the two tables
+    stay distinguishable in the text they produce.
     """
     out = {}
     for line in planner.SCRIPT_SURFACE.splitlines():
         m = re.match(r'\s*- `"([A-Z][A-Z_]*)"` needs (.+?)\.$', line)
-        if not m:
+        if not m or m.group(2).endswith("as numbers"):
             continue
         out[m.group(1)] = re.findall(r'`"([a-z_]+)"`', m.group(2))
+    return out
+
+
+def _prompt_required_coords():
+    """{(kind): [coord, ...]} as the PROMPT states the coordinate rule."""
+    out = {}
+    for line in planner.SCRIPT_SURFACE.splitlines():
+        m = re.match(r'\s*- `"([A-Z][A-Z_]*)"` needs (.+), as numbers\.$', line)
+        if not m:
+            continue
+        out[m.group(1)] = re.findall(r'`([xyz])`', m.group(2))
     return out
 
 
@@ -70,6 +86,22 @@ class RequiredFieldsInPromptTest(unittest.TestCase):
                 with self.assertRaises(RefusedAction):
                     bind_action({"kind": kind})
 
+    def test_the_coordinate_rule_matches_the_binding(self):
+        """The prompt's coordinate lines must name exactly the kinds the
+        binding refuses without coordinates, in both directions: a kind listed
+        that binds without them is false advice, and one the binding refuses
+        but the prompt omits is the 0,0,0 walk with no warning."""
+        from action_binding import _REQUIRED_COORDS
+        self.assertTrue(_REQUIRED_COORDS, "the coordinate table is empty -- "
+                                          "this test would pass vacuously")
+        shown = _prompt_required_coords()
+        self.assertEqual({k: list(v) for k, v in _REQUIRED_COORDS.items()}, shown)
+
+    def test_the_coordinate_rule_does_not_catch_build(self):
+        """BUILD reads all-zero as "build here", so listing it would tell a
+        planner to send coordinates the mod does not need."""
+        self.assertNotIn("BUILD", _prompt_required_coords())
+
     def test_the_coordinates_mistake_is_named(self):
         """The script that wedged the bot looked plausible, so the sentence that
         would have stopped it has to be there."""
@@ -89,18 +121,25 @@ class RequiredFieldsInPromptTest(unittest.TestCase):
     def test_a_required_kind_reaches_the_prompt_by_editing_the_binding_only(self):
         """KILLS: the table typed into the prompt. A kind added to the binding's
         required table must appear in a freshly imported prompt, with no prompt
-        edit -- the same drift guard the kind list has."""
+        edit -- the same drift guard the kind list has.
+
+        The kind is STORE_ALL, not GOTO: GOTO now carries a coordinate
+        requirement, so it is already in the prompt and could not show a change.
+        STORE_ALL is bindable, reads coordinates only under a guard, and is in
+        neither required table -- so adding it to _REQUIRED_FIELDS is a real
+        edit that must show up.
+        """
         import subprocess, sys, os
         here = os.path.dirname(os.path.abspath(__file__))
         probe = (
             "import action_binding, sys\n"
-            "assert '`\"GOTO\"` needs' not in __import__('planner').SCRIPT_SURFACE\n"
+            "assert '`\"STORE_ALL\"` needs' not in __import__('planner').SCRIPT_SURFACE\n"
             "sys.modules.pop('planner', None)\n"
             "action_binding._REQUIRED_FIELDS = dict(action_binding._REQUIRED_FIELDS)\n"
-            "action_binding._REQUIRED_FIELDS['GOTO'] = ('x',)\n"
+            "action_binding._REQUIRED_FIELDS['STORE_ALL'] = ('target',)\n"
             "import planner\n"
-            "assert '`\"GOTO\"` needs `\"x\"`.' in planner.SCRIPT_SURFACE, "
-            "'GOTO missing from the prompt after a binding-only edit'\n"
+            "assert '`\"STORE_ALL\"` needs `\"target\"`.' in planner.SCRIPT_SURFACE, "
+            "'STORE_ALL missing from the prompt after a binding-only edit'\n"
             "print('REQ-OK')\n"
         )
         out = subprocess.run([sys.executable, "-B", "-c", probe], cwd=here,
@@ -141,11 +180,14 @@ class ScriptSurfaceKindTest(unittest.TestCase):
         prompt states the rule, so following the prompt is the thing being
         tested, not a bare `{"kind": ...}` the prompt never promised works."""
         required = _prompt_required_fields()
+        coords = _prompt_required_coords()
         for kind in sorted(_example_kinds()):
             with self.subTest(kind=kind):
                 action = {"kind": kind}
                 for field in required.get(kind, ()):
                     action[field] = "minecraft:stone"
+                for field in coords.get(kind, ()):
+                    action[field] = 0
                 bound = bind_action(action)
                 self.assertEqual(kind, bound["kind"])
 
@@ -203,6 +245,34 @@ class DriftTest(unittest.TestCase):
                          f"stdout={out.stdout!r} stderr={out.stderr[-800:]!r}")
         self.assertIn("DRIFT-OK", out.stdout)
 
+    def test_removing_a_coordinate_kind_removes_its_prompt_line(self):
+        """KILLS: rendering the coordinate table without joining it against
+        BINDABLE_KINDS. That join filters nothing while every coordinate kind is
+        bindable, so without this probe the filter could be deleted silently and
+        the prompt would keep advising coordinates for an action nothing
+        accepts. Same separate-process shape as the kind-list drift guard."""
+        import subprocess
+        import sys
+        import os
+
+        here = os.path.dirname(os.path.abspath(__file__))
+        probe = (
+            "import action_binding, sys, planner\n"
+            "assert '`\"GOTO\"` needs `x`' in planner.SCRIPT_SURFACE, 'not there before'\n"
+            "sys.modules.pop('planner', None)\n"
+            "action_binding.BINDABLE_KINDS = frozenset("
+            "action_binding.BINDABLE_KINDS - {'GOTO'})\n"
+            "import planner\n"
+            "assert '`\"GOTO\"` needs `x`' not in planner.SCRIPT_SURFACE, "
+            "'GOTO gone from the binding but its coordinate line is still in the prompt'\n"
+            "print('COORD-DRIFT-OK')\n"
+        )
+        out = subprocess.run([sys.executable, "-B", "-c", probe], cwd=here,
+                             capture_output=True, text=True)
+        self.assertEqual(0, out.returncode,
+                         f"stdout={out.stdout!r} stderr={out.stderr[-800:]!r}")
+        self.assertIn("COORD-DRIFT-OK", out.stdout)
+
     def test_the_examples_are_not_hand_written(self):
         """KILLS: an Examples line typed out, which is how "MINE" survived a
         binding that no longer had it. Every example must be a real kind."""
@@ -212,6 +282,123 @@ class DriftTest(unittest.TestCase):
         self.assertEqual(4, len(examples), f"expected 4 examples, got {examples}")
         self.assertEqual(set(), examples - BINDABLE_KINDS,
                          "an example names a kind the binding refuses")
+
+
+class CoordinateRuleMatchesSourceTest(unittest.TestCase):
+    """`_REQUIRED_COORDS` is pinned to the Java behaviour sources, not to itself.
+
+    The rule's premise is that a kind reading `directive.getX()` without an
+    `hasLocation()` guard will act at 0,0,0 when sent none. That is a fact
+    about the mod, so the test re-derives the set of such kinds from the
+    sources rather than comparing the table with the table: a new behaviour
+    that reads coordinates unguarded, or an existing one that drops its guard,
+    reds here instead of silently walking a bot to origin.
+    """
+
+    # Behaviour that reads an all-zero location as "no location given, use a
+    # fallback" -- a missing coordinate is valid there, so it is excluded by
+    # design. Each entry needs its reason, so excluding one is a claim checked
+    # by a human rather than a silent omission.
+    _ZERO_MEANS_FALLBACK = {
+        "BuildBehavior": "treats all-zero as 'build here' (BuildBehavior.java:99-107)",
+    }
+
+    def _behavior_dir(self):
+        import os
+        here = os.path.dirname(os.path.abspath(__file__))
+        return os.path.join(here, "..", "src", "main", "java", "com",
+                            "sigmastrain", "aiplayermod", "brain", "behavior")
+
+    # Behaviour class -> DirectiveType it is created for (BehaviorFactory).
+    # Read from the factory rather than hard-coded, so a renamed kind is caught.
+    def _kind_for_behavior(self):
+        import os
+        import re
+        d = self._behavior_dir()
+        factory = os.path.join(d, "BehaviorFactory.java")
+        with open(factory, encoding="utf-8") as fh:
+            text = fh.read()
+        out = {}
+        for m in re.finditer(r"case\s+([A-Z_]+)\s*->\s*new\s+(\w+Behavior)",
+                             text):
+            out[m.group(2)] = m.group(1)
+        return out
+
+    def _unguarded_coordinate_readers(self):
+        """{BehaviourClass} where a directive coordinate is read with no
+        `hasLocation()` guard governing it.
+
+        Structural, not line-based: a guard is either (a) the read is inside an
+        `if (directive.hasLocation())` block, or (b) the read is on a line whose
+        own expression contains `hasLocation()` (the ternary form). A line-based
+        "is hasLocation on this line" check would miss `if (hasLocation()) {`
+        followed by reads on later lines (WideSearch, AreaLoot) -- it flagged
+        guarded kinds as unguarded, which is how a pin becomes theatre.
+        """
+        import os
+        import re
+        d = self._behavior_dir()
+        self.assertTrue(os.path.isdir(d), f"behaviour sources not found at {d}")
+        found = {}
+        for name in sorted(os.listdir(d)):
+            if not name.endswith("Behavior.java"):
+                continue
+            with open(os.path.join(d, name), encoding="utf-8") as fh:
+                text = fh.read()
+            # Spans a hasLocation() guard governs: everything from an `if
+            # (directive.hasLocation()) {` to its matching close brace. Computed
+            # by brace matching so a multi-line guard body (WideSearch, AreaLoot)
+            # counts, which a per-line check got wrong.
+            guarded_spans = []
+            for g in re.finditer(r"if\s*\(\s*directive\.hasLocation\(\)\s*\)\s*\{",
+                                 text):
+                depth = 1
+                i = g.end()
+                while i < len(text) and depth:
+                    if text[i] == "{":
+                        depth += 1
+                    elif text[i] == "}":
+                        depth -= 1
+                    i += 1
+                guarded_spans.append((g.start(), i))
+
+            def guarded(pos):
+                if any(a <= pos < b for a, b in guarded_spans):
+                    return True
+                # The ternary / one-line form: hasLocation() on the same line.
+                line_start = text.rfind("\n", 0, pos) + 1
+                line = text[line_start:text.find("\n", pos)]
+                return "hasLocation()" in line
+
+            unguarded = [text[text.rfind("\n", 0, m.start()) + 1:
+                              text.find("\n", m.start())].strip()
+                         for m in re.finditer(r"directive\.get[XYZ]\(\)", text)
+                         if not guarded(m.start())]
+            if unguarded:
+                found[name[:-len(".java")]] = unguarded
+        return found
+
+    def test_the_table_matches_every_unguarded_reader(self):
+        from action_binding import _REQUIRED_COORDS
+        unguarded = self._unguarded_coordinate_readers()
+        kinds = self._kind_for_behavior()
+        # Map behaviour class -> directive kind through the factory.
+        unguarded_kinds = set()
+        for cls in unguarded:
+            self.assertIn(cls, kinds, f"{cls} has no case in BehaviorFactory; "
+                                      "the factory parse or the class name is stale")
+            if cls in self._ZERO_MEANS_FALLBACK:
+                continue
+            unguarded_kinds.add(kinds[cls])
+        expected = unguarded_kinds
+        self.assertEqual(
+            expected, set(_REQUIRED_COORDS),
+            "a behaviour reads directive coordinates without an hasLocation() "
+            "guard (or one gained/lost a guard) and _REQUIRED_COORDS disagrees. "
+            f"unguarded kinds: {sorted(unguarded_kinds)}; "
+            f"raw: { {k: v for k, v in unguarded.items()} }. If one of these "
+            "treats a zero as a fallback, add it to _ZERO_MEANS_FALLBACK with "
+            "its reason; otherwise add it to _REQUIRED_COORDS.")
 
 
 class LookupEntryFieldsTest(unittest.TestCase):
