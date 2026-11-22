@@ -6,6 +6,15 @@ Revs: neoforge-ai-player `8107fb1`, `60a2043`, `8e72c05`; agent-script-runner `3
 Reviewer: minecraft-reviewer. Read-only: nothing built, pushed, applied or deployed.
 Date: 2026-11-22
 
+> **Supersession note (added 15:52Z).** F-1 was accepted and fixed by rewording
+> the `8e72c05` commit message; that commit is now **`f57ec62`**, with an
+> identical tree (`89982b1`, verified by `rev-parse` and an empty tree-to-tree
+> diff) and the same parent (`60a2043`). Every `8e72c05` cite below is
+> historically true — the tests were run at that sha — but `8e72c05` is no
+> longer on the branch. Read `f57ec62` for the current content. The corrected
+> message now spells out that a script tests `s.state.world.day_time === null`,
+> never `s.state.world === null`. The archive commit is `db809a3`.
+
 ## Verdict: PASS, with one documentation finding (F-1) and one gap I could not close
 
 The shipped behaviour is correct on every check the row asks for. One prose
@@ -21,7 +30,7 @@ writes a script against it.
 | runner `05f0ded`: `node --test test/engine.test.mjs` | **58/58 pass, 0 fail, rc=0** |
 | fixture provenance (`test_envelope_fixture`, runner visible) | **passes** paired; **FAILED (failures=1)** when I tampered the fixture |
 | `openspec validate script-lookups-and-results --strict` at `8e72c05` | **valid, rc=0** |
-| Java `WorldTimeTest` | **NOT RUN — see F-2** |
+| Java `WorldTimeTest` | **NOT RUN at review time — see F-2; RUN 15:57Z at `f57ec62`: 8 tests, 0 failures, rc=0** |
 
 Every command ran bounded (`ulimit -v 4194304`; Node `nice -n 19` with
 `NODE_OPTIONS`), and each tree was a detached worktree at the named rev, not the
@@ -157,3 +166,34 @@ Ship it. F-1 is a two-line prose fix ("the fields are null", not "the object is
 null") that should go in before a script is written against the wrong shape;
 F-2 is my honest gap — the Java test exists, reads correctly, and I checked its
 arithmetic but could not run it here.
+
+## Update 15:57Z — F-1 closed, F-2 closed
+
+**F-1:** fixed by the builder in `f57ec62` (message-only rewrite of `8e72c05`;
+identical tree `89982b1`, same parent `60a2043`, empty tree-to-tree diff). I
+re-read the shipped text at `f57ec62`: every `state.world` occurrence refers to
+the field (`l3_planner.py:478-479,484`). No surviving object-is-null claim.
+The builder row's resolution text is immutable, so the correction lives in its
+transition log (15:51:56Z), which I read.
+
+**F-2 is no longer a gap — I ran it.** The Java tests are executable without a
+wrapper jar via the cached distribution:
+`~/.gradle/wrapper/dists/gradle-8.14-bin/.../gradle --offline --no-daemon
+-Dorg.gradle.jvmargs=-Xmx2g --max-workers=2 test --tests
+com.sigmastrain.aiplayermod.bot.WorldTimeTest`, in a detached worktree at
+`f57ec62`. Result: **tests=8, failures=0, errors=0, skipped=0, gradle rc=0**
+(JUnit XML `TEST-com.sigmastrain.aiplayermod.bot.WorldTimeTest.xml`).
+
+The eight executed cases are the real boundary set, not trivial ones:
+`duskToDawnIsNight`, `daylightIsNotNight`, `dawnIsNotNight`,
+`dayTimeIsReducedModulo24000`, `dayTimeIsNeverNegativeOrOutOfRange`,
+`sunriseIsNotNight`, `exactlyOneNightWindowPerDayCycle`,
+`theNightWindowIsTheLengthVanillaUses`. `sunriseIsNotNight` and
+`theNightWindowIsTheLengthVanillaUses` are the two the prod bug turned on.
+
+**First attempt was a dead instrument and I record it:** I ran
+`--tests '*WorldTimeTest*'` in this worktree while it was still on my own
+branch `c78938a`, which predates the test. Gradle printed "No tests found for
+given includes" and BUILD FAILED — a wrong-tree artefact that reads exactly like
+a test failure. Re-run at the reviewed rev it passes. This misread is itself
+part of the harness gap filed as `qitem-20261122155352-7c1a7aae94f9133e`.
