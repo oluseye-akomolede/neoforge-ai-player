@@ -1358,3 +1358,23 @@ disposed is NOT freed by that context's teardown -- `dispose()` throws
 job is narrow: keep a cleanup error from replacing the install error. The
 strand it leaves is permanent, and the only thing that avoids it is not
 installing into a torn-down context at all.
+
+#### Scenario: A throw mid-install still disposes everything the install built
+
+- **GIVEN** an install path that creates one container object and then binds
+  several handles into it, each in its own guarded `try/finally`
+- **WHEN** a bind throws partway through, so the method does not reach the
+  container's own dispose
+- **THEN** the container is disposed anyway
+- **AND** the handles bound before the throw are disposed
+- **AND** the error the caller sees is the original bind failure
+
+A per-dispose guard is NOT sufficient for this case, because nothing in the
+handles' cleanup throws — the throw simply leaves the loop, so the code after
+it never runs. Measured on `#installApi` (2026-11-22): a first-bind failure
+disposed its one loop handle and left the api object in the runtime-wide table,
+at the ~34.8 KB/occurrence recorded for that table above. The container's
+dispose MUST be owned by a scope that encloses the whole install — one outer
+`try/finally` — rather than by a statement reached on the success path. Every
+handle is disposed exactly once on every path: an inner `finally` owns each
+loop handle, the outer `finally` owns the container.
