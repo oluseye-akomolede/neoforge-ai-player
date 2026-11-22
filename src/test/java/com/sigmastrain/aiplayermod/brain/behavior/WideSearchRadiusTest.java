@@ -149,8 +149,7 @@ class WideSearchRadiusTest {
                 "a radius-4 search must say 4, not 32");
 
         // No radius: the walk starts at the first shell and reports each shell
-        // it really reached. Every shell clamps to the default cap of 256, so
-        // the last four shells all sweep 256 and must all say 256.
+        // it really reached, all the way to the default maximum of 512.
         int defaultMax = WideSearchBehavior.resolveMaxRadius(null, 512);
         assertEquals(32, searchedRadius(SHELL_RADII[0], defaultMax));
         assertEquals(64, searchedRadius(SHELL_RADII[1], defaultMax));
