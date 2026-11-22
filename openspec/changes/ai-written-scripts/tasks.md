@@ -316,6 +316,15 @@ method name inside a module that *does* exist produces the same shape, so
 `Ran 1 test` alone is not enough; read whether the name is a TestCase anyone
 wrote.
 
+Note what kind of problem this is: the answer is in output already being
+printed on the line under the summary. The status was right and the reading
+was incomplete, not the measurement impossible -- so the fix is to read the
+line you already have, not to find a better instrument. Calling this
+"unanswerable" would tell the next seat to accept a limit and move on, and
+here that leaves the trap live. Reserve "cannot answer" for output that
+genuinely cannot separate the cases (a total with no members); that one needs
+a different measurement, not a closer look.
+
 Scope a test or a mutant by **what reaches the changed field**, never by the
 module's name or the set of files you edited. Grep for the symbol (counts at
 `07d21bd`):
