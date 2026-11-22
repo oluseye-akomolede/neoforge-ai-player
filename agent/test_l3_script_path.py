@@ -390,6 +390,71 @@ class TestExactlyOneDriver(unittest.TestCase):
                         "goal has no driver at all")
 
 
+class TestARefusedBindWithNoStepsFailsTheGoal(unittest.TestCase):
+    """Prod Mystic 2026-11-22 12:55-13:00Z: the bind was refused for a
+    dry-tick timeout, the script reply carried no steps, and the goal
+    finalized "complete" -- the player was told nothing and the goal looked
+    done. Nothing ran, so "complete" is the one status it cannot be."""
+
+    def _run(self, on_script_returns=False, script_present=True):
+        import plan_orchestrator
+        from plan_schema import Plan
+
+        steps_dispatched = []
+        plan = Plan(
+            task="tell me when it gets dark", bot="Scout",
+            created_at="2026-11-22T00:00:00",
+            status="executing",
+            # The shape of a script plan: no steps at all.
+            subtasks=[], current_subtask_id=1,
+        )
+        if script_present:
+            plan.script = "api.result('dawn');"
+
+        def dispatch(directive):
+            steps_dispatched.append(directive)
+            return "COMPLETED"
+
+        with mock.patch.object(plan_orchestrator.l3_planner, "call_plan",
+                               side_effect=lambda *a, **kw: plan), \
+             mock.patch.object(plan_orchestrator.plan_store, "write"), \
+             mock.patch.object(plan_orchestrator.plan_store, "archive") as archive, \
+             mock.patch.object(plan_orchestrator.trajectory_log,
+                               "log_plan_close") as log_close:
+            result = plan_orchestrator.execute_task(
+                bot_name="Scout", model="m", task="tell me when it gets dark",
+                dispatch_fn=dispatch,
+                world_state_fn=lambda: "",
+                on_script=lambda p, s: on_script_returns,
+            )
+        self.archive = archive
+        self.log_close = log_close
+        return result, steps_dispatched
+
+    def test_a_refused_bind_with_no_steps_fails_not_completes(self):
+        """KILLS: falling through to phase 2 with zero subtasks, where the
+        loop's first `current_subtask() is None` marks the plan complete."""
+        result, dispatched = self._run(on_script_returns=False)
+        self.assertEqual(dispatched, [], "nothing should have been dispatched")
+        self.assertEqual(result.status, "failed",
+                         "a goal whose script could not start and which had no "
+                         "steps to run was reported as %r" % (result.status,))
+        self.assertNotEqual(result.status, "complete",
+                            "the false success that started the bug")
+        self.assertTrue(result.meta.get("script_bind_refused"),
+                        "the refusal was not recorded on the plan")
+        self.assertIn("could not be started",
+                      result.meta.get("script_bind_refused_reason", ""),
+                      "the reason does not say the script could not start")
+
+    def test_the_failed_goal_is_archived_and_closed(self):
+        """A failure still has to be written and archived. The early-return
+        path must not skip the bookkeeping the normal finalize does."""
+        self._run(on_script_returns=False)
+        self.assertTrue(self.archive.called,
+                        "the failed-bind plan was never archived")
+
+
 # ── the real on_script closure ─────────────────────────────────────────────
 
 class TestTheRealOnScriptClosureReleasesTheHold(unittest.TestCase):
@@ -673,9 +738,51 @@ class TestRefusedBindAgainstARealHandWrittenBinding(unittest.TestCase):
         self.assertIsNone(a._script_hold,
                           "the hold outlived the goal: it was never released")
 
+    def test_a_refused_bind_with_no_steps_speaks_to_the_player(self):
+        """KILLS: failing the goal silently. The orchestrator marks it failed,
+        and if nobody says anything the player still sees a bot that went
+        quiet for a goal it was never told about."""
+        import agent as agent_mod
+        from plan_schema import Plan
+        goal_id = self.a._new_goal_id("Steve", "tell me when it gets dark")
+        self.a._begin_script_hold(goal_id, "tell me when it gets dark")
+        on_script = self._capture_real_closure(goal_id)
+        plan = Plan(task="tell me when it gets dark", bot="Scout",
+                    created_at="2026-11-22T00:00:00", status="executing",
+                    subtasks=[], current_subtask_id=1)
+        with mock.patch.object(agent_mod.api, "system_chat") as chat:
+            handed = on_script(plan, "api.result('dawn');")
+        self.assertFalse(handed, "fixture: the bind should have been refused")
+        self.assertTrue(chat.called,
+                        "the bind was refused with no steps to run and the "
+                        "player was told nothing")
+        text = " ".join(str(c) for c in chat.call_args[0])
+        self.assertIn("couldn't start", text.lower(),
+                      f"the chat line does not say the script could not start: {text!r}")
+
+    def test_a_refused_bind_with_steps_stays_quiet(self):
+        """The other direction: when the plan HAS steps, they run and speak
+        for themselves. A "couldn't start the script" line there would be a
+        false alarm -- the goal is still being driven."""
+        import agent as agent_mod
+        from plan_schema import Plan, Subtask
+        goal_id = self.a._new_goal_id("Steve", "keep the furnace fed")
+        self.a._begin_script_hold(goal_id, "keep the furnace fed")
+        on_script = self._capture_real_closure(goal_id)
+        plan = Plan(task="keep the furnace fed", bot="Scout",
+                    created_at="2026-11-22T00:00:00", status="executing",
+                    subtasks=[Subtask(id=1, description="feed it",
+                                      criteria="fed")],
+                    current_subtask_id=1)
+        with mock.patch.object(agent_mod.api, "system_chat") as chat:
+            handed = on_script(plan, "api.do('feed');")
+        self.assertFalse(handed, "fixture: the bind should have been refused")
+        self.assertFalse(chat.called,
+                         "the player was told the script could not start even "
+                         "though the step list still runs the goal")
+
 
 # ── atomic bind ────────────────────────────────────────────────────────────
-
 class TestBindIsAtomicAgainstTheTick(unittest.TestCase):
     """_bind_planner_script swaps three fields _get_script_tick reads. The swap
     must be invisible half-done to a concurrent tick."""

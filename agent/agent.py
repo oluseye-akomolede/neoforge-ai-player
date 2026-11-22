@@ -2166,6 +2166,18 @@ class BotRunner:
             if not self._bind_planner_script(source):
                 print(f"[{self.name}/script] goal {goal_id or '-'} bind refused; "
                       f"running the planner's steps, script stays held")
+                # With no steps to run, the orchestrator fails the goal (see
+                # plan_orchestrator's refused-bind branch). Tell the player
+                # here rather than leaving a silent success: the whole bug was
+                # that the goal finalized "complete" and nobody spoke.
+                if not plan.subtasks:
+                    try:
+                        api.system_chat(
+                            self.name,
+                            "I couldn't start the script for this one. "
+                            "Try asking again in a moment.", "red")
+                    except Exception as e:
+                        print(f"[{self.name}/script] bind-refusal chat failed: {e}")
                 return False
             print(f"[{self.name}/script] goal {goal_id or '-'} handed to the "
                   f"planner's script; releasing its hold")

@@ -382,6 +382,41 @@ def execute_task(
             log.info("[%s] goal not handed to its script; executing the step "
                      "list", bot_name)
 
+    # A refused (or unavailable) script whose reply carried NO steps has
+    # nothing left to drive the goal. Falling through to phase 2 would find
+    # `current_subtask() is None` on its first pass and mark the plan
+    # COMPLETE -- the player is told nothing and the goal looks done. Prod
+    # Mystic, 2026-11-22 12:55-13:00Z, did exactly this: the bind was refused
+    # for a dry-tick timeout, the reply had no steps, and the log read
+    # "goal not handed to its script; executing the step list" followed by
+    # "plan finalized: complete".
+    #
+    # A goal that could not start the thing it was planned for has FAILED.
+    # The refusal reason is carried on the plan so the caller can tell the
+    # player; the orchestrator stays decoupled from chat.
+    if planner_script and not plan.subtasks:
+        plan.status = "failed"
+        plan.meta["script_bind_refused"] = True
+        plan.meta["script_bind_refused_reason"] = (
+            "the planner wrote a script for this goal but it could not be "
+            "started, and the plan had no steps to fall back on")
+        log.warning("[%s] script bind refused with no steps to run; failing "
+                    "the goal rather than reporting it complete", bot_name)
+        plan_store.write(plan)
+        plan_store.archive(plan)
+        telemetry.push(bot_name, "fail",
+                       f"plan finalized: {plan.status} (script bind refused, "
+                       f"no steps)")
+        try:
+            on_finalized(plan)
+        except Exception:
+            log.exception("[%s] on_finalized hook raised", bot_name)
+        trajectory_log.log_plan_close(
+            bot=bot_name, plan_ref=plan.created_at, status=plan.status,
+            task=task, subtasks_total=0, subtasks_complete=0,
+        )
+        return plan
+
     # Phase 2: drive subtasks
     last_subtask_id = -1
     while plan.status == "executing":
