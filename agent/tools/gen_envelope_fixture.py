@@ -105,7 +105,14 @@ class _FixtureApi:
 
     def status(self, bot):
         return {"health": RAW_RESPONSES["health"],
-                "position": RAW_RESPONSES["position"]}
+                "position": RAW_RESPONSES["position"],
+                # The mod's /status carries day_time and is_night at the TOP
+                # LEVEL (BotPlayer.getStatus puts them in the same map as
+                # health). build_state reads them at that depth, so nesting
+                # them under "world" here would model a shape the mod does not
+                # send -- the exact failure this fixture exists to prevent.
+                # 18000 is midnight: a real night, not a null.
+                "day_time": 18000, "is_night": True}
 
     def get_directive(self, bot):
         return None

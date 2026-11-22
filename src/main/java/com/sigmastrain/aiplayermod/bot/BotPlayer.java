@@ -753,6 +753,32 @@ public class BotPlayer {
 
     // ── World observation ──
 
+    /**
+     * A level's day time reduced to 0..23999.
+     *
+     * <p>`getDayTime()` keeps counting past 24000 — a server up for three days
+     * reports 72000 — so a raw reading is not a time of day. Static and pure
+     * so the wrap is testable without a running server; the boundary matters
+     * because a reader that passes through 24000 would report an impossible
+     * time to a script comparing against a range.
+     */
+    static int dayTimeOf(long rawDayTime) {
+        return (int) Math.floorMod(rawDayTime, 24000L);
+    }
+
+    /**
+     * Whether a day time is inside vanilla's monster-spawn window.
+     *
+     * <p>13000 (dusk) through 22999 (one tick before dawn). Both bounds are
+     * tested: 23000 MUST be false or a script waits through the morning, and
+     * 0 MUST be false because sunrise is the value the prod script mistook for
+     * night. This is a property of the OVERWORLD cycle; the caller only asks it
+     * for a level that has one.
+     */
+    static boolean isNightOf(int dayTime) {
+        return dayTime >= 13000 && dayTime < 23000;
+    }
+
     public Map<String, Object> getStatus() {
         Map<String, Object> status = new LinkedHashMap<>();
         status.put("name", player.getName().getString());
@@ -761,6 +787,23 @@ public class BotPlayer {
         status.put("saturation", player.getFoodData().getSaturationLevel());
         status.put("position", formatPos(player.position()));
         status.put("dimension", player.level().dimension().location().toString());
+        // The bot's OWN level, not the overworld: lighting is per-dimension, so
+        // a bot in the Nether reporting the overworld's clock would be the same
+        // class of lie this field exists to prevent. Read on the server thread:
+        // getDayTime is a level field and refreshCache() runs from the tick.
+        // (Prod Mystic 2026-11-22 told a player it was night at day time 0, in
+        // daylight, because this field did not exist.)
+        //
+        // KNOWN LIMIT: `is_night` is a pure function of the clock, so it
+        // describes the overworld cycle. The Nether and the End have no
+        // day/night cycle, and their `getDayTime()` still advances — so a bot
+        // there gets a clock reading and a boolean that carry no meaning.
+        // Distinguishing them needs the dimension's `hasSkyLight`, which is not
+        // wired here; `dimension` is already in this map, so a script that
+        // needs to know can read it. Stated rather than silently wrong.
+        int dayTime = dayTimeOf(player.level().getDayTime());
+        status.put("day_time", dayTime);
+        status.put("is_night", isNightOf(dayTime));
         status.put("gamemode", player.gameMode.getGameModeForPlayer().getName());
         status.put("alive", isAlive());
         status.put("anchored", AnchorManager.isAnchored(

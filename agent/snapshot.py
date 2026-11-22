@@ -109,10 +109,22 @@ def build_state(api, bot, *, block_radius=8, entity_radius=24.0):
     status = _read("status", lambda: api.status(bot), {}) or {}
     directive = _read("directive", lambda: api.get_directive(bot), None)
 
+    # The world clock, from the bot's own level. `None` when the mod does not
+    # send it -- an older mod, or a status the reader failed -- and NEVER a
+    # derived value: the whole reason this field exists is that a script invented
+    # `(6000 + ticks*10) % 12000` and announced night at noon (prod Mystic,
+    # 2026-11-22). A script that needs a time and finds None must say it cannot
+    # tell, not make one up; the planner prompt carries that rule.
+    world = {
+        "day_time": status.get("day_time"),
+        "is_night": status.get("is_night"),
+    }
+
     return {
         "health": status.get("health"),
         "food": status.get("food"),
         "position": status.get("position"),
+        "world": world,
         "inventory": _obs("inventory", lambda: api.inventory(bot), "inventory"),
         "nearby": {
             "blocks": _obs("blocks", lambda: api.blocks(bot, block_radius), "blocks"),

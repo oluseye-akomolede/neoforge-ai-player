@@ -308,9 +308,11 @@ A script is plain JavaScript for one tick, run every tick. Its API is exactly:
 - api.remember(v)     — persist a STRING across ticks; read it back next tick
                         via api.recall(). One blob, 16 KiB, last write wins.
 - api.log(level, t)   — write a line to the agent log ("info"/"warn"/...)
-The world state is a read-only global named `snapshot`, NOT an api method:
-  const s = snapshot;
-  if (s) { /* s.self, s.bots, s.inventory, ... */ }
+The world state is a read-only global named `snapshot`, NOT an api method.
+This is exactly what it carries:
+
+{snapshot_schema}
+
 Do NOT call api.get_snapshot() or api.get_directive() — they do not exist, and
 a call to a missing method throws and discards your whole script.
 Return an array of actions (or [] to do nothing this tick). A script that
@@ -446,6 +448,50 @@ succeed. Keep the reason to one sentence, in the bot's voice.
 """
 
 
+# The snapshot's shape, stated ONCE.
+#
+# Why this constant exists rather than prose in each prompt: both prompts used
+# to describe the world as `s.self, s.bots, s.inventory`, none of which the
+# envelope carries -- the real path is `s.state.*` and there is no `self` or
+# `bots` at all. On 2026-11-22 prod Mystic read that, found nothing, and
+# invented a clock: "it's getting dark -- overworld time is 0 (night)" in
+# daylight. The prompt was teaching a schema the agent never sends.
+#
+# So the text lives here, is asserted against a generated envelope by
+# test_planner_script_output, and MUST NOT be retyped per prompt. If
+# snapshot.build_state gains a field, this is the one line that changes.
+#
+# Braces are SINGLE: this constant is substituted as a VALUE into the prompts,
+# never re-formatted, so doubling them would put literal {{ }} in front of the
+# model. (Caught by rendering it, not by reading it.)
+_SNAPSHOT_SCHEMA = """\
+  const s = snapshot;              // may be undefined if none was sent
+  if (s) {
+    s.tick                          // int: which tick this is
+    s.server_ms                     // int: when the agent captured it (epoch ms)
+    s.state.health                  // float, or null if unread
+    s.state.food                    // int, or null
+    s.state.position                // {x, y, z} floats
+    s.state.inventory               // [{slot, item, count, display_name, ...}]
+    s.state.nearby.blocks           // [{id, block, position}]
+    s.state.nearby.mobs             // [{type, name, position, distance}]
+    s.state.world.day_time          // int 0..23999, or null -- see below
+    s.state.world.is_night          // boolean, or null -- see below
+    s.task                          // the directive being run, or null
+  }
+
+There is no `s.self` and no `s.bots`: the world a script reads is described
+above and nothing else. `s.state.world` is the game's REAL clock --
+`day_time` 0..23999 counts from sunrise, and `is_night` is the game's own
+answer to "is it dark". If `world.day_time` is null the agent could not read
+the clock: say so, and do NOT compute a time from `tick`.
+
+If a fact you need is not in the snapshot, you MUST NOT estimate it. Report
+`done: false` with a reason, or fail the goal and say why in chat. A plausible
+wrong answer is worse than a refusal, because the player cannot tell it from
+the truth."""
+
+
 _SCRIPT_SYSTEM_PROMPT = """You are {bot_name}, a {persona}, writing ONE game script.
 
 This is a script-only reply. The player's goal has already been planned; you
@@ -454,10 +500,10 @@ step list.
 
 {script_surface}
 
-The world state is also a read-only global named `snapshot`, not an api method:
+The world state is also a read-only global named `snapshot`, not an api method.
+This is exactly what it carries:
 
-  const s = snapshot;              // may be undefined if none was sent
-  if (s) {{ /* s.self, s.bots, s.inventory, ... */ }}
+{snapshot_schema}
 
 Do NOT call api.get_snapshot() or api.get_directive() — they do not exist,
 and a call to a missing method throws and discards your whole script.
@@ -496,7 +542,15 @@ def render_plan_prompt(bot_name: str, dimensions: str = "",
         persona=BOT_PERSONAS.get(bot_name, "generalist"),
         dimensions=dimensions,
         skills=_skills_lines(),
-        script_section=_PLAN_SCRIPT_SECTION if offered else "")
+        # The schema sits INSIDE the script section, so it is substituted into
+        # that section (which is itself interpolated) and disappears with it
+        # when a bot was not offered a script. .replace, not .format: the
+        # section contains unescaped braces from its own JS/JSON examples, so
+        # formatting it would raise on the first of them. Leaving the
+        # placeholder in place would hand the model the literal text.
+        snapshot_schema=_SNAPSHOT_SCHEMA,
+        script_section=(_PLAN_SCRIPT_SECTION.replace("{snapshot_schema}", _SNAPSHOT_SCHEMA)
+                        if offered else ""))
 
 
 def call_plan(model: str, bot_name: str, task: str,
@@ -1695,7 +1749,10 @@ def render_script_system_prompt(bot_name: str, persona: str, skills: str | None 
     return _SCRIPT_SYSTEM_PROMPT.format(
         bot_name=bot_name, persona=persona,
         skills=_skills_lines() if skills is None else skills,
-        script_surface=_SCRIPT_SURFACE if _offered else "")
+        script_surface=_SCRIPT_SURFACE if _offered else "",
+        # Gated with the surface: a bot that was not offered a script is not
+        # told how to read the snapshot either, so the two cannot disagree.
+        snapshot_schema=_SNAPSHOT_SCHEMA if _offered else "")
 
 
 def call_script(

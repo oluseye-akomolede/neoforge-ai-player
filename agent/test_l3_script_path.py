@@ -289,8 +289,65 @@ class TestThePlanPromptStatesWhenToScript(unittest.TestCase):
         import l3_planner
         out = l3_planner._PLAN_SYSTEM_PROMPT.format(
             bot_name="Scout", persona="generalist", dimensions="",
-            skills="", script_section="")
+            skills="", script_section="", snapshot_schema=l3_planner._SNAPSHOT_SCHEMA)
         self.assertIn("Scout", out)
+
+
+# ── the planner is given the snapshot schema ───────────────────────────────
+
+class TestThePlannerIsGivenTheSnapshotSchema(unittest.TestCase):
+    """Row c05ac362: scripts invented world time. The planner wrote
+    "it's getting dark -- overworld time is 0 (night)" in daylight because it
+    had no clock and was never told what the snapshot carries. This asserts the
+    RENDERED prompt, through production's renderer -- a test that re-encoded
+    the format would pass while the prompt shipped a literal placeholder.
+    """
+
+    def _offered(self):
+        import l3_planner
+        return l3_planner.render_plan_prompt("Scout", offered=True)
+
+    def _not_offered(self):
+        import l3_planner
+        return l3_planner.render_plan_prompt("Scout", offered=False)
+
+    def test_the_schema_reaches_the_prompt(self):
+        out = self._offered()
+        self.assertIn("s.state.health", out)
+        self.assertIn("s.state.world.day_time", out)
+        self.assertIn("s.state.world.is_night", out)
+
+    def test_the_placeholder_never_survives(self):
+        """KILLS: passing the section through un-substituted, which shipped
+        the literal text {snapshot_schema} to the model (caught by rendering
+        it once, not by reading the code twice)."""
+        for out in (self._offered(), self._script()):
+            self.assertNotIn("{snapshot_schema}", out)
+
+    def test_the_fields_the_old_prompt_invented_are_not_offered(self):
+        """KILLS: restoring the fictional s.self / s.bots schema. The words may
+        appear in prose that says they do NOT exist -- that sentence is the fix
+        -- so assert on the schema lines, not on a bare substring."""
+        for out in (self._offered(), self._not_offered()):
+            self.assertNotIn("s.self,", out)
+            self.assertNotIn("s.self =", out)
+            self.assertNotIn("s.bots,", out)
+
+    def test_a_non_offered_bot_is_not_taught_the_schema(self):
+        out = self._not_offered()
+        self.assertNotIn("s.state.health", out)
+        self.assertNotIn("exactly what it carries", out)
+
+    def test_the_prompt_forbids_estimating_an_absent_fact(self):
+        out = self._offered()
+        self.assertIn("MUST NOT estimate", out)
+
+    def _script(self):
+        import l3_planner
+        return l3_planner._SCRIPT_SYSTEM_PROMPT.format(
+            bot_name="Scout", persona="generalist", skills="",
+            script_surface=l3_planner._SCRIPT_SURFACE,
+            snapshot_schema=l3_planner._SNAPSHOT_SCHEMA)
 
 
 # ── exactly one driver ─────────────────────────────────────────────────────
@@ -1567,10 +1624,12 @@ class TestThePromptsNameTheApiTheSandboxBinds(unittest.TestCase):
         KILLS: adding an unescaped brace to either prompt."""
         l3_planner._PLAN_SYSTEM_PROMPT.format(
             bot_name="Scout", persona="scout", dimensions="", skills="X",
-            script_section=l3_planner._PLAN_SCRIPT_SECTION)
+            script_section=l3_planner._PLAN_SCRIPT_SECTION,
+            snapshot_schema=l3_planner._SNAPSHOT_SCHEMA)
         l3_planner._SCRIPT_SYSTEM_PROMPT.format(
             bot_name="Scout", persona="scout", skills="X",
-            script_surface=l3_planner._SCRIPT_SURFACE)
+            script_surface=l3_planner._SCRIPT_SURFACE,
+            snapshot_schema=l3_planner._SNAPSHOT_SCHEMA)
 
 
 class TestTheL3ScriptPromptShowsLookAndResult(unittest.TestCase):

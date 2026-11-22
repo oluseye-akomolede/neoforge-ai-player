@@ -31,9 +31,14 @@ freeze = _snap.freeze
 class _FakeApi:
     """A stand-in mod that records every call it receives."""
 
-    def __init__(self, fail=()):
+    def __init__(self, fail=(), status_extra=None):
         self.calls = []
         self._fail = set(fail)
+        # Extra keys merged into the status reply. The DEFAULT is no time at
+        # all: that is what an older mod sends, and it is the state the agent
+        # must answer None to rather than deriving a value. A test that wants
+        # a clock has to say so.
+        self._status_extra = dict(status_extra or {})
 
     def _maybe_fail(self, name):
         if name in self._fail:
@@ -46,7 +51,8 @@ class _FakeApi:
         # values for every bot makes "the caches are separate" unfalsifiable.
         return {"health": 20.0, "food": 18,
                 "position": {"x": float(len(bot)), "y": 64.0, "z": -3.0,
-                             "dim": "minecraft:overworld"}}
+                             "dim": "minecraft:overworld"},
+                **self._status_extra}
 
     # NOTE the wrappers. Every observation endpoint answers with a one-key
     # object, not a bare list -- the fake used to return the list directly and
@@ -123,6 +129,58 @@ class BuildStateTest(unittest.TestCase):
         self.assertEqual(state["nearby"]["blocks"][0]["id"], "minecraft:chest")
         self.assertEqual(state["nearby"]["mobs"][0]["type"], "minecraft:cow")
         self.assertEqual(state["nearby"]["mobs"][0]["distance"], "4.2")
+
+    # ── World time (prod Mystic, 2026-11-22) ────────────────────────────────
+    # Mystic told a player "it's getting dark -- overworld time is 0 (night)"
+    # in daylight. The snapshot had no time, the planner prompt described a
+    # schema the envelope never had, and the script invented
+    # `(6000 + ticks*10) % 12000`. These pin the field the script should have
+    # read, and that the agent never fabricates one.
+
+    def test_state_carries_the_world_clock_from_the_status(self):
+        api = _FakeApi(status_extra={"day_time": 15000, "is_night": True})
+        state, errors = build_state(api, "Scout")
+        self.assertEqual(errors, [])
+        self.assertEqual(state["world"]["day_time"], 15000)
+        self.assertIs(state["world"]["is_night"], True)
+
+    def test_daylight_is_reported_as_daylight(self):
+        # The other side of the prod failure: the script must be able to tell.
+        api = _FakeApi(status_extra={"day_time": 0, "is_night": False})
+        state, _ = build_state(api, "Scout")
+        self.assertEqual(state["world"]["day_time"], 0)
+        self.assertIs(state["world"]["is_night"], False)
+
+    def test_an_older_mod_gets_none_not_an_invented_clock(self):
+        """A status without time MUST NOT become a derived value.
+
+        This is the assertion that would have caught the prod bug: every
+        invented clock is some function of the tick count, so the failure looks
+        like a plausible number. None is the only honest answer, and it is what
+        tells a script "I cannot know" instead of "it is night".
+        """
+        api = _FakeApi()   # status has no day_time / is_night
+        state, _ = build_state(api, "Scout")
+        self.assertEqual(state["world"], {"day_time": None, "is_night": None})
+        for key in ("day_time", "is_night"):
+            self.assertIsNone(state["world"][key],
+                              f"{key} must be None, not a guess")
+        # And nothing that could be mistaken for a clock at another path.
+        self.assertNotIn("time", state)
+        self.assertNotIn("world_time", state)
+        self.assertNotIn("day_time", state)
+
+    def test_the_world_clock_is_not_derived_from_the_tick(self):
+        # Two ticks 600 apart is enough for the invented clock to reach 0.
+        # A derived field would differ between them; a real reading is whatever
+        # the mod said both times.
+        api = _FakeApi(status_extra={"day_time": 1000, "is_night": False})
+        state_t1, _ = build_state(api, "Scout")
+        env1 = build_envelope(state_t1, tick=1)
+        state_t2, _ = build_state(api, "Scout")
+        env2 = build_envelope(state_t2, tick=601)
+        self.assertEqual(env1["state"]["world"], env2["state"]["world"])
+        self.assertEqual(env2["state"]["world"]["day_time"], 1000)
 
     def test_state_task_carries_the_progress_a_script_reads(self):
         """KILLS (review F-1 on 465b61e): the arrival a GOTO reported could not
