@@ -11,7 +11,7 @@ import requests
 from config import OLLAMA_URL, answer_text, ensure_not_truncated, think_field
 import brain
 import openai_brain
-from action_binding import BINDABLE_KINDS
+from action_binding import BINDABLE_KINDS, _REQUIRED_FIELDS
 
 
 class PlannerResult(list):
@@ -31,7 +31,11 @@ class PlannerResult(list):
         super().__init__(steps)
         self.script = script
 
+
+# The script surface holds a slot for the required-argument block; filled by
+# _fill_required_fields() after the kind list is substituted.
 _SCRIPT_SURFACE_SLOT = "@@SCRIPT_SURFACE@@"
+_REQUIRED_FIELDS_SLOT = "@@REQUIRED_FIELDS@@"
 
 
 SCRIPT_SURFACE = """For goals that are REPETITIVE or CONDITIONAL — "keep the chest stocked",
@@ -49,6 +53,7 @@ through these calls:
   case-insensitive (`"mine"` works), but the names are the ones above — there
   is no `"attack"` and no `"place"`; melee is `"COMBAT"` and putting an item in
   a container is `"CONTAINER_STORE"`. `args` is a plain object.
+@@REQUIRED_FIELDS@@
   Returns `{ok, seq}` or a rejection.
 - `api.say(text)` — speak in chat.
 - `api.send(otherBot, msg)` — message another bot.
@@ -144,14 +149,63 @@ def _render_examples(kinds):
     return ", ".join(f'`"{k}"`' for k in chosen)
 
 
-# The kind list is computed from BINDABLE_KINDS, not typed: a hand-written list
-# is exactly the thing that drifted (the prompt offered "attack" and "place",
-# neither of which the binding accepts). Substituted by plain string replace
-# rather than .format, because this surface holds literal braces like {ok, seq}.
+def _render_required_fields(required):
+    """Say which arguments a kind cannot do without, taken FROM the binding.
+
+    The wedge this prevents: `MINE` sent with coordinates and no `target` bound
+    cleanly and then killed the bot's tick loop. The script author cannot know
+    which argument a kind needs unless the prompt says so, and a hand-written
+    list would drift from `_REQUIRED_FIELDS` the moment a kind is added --
+    exactly how "attack" and "place" got into the Examples line. Kinds whose
+    arguments are optional are not listed. Returns the lines without their
+    indent, or [] -- so a caller can emit nothing rather than a stray bullet.
+    """
+    # Only kinds the binding can still dispatch. A required entry for a kind
+    # that is gone would be a prompt line about an action nothing accepts; the
+    # required table and the bindable set are separate declarations, so they
+    # are joined here rather than assumed to agree.
+    required = {k: v for k, v in required.items() if k in BINDABLE_KINDS and v}
+    if not required:
+        return []
+    items = []
+    for kind in sorted(required):
+        named = " and ".join(f'`"{f}"`' for f in required[kind])
+        items.append(f'`"{kind}"` needs {named}.')
+    return ["Some kinds also NEED an argument; an action without one is "
+            "not dispatched at all:",
+            *[f"- {item}" for item in items],
+            "`target` is a block, item or entity id "
+            "(`\"minecraft:iron_ore\"`), never a position: x/y/z are "
+            "coordinates and do not stand in for it."]
+
+
+def _fill_required_fields(surface, required):
+    """Replace the required-argument slot in `surface` with its rendered lines.
+
+    The slot occupies a line of its own, so it is replaced together with its
+    leading newline -- otherwise removing it would leave a blank line. With
+    nothing required the whole partial is dropped instead of left in saying
+    "nothing here": a prompt line about a rule that does not exist would be a
+    claim the binding does not make.
+    """
+    lines = _render_required_fields(required)
+    if not lines:
+        return surface.replace("\n" + _REQUIRED_FIELDS_SLOT, "")
+    block = "".join("  " + line + "\n" for line in lines)
+    return surface.replace("\n" + _REQUIRED_FIELDS_SLOT, "\n" + block.rstrip("\n"))
+
+
+# The kind list and the required-argument list are computed from the binding,
+# not typed: a hand-written list is exactly the thing that drifted (the prompt
+# offered "attack" and "place", neither of which the binding accepts, and said
+# nothing about `target` before a script wedged a bot with a targetless MINE).
+# Substituted by plain string replace rather than .format, because this surface
+# holds literal braces like {ok, seq}.
 SCRIPT_SURFACE = (SCRIPT_SURFACE
                   .replace("@@N_KINDS@@", str(len(BINDABLE_KINDS)))
                   .replace("@@KIND_LIST@@", _render_kind_list(BINDABLE_KINDS))
                   .replace("@@EXAMPLES@@", _render_examples(BINDABLE_KINDS)))
+SCRIPT_SURFACE = _fill_required_fields(SCRIPT_SURFACE, _REQUIRED_FIELDS)
 
 
 PLANNER_PROMPT = """You are a Minecraft task planner. Break the player's instruction into simple, sequential steps that a bot can execute one at a time.

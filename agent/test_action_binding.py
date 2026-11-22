@@ -33,6 +33,7 @@ MOD_DIRECTIVE_KINDS = _ab.MOD_DIRECTIVE_KINDS
 RefusedAction = _ab.RefusedAction
 bind_action = _ab.bind_action
 bind_actions = _ab.bind_actions
+_REQUIRED_FIELDS = _ab._REQUIRED_FIELDS
 to_directive = _ab.to_directive
 
 
@@ -159,8 +160,62 @@ class BindingTest(unittest.TestCase):
     def test_every_bindable_kind_actually_binds(self):
         # The set and the function agree for all members, so a kind added to
         # the set but rejected by the code (or vice versa) is visible here.
+        # A kind that requires a field gets one, so this still proves the set
+        # and the checker agree rather than re-testing the required-field rule.
         for kind in sorted(BINDABLE_KINDS):
-            self.assertEqual(bind_action({"kind": kind})["kind"], kind)
+            action = {"kind": kind}
+            for field in _REQUIRED_FIELDS.get(kind, ()):
+                action[field] = "minecraft:stone"
+            self.assertEqual(bind_action(action)["kind"], kind)
+
+
+class RequiredFieldTest(unittest.TestCase):
+    """A directive missing a field its kind needs is refused, never dispatched.
+
+    The failure this prevents, from the live trial on 2026-11-22: a script sent
+    `MINE {x, y, z}` with no target, the allow-list admitted it, the mod
+    installed MineBehavior, and start() NPE'd on a null target before
+    enterPhase() -- so every server tick re-threw it and the bot stopped
+    answering for eight minutes.
+    """
+
+    def test_mine_without_a_target_is_refused(self):
+        with self.assertRaises(RefusedAction) as ctx:
+            bind_action({"kind": "MINE", "x": 16, "y": 89, "z": -16})
+        self.assertIn("target", str(ctx.exception))
+
+    def test_the_refusal_names_coordinates_as_the_likely_mistake(self):
+        # The script that wedged the bot looked plausible. Saying only "missing
+        # target" leaves its author to repeat the guess, so the reason has to
+        # say that a block id goes in target and x/y/z are not coordinates.
+        with self.assertRaises(RefusedAction) as ctx:
+            bind_action({"kind": "MINE", "x": 16})
+        self.assertIn("not coordinates", str(ctx.exception))
+
+    def test_a_blank_target_is_missing_not_present(self):
+        # "  " passes a presence check and reaches the same NPE as absent.
+        for blank in ("", "   ", "\t"):
+            with self.assertRaises(RefusedAction, msg=f"target={blank!r}"):
+                bind_action({"kind": "MINE", "target": blank})
+
+    def test_a_real_target_binds_and_keeps_its_fields(self):
+        bound = bind_action({"kind": "MINE", "target": "minecraft:dirt", "count": 4})
+        self.assertEqual(bound["kind"], "MINE")
+        self.assertEqual(bound["target"], "minecraft:dirt")
+        self.assertEqual(bound["count"], 4)
+
+    def test_goto_takes_coordinates_not_a_target(self):
+        # The reverse guard: GOTO genuinely reads x/y/z (GotoBehavior.java:36-38),
+        # so a required-target table applied to it would refuse every valid goto.
+        bound = bind_action({"kind": "GOTO", "x": 10, "y": 70, "z": -5})
+        self.assertEqual(bound["kind"], "GOTO")
+
+    def test_every_kind_in_the_required_table_is_bindable(self):
+        # A table naming a kind that is not in the dispatch set is dead, and a
+        # rule nobody can reach is a rule nobody has tested.
+        for kind in _REQUIRED_FIELDS:
+            self.assertIn(kind, BINDABLE_KINDS,
+                          f"_REQUIRED_FIELDS names {kind}, which cannot be dispatched")
 
 
 if __name__ == "__main__":

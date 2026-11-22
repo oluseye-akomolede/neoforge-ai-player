@@ -156,7 +156,11 @@ public class BotBrain {
         return type;
     }
 
-    private void applyDirective(Directive directive) {
+    // Package-private so a unit test can drive it without a live ServerPlayer.
+    // tick()'s later stages (self-preservation, chat) dereference the entity, so
+    // the failure path cannot be reached through tick() in a server-free test;
+    // this is the one seam, and it is the method under test.
+    void applyDirective(Directive directive) {
         if (activeBehavior != null && activeBehavior != idleBehavior) {
             activeBehavior.stop();
         }
@@ -166,8 +170,39 @@ public class BotBrain {
 
         activeDirective = directive;
         lastProgress = null;
-        activeBehavior = BehaviorFactory.create(directive.getType());
-        activeBehavior.start(bot, directive);
+        Behavior created = BehaviorFactory.create(directive.getType());
+        try {
+            created.start(bot, directive);
+        } catch (RuntimeException e) {
+            // Install only a behavior whose start() succeeded. Assigning before
+            // start() left a half-started behavior in place: MineBehavior with a
+            // null target threw in start() before enterPhase(), so phase stayed
+            // unset and every server tick re-threw in tick() -- 312 stack traces
+            // in 16s, the server thread fell behind, and the bot stopped
+            // answering. Fail the directive once and go idle instead.
+            try {
+                created.stop();
+            } catch (RuntimeException ignored) {
+                // A behavior whose start() failed may not have initialised what
+                // stop() needs; that must not stop the bot recovering.
+            }
+            directive.fail("start() threw: " + e);
+            activeDirective = null;
+            // Retained as the last directive so the agent's next poll sees why
+            // it failed, rather than a bot that looks idle with no record.
+            lastDirective = directive;
+            activeBehavior = idleBehavior;
+            // Recovery must not depend on the entity: systemChat() dereferences
+            // the player, so calling it here made the catch that exists to stop
+            // a wedge throw an NPE of its own.
+            AIPlayerMod.LOGGER.warn("Directive {} failed at start(), fell back to idle: {}",
+                    directive.getType(), e.toString());
+            if (bot != null) {
+                bot.systemChat("Directive failed: " + directive.getType(), "red");
+            }
+            return;
+        }
+        activeBehavior = created;
 
         AIPlayerMod.LOGGER.info("[{}] New directive: {} target={}",
                 bot.getPlayer().getName().getString(), directive.getType(), directive.getTarget());

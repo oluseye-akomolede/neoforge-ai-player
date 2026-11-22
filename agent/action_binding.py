@@ -52,6 +52,39 @@ BINDABLE_KINDS = AGENT_SIDE_KINDS | MOD_DIRECTIVE_KINDS
 # script set `type` directly would let it reach a handler the binding refused.
 _ALLOWED_ARGS = frozenset({"target", "count", "radius", "x", "y", "z", "extra"})
 
+# Per-kind required fields. A directive that omits one is refused at binding,
+# before it reaches the mod: on 2026-11-22 a MINE with x/y/z and no `target`
+# passed the allow-list, the mod installed MineBehavior, and start() NPE'd on
+# a null target before enterPhase() -- so every server tick re-threw it and the
+# bot stopped answering. The allow-list is global on purpose (a field legal for
+# one kind is not legal for none); requirement is per kind.
+# The hint a script author needs for the kind most likely to be got wrong: a
+# lookup hands back block positions, so the tempting mistake is coordinates.
+_FIELD_HINTS = {
+    "MINE": "MINE takes the block id as 'target', not coordinates.",
+}
+
+_REQUIRED_FIELDS = {
+    "MINE": ("target",),
+    "SMELT": ("target",),
+    "CRAFT": ("target",),
+    "FOLLOW": ("target",),
+}
+
+
+def _missing_required(kind, bound):
+    """Name the first required field this action lacks, or None.
+
+    Blank counts as missing: a MINE with `target: "  "` reaches the same NPE as
+    one with no target at all, so refusing only an absent key would leave the
+    wedge reproducible.
+    """
+    for field in _REQUIRED_FIELDS.get(kind, ()):
+        value = bound.get(field)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return field
+    return None
+
 
 class RefusedAction(Exception):
     """An action the agent will not run. Carries why, so the script's author
@@ -91,6 +124,14 @@ def bind_action(action):
                 f"allowed: {', '.join(sorted(_ALLOWED_ARGS))}"
             )
         bound[key] = value
+    missing = _missing_required(kind, bound)
+    if missing is not None:
+        sent = sorted(k for k in bound if k != "kind")
+        hint = _FIELD_HINTS.get(kind, "")
+        raise RefusedAction(
+            f"action {kind} needs a non-blank {missing!r}; it was not sent "
+            f"(got {sent})." + (f" {hint}" if hint else "")
+        )
     return bound
 
 

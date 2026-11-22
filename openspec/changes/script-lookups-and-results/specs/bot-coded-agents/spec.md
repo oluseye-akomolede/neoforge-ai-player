@@ -497,3 +497,62 @@ carry MUST NOT be reported as "the game sent no capture time", because it did.
 - **WHEN** it reads `state.nearby.blocks` or `state.nearby.mobs`
 - **THEN** the value it sees MUST be the same list the lookup reads
 - **AND** no reader MUST be left handling a wrapper the agent no longer stores
+
+### Requirement: A Directive Missing A Required Field Is Refused, Never Dispatched
+
+An action MUST be refused at binding when it lacks a field its kind requires,
+with a reason the script log shows, on the same path as an unknown kind. It
+MUST NOT reach the mod. A malformed directive MUST fail the directive or be
+refused — never leave a bot wedged or spam the server thread.
+
+The failure this requirement exists to stop: on 2026-11-22 a script dispatched
+`MINE {"kind": "MINE", "x": 16, "y": 89, "z": -16}` with no `target`.
+`_ALLOWED_ARGS` admits `x`, `y` and `z` for every kind (`agent/action_binding.py:53`),
+so binding passed it. The mod's `BotBrain.applyDirective` installed `MineBehavior`
+before calling `start()` (`BotBrain.java:169-170` before this change);
+`MineBehavior.start()` reads `directive.getTarget()` (`MineBehavior.java:71`
+before this change) and calls `resolveDrop(targetBlock)` on it (`:83`) before
+`enterPhase()` (`:94`), which NPEs on null. Because the behavior was already
+installed, every server tick hit `switch (phase)` at `:107` and NPEd again: 312 stack traces in ~16 s, the server
+thread fell behind, and the bot stopped answering (`/brain` timed out at 10 s,
+L1 polls at 5 s) for more than eight minutes. Other bots were unaffected.
+
+`bind_action` MUST validate per-kind required fields. At minimum, `MINE`
+requires a non-blank `target`, and its `x`/`y`/`z` are NOT coordinates — a lookup
+returns positions, so a script mines a found block by passing the entry's
+`block` (or `id`) as `target` with a `count`. The per-kind field table MUST
+carry each kind's required fields and MUST be pinned by a test, in the pattern
+of `test_bindable_set_matches_source`, so the table and the check cannot drift.
+
+The script prompt MUST document the required fields of the common kinds,
+derived from that same table rather than hand-written, so a planner is told
+what to send instead of discovering it through a refusal.
+
+Defence in depth in the mod, which MUST hold even when a caller bypasses the
+agent's binding: `BotBrain.applyDirective` MUST NOT leave a half-started
+behavior — if `start()` throws, the directive fails with a reason logged once
+and the bot falls back to idle, rather than retrying a throwing `tick()` every
+server tick. `MineBehavior.start()` MUST reject a null or blank target cleanly
+before `resolveDrop`.
+
+#### Scenario: MINE without a target is refused and the bot stays responsive
+- GIVEN a script that dispatches `{"kind": "MINE", "x": 16, "y": 89, "z": -16}`
+- WHEN the tick binds the action
+- THEN the action is refused with a reason naming the missing `target`
+- AND the script log shows that reason
+- AND no directive reaches the mod
+- AND the bot answers its next brain poll
+
+#### Scenario: A throwing start() degrades the directive, not the server
+- GIVEN a behavior whose `start()` throws
+- WHEN `applyDirective` installs it
+- THEN the directive is marked failed and its reason logged once
+- AND the bot falls back to idle
+- AND no further `tick()` on that behavior runs
+
+#### Scenario: The prompt names the fields MINE requires
+- GIVEN the rendered script prompt
+- WHEN a planner reads the `MINE` entry
+- THEN it says `target` (a non-blank block id) is required
+- AND it says `target` is never a position, so `x`/`y`/`z` do not stand in for it
+- AND the field names in the prompt come from the same table the binding checks

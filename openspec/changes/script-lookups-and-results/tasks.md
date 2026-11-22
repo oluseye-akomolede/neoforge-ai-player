@@ -222,6 +222,28 @@ shears and could not tell).
       and a test that pins the three field names must red when any one is
       replaced by `id`.
 
+- [x] 4.6 **A malformed action is refused, never dispatched.** Found live on
+      2026-11-22: a script `api.do`'d `MINE {x, y, z}` with no `target`; the
+      allow-list admits `x`/`y`/`z` for every kind, so binding accepted it and
+      the mod installed MineBehavior, whose `start()` NPE'd on the null target
+      before setting a phase. Every server tick re-threw, Mystic stopped
+      answering for 8+ minutes. Three layers, all pinned: (a) `bind_action`
+      refuses a kind missing a field `_REQUIRED_FIELDS` names for it (blank
+      counts as missing, and a MINE refusal says coordinates are not the
+      target); (b) `SCRIPT_SURFACE` documents those required fields, rendered
+      from the same table, and drops the entry of any kind the binding no
+      longer dispatches; (c) in the mod, `BotBrain.applyDirective` installs a
+      behaviour only after `start()` returns, failing the directive and going
+      idle if it throws, and `MineBehavior.start()` rejects a blank target.
+      KILLS: removing the binding check reds the `RequiredFieldTest` trio;
+      dropping the prompt slot reds `RequiredFieldsInPromptTest` (3 red,
+      4 errors); skipping the bindable-set join reds exactly
+      `test_removing_a_kind_from_the_binding_removes_it_from_the_prompt`;
+      restoring the pre-fix `applyDirective` body reds
+      `a_throwing_start_fails_the_directive_and_does_not_leave_it_active`;
+      removing `requireTarget` reds `MineBehaviorTargetTest`'s null and blank
+      cases. Every mutant restored and verified.
+
 - [x] 4.4 Runner suite 189/189 (`npm test`); agent `test_l3_script_path`
       90 OK. Every mutant restored with `diff -q` identical.
 

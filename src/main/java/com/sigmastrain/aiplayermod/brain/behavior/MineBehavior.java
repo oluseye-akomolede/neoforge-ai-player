@@ -65,8 +65,27 @@ public class MineBehavior implements Behavior {
     private static final int BLOCKS_PER_TICK = 3;
     private static final int TICKS_PER_LEVEL = 1; // snappier rituals (user, 2026-08-04)
 
+    /**
+     * A blank target is a failed directive, not a search for block "".
+     *
+     * This is the second line of defence, not the first: the agent's binding
+     * refuses a MINE with no target (action_binding._REQUIRED_FIELDS). On
+     * 2026-11-22 a script got one past it, and here the null reached the
+     * getTarget() -> toLowerCase() path and NPE'd in tick() on every server
+     * tick. The agent fixes the cause; this keeps the mod's half of the
+     * contract true even when something upstream does not.
+     */
+    private static void requireTarget(Directive directive) {
+        String target = directive.getTarget();
+        if (target == null || target.isBlank()) {
+            throw new IllegalArgumentException(
+                    "MINE requires a block id as its target; got " + target);
+        }
+    }
+
     @Override
     public void start(BotPlayer bot, Directive directive) {
+        requireTarget(directive);
         this.directive = directive;
         this.targetBlock = directive.getTarget();
         this.targetCount = directive.getCount() > 0 ? directive.getCount() : 1;

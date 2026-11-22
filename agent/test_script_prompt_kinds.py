@@ -26,6 +26,90 @@ def _example_kinds():
     return found
 
 
+def _prompt_required_fields():
+    """{(kind): [field, ...]} as the PROMPT states them, parsed from its text.
+
+    Parsed from the rendered surface rather than read off `_REQUIRED_FIELDS`, so
+    a renderer that drops or mangles an entry is caught by comparing against
+    the binding, not by comparing the binding with itself.
+    """
+    out = {}
+    for line in planner.SCRIPT_SURFACE.splitlines():
+        m = re.match(r'\s*- `"([A-Z][A-Z_]*)"` needs (.+?)\.$', line)
+        if not m:
+            continue
+        out[m.group(1)] = re.findall(r'`"([a-z_]+)"`', m.group(2))
+    return out
+
+
+class RequiredFieldsInPromptTest(unittest.TestCase):
+    """The prompt must say which arguments a kind cannot do without.
+
+    The wedge on 2026-11-22: a script sent `MINE` with coordinates and no
+    `target`; the binding admitted it and the bot's tick loop died. The author
+    could not know because the prompt never said. These tests pin the prompt to
+    the binding in both directions.
+    """
+
+    def test_every_required_kind_and_field_is_named(self):
+        from action_binding import _REQUIRED_FIELDS
+        self.assertTrue(_REQUIRED_FIELDS, "the required table is empty -- this "
+                                          "test would pass vacuously")
+        shown = _prompt_required_fields()
+        self.assertEqual({k: list(v) for k, v in _REQUIRED_FIELDS.items()}, shown)
+
+    def test_the_prompt_does_not_invent_a_requirement(self):
+        """A kind listed as needing an argument, which the binding lets through
+        bare, is a false refusal the model will work around."""
+        from action_binding import _REQUIRED_FIELDS
+        for kind, fields in _prompt_required_fields().items():
+            with self.subTest(kind=kind):
+                self.assertEqual(list(_REQUIRED_FIELDS.get(kind, ())), fields)
+                # And it really is refused without them: the prompt's sentence
+                # "an action without one is not dispatched" must be true.
+                with self.assertRaises(RefusedAction):
+                    bind_action({"kind": kind})
+
+    def test_the_coordinates_mistake_is_named(self):
+        """The script that wedged the bot looked plausible, so the sentence that
+        would have stopped it has to be there."""
+        s = planner.SCRIPT_SURFACE
+        self.assertIn("never a position", s)
+        self.assertIn("do not stand in for it", s)
+
+    def test_nothing_required_leaves_no_stray_slot_or_line(self):
+        """If the required table empties, the partial must disappear -- not
+        print a bullet saying "none", which is advice the binding never made."""
+        raw = '  a plain object.\n' + planner._REQUIRED_FIELDS_SLOT + '\n  Returns x.'
+        out = planner._fill_required_fields(raw, {})
+        self.assertNotIn("@", out)
+        self.assertNotIn("NEED", out)
+        self.assertEqual('  a plain object.\n  Returns x.', out)
+
+    def test_a_required_kind_reaches_the_prompt_by_editing_the_binding_only(self):
+        """KILLS: the table typed into the prompt. A kind added to the binding's
+        required table must appear in a freshly imported prompt, with no prompt
+        edit -- the same drift guard the kind list has."""
+        import subprocess, sys, os
+        here = os.path.dirname(os.path.abspath(__file__))
+        probe = (
+            "import action_binding, sys\n"
+            "assert '`\"GOTO\"` needs' not in __import__('planner').SCRIPT_SURFACE\n"
+            "sys.modules.pop('planner', None)\n"
+            "action_binding._REQUIRED_FIELDS = dict(action_binding._REQUIRED_FIELDS)\n"
+            "action_binding._REQUIRED_FIELDS['GOTO'] = ('x',)\n"
+            "import planner\n"
+            "assert '`\"GOTO\"` needs `\"x\"`.' in planner.SCRIPT_SURFACE, "
+            "'GOTO missing from the prompt after a binding-only edit'\n"
+            "print('REQ-OK')\n"
+        )
+        out = subprocess.run([sys.executable, "-B", "-c", probe], cwd=here,
+                             capture_output=True, text=True)
+        self.assertEqual(0, out.returncode,
+                         f"stdout={out.stdout!r} stderr={out.stderr[-800:]!r}")
+        self.assertIn("REQ-OK", out.stdout)
+
+
 class ScriptSurfaceKindTest(unittest.TestCase):
 
     def test_every_kind_the_prompt_shows_is_bindable(self):
@@ -51,16 +135,27 @@ class ScriptSurfaceKindTest(unittest.TestCase):
         self.assertEqual(int(m.group(1)), len(BINDABLE_KINDS))
 
     def test_a_prompt_example_dispatches_without_refusal(self):
-        """The end-to-end claim: what the prompt says, the binding accepts."""
+        """The end-to-end claim: what the prompt says, the binding accepts.
+
+        A kind the prompt says needs an argument is now bound WITH it -- the
+        prompt states the rule, so following the prompt is the thing being
+        tested, not a bare `{"kind": ...}` the prompt never promised works."""
+        required = _prompt_required_fields()
         for kind in sorted(_example_kinds()):
             with self.subTest(kind=kind):
-                bound = bind_action({"kind": kind})
+                action = {"kind": kind}
+                for field in required.get(kind, ()):
+                    action[field] = "minecraft:stone"
+                bound = bind_action(action)
                 self.assertEqual(kind, bound["kind"])
 
     def test_lowercase_is_accepted_because_the_prompt_says_so(self):
         """The prompt now tells the model case does not matter; that promise
         must hold or the sentence is a new way to be refused."""
-        self.assertEqual("MINE", bind_action({"kind": "mine"})["kind"])
+        # MINE needs a target, which says nothing about case; supply it so this
+        # stays a test of normalisation and not of the required-field rule.
+        self.assertEqual("MINE",
+                         bind_action({"kind": "mine", "target": "stone"})["kind"])
 
     def test_the_invented_names_are_actually_refused(self):
         """The prompt names "attack" and "place" as WRONG. If one of them were
