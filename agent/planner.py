@@ -107,7 +107,13 @@ Rules for scripts:
 - `api.say` only when something changed since the last tick; a line you say
   again within a minute is suppressed, so a repeat is wasted, not harmful.
 - Anything a script `api.do`s is dispatched like a planned step, so use real
-  directive names, not invented ones."""
+  directive names, not invented ones.
+- An action you `api.do` takes effect AFTER this tick: the dispatch is queued
+  and the world changes on a later tick, so `look` in the same tick still shows
+  the old state. Never assume the effect landed because `api.do` returned
+  `{ok: true}` -- `ok` means the action was ACCEPTED, not that it happened.
+  Verify on a later tick before reporting progress, or you will log work that
+  has not occurred."""
 
 
 def _render_kind_list(kinds):
