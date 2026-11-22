@@ -112,17 +112,22 @@ SCRIPT_IDLE_MAX = 5
 # terminal keeps its status ACTIVE forever, so the idle bound can never fire
 # and the goal is held indefinitely.
 #
-# Demonstrated, not theoretical (reviewer, 2026-11-22 04:58Z): FOLLOW returns
-# RUNNING by design for every PRESENT target -- aboard, within followDistance,
-# and teleport-approach at FollowBehavior.java:94/:99/:107 -- and its only
-# terminal exit (OFFLINE_GIVEUP_TICKS, :31/:66) needs the target ABSENT. So a
-# script issuing FOLLOW <present player>, which action_binding.py allows, held
-# a goal for 5000 driven ticks (~2.8 h at TICK_DELAY=2.0) with no yield and
-# nothing to make tick 5001 differ. 38 behaviour classes, 2 self-bounded
-# (GOTO 600, FOLLOW 400), and Behavior is an interface with no inherited bound.
+# Reachable, not measured: FOLLOW returns RUNNING by design for every PRESENT
+# target -- aboard, within followDistance, and teleport-approach at
+# FollowBehavior.java:94/:99/:107 -- and its only terminal exit
+# (OFFLINE_GIVEUP_TICKS, :31/:66) needs the target ABSENT. So a script issuing
+# FOLLOW <present player>, which action_binding.py allows, keeps the directive
+# ACTIVE for as long as the player stays. That is ten lines of control flow
+# read from the Java; it is NOT a measured tick count. An earlier version of
+# this comment claimed 5000 "driven" ticks, which came from a harness that
+# raised TypeError on entry and never entered the method (reviewer correction,
+# 2026-11-22 05:06Z) -- so no run established any such figure. 38 behaviour
+# classes, 2 self-bounded (GOTO 600, FOLLOW 400), and Behavior is an interface
+# with no inherited bound.
 #
-# Sized at 3000 ticks (~100 min at TICK_DELAY=2.0): five times GOTO's own
-# 600-tick bound (~20 min), so no correctly bounded behaviour can reach it,
+# Sized at 3000 ticks (~100 min at TICK_DELAY=2.0, a derived figure from the
+# configured delay, not a measurement): five times GOTO's own 600-tick bound
+# (~20 min), so no correctly bounded behaviour can reach it,
 # while a genuinely stuck one yields within about an hour and a half rather
 # than never. This bounds the WAIT, not the work: the directive is not
 # cancelled, only unbound from the goal, so re-planning can re-issue it and it

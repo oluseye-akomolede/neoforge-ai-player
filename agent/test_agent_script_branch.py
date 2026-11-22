@@ -450,8 +450,10 @@ class AllRefusedYieldsTest(unittest.TestCase):
     def test_a_directive_active_past_its_own_bound_yields_the_goal(self):
         # NC-1 (reviewer, 2026-11-22 04:58Z): a behaviour with no terminal exit
         # keeps status ACTIVE, so the in-progress gate reset the idle run on
-        # every tick and the goal was held forever -- 5000 driven ticks, ~2.8 h
-        # at TICK_DELAY=2.0, with nothing to make the next tick differ.
+        # every tick and the goal was held for the whole duration of that
+        # directive. Read from control flow, not measured: the 5000-tick figure
+        # originally quoted here came from a harness that raised TypeError on
+        # entry (reviewer correction, 2026-11-22 05:06Z).
         # Seeded NONZERO so a reset and a no-op are distinguishable
         # (reviewer, 2026-11-22 04:56Z: my probe could not tell them apart).
         self.a._script_active_run = 2
