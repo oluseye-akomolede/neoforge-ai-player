@@ -3542,6 +3542,11 @@ Respond with ONLY a JSON array. Example:
             # idle ticks, and a script that acts at all is not the hung wait it
             # exists to catch.
             self._script_idle_run = 0
+            # A dispatched action is new work, so any directive still ACTIVE
+            # from here is a NEW wait, not the continuation of the one being
+            # bounded. Without this, a script issuing a directive every tick
+            # would accrue to the bound while making progress.
+            self._script_active_run = 0
             # The runner's seq for each bound action, in the same order. It is
             # NOT inside the action dict: bind_action refuses unknown keys and
             # _l3_orchestrator_dispatch strips anything outside the mod call's

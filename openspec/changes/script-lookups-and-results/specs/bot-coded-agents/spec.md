@@ -908,6 +908,10 @@ saying the directive produced no terminal result. The directive itself MUST
 NOT be cancelled: the bound is on the wait, not the work, so a re-plan may
 re-issue it and it then stops counting. The run MUST be reset whenever no
 directive is in flight, so the bound is on CONSECUTIVE ticks and not a total.
+It MUST also be reset by any tick that dispatches an action: a dispatched
+action is new work, so a directive still `ACTIVE` afterwards is a new wait
+rather than the continuation of the one being bounded -- otherwise a script
+issuing a directive every tick would accrue to the bound while making progress.
 The bound MUST be set above every self-bounded behaviour's own limit
 (`GOTO`'s `MAX_TICKS = 600`, `GotoBehavior.java:37`), so no correctly bounded
 behaviour can reach it.
@@ -937,6 +941,12 @@ behaviour can reach it.
 - **WHEN** the script polls it to completion
 - **THEN** `SCRIPT_DIRECTIVE_MAX_TICKS` MUST NOT have been reached
 - **AND** the goal MUST NOT be yielded before the walk finishes
+
+#### Scenario: A productive script does not accrue to the bound
+- **GIVEN** a script that dispatches an action on every tick, each leaving a directive `ACTIVE`
+- **WHEN** more than `SCRIPT_DIRECTIVE_MAX_TICKS` ticks pass in total
+- **THEN** each dispatch MUST restart the ACTIVE run
+- **AND** the goal MUST NOT be yielded
 
 ### Requirement: A Finished Directive Stays Readable Until The Next One
 

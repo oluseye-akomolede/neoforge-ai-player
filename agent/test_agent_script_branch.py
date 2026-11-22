@@ -413,6 +413,22 @@ class AllRefusedYieldsTest(unittest.TestCase):
             self.a._run_orchestrator.call_count, 0,
             "a single dispatch must reset the idle run, not accumulate across it")
 
+    def test_a_dispatching_tick_resets_the_directive_run(self):
+        # A script issuing a directive every tick is making progress, so an
+        # ACTIVE status carried over from the previous tick is a NEW wait, not
+        # the continuation of the one being bounded. Without the reset it would
+        # accrue to the bound across a productive run and yield a working goal.
+        bound = self.agent_mod.SCRIPT_DIRECTIVE_MAX_TICKS
+        self.a._script_active_run = bound - 1
+        self._with_tick((True, [{"kind": "STORE_ALL"}], [{"seq": 1}], "ok"),
+                        last_task=self._task("ACTIVE"))
+        self.a._l3_orchestrator_dispatch = mock.Mock(
+            return_value="COMPLETED STORE_ALL {'stored': 1}")
+        self.a._run_script_tick()
+        self.assertEqual(self.a._script_active_run, 0,
+                         "a dispatch starts a new wait, it does not resume one")
+        self.assertEqual(self.a._run_orchestrator.call_count, 0)
+
     def test_the_idle_yield_names_the_bound_and_the_goal(self):
         self._idle_tick()
         with mock.patch("builtins.print") as p:
