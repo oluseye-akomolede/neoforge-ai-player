@@ -1944,7 +1944,8 @@ class ScriptLifetimeTest(unittest.TestCase):
     Three transitions end that work: the done close (already true and already
     tested), a failure handed back to the planner, and a player's stop. The
     live symptom was a failed script held at (cooldown) 34 times in ~5 min and
-    still ticking after a "stop" logged "plan finalized: cancelled".
+    still ticking after a "stop" logged "plan finalized: cancelled". A fourth,
+    reset(), was found by review of 1e2a789 (F-1) and is covered here too.
 
     Every test here drives the real method; a mutant that removes each unbind
     reds its own test, so the three paths cannot be satisfied by one shared
@@ -1970,6 +1971,16 @@ class ScriptLifetimeTest(unittest.TestCase):
         # in the stop path rather than in this fixture.
         self.a._current_task_id = None
         self.a._awaiting_taskboard = False
+        # The same for reset(), which clears every planning attribute before it
+        # reaches the unbind. Give it the state __init__ would have.
+        self.a._plan_steps = []
+        self.a._plan_step_idx = 0
+        self.a._plan_instruction = ""
+        self.a._l1_failed_steps = set()
+        self.a._all_failed_steps = set()
+        self.a._following_player = None
+        self.a.conversation_history = []
+        self.a._cancel_orchestrator = mock.Mock()
 
     def _bind_planner(self, src="api.say('hi');"):
         with mock.patch.object(self.a, "_bound_script_path",
@@ -2095,6 +2106,42 @@ class ScriptLifetimeTest(unittest.TestCase):
         self.assertIsNone(self.a._script_hold,
                           "a stop must not masquerade as a goal-owned hold")
         self.assertTrue(self.a._script_halted_for_stop)
+
+    # ── (4) reset ───────────────────────────────────────────────────────
+
+    def test_a_reset_unbinds_the_planners_script(self):
+        # KILLS: a reset that clears the hold but leaves the planner script
+        # bound. The hold clear RELEASES a held script, so a bound planner
+        # script then resumed with no plan and no goal -- reviewer F-1 on
+        # 1e2a789, which fixed stop and hand-back but not reset.
+        self._bind_planner()
+        with mock.patch.object(self.a, "_bound_script_path",
+                               return_value=None):
+            self.a.reset()
+        self.assertIsNone(self.a._planner_script,
+                          "a reset must unbind the planner's script, not only "
+                          "clear the hold")
+
+    def test_a_reset_halts_a_hand_written_script_without_unbinding_it(self):
+        # The same two outcomes as stop, for the same reason: the player's
+        # bindings.json deployment must survive a reset.
+        self._bind_hand_written()
+        with mock.patch.object(self.a, "_bound_script_path",
+                               return_value="/scripts/mystic.js"):
+            self.a.reset()
+        self.assertTrue(self.a._script_halted_for_stop,
+                        "a reset must halt the bound hand-written script")
+        # Give the bot a REAL source and a sentinel tick, so the gate is the
+        # only thing that can return None here (same reasoning as the stop
+        # mutation, which stayed green until the fixture was fixed).
+        sentinel = object()
+        self.a._planner_script = "api.say('hi');"
+        self.a._script_tick = sentinel
+        self.a._script_loaded = True
+        with mock.patch.object(self.a, "_bound_script_path",
+                               return_value="/scripts/mystic.js"):
+            self.assertIsNone(self.a._get_script_tick(),
+                              "a reset-halted script must not reach the runner")
 
 
 class ScriptResultReachesTheSlotTest(unittest.TestCase):

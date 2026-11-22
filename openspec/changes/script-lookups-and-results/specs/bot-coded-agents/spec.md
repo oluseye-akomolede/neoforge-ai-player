@@ -1197,8 +1197,14 @@ script is no longer ticking:
    pays a runner call every tick and can suppress its own `say` indefinitely.
 3. The player sends a stop. A player's "stop" MUST stop a script that mines or
    walks, not only the planner that wrote it.
+4. The bot is reset. A reset is terminal in the same way a stop is: it clears
+   the plan, the goal and the script hold, so a bound planner script left alone
+   would resume ticking with no goal and no plan to serve. `reset()` MUST treat
+   a script exactly as a stop does. Without this it is the one terminal path
+   that still leaves the planner's script running, which is the same defect
+   this requirement closes for (2) and (3).
 
-For (2) and (3) the unbind MUST be `_unbind_planner_script` itself, not a
+For (2), (3) and (4) the unbind MUST be `_unbind_planner_script` itself, not a
 second mechanism that clears the same fields. That function already refuses to
 touch a hand-written script (`_planner_script` is empty for one), so the
 "deployment-bound scripts are not unbound" half is structural rather than a
@@ -1236,6 +1242,22 @@ states, and the log MUST say which one happened.
 #### Scenario: A stop halts a hand-written script for the stop period
 - **GIVEN** a script bound from `bindings.json` for this bot
 - **WHEN** the player sends exactly `stop`
+- **THEN** the script MUST NOT dispatch a further action while the bot is
+  stopped
+- **AND** it MUST remain bound, so the player's deployment is not erased
+- **AND** the next goal the bot accepts MUST let it dispatch again
+
+#### Scenario: A reset unbinds the planner's script
+- **GIVEN** a planner-authored script bound and ticking
+- **WHEN** the bot is reset (`reset()`, the in-game "All tasks cleared")
+- **THEN** the script MUST be unbound
+- **AND** a subsequent tick MUST NOT call the runner
+- **AND** the reset MUST still cancel the orchestrator and the directive, as it
+  does today
+
+#### Scenario: A reset halts a hand-written script and keeps it bound
+- **GIVEN** a script bound from `bindings.json` for this bot
+- **WHEN** the bot is reset
 - **THEN** the script MUST NOT dispatch a further action while the bot is
   stopped
 - **AND** it MUST remain bound, so the player's deployment is not erased

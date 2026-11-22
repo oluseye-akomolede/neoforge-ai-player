@@ -572,6 +572,17 @@ class BotRunner:
         # own hold only. Without this a reset during a held goal would leave the
         # script paused forever (the "every path must terminate" finding).
         self._clear_script_hold()
+        # A reset is terminal exactly as a stop is, and it is the one terminal
+        # path that still left the planner's script running: clearing the hold
+        # above RELEASES a held script, so a bound planner script then resumed
+        # ticking with no plan and no goal to serve (reviewer F-1 on 1e2a789).
+        # Same two outcomes as the stop path, for the same reasons: a planner
+        # script is unbound outright, a hand-written one is halted and stays
+        # bound so the player's deployment is not erased.
+        if self._unbind_planner_script():
+            print(f"[{self.name}/reset] unbound the planner's script")
+        else:
+            self._halt_script_for_stop()
         self.conversation_history.clear()
         with _orchestration_lock:
             _orchestrated_messages.clear()
