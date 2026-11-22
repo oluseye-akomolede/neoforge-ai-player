@@ -265,13 +265,23 @@ The password is taken from the **LIVE** TEST DSN, not from a backup, and never p
 ```bash
 ssh controlplane 'bash -s' <<'REMOTE'
 set -eu
+# The live DSN is written to /tmp on the controlplane host; remove it on any exit, not just
+# the happy path -- the explicit rm below sits after the parse.
+trap 'rm -f /tmp/pgdsn.live' EXIT
 # The password comes from the LIVE TEST secret — the one that is still valid right now.
 # Rehearsing with the backup's value would test a different code path and could rotate the
 # role to a password no consumer holds if the backup were stale.
 kubectl -n minecraft-test get secret agent-config -o jsonpath='{.data.PG_DSN}' | base64 -d > /tmp/pgdsn.live
 OLD=$(python3 -c 'from urllib.parse import urlsplit;print(urlsplit(open("/tmp/pgdsn.live").read()).password)')
 rm -f /tmp/pgdsn.live
-[ -n "$OLD" ] || { echo "ABORT: parsed an empty password from the live DSN"; exit 1; }
+# Reject the VALUE, not just its absence. print(None) renders the four-character string
+# "None", so a garbled or empty file yields OLD=None (len 4) and passes a [ -n ] test --
+# then ALTER ROLE ... PASSWORD 'None' SUCCEEDS and rotates the role to a value no consumer
+# holds. Same for a single quote, which would end the SQL literal early.
+case "$OLD" in
+  ''|None) echo "ABORT: could not parse a password from the live DSN (got '$OLD')"; exit 1;;
+  *\'*)    echo "ABORT: password contains a single quote; refusing to interpolate"; exit 1;;
+esac
 # The rehearsed command, verbatim the shape §8 will run. Same VALUE in and out: a no-op.
 kubectl -n minecraft-test exec deploy/pgvector -- psql -U aibot -d postgres -v ON_ERROR_STOP=1 \
   -c "ALTER ROLE aibot PASSWORD '$OLD'" || { echo "ABORT: rehearsal ALTER ROLE failed"; exit 1; }
@@ -638,9 +648,18 @@ set -euo pipefail
 #        new one, and rolling back only the secrets leaves both consumers broken.
 ssh controlplane 'bash -s' <<'REMOTE'
 set -eu
+# The backup DSN is written to /tmp here; remove it on any exit, including the aborts below.
+trap 'rm -f /tmp/pgdsn.rb' EXIT
 kubectl -n minecraft-test get secret pgdsn-backup-agent-config -o jsonpath='{.data.PG_DSN}' | base64 -d > /tmp/pgdsn.rb
 OLD=$(python3 -c 'from urllib.parse import urlsplit;print(urlsplit(open("/tmp/pgdsn.rb").read()).password)')
 rm -f /tmp/pgdsn.rb
+# Same value guard as 4b, and it matters MORE here: this is a rollback. A garbled or empty
+# backup yields the four-character string "None", which passes [ -n ] and sets the role to
+# PASSWORD 'None' -- destroying the very credential the rollback exists to restore.
+case "$OLD" in
+  ''|None) echo "ABORT: could not parse a password from the backup DSN (got '$OLD'); role NOT touched"; exit 1;;
+  *\'*)    echo "ABORT: backup password contains a single quote; refusing to interpolate"; exit 1;;
+esac
 kubectl -n minecraft-test exec deploy/pgvector -- psql -U aibot -d postgres -v ON_ERROR_STOP=1 -c "ALTER ROLE aibot PASSWORD '$OLD'"
 echo "--- end"
 REMOTE
@@ -657,6 +676,9 @@ done
 # --- 3. PROD's secret, before any restart. Exactly one field (PG_DSN), from its own backup.
 ssh controlplane 'bash -s' <<'REMOTE'
 set -eu
+# prod's base64 PG_DSN lands in /tmp here. The rm below sits AFTER the patch, so under
+# set -eu a failing patch exits leaving this file on disk -- exactly the retry case. Trap it.
+trap 'rm -f /tmp/prod.b64' EXIT
 kubectl -n minecraft get secret pgdsn-backup-agent-config-prod -o jsonpath='{.data.PG_DSN}' > /tmp/prod.b64
 [ -s /tmp/prod.b64 ] || { echo "ABORT: prod backup PG_DSN field is empty"; exit 1; }
 kubectl -n minecraft patch secret agent-config --type=merge \
@@ -690,6 +712,9 @@ Secret's shape but the same one-field (`PG_DSN`) content:
 ```bash
 ssh controlplane 'bash -s' <<'REMOTE'
 set -eu
+# Same trap as step 3: the rm below is after the patch, so a failed patch would otherwise
+# leave prod's credential at rest in /tmp on the controlplane host.
+trap 'rm -f /tmp/prod.b64' EXIT
 # Restore exactly one field, PG_DSN, from the prod backup. Nothing else in the secret
 # moves: a whole-object apply would carry back whatever else the backup held.
 kubectl -n minecraft get secret pgdsn-backup-agent-config-prod -o jsonpath='{.data.PG_DSN}' > /tmp/prod.b64
