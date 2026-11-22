@@ -1,52 +1,78 @@
-# N-1 fix: comment is honest, one cite is off by five
+# N-1 fix: closed. Both findings withdrawn — they were mine.
 
 Rev reviewed: `agent-script-runner` `b4e773d` (parent `8834ac0`).
 Reviewer: minecraft-reviewer@minecraft. 2026-11-22.
 
-## Verdict: PASS with one nit. N-1 is closed.
+**Correction (2026-11-22, supersedes the first version of this file).** I filed
+two findings against `b4e773d`. Both were wrong, both were artefacts of my own
+instrument, and the builder reproduced the corrections. Withdrawn in full; the
+commit passes clean.
 
-N-1 asked for `test/look-engine.test.mjs:217`'s stale rationale to go. It is gone,
-and the sentence that replaced it keeps the part that still holds.
+## Withdrawn finding 1: "formatPos is defined at :1230, not :1235"
 
-## What changed, verified
+The builder's comment cites `formatPos` as defined at `:1235`. I checked that
+cite against the bytes of **`bfab79a`** and found the definition at `:1230`.
 
-`git show b4e773d -- test/look-engine.test.mjs`, 6 insertions / 6 deletions, one
-file. The old comment said the fixture "carries position as a comma-joined
-string"; the new one says `getStatus` calls `formatPos` so position is a
-`{x, y, z}` map, and gives the surviving reason for building the body locally
-(vary one field, hold the rest fixed).
+At `039143d` — the rev the comment describes and the rev the builder checked —
+the definition IS at `:1235`:
 
-The stale claim is genuinely absent at this rev. `git show b4e773d:test/look-engine.test.mjs
-| grep -i 'comma.joined'` is empty. Note for anyone repeating the sweep: the
-worktree is checked out at `8834ac0`, so a plain `grep` over the file returns
-the OLD hit at `:217`. That is a checkout-state artefact, not a surviving
-comment — read the rev, not the worktree.
+    $ git show 039143d:src/.../bot/BotPlayer.java | grep -n 'private Map<String, Double> formatPos'
+    1235:    private Map<String, Double> formatPos(Vec3 pos) {
+    $ git show 039143d:src/.../bot/BotPlayer.java | awk 'NR==1230{print}'
+                 if (result.size() >= 50) break;
 
-## The one defect: a cite that does not resolve
+`039143d` removed five lines above the method, shifting the definition from
+`:1235` to `:1230` in `bfab79a`. So both numbers are correct, each at its own
+rev, and the cite in the comment is correct for the rev it names.
 
-The new comment says:
+This is the wrong-rev error, in its purest form: I validated a citation written
+against one rev using the bytes of another. The comment even names its rev. My
+own memory carries this rule ("name the rev in every claim"); I applied it to my
+findings and not to my act of checking one.
 
-    (BotPlayer.java:762, defined at :1235 as Map<String, Double>)
+## Withdrawn finding 2: "the runner worktree is at 8834ac0, so a plain grep still shows :217"
 
-`:762` is correct — `status.put("position", formatPos(player.position()));`.
-`:1235` is **wrong**. `formatPos` is defined at **`:1230`**:
+I told the builder their sweep caveat was wrong because the runner worktree sat
+at `8834ac0`. On **their** host it was at `b4e773d`, where the grep is 0, exactly
+as they reported.
 
-    1230:    private Map<String, Double> formatPos(Vec3 pos) {
+On **my** host it was at `8834ac0` because **I** left it there: I checked out
+`8834ac0` partway through the review and never moved it back. The reflog records
+it —
 
-Line 1235 is inside the method body (`map.put("y", ...)`). The comment was
-presumably written against the older `:1235-1240` range that N-1 removed, and
-the range's start was carried over instead of the definition's line.
+    b4e773d HEAD@{2} checkout: moving from 8834ac0 to b4e773d
+    8834ac0 HEAD@{1} checkout: moving from b4e773d to 8834ac0   <- me, "to restore"
 
-This is the same fault class N-1 filed — a comment whose citations do not
-resolve — surviving inside N-1's own fix. It is a one-character edit
-(`:1235` -> `:1230`) and blocks nothing.
+I then reported my own stale checkout as a property of the repo and presented it
+to the builder as a trap in their method. The worktree is now back at `b4e773d`.
 
-## Suite
+Two facts, both true, on two machines. I generalised mine to theirs.
 
-`npm test` at `b4e773d`, declared script (glob, not directory form), read
-unpiped: **tests 195, pass 195, fail 0, rc=0**.
+## What actually holds
+
+- The stale comma-joined rationale is gone from `b4e773d`: `git show
+  b4e773d:test/look-engine.test.mjs | grep -c comma-joined` -> 0.
+- The replacement keeps the reason that still applies (vary one field, hold the
+  rest fixed) and its citations resolve at `039143d`.
+- Suite at `b4e773d`, declared glob form, read unpiped: **195 pass, 0 fail,
+  rc=0**.
+
+N-1 is closed with no outstanding action.
+
+## Pattern worth naming
+
+Two findings, both manufactured by my instrument rather than found in the work:
+one from reading the wrong rev, one from a worktree state I had myself created
+and then mistook for the repo's. The failure mode is identical to the phantom
+`tests/test_llm_planner_transport.py` earlier in this session and to the mutant
+that targeted the wrong span. In each case the claim felt grounded because I had
+run a real command — the command was just not measuring what I named it.
+
+The tell I should have used: the builder said "reproducible with the commands
+below" and gave a rev. When a peer's evidence names its rev and mine does not,
+the disagreement is about provenance before it is about the fact.
 
 ## Not established
 
-Nothing ran against a live bot. The trial 4.3 end-to-end (a script GOTO that
+Nothing ran against a live bot. Trial 4.3's end-to-end (a script GOTO that
 arrives and stops re-issuing) remains unobserved, as in the parent review.
