@@ -106,6 +106,35 @@ SCRIPT_REPEAT_MAX = 5
 # but a wait that outlives five consecutive ticks is not going to end.
 SCRIPT_IDLE_MAX = 5
 
+# Consecutive ticks one directive may stay ACTIVE before the goal behind it is
+# yielded. The in-progress gate above is what stops SCRIPT_IDLE_MAX tearing
+# down a legitimate walk, but it is also a hole: a behaviour that never returns
+# terminal keeps its status ACTIVE forever, so the idle bound can never fire
+# and the goal is held indefinitely.
+#
+# Demonstrated, not theoretical (reviewer, 2026-11-22 04:58Z): FOLLOW returns
+# RUNNING by design for every PRESENT target -- aboard, within followDistance,
+# and teleport-approach at FollowBehavior.java:94/:99/:107 -- and its only
+# terminal exit (OFFLINE_GIVEUP_TICKS, :31/:66) needs the target ABSENT. So a
+# script issuing FOLLOW <present player>, which action_binding.py allows, held
+# a goal for 5000 driven ticks (~2.8 h at TICK_DELAY=2.0) with no yield and
+# nothing to make tick 5001 differ. 38 behaviour classes, 2 self-bounded
+# (GOTO 600, FOLLOW 400), and Behavior is an interface with no inherited bound.
+#
+# Sized at 3000 ticks (~100 min at TICK_DELAY=2.0): five times GOTO's own
+# 600-tick bound (~20 min), so no correctly bounded behaviour can reach it,
+# while a genuinely stuck one yields within about an hour and a half rather
+# than never. This bounds the WAIT, not the work: the directive is not
+# cancelled, only unbound from the goal, so re-planning can re-issue it and it
+# stops counting.
+#
+# FOLLOW is the one behaviour meant to run indefinitely, and a duration bound
+# is the wrong instrument for it long-term -- it should be bounded by target
+# STALENESS instead (no movement, no proximity change). That needs a mod-side
+# signal the agent does not have; this bound is the backstop until then, and
+# NC-1 records it (qitem-20261122045802-740b42e3250d56f9).
+SCRIPT_DIRECTIVE_MAX_TICKS = 3000
+
 
 def _script_action_key(directive: dict) -> str:
     """A stable identity for one bound action, for the spin counter.
@@ -406,6 +435,9 @@ class BotRunner:
         # Consecutive ticks the bound script dispatched nothing. Reset by any
         # dispatch. Bound is SCRIPT_IDLE_MAX.
         self._script_idle_run = 0
+        # Consecutive ticks ONE directive has been ACTIVE. Bound is
+        # SCRIPT_DIRECTIVE_MAX_TICKS; reset whenever no directive is in flight.
+        self._script_active_run = 0
         self._terrain_tick = 0
         self._lock = threading.Lock()
         self._memory_file = os.path.join(
@@ -1756,6 +1788,7 @@ class BotRunner:
         # A goal-less bot's idle run must not be inherited by this one: the
         # run that reaches the bound must belong to the goal it yields.
         self._script_idle_run = 0
+        self._script_active_run = 0
         print(f"[{self.name}/orchestrator] starting plan for: {task_text[:80]}")
 
         def on_plan_created(plan):
@@ -3441,11 +3474,31 @@ Respond with ONLY a JSON array. Example:
                 if _suppressed:
                     return True
                 if self._directive_in_progress(st):
-                    # Not idle: the script dispatched nothing because the bot is
-                    # walking a GOTO. Reset rather than hold the run, so a walk
-                    # never contributes to the bound that yields the goal.
+                    # Not idle in the SCRIPT_IDLE_MAX sense: the script
+                    # dispatched nothing because the bot is walking a GOTO.
+                    # Reset that run rather than hold it, so a walk never
+                    # contributes to the bound that yields the goal.
                     self._script_idle_run = 0
+                    # But an ACTIVE directive can itself be the wait that never
+                    # ends: a behaviour with no terminal exit holds the goal
+                    # forever, and resetting above is what makes it invisible.
+                    # Count that run separately and bound it.
+                    if not self._has_active_goal():
+                        self._script_active_run = 0
+                        return False
+                    self._script_active_run = getattr(
+                        self, "_script_active_run", 0) + 1
+                    if self._script_active_run >= SCRIPT_DIRECTIVE_MAX_TICKS:
+                        self._script_active_run = 0
+                        self._yield_script_to_planner(
+                            f"directive ACTIVE for {SCRIPT_DIRECTIVE_MAX_TICKS} "
+                            "consecutive ticks (no terminal result) while its "
+                            "goal was unfinished -- re-planning so the wait "
+                            "cannot outlive the bound")
                     return False
+                # No directive in flight: whatever ACTIVE run was counted is
+                # over, so this bound is on CONSECUTIVE ticks, not a total.
+                self._script_active_run = 0
                 self._note_script_idle()
                 # A wait that can never end must not hold the goal forever. The
                 # planner gets the tick either way (this returns False), but on

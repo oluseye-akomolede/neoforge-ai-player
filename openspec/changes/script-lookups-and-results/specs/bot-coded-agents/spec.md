@@ -894,6 +894,24 @@ envelope that same tick already built, recorded as `ScriptTick.last_task`
 (`script_tick.py:471`), not from a second request: a fresh `GET` would answer
 for a different moment than the script was given.
 
+Third, and overriding the second where they disagree, an `ACTIVE` directive
+MUST NOT be able to hold a goal forever. The in-progress gate is what stops a
+legitimate walk being torn down, but it is also a hole: a behaviour with no
+terminal exit keeps its status `ACTIVE` indefinitely, so the idle bound can
+never fire. `FOLLOW` is the demonstrated case -- it returns `RUNNING` for every
+PRESENT target (`FollowBehavior.java:94`, `:99`, `:107`) and its only terminal
+exit (`OFFLINE_GIVEUP_TICKS`, `:31`, gated at `:66`) requires the target
+ABSENT -- and a script may issue it, since `action_binding.py:41` binds
+`FOLLOW`. After `SCRIPT_DIRECTIVE_MAX_TICKS` consecutive `ACTIVE` ticks the
+goal MUST be yielded for re-planning, with a log line naming the bound and
+saying the directive produced no terminal result. The directive itself MUST
+NOT be cancelled: the bound is on the wait, not the work, so a re-plan may
+re-issue it and it then stops counting. The run MUST be reset whenever no
+directive is in flight, so the bound is on CONSECUTIVE ticks and not a total.
+The bound MUST be set above every self-bounded behaviour's own limit
+(`GOTO`'s `MAX_TICKS = 600`, `GotoBehavior.java:37`), so no correctly bounded
+behaviour can reach it.
+
 #### Scenario: A goal-less bot does not yield
 - **GIVEN** a bound script that dispatches nothing and no active goal
 - **WHEN** `SCRIPT_IDLE_MAX` consecutive ticks pass
@@ -903,9 +921,22 @@ for a different moment than the script was given.
 
 #### Scenario: A walk in progress is not idleness
 - **GIVEN** a script that dispatches nothing while its directive reports `ACTIVE`
-- **WHEN** many ticks pass, more than `SCRIPT_IDLE_MAX`
+- **WHEN** many ticks pass, more than `SCRIPT_IDLE_MAX` but fewer than `SCRIPT_DIRECTIVE_MAX_TICKS`
 - **THEN** the goal MUST NOT be yielded
 - **AND** the idle run MUST NOT reach the bound while the directive runs
+
+#### Scenario: A directive that never goes terminal yields the goal
+- **GIVEN** a bound script with an active goal whose directive stays `ACTIVE`
+- **WHEN** `SCRIPT_DIRECTIVE_MAX_TICKS` consecutive ticks pass
+- **THEN** the goal MUST be yielded to the planner
+- **AND** the directive MUST NOT be cancelled
+- **AND** the log MUST name the bound (trial 4.2's wait-that-cannot-end, one layer down)
+
+#### Scenario: Bounded behaviour never trips the directive bound
+- **GIVEN** a `GOTO` that runs to its own `MAX_TICKS = 600` limit
+- **WHEN** the script polls it to completion
+- **THEN** `SCRIPT_DIRECTIVE_MAX_TICKS` MUST NOT have been reached
+- **AND** the goal MUST NOT be yielded before the walk finishes
 
 ### Requirement: A Finished Directive Stays Readable Until The Next One
 

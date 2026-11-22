@@ -431,6 +431,62 @@ class AllRefusedYieldsTest(unittest.TestCase):
     def _task(status):
         return {"directive": {"id": 7, "type": "GOTO", "status": status}}
 
+    def test_a_directive_active_past_its_own_bound_yields_the_goal(self):
+        # NC-1 (reviewer, 2026-11-22 04:58Z): a behaviour with no terminal exit
+        # keeps status ACTIVE, so the in-progress gate reset the idle run on
+        # every tick and the goal was held forever -- 5000 driven ticks, ~2.8 h
+        # at TICK_DELAY=2.0, with nothing to make the next tick differ.
+        # Seeded NONZERO so a reset and a no-op are distinguishable
+        # (reviewer, 2026-11-22 04:56Z: my probe could not tell them apart).
+        self.a._script_active_run = 2
+        self._idle_tick(last_task=self._task("ACTIVE"))
+        with mock.patch("builtins.print") as p:
+            for _ in range(self.agent_mod.SCRIPT_DIRECTIVE_MAX_TICKS):
+                self.a._run_script_tick()
+        self.assertEqual(self.a._run_orchestrator.call_count, 1,
+                         "a permanently ACTIVE directive must yield the goal")
+        self.assertEqual(self.a._plan_steps, [],
+                         "yielding drops the stale step list for a re-plan")
+        printed = " ".join(str(c.args[0]) for c in p.call_args_list if c.args)
+        self.assertIn("no terminal result", printed)
+        self.assertIn(str(self.agent_mod.SCRIPT_DIRECTIVE_MAX_TICKS), printed)
+
+    def test_a_directive_below_its_bound_does_not_yield(self):
+        # The other direction: the bound must not fire early, or a working walk
+        # is torn down on a timer -- the defect the in-progress gate fixed.
+        self.a._script_active_run = 0
+        self._idle_tick(last_task=self._task("ACTIVE"))
+        for _ in range(self.agent_mod.SCRIPT_DIRECTIVE_MAX_TICKS - 1):
+            self.a._run_script_tick()
+        self.assertEqual(self.a._run_orchestrator.call_count, 0,
+                         "one tick short of the bound must not yield")
+        self.assertEqual(self.a._plan_steps, ["mine something"])
+        self.assertEqual(self.a._script_active_run,
+                         self.agent_mod.SCRIPT_DIRECTIVE_MAX_TICKS - 1)
+
+    def test_the_directive_bound_is_consecutive_not_cumulative(self):
+        # A COMPLETED tick between ACTIVE runs means the directive finished;
+        # the next one is a NEW wait and must start from zero. Otherwise a
+        # script issuing many short walks would accrue to the bound and yield
+        # a goal it is making progress on.
+        self.a._script_active_run = self.agent_mod.SCRIPT_DIRECTIVE_MAX_TICKS - 1
+        self._idle_tick(last_task=self._task("COMPLETED"))
+        self.a._run_script_tick()
+        self.assertEqual(self.a._script_active_run, 0,
+                         "a finished directive ends the consecutive run")
+        self._idle_tick(last_task=self._task("ACTIVE"))
+        self.a._run_script_tick()
+        self.assertEqual(self.a._run_orchestrator.call_count, 0,
+                         "the run must restart, not resume at the bound")
+        self.assertEqual(self.a._script_active_run, 1)
+
+    def test_the_directive_bound_outlasts_a_gotos_own_limit(self):
+        # GOTO bounds itself at 600 ticks (GotoBehavior.java:37). If the agent's
+        # bound were at or below that, a legitimate long walk would be torn down
+        # by the very guard meant to protect it.
+        self.assertGreater(self.agent_mod.SCRIPT_DIRECTIVE_MAX_TICKS, 600,
+                           "the agent bound must sit above GOTO's own MAX_TICKS")
+
     def test_a_goal_less_bot_does_not_yield_and_keeps_its_plan(self):
         # Reviewer F-1 (2026-11-22 04:48Z): driven with no goal set, the idle
         # guard yielded every SCRIPT_IDLE_MAX ticks forever, cleared a live
