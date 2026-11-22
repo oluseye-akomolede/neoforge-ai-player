@@ -1271,3 +1271,51 @@ steps, then `plan finalized: complete`.
 - **WHEN** the orchestrator drives the goal
 - **THEN** the step list runs as it does today
 - **AND** the goal's status is decided by those steps, not by the refusal
+
+### Requirement: A Tick With A Snapshot MUST NOT Grow The Runner's Heap
+
+The runner installs the game snapshot into the script sandbox on every tick
+that carries one (`agent-script-runner src/engine.js`, `#installSnapshot`).
+Installing it calls `ctx.getProp(handle, "snapshot")` and
+`ctx.getProp(handle, "look")` and feeds each result to a `setProp` on the guest
+global. Every `getProp` returns a QuickJS handle that holds an entry in the
+**runtime-wide** HostRef table, and those entries live as long as the runtime
+does — not as long as the context. Disposing only the outer `handle` therefore
+leaks one HostRef entry per `getProp`, per tick.
+
+Each tick that carries a snapshot MUST leave the runtime's retained memory
+where it found it, within a bounded slack that does not grow with the number of
+ticks. The bound MUST hold for a realistically large snapshot (40+ bots with
+positions and inventories, a chat backlog), not only for a minimal one: the
+leak is proportional to the installed payload, so a tiny fixture can make a
+leaking runtime look flat for thousands of ticks.
+
+The same rule applies to every `getProp`-into-`setProp` site, not only the
+snapshot path. `#installApi` was fixed this way in `f63a623`; `#installSnapshot`
+was not, and an unpatched runner died at 2,142 ticks on a 29-byte snapshot and
+survives past 30,000 once its two inner refs are disposed.
+
+#### Scenario: Steady ticks with a large snapshot keep the heap flat
+
+- **GIVEN** a sandbox on a limited runtime with a warm-up of at least 20 ticks
+- **WHEN** it is ticked 500 times, each tick carrying a snapshot of at least 100 KB
+- **THEN** every tick succeeds
+- **AND** retained memory after the run is not more than the starting reading
+  plus a small fixed slack, and does not grow linearly with the tick count
+
+#### Scenario: The bounding test fails on a leaking runner
+
+- **GIVEN** the same large-snapshot test run against a runner that disposes only
+  the outer handle in `#installSnapshot`
+- **WHEN** the test completes
+- **THEN** it fails, reporting growth per tick
+- **AND** the reported growth is on the order of tens of kilobytes per tick, not
+  a burst attributable to one-off warm-up allocations
+
+#### Scenario: A snapshot-free tick is unaffected
+
+- **GIVEN** a sandbox ticked with no snapshot argument
+- **WHEN** the run completes
+- **THEN** the heap is flat
+- **AND** the snapshot-leak test does not depend on this path, because a
+  snapshot-free tick never enters the leaking branch
