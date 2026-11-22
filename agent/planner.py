@@ -124,7 +124,15 @@ Rules for scripts:
   the old state. Never assume the effect landed because `api.do` returned
   `{ok: true}` -- `ok` means the action was ACCEPTED, not that it happened.
   Verify on a later tick before reporting progress, or you will log work that
-  has not occurred."""
+  has not occurred.
+- `GOTO` goes to a POSITION, not to a block. To work on a block, `GOTO` a
+  neighbouring open block, or a position within reach of it -- never the block
+  itself. A GOTO into solid rock fails with `target_enclosed` rather than
+  digging to it; if the destination was lifted up to 3 blocks to a clear
+  standing spot, the COMPLETED result carries `adjusted_from` and
+  `adjusted_to` -- the requested and the actual destination, each an
+  `{x, y, z}` map. Write an arrival check against `adjusted_to`, or against
+  `look.self().position`, never against the coordinates you asked for."""
 
 
 def _render_kind_list(kinds):

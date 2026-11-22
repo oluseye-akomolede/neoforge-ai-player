@@ -176,6 +176,23 @@ class PlannerPromptDocumentsPtcTest(unittest.TestCase):
         self.assertIn("2 KiB", prompt)
         self.assertIn("escalate", prompt)
 
+    def test_the_prompt_warns_goto_takes_a_position_not_a_block(self):
+        # KILLS: trial 4.2. A script targeted an enclosed ore block itself, the
+        # mod lifted the destination 36 blocks to the surface, and the script
+        # had no way to learn the target had moved. The prompt must say GOTO is
+        # a position and to stand NEXT TO a block to work on it. Also pins the
+        # failure name so a planner can recognise it.
+        prompt = _rendered_prompt()
+
+        self.assertIn("GOTO` goes to a POSITION, not to a block", prompt,
+                      "the prompt must say GOTO takes a position, not a block")
+        self.assertIn("neighbouring open block", prompt,
+                      "the prompt must say to stand next to the block")
+        self.assertIn("target_enclosed", prompt,
+                      "a planner must be able to recognise the enclosed failure")
+        self.assertIn("adjusted_from", prompt,
+                      "a planner must know a lifted destination is reported")
+
 
 class PlannerPromptRendersTest(unittest.TestCase):
     def test_the_real_prompt_renders_and_reaches_the_model(self):
@@ -196,6 +213,33 @@ class PlannerPromptRendersTest(unittest.TestCase):
         for needed in ("look.blocks(", "look.entities(", "look.age()",
                        "api.result("):
             self.assertIn(needed, sent["prompt"])
+
+
+class GotoWarningTest(unittest.TestCase):
+    """A script writing a GOTO must be told it takes a POSITION, that a solid
+    target fails rather than digs, and where to read a lift -- trial 4.2 was a
+    GOTO silently lifted 36 blocks to the surface."""
+
+    def test_the_prompt_warns_that_a_solid_goto_target_fails(self):
+        surface = planner.SCRIPT_SURFACE
+        self.assertIn("target_enclosed", surface)
+        self.assertIn("POSITION, not to a block", surface)
+
+    def test_the_prompt_names_where_a_lift_is_reported(self):
+        self.assertIn("`adjusted_from`", planner.SCRIPT_SURFACE)
+        self.assertIn("`adjusted_to`", planner.SCRIPT_SURFACE)
+
+    def test_the_prompt_lift_bound_matches_the_mod(self):
+        # The prompt states the bound as a literal. Pin it to the Java constant
+        # so the two cannot drift: a script author reading "3" and a mod that
+        # lifts 5 is the same class of false statement as the fixture.
+        import pathlib
+        import re
+        src = pathlib.Path(__file__).resolve().parent.parent / (
+            "src/main/java/com/sigmastrain/aiplayermod/brain/behavior/GotoBehavior.java")
+        m = re.search(r"GOTO_MAX_LIFT\s*=\s*(\d+)", src.read_text())
+        self.assertIsNotNone(m, "GOTO_MAX_LIFT not found in GotoBehavior.java")
+        self.assertIn(f"lifted up to {m.group(1)} blocks", planner.SCRIPT_SURFACE)
 
 
 if __name__ == "__main__":

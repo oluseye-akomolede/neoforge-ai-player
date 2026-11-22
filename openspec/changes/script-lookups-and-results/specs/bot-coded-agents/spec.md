@@ -791,3 +791,70 @@ COMPLETED, and nothing yielded until a human restarted the agent.
   the same spinning script
 - **WHEN** it has been re-submitted `SCRIPT_REPLAN_MAX` times
 - **THEN** it MUST stop re-planning, exactly as an all-refused yield does
+
+### Requirement: GOTO Fails Rather Than Silently Relocating An Enclosed Target
+
+A `GOTO` whose target block is enclosed MUST fail with the reason
+`target_enclosed` rather than move the target to somewhere reachable. A GOTO
+that arrives somewhere other than where it was sent, and reports COMPLETED, is
+the failure: the caller cannot tell that the destination changed.
+
+`GotoBehavior.start` (`GotoBehavior.java:57`) resolves the target through
+`decideLift` (`:122`), which raises `targetY` one block at a time until the feet
+and head are clear. Before this change the loop stopped only at the build
+limit. For a target inside solid rock that walks the destination to the
+surface: trial 4.2 (2026-11-22, test server) sent `GOTO (-123, -44, -152)`, an
+enclosed `deepslate_diamond_ore`, and the bot was sent to `y = -8`, 36 blocks
+above, through a different cave.
+
+The search MUST be bounded to `GOTO_MAX_LIFT = 3` blocks above the target. A
+few blocks covers a target buried under a floor or under a shallow ledge, which
+is a real intent. Beyond that the caller meant that exact place, and moving it
+36 blocks is not an adjustment but a different destination.
+
+If no clear standing position exists within that bound, the directive MUST fail
+with reason `target_enclosed`, naming the requested coordinates, rather than
+walking, climbing or teleporting anywhere else. A silent substitution is the
+defect this requirement exists to stop, so an adjustment is only acceptable
+when it is bounded AND reported (below).
+
+When the target IS lifted within the bound, the COMPLETED result MUST carry the
+actual arrival position and an `adjusted_from` field naming the coordinates
+that were asked for, so a script's own arrival check can be written against
+what happened rather than what it requested. The result MUST ride the existing
+`ProgressReport.putResult` channel, which reaches the script as the `COMPLETED
+<type> {...} result={...}` line (`agent.py:1410-1413`); no new protocol is
+introduced.
+
+A distance-teleport (`GotoBehavior.java:171`, beyond `TELEPORT_THRESHOLD`)
+MUST use the same bounded, reported target. It reads `targetY`, which `start`
+sets to the bounded lift result, so a far target can no longer be teleported to
+a lifted surface position.
+
+#### Scenario: Trial 4.2's enclosed target fails instead of climbing
+- **GIVEN** a script that dispatches `GOTO x=-123 y=-44 z=-152`, whose target
+  block is enclosed in stone
+- **WHEN** no clear standing position exists within `GOTO_MAX_LIFT` blocks above
+- **THEN** the directive MUST fail with reason `target_enclosed`
+- **AND** the failure MUST name `(-123, -44, -152)`
+- **AND** the bot MUST NOT move to or near `y = -8`
+
+#### Scenario: A target under a shallow ledge is still lifted and reported
+- **GIVEN** a `GOTO` whose target is covered by one block of stone
+- **WHEN** the block above is clear
+- **THEN** the directive MUST proceed to the lifted position
+- **AND** on arrival the COMPLETED result MUST carry the actual position and an
+  `adjusted_from` naming the original coordinates
+
+#### Scenario: An unreachable enclosed target is not teleported to
+- **GIVEN** an enclosed `GOTO` target further away than `TELEPORT_THRESHOLD`
+- **WHEN** the lift would need to exceed `GOTO_MAX_LIFT`
+- **THEN** the directive MUST fail rather than teleport to the lifted `targetY`
+
+#### Scenario: The script surface warns against targeting a block itself
+- **GIVEN** the rendered script prompt
+- **WHEN** a planner reads it
+- **THEN** it MUST say that to work on a block, GOTO a neighbouring open block
+  or a position within reach, not the block itself
+- **AND** it MUST NOT suggest that GOTO into a solid block is adjusted for the
+  caller
