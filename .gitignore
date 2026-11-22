@@ -1,7 +1,9 @@
 # Gradle
 .gradle/
 build/
-gradle/wrapper/gradle-wrapper.jar
+# gradle-wrapper.jar IS tracked on purpose: without it ./gradlew cannot run from a
+# fresh clone, so the Java tests are unrunnable for anyone without a pre-populated
+# cache -- and a missing test class then reads exactly like a failing test.
 
 # IDE
 .idea/
