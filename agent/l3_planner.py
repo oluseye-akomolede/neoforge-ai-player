@@ -774,11 +774,13 @@ RAW DIRECTIVE REFERENCE (fallback — use ONLY when NO skill above covers the su
                      MUST be a block or mob id. It cannot find a structure:
                      "end_city" is not a block, so the scan runs forever and
                      finds nothing. For structures use LOCATE.
-                     Set "extra":{{"radius":N}} to cap the search: N is the
-                     MAXIMUM distance to look, not a starting size. Use a small
-                     N when the order means "within N blocks, don't wander" —
-                     radius 4 searches only the cell the bot stands in, while
-                     omitting radius walks the default 32-block cube first.
+                     Set "extra":{{"radius":N}} to search no further than N
+                     blocks. N is a MAXIMUM distance, not a target size: the bot
+                     sweeps one cube of that radius and then stops, so radius 4
+                     scans only the single 16-block cell it stands in. Omit
+                     radius entirely to keep the default expanding search (32,
+                     then 64, 128, 256) — never pass a large N "to be safe",
+                     that just overrides the default.
   ME_STORE         — {{ "kind":"ME_STORE", "target":"minecraft:cobblestone", "count":64 }}
                      target "all" stores everything evictable. Uses the worn
                      wireless terminal — works from ANYWHERE, no movement.
