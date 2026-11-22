@@ -297,6 +297,42 @@ all five prod bots at once.
       `_note_stop_supersedes` and driving production's own method; both
       mutants then went red.
 
+## 4c. Scripts invent world time (2026-11-22)
+
+Found live on prod (lead, 15:1xZ): Mystic told a player "It's getting dark —
+overworld time is 0 (night)" during daylight. Chain, each link verified at the
+source rather than taken from the report: `BotPlayer.getStatus()` (:756-790) has
+no time field; `build_state` copies only health/food/position; the planner prompt
+at `l3_planner.py:311` and `:457` tells the planner the world is `s.self, s.bots,
+s.inventory`, none of which the envelope has (the real path is `s.state.*`, and
+there is no `self` or `bots` at all) — so the script guessed at `time`,
+`world_time`, `day_time`, `server_time`, found nothing, and fell back to
+`(6000 + ticks*10) % 12000`, which reaches 0 after 600 ticks and calls 0 night.
+
+- [ ] 4c.1 Spec: "A Script That Needs World Time Reads It, Never Estimates It",
+      with four scenarios (wait-for-dark fires once on the real field; the
+      status carries real day time across the wrap; the prompt describes the
+      shape the agent actually sends; a missing fact is refused, not invented).
+- [ ] 4c.2 Mod: `GET /bot/{bot}/status` reports `day_time`
+      (`level.getDayTime() % 24000`, floored) and `is_night` (true for
+      13000..23000, the vanilla monster-spawn window). `BotPlayer.getStatus`.
+      Measured at those bounds, not reasoned about: 13000 and 23000 are the
+      edges of the window vanilla uses, and 0 (sunrise) must be false — the
+      exact value the prod script called night.
+- [ ] 4c.3 Agent: `build_state` carries `state.world = {day_time, is_night}`
+      from the status, defaults to `{"day_time": None, "is_night": None}` when
+      the mod does not send them, and does not invent a time. `snapshot.py`.
+- [ ] 4c.4 Prompt: both `l3_planner.py` sites state the snapshot's real shape
+      (`s.state.health`, `s.state.position`, `s.state.inventory`,
+      `s.state.nearby.{blocks,mobs}`, `s.state.world.{day_time,is_night}`,
+      `s.task`) and carry the no-estimation rule. The shape is copied from a
+      generated envelope (`agent/tools/gen_envelope_fixture.py`), not retyped.
+- [ ] 4c.5 Tests: `test_snapshot.py` for 4c.3; a new Java test for 4c.2; a
+      prompt test asserting the schema text against the generated envelope; and
+      the regression scenario (a wait-for-dark script announcing only when
+      `is_night`). Mutants: remove `world` from build_state; make `is_night`
+      always false; restore `s.self` in the prompt.
+
 ## 5. Trials on test (run by the lead)
 
 - [ ] 5.1 Lookup within the snapshot: a sheep goal shears only when a sheep is

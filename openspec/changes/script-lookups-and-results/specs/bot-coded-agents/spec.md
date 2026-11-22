@@ -652,6 +652,69 @@ carry MUST NOT be reported as "the game sent no capture time", because it did.
 - **THEN** the value it sees MUST be the same list the lookup reads
 - **AND** no reader MUST be left handling a wrapper the agent no longer stores
 
+### Requirement: A Script That Needs World Time Reads It, Never Estimates It
+
+The snapshot MUST carry the overworld's real day time, and a script that needs a
+time-of-day fact MUST read that field rather than derive one.
+
+A time-of-day fact is state, not a computation the script may perform. Lighting
+is per-dimension and per-level, and the time the game keeps is the only
+authority on whether it is dark; a script that reconstructs it from the tick
+count is inventing a clock. On 2026-11-22 prod Mystic told a player "It's getting
+dark — overworld time is 0 (night)" — the truthful reading was daytime —
+because the snapshot carried no time, the prompt described a schema the envelope
+never had, and the script fell back to `(6000 + ticks*10) % 12000`, which reaches
+0 after 600 ticks. It also counted 0..1000 as night, and 0 is sunrise.
+
+The mod's `GET /bot/{bot}/status` MUST report `day_time` — the overworld's
+`level.getDayTime() % 24000` — and `is_night`, a boolean derived from it. The
+agent MUST carry both into `state.world` as `{day_time, is_night}`, so the
+nesting matches the rest of the state (`snapshot.state.world.day_time`) rather
+than sitting at a level the envelope does not use.
+
+The planner prompt MUST state the snapshot's exact shape — field names and
+nesting — so a script is written against what the agent sends. A prompt that
+names fields the envelope does not carry is the defect this requirement exists to
+prevent, not a simplification of it.
+
+When a script needs a fact the snapshot does not carry, it MUST NOT estimate,
+derive or invent it. It MUST either report `done: false` with a reason, or fail
+the goal and say so in chat. A plausible wrong answer is worse than a refusal,
+because the player cannot tell it from the truth.
+
+#### Scenario: A wait-for-dark script announces only on the real field
+- **GIVEN** a snapshot carrying `state.world.day_time` and `state.world.is_night`
+- **WHEN** a script waiting for nightfall reads the snapshot
+- **THEN** it MUST decide from `state.world.is_night` and MUST NOT derive night
+  from the tick count, a modulus, or any field the envelope does not carry
+- **AND** it MUST announce only when `is_night` is true
+- **AND** across a full day cycle it MUST make exactly one announcement, so a
+  script that counts 0..1000 as night cannot pass by firing at sunrise
+
+#### Scenario: The status carries real day time from the level
+- **GIVEN** a level whose `getDayTime()` is 15000 (afternoon, daylight is ending)
+- **WHEN** the status is built for that bot
+- **THEN** it MUST carry `day_time` 15000 and `is_night` true
+- **AND** at `getDayTime()` 1000 (morning) it MUST carry `is_night` false
+- **AND** a `getDayTime()` above 24000 MUST be reduced modulo 24000, so a level
+  that has run for several days does not report an out-of-range time
+
+#### Scenario: The prompt describes the shape the agent actually sends
+- **GIVEN** the planner prompt rendered for a script request
+- **WHEN** its snapshot schema is compared with the envelope `build_state`
+  produces
+- **THEN** every field the prompt names MUST exist at the path the prompt gives
+- **AND** the prompt MUST name `state.world.day_time` and `state.world.is_night`
+- **AND** a field the envelope does not carry MUST NOT be presented as readable
+
+#### Scenario: A missing fact is refused rather than invented
+- **GIVEN** a goal requiring a fact the snapshot does not carry
+- **WHEN** the script runs
+- **THEN** it MUST report `done: false` with a reason, or fail the goal and say
+  so in chat
+- **AND** it MUST NOT emit a plausible substituted value (an estimated time, a
+  guessed position, a default count)
+
 ### Requirement: A Directive Missing A Required Field Is Refused, Never Dispatched
 
 An action MUST be refused at binding when it lacks a field its kind requires,
