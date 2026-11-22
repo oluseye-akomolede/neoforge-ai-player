@@ -19,9 +19,11 @@ code defect, both are prose that will get quoted:
   error as `wasm_trap` 'context is gone', which also flips the recycle decision" —
   is **not borne out**. The kind is identical before and after the fix.
 - **R-2.** The figure "~480 KB per failed install" appears in the spec (`:1333`)
-  and in `68c1ded`'s comment (`:822`) and I **could not reproduce it**. The same
-  state measures ~209.5 KB at the spec's own 40-bot payload shape, ~68 KB at a
-  one-bot payload.
+  and in `68c1ded`'s comment (`:822`) and I **could not reproduce it**. *My own
+  replacement figures in the first edition of this review — "~209.5 KB at the
+  40-bot shape, ~68 KB at one bot" — were also wrong; see the R-2 correction
+  below. The correct measurement is a flat ~33.5 KB per torn-down install,
+  independent of payload.*
 
 ## Check 1: `safeDispose` swallows cleanup errors and never masks the install error
 
@@ -126,6 +128,35 @@ is real on the mechanism path — but the sentence carrying the number, and the
 "~66 of them" derivation, are not reproducible with the instrument I can run.
 Since reviewer numbers become test expectations, I am filing it rather than
 silently letting it be quoted.
+
+### R-2 correction (same review, 2026-11-22 ~15:0xZ): both of my figures were wrong
+
+The builder took my table and wrote it into the spec (`f57bdeb`) and the code
+comments ("~209.5 KB at a 40-bot / 200-message shape, ~68 KB at one bot,
+payload-proportional"). Before that hardened further I re-derived it rather than
+let my own number be quoted, and **my table does not survive re-measurement**:
+
+- My probes above were **not on disk any more** (the `/tmp` trees were cleared),
+  so I rebuilt the measurement from the real code path: a real `Sandbox`, a real
+  `#installSnapshot`, `disposeContext()` between install and bind, a real
+  `createLimitedRuntime()` and `rt.computeMemoryUsage()` (`probe-bind.mjs`).
+- **A torn-down install retains 33,496 bytes — identical for a 1-bot snapshot and
+  a 60-bot / 200-chat snapshot.** The cost is **flat, not payload-proportional**.
+  The ~33.5 KB is the one stranded `HostRef`; it agrees with the "grew by ~33.5 KB
+  per handle" figure already in Check 1 above.
+- Stranding 1, 2 and 3 handles in isolation measured 67,282 / 67,456 / 67,264 B —
+  flat in handle count too, i.e. a one-time ~67 KB object-shape cost, not a
+  per-handle rate.
+
+So the correct statement is: **a failed snapshot install strands one ref, costing
+a one-time ~33.5 KB, independent of payload size.** The payload does not ride
+along because the strand is the ref, not a copy of the JSON.
+
+This does not change the verdict: the guard still prevents a cleanup throw from
+replacing the install error, and the strand is still permanent. But the
+"payload-proportional, ~209.5 KB" sentence the builder committed is **my error,
+propagated into the spec and two comments**, and should be replaced with the flat
+figure or with no figure at all. Filed to the builder as R-3.
 
 ## Check 5: accept the structural change
 
