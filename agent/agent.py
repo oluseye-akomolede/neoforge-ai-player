@@ -279,6 +279,31 @@ _SOURCE_HEAD_CHARS = 500
 _SOURCE_TAIL_CHARS = 300
 
 
+def _l3_path_enabled(bot_name):
+    """Whether `bot_name` routes through the L3 plan layer. ONE predicate.
+
+    The three call sites (chat gate, L3 acceptance, order lane) must never
+    disagree: a bot whose chat is accepted onto L3 but whose order lane still
+    reports "disabled" has been handed a goal it cannot order. Delegating to
+    `planner.l3_path_enabled` is what keeps them in step -- the alternative,
+    three copies of the same condition, is how they drift.
+
+    `USE_L3_PLAN_LAYER` is imported at module scope, so it is read from config
+    once at startup; the per-bot half is read at call time.
+
+    The answer is NOT tuple-unpacked here. Several tests patch the whole
+    `planner` module to fake `decompose`, which makes this call return a Mock;
+    `on, _ = ...` would then raise "not enough values to unpack" and turn a
+    fixture into a crash in production code. Anything that is not a 2-tuple is
+    treated as "no per-bot answer", which falls back to the flag -- the
+    deployment-wide behaviour that existed before this feature.
+    """
+    answer = planner.l3_path_enabled(bot_name, use_l3_plan_layer=USE_L3_PLAN_LAYER)
+    if isinstance(answer, tuple) and len(answer) == 2:
+        return bool(answer[0])
+    return bool(USE_L3_PLAN_LAYER)
+
+
 def _source_preview(source):
     """Head + tail of a script, newline-escaped, for ONE agent log line.
 
@@ -488,6 +513,13 @@ class BotRunner:
         # back; the three "off" reasons are worded apart on purpose.
         _offered, _why = planner.script_mode(self.name)
         print(f"[{self.name}] {_why}")
+        # Routing is a separate decision from offering, so it gets its own line.
+        # Without it a deployment sees "script mode off: no runner" and cannot
+        # tell whether the bot still reached L3 or fell back to decompose --
+        # and with the flag unset in prod, "reached L3 at all" is the new fact.
+        _on_l3, _why_l3 = planner.l3_path_enabled(
+            self.name, use_l3_plan_layer=USE_L3_PLAN_LAYER)
+        print(f"[{self.name}] planning path: {_why_l3}")
         api.spawn(self.name)
         time.sleep(0.5)
         try:
@@ -888,7 +920,7 @@ class BotRunner:
             # access, and per-bot plan files isolate execution state. Players can
             # tell "all bots do X" and every bot runs its own plan in parallel; or
             # "@Forge build Y" and only Forge proceeds.
-            if USE_L3_PLAN_LAYER and not from_bot and not self._following_player:
+            if _l3_path_enabled(self.name) and not from_bot and not self._following_player:
                 text_lower = text.lower()
                 addressed_by_name = self.name.lower() in text_lower
                 applies_to_all = bool(_ALL_BOTS_RE.search(text))
@@ -1108,10 +1140,11 @@ class BotRunner:
                     print(f"[{self.name}/orchestrator] All steps delegated to other bots")
                 self._consume_message(msg)
             else:
-                # L3 spec-driven planning path (opt-in via USE_L3_PLAN_LAYER).
+                # L3 spec-driven planning path (per bot: USE_L3_PLAN_LAYER for
+                # the whole deployment, or this bot named in SCRIPT_BOTS).
                 # Spawns a worker thread that drives plan_orchestrator.execute_task
                 # to completion using this bot's mod API for dispatch.
-                if USE_L3_PLAN_LAYER:
+                if _l3_path_enabled(self.name):
                     if self._is_chat_message(text):
                         print(f"[{self.name}/chat] L3 plan layer: conversation, replying in character")
                         self._reply_in_character(text)
@@ -5666,11 +5699,12 @@ def _order_worker():
                     daemon=True,
                 ).start()
                 continue
-            if not USE_L3_PLAN_LAYER:
+            if not _l3_path_enabled(bot):
                 try:
                     api.raw_post("/telemetry/orders", {
                         "id": oid, "bot": bot, "kind": kind, "status": "FAILED",
-                        "detail": "L3 plan layer disabled on this agent"})
+                        "detail": ("L3 plan layer disabled for this bot "
+                                   "(USE_L3_PLAN_LAYER unset and not in SCRIPT_BOTS)")})
                 except Exception:
                     pass
                 continue

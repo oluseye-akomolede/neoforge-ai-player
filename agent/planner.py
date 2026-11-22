@@ -303,6 +303,47 @@ def script_mode(bot_name, enabled_bots=None, runner_url=None):
     return True, "script mode on: enabled in SCRIPT_BOTS with a runner configured"
 
 
+def l3_path_enabled(bot_name, use_l3_plan_layer=None, enabled_bots=None):
+    """Whether THIS bot routes instructions through the L3 plan layer, and why.
+
+    Returns `(on, reason)`. The reason is for logs and tests, and names which
+    of the two ways turned it on, because "it is on" is not the useful fact
+    when diagnosing a deployment.
+
+    There are two ways in and they exist for different reasons:
+
+    - `USE_L3_PLAN_LAYER` is a deployment-wide switch. It predates
+      `SCRIPT_BOTS` and moves every bot at once; a deployment that sets it
+      keeps exactly the behaviour it had before this function existed.
+    - `SCRIPT_BOTS` names the bots that may write scripts. The script surface
+      is spliced into the L3 plan prompt only, so a bot named for scripts that
+      cannot reach L3 has been promised a surface it can never use. Naming a
+      bot therefore also routes that bot here.
+
+    Reachability is NOT offering. A bot in `SCRIPT_BOTS` reaches L3 whether or
+    not a runner is configured; `script_mode` is what decides the prompt, and
+    it still refuses without `SCRIPT_RUNNER_URL`. Keeping the two separate is
+    deliberate: one answers "can a script run here", the other "may this bot
+    even be asked for one".
+
+    Read at call time, not import time, so two bots in one process can differ
+    and a test can set the environment without reimporting.
+    """
+    import os
+    if use_l3_plan_layer is None:
+        use_l3_plan_layer = os.environ.get("USE_L3_PLAN_LAYER", "false").lower() in (
+            "true", "1", "yes")
+    if use_l3_plan_layer:
+        return True, "L3 path on: USE_L3_PLAN_LAYER is set deployment-wide"
+    if enabled_bots is None:
+        enabled_bots = os.environ.get("SCRIPT_BOTS", "")
+    names = {n.strip().lower() for n in (enabled_bots or "").split(",") if n.strip()}
+    if (bot_name or "").strip().lower() in names:
+        return True, ("L3 path on: this bot is named in SCRIPT_BOTS, so it must "
+                      "reach the path the script surface lives on")
+    return False, "L3 path off: flag unset and this bot is not in SCRIPT_BOTS"
+
+
 PLANNER_PROMPT = """You are a Minecraft task planner. Break the player's instruction into simple, sequential steps that a bot can execute one at a time.
 
 ## How to decompose
