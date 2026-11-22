@@ -62,11 +62,13 @@ through these calls:
 - `api.recall()` — the string this tick started with, or `null`.
 - `api.log(level, text)` — write one diagnostic line (≤1 KB).
 - `api.result(value)` — report a value to the planner. Returns `{ok: true}`
-  or a rejection. The value reaches the planner when the script ENDS (`done`,
-  an error, or `escalate`); the LAST call in a tick wins; it is cut at 2 KiB
-  with a truncation marker. The script's top-level return value is discarded —
-  this call is how a script reports. Use it to say what a goal found, or why
-  it stopped.
+  or a rejection. The value reaches the planner when the script ENDS: on
+  `done`, or on `error` (the script reported `{done: false}`, or the tick
+  threw). `escalate` is also accepted by the agent but nothing produces it
+  today, so do not rely on it. The LAST call in a tick wins; the value is
+  cut at 2 KiB with a truncation marker. The script's
+  top-level return value is discarded — this call is how a script reports.
+  Use it to say what a goal found, or why it stopped.
 
   Say whether the work SUCCEEDED by passing an object with a boolean `done`
   field: `api.result({done: true, found: 3})` closes the goal, while

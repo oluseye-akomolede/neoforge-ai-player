@@ -178,10 +178,10 @@ class ScriptResult:
     """
 
     __slots__ = ("state", "actions", "detail", "memory", "logs", "logs_dropped",
-                 "result")
+                 "result", "failed")
 
     def __init__(self, state, actions=None, detail="", memory=None, logs=None,
-                 logs_dropped=0, result=None):
+                 logs_dropped=0, result=None, failed=False):
         self.state = state
         self.actions = actions or []
         self.detail = detail
@@ -203,6 +203,16 @@ class ScriptResult:
         # capResult returns text=None for both, and the caller treats it as
         # "no report" rather than storing an empty one.
         self.result = result
+        # Whether the TICK itself failed, as distinct from what the script
+        # reported. A script can call `api.result(v)` and then throw later in
+        # the same tick (agent-script-runner src/main.js:250-255 -- the error
+        # branch carries the result for exactly this case). The carried result
+        # often has no `done` flag, because the throw happened before the
+        # script set one, so classifying on the result's own verdict alone
+        # read a thrown tick's partial report as SUCCESS: the goal closed and
+        # the player was told it worked. The status is the verdict when the
+        # status is an error, and this carries it.
+        self.failed = bool(failed)
 
     def __repr__(self):
         return f"ScriptResult(state={self.state!r}, n_actions={len(self.actions)}, detail={self.detail!r})"
@@ -260,15 +270,30 @@ def call_runner(api, bot_state, *, post=None):
         # the 2026-11-20 21:23Z trial could not tell a missing API method from a
         # syntax error. The message is the runner's diagnosis; dropping it left
         # only the category.
+        #
+        # The RESULT is carried through, not dropped. main.js:250-255 sends
+        # it on this branch precisely so a script that reported and THEN threw
+        # keeps its report, and dropping it here threw away the only case the
+        # error branch exists for. `failed=True` because the status IS the
+        # verdict on a throwing tick: the script did not finish, and its
+        # partial report has no `done` flag to say so (it threw before setting
+        # one), so the caller must not read the absent flag as success.
+        reported = payload.get("result")
+        if not (isinstance(reported, dict) and "text" in reported):
+            reported = None
         return ScriptResult(
             STATE_FALLBACK_ERROR,
-            detail=_describe_runner_error(payload))
+            detail=_describe_runner_error(payload),
+            result=reported,
+            failed=True)
 
     actions = payload.get("actions")
     if actions is None:
         actions = []
     if not isinstance(actions, list):
-        return ScriptResult(STATE_FALLBACK_ERROR, detail=f"actions is {type(actions).__name__}, not a list")
+        return ScriptResult(STATE_FALLBACK_ERROR,
+                            detail=f"actions is {type(actions).__name__}, not a list",
+                            failed=True)
 
     # `logs` is read defensively: a runner revision that omits it, or sends a
     # non-list, must not make an otherwise good tick look like a failure. A

@@ -935,6 +935,114 @@ class ScriptObservabilityTest(unittest.TestCase):
         self.assertIn("(+4 more lines this tick", out,
                       "9 lines returned, cap 5, so 4 must be reported hidden")
 
+    # ── a thrown tick's carried result ──────────────────────────────────
+    # The runner sends `result` on its error branch (agent-script-runner
+    # src/main.js:250-255) because a script can call api.result(v) and then
+    # throw LATER in the same tick. Driven through a REAL status:error payload
+    # and the real ScriptTick, not a hand-built `ok` field: the earlier tests
+    # for this requirement both seeded `ok` directly, so neither exercised the
+    # producer, and the whole carried-result path was dead while they passed.
+    #
+    # The failure they hid: the throw happens before the script sets `done`,
+    # so the carried result has no verdict, `result_verdict` returns None, and
+    # the trigger mapper reads None as "done". A script that threw told the
+    # player the work was finished and closed the goal (reviewer, 05:26Z).
+
+    def _error_tick_carrying(self, text):
+        """A real error tick whose script reported `text` before throwing."""
+        import script_client
+
+        payload = {
+            "contract_version": 1, "status": "error",
+            "error_class": "script_error", "message": "TypeError: boom",
+            "script_revision": "r", "cpu_ms": 1, "wall_ms": 2,
+            "host_calls": 0, "heap_peak_bytes": 0,
+            "result": {"text": text, "truncated": False},
+        }
+        self._real_tick(payload)
+        # Prove the fixture is the shape production sees, rather than
+        # whatever the parser happens to accept: the transport branch under
+        # test is the one that carries a result on a failed state.
+        parsed = script_client.call_runner(
+            None, {}, post=lambda _p, _d=None, **_kw: payload)
+        self.assertTrue(parsed.failed,
+                        "fixture is not a failed tick; the test would prove "
+                        "nothing about the error branch")
+        self.assertEqual(parsed.result, payload["result"],
+                         "the parser dropped the carried result, so the "
+                         "error branch never has one to hold")
+
+    def test_a_thrown_ticks_result_does_not_close_the_goal_as_done(self):
+        # KILLS: treating a no-verdict result as `done`. The carried report is
+        # a partial scan; the tick threw. Closing the goal on it tells the
+        # player the work finished, which is the lead's 05:15Z report.
+        self._error_tick_carrying("partial scan, 3 blocks")
+        self.a._active_goal_id = "goal-A"
+        self.a._result_slot = self.agent_mod.ResultSlot()
+        with mock.patch("builtins.print"):
+            self.a._run_script_tick()
+        self.assertTrue(self.a._result_slot.has_pending(),
+                        "the thrown tick's carried result was dropped")
+        _, _, trigger = self.a._result_slot.peek()
+        self.assertEqual(trigger, "error",
+                         "a tick that threw must not store a `done` trigger")
+
+    def test_a_thrown_ticks_result_reaches_the_planner_not_the_closer(self):
+        # The consequence the trigger exists for: re-plan, do not close.
+        self._error_tick_carrying("partial scan, 3 blocks")
+        self.a._active_goal_id = "goal-A"
+        self.a._result_slot = self.agent_mod.ResultSlot()
+        self.a._plan_steps = []
+        with mock.patch("builtins.print"):
+            self.a._run_script_tick()
+        with mock.patch.object(self.a, "_plan_with_result") as pl, \
+             mock.patch.object(self.a, "_close_result_goal") as close, \
+             mock.patch("api.chat") as chat, \
+             mock.patch.object(self.a, "_plan_steps", []):
+            self.a._maybe_plan_on_result()
+        self.assertEqual(pl.call_count, 1,
+                         "a throw-tick's result must reach the planner")
+        self.assertEqual(close.call_count, 0,
+                         "a throw-tick's result must not close the goal")
+        self.assertEqual(chat.call_count, 0,
+                         "a throw-tick's result must not tell the player "
+                         "it succeeded")
+        self.assertEqual(self.a._active_goal_id, "goal-A",
+                         "the goal must stay open so it can be re-planned")
+
+    def test_a_carried_result_with_done_true_still_counts_as_failure(self):
+        # The status is the verdict on a throwing tick. A script that set
+        # `done: true` and THEN threw did not finish: the throw is the last
+        # thing that happened, and reading the earlier flag as success is how
+        # a crashed script reports "done". The status wins.
+        self._error_tick_carrying('{"done": true, "found": 3}')
+        self.a._active_goal_id = "goal-A"
+        self.a._result_slot = self.agent_mod.ResultSlot()
+        with mock.patch("builtins.print"):
+            self.a._run_script_tick()
+        _, _, trigger = self.a._result_slot.peek()
+        self.assertEqual(trigger, "error",
+                         "a throw ends the tick, so status:error must beat "
+                         "the script's own done:true")
+
+    def test_a_transport_failure_with_no_result_holds_nothing(self):
+        # The control for the test above: a refusal or timeout carries no
+        # result at all, so there must be no phantom report in the slot. This
+        # is what makes "hold the carried result" narrow rather than "hold
+        # something whenever the runner was unhappy".
+        self._real_tick({
+            "contract_version": 1, "status": "error",
+            "error_class": "script_error", "message": "TypeError: boom",
+            "script_revision": "r",
+        })
+        self.a._active_goal_id = "goal-A"
+        self.a._result_slot = self.agent_mod.ResultSlot()
+        with mock.patch("builtins.print"):
+            self.a._run_script_tick()
+        self.assertFalse(self.a._result_slot.has_pending(),
+                         "an error tick that reported nothing must hold "
+                         "nothing")
+
     # ── say/send delivery ────────────────────────────────────────────────
     # Until 2026-11-20 22:21Z a script's api.say was refused at translation,
     # so a bot whose script chatted every minute never spoke. Routing them is

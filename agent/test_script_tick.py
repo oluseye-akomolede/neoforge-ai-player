@@ -78,12 +78,19 @@ class _FakeApi:
         return None
 
 
-def _poster(actions=None, *, state="ok"):
-    """A runner transport that returns a canned contract response."""
+def _poster(actions=None, *, state="ok", result=None):
+    """A runner transport that returns a canned contract response.
+
+    `result` is the `{text, truncated}` the runner carries when a script
+    called api.result. It is sent on the error branch too (runner
+    src/main.js:255), which is the case a thrown tick's report travels on.
+    """
     def _post(path, data=None, **kw):
         body = {"contract_version": 1, "status": state}
         if actions is not None:
             body["actions"] = actions
+        if result is not None:
+            body["result"] = result
         return body
     return _post
 
@@ -306,6 +313,40 @@ class FallbackTest(unittest.TestCase):
             _FakeApi(), "Scout", "x", post=_poster(state="error")).tick()
         self.assertFalse(handled)
         self.assertEqual(actions, [])
+
+    def test_a_failed_tick_that_reported_holds_its_result_as_failure(self):
+        # This test used to assert only `handled` and `actions`, so the whole
+        # carried-result path was dead while it passed (reviewer, 05:26Z). The
+        # runner sends `result` on the error branch; the agent must keep it,
+        # and must keep it as a FAILURE -- the throw happened before the
+        # script could set `done`, so the carried report has no verdict and a
+        # no-verdict result is read as `done` downstream.
+        #
+        # KILLS: dropping the result on any non-script state (the old code),
+        # and holding it with no classification (which the trigger mapper
+        # turns into `done`).
+        st = ScriptTick(_FakeApi(), "Scout", "x",
+                        post=_poster(state="error", result={
+                            "text": "partial scan, 3 blocks", "truncated": False}))
+        handled, actions, _, _ = st.tick()
+        self.assertFalse(handled,
+                         "a failed tick must still fall back to the planner")
+        self.assertEqual(actions, [],
+                         "a failed tick's actions are not trusted")
+        self.assertEqual(
+            st.last_result,
+            {"text": "partial scan, 3 blocks", "truncated": False, "ok": False},
+            "the result a throwing tick carried must be held, and held as a "
+            "failure: a no-verdict result is treated as `done` downstream")
+
+    def test_a_failed_tick_with_no_result_holds_nothing(self):
+        # The control: a bare error (a timeout, a refusal) carries no result,
+        # so nothing must be invented for it.
+        st = ScriptTick(_FakeApi(), "Scout", "x", post=_poster(state="error"))
+        st.tick()
+        self.assertIsNone(st.last_result,
+                          "a failed tick that reported nothing must hold "
+                          "nothing")
 
     def test_fallthrough_never_raises(self):
         # The caller sits in the tick loop; an exception here would kill the

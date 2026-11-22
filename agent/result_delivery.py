@@ -1,9 +1,13 @@
 """Delivery of script results to the planner (change: script-lookups-and-results).
 
 A script reports with `api.result(v)`. That call stores a value for the NEXT
-trigger (done / error / escalate) to deliver -- it raises no trigger of its
-own. This module holds the rules that decide whether a stored result may
-actually start a planner call:
+trigger to deliver -- it raises no trigger of its own. The triggers the agent
+actually produces are `done` and `error`: `error` when the script's own
+`{done: false}` says it failed, or when the tick threw (the status decides
+then, whatever the carried result says). `escalate` is accepted by this
+module and handled as non-done, but NO producer stores it today -- only tests
+do -- so it is a spare seat, not a live contract. This module holds the rules
+that decide whether a stored result may actually start a planner call:
 
   * a per-bot cap of 4 result-triggered calls per hour;
   * a per-bot cooldown of 15 minutes between them;

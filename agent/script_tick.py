@@ -542,6 +542,30 @@ class ScriptTick:
 
         if result.state != STATE_SCRIPT:
             # Timeout, refused, error -- every non-script state falls through.
+            #
+            # Except one: an error tick that CARRIED a result. A script can
+            # report and then throw in the same tick (runner main.js:250-255
+            # sends the result on the error branch for exactly this), and that
+            # report is the case the "must not be silently dropped"
+            # requirement names. Hold it, marked as a failure -- the script
+            # threw, so its absent `done` flag must not read as success
+            # (`failed=True` travels to the trigger via last_result).
+            #
+            # The caller is still told `handled=False`: the tick did not
+            # succeed, so the planner runs. Holding the result is about what
+            # the bot LEARNED this tick, not about who acts next.
+            if result.failed and result.result:
+                text, cut = cap_result(text=str(result.result["text"]))
+                if text is not None:
+                    self.last_result = {
+                        "text": text,
+                        "truncated": bool(result.result.get("truncated")) or cut,
+                        # No verdict is READ here: the status already said
+                        # this tick failed, and consulting the payload's
+                        # `done` would let a half-written result claim
+                        # success over the throw that ended it.
+                        "ok": False,
+                    }
             return False, [], [], f"runner {result.state}: {result.detail}"
 
         # Hold what the script remembered. The runner returns `memory_out` as
