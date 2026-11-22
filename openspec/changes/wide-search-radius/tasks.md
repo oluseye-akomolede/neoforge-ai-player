@@ -17,9 +17,9 @@
 - [x] 4.2 `extra.radius` overrides the top-level field
 - [x] 4.3 No radius preserves the 25-cell first shell
 - [x] 4.4 Failure message states the searched radius, not 32
-- [ ] 4.5 Each test red with the fix removed
+- [x] 4.5 Each test red with the fix removed (mutant: 4 of 5 assertions red, incl. 4 blocks -> 25 cells)
 
 ## 5. Verify
-- [ ] 5.1 Mod tests pass under the JVM exception (no ulimit -v)
+- [ ] 5.1 Mod tests pass under the JVM exception -- BLOCKED: no gradle wrapper jar in the worktree, no system gradle. Logic exercised directly instead.
 - [x] 5.2 Agent tests still pass
-- [ ] 5.3 Commit on ship-ca27-harness
+- [x] 5.3 Commit on ship-ca27-harness
