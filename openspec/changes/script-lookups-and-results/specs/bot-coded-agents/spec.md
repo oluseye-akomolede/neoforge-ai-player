@@ -654,8 +654,11 @@ carry MUST NOT be reported as "the game sent no capture time", because it did.
 
 ### Requirement: A Script That Needs World Time Reads It, Never Estimates It
 
-The snapshot MUST carry the overworld's real day time, and a script that needs a
-time-of-day fact MUST read that field rather than derive one.
+The snapshot MUST carry the real day time of the level the bot is IN, and a script
+that needs a time-of-day fact MUST read that field rather than derive one. (The
+bot's own level, not the overworld's: lighting is per-dimension, so reporting
+the overworld's clock to a bot in the Nether would be the same class of lie this
+requirement exists to prevent.)
 
 A time-of-day fact is state, not a computation the script may perform. Lighting
 is per-dimension and per-level, and the time the game keeps is the only
@@ -666,7 +669,7 @@ because the snapshot carried no time, the prompt described a schema the envelope
 never had, and the script fell back to `(6000 + ticks*10) % 12000`, which reaches
 0 after 600 ticks. It also counted 0..1000 as night, and 0 is sunrise.
 
-The mod's `GET /bot/{bot}/status` MUST report `day_time` — the overworld's
+The mod's `GET /bot/{bot}/status` MUST report `day_time` — the bot's own level's
 `level.getDayTime() % 24000` — and `is_night`, a boolean derived from it. The
 agent MUST carry both into `state.world` as `{day_time, is_night}`, so the
 nesting matches the rest of the state (`snapshot.state.world.day_time`) rather
