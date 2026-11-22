@@ -68,6 +68,18 @@ import chat_filter
 # would make a truncated script look like a short one.
 SCRIPT_LOG_CAP = 4096
 
+# How many times one goal may be re-submitted to the planner after its script
+# yielded on an all-refused tick (spec, "A Yielded Goal Returns To The
+# Planner"). Without a bound, a goal whose planner keeps answering with a
+# script that cannot dispatch would re-plan forever, one worker thread per
+# pass -- the spin the requirement names. The value is deliberately small: a
+# re-plan is a recovery from one bad script, not a retry loop, and a goal that
+# has failed this many times is better left to the taskboard than to a thread
+# that never ends. Unmeasured against live trials; sized from the shape of the
+# failure (trial 4.1 produced 1 script and 0 plans in six minutes, so any
+# bound above 1 would have changed nothing there).
+SCRIPT_REPLAN_MAX = 3
+
 
 def _script_digest(source: str) -> str:
     """First 16 hex of the source's sha256 -- the same value _revision_of
@@ -335,6 +347,17 @@ class BotRunner:
         # 9.8 exists to prevent). The counter makes every accepted goal id
         # distinct; the readable prefix stays for logs.
         self._script_hold_seq = 0
+        # Task 2a.15: how many times the CURRENT goal has been re-submitted to
+        # the planner after an all-refused script yield. Keyed by goal_id, so a
+        # new goal starts from zero rather than inheriting a spent budget. The
+        # bound itself is SCRIPT_REPLAN_MAX.
+        self._replan_goal_id = ""
+        self._replan_attempts = 0
+        # Task 2a.15: the goal the current orchestrator worker is driving. Set
+        # by _run_orchestrator, because the bind releases the script hold and
+        # the hold can no longer name the goal by the time a script yields.
+        self._active_goal_id = ""
+        self._active_goal_text = ""
         self._cached_inventory = []  # updated on each observe tick
         self._terrain_tick = 0
         self._lock = threading.Lock()
@@ -1608,6 +1631,13 @@ class BotRunner:
         # so the bot answers the person who sent it rather than relying on L3
         # to remember a name across a multi-subtask plan.
         self._task_sender = sender if sender and sender not in _all_runners else ""
+        # Task 2a.15: remember which goal this worker is driving. The script
+        # bind RELEASES the goal's hold (2a.6), so by the time a script yields
+        # `_script_hold` is already None and cannot name the goal. This is the
+        # surviving record, and the per-goal re-plan bound keys off it.
+        if goal_id:
+            self._active_goal_id = goal_id
+        self._active_goal_text = task_text
         print(f"[{self.name}/orchestrator] starting plan for: {task_text[:80]}")
 
         def on_plan_created(plan):
@@ -3326,6 +3356,19 @@ Respond with ONLY a JSON array. Example:
                 # `actions` was non-empty here (a script that proposed nothing
                 # returned above) and none of them ran.
                 if refusals:
+                    # Task 2a.15: capture the goal BEFORE clearing the plan.
+                    # Unbinding removes the script as driver; it does not by
+                    # itself put the goal back in front of `call_plan`, because
+                    # execute_task already returned on its own thread. So the
+                    # goal is re-submitted explicitly here, under the spin
+                    # bound. The ACTIVE goal is read, not `_script_hold`: the
+                    # bind released that hold (2a.6), so it is already None.
+                    hold = self._script_hold or {}
+                    hold_goal_id = (getattr(self, "_active_goal_id", "")
+                                    or hold.get("goal_id", ""))
+                    goal_text = (getattr(self, "_active_goal_text", "")
+                                 or hold.get("goal_text", "")
+                                 or self._plan_instruction)
                     yielded = self._unbind_planner_script()
                     self._plan_steps = []
                     self._plan_step_idx = 0
@@ -3333,8 +3376,13 @@ Respond with ONLY a JSON array. Example:
                     print(
                         f"[{self.name}/script] option 1: all {len(refusals)} "
                         f"action(s) refused; "
-                        + ("script unbound" if yielded else "no planner script to unbind")
-                        + ", goal handed back to the planner")
+                        + ("script unbound" if yielded else "no planner script to unbind"))
+                    resubmitted = self._resubmit_yielded_goal(hold_goal_id, goal_text)
+                    if not resubmitted:
+                        print(
+                            f"[{self.name}/script] no re-plan: "
+                            + ("no goal text to re-submit" if not goal_text.strip()
+                               else f"re-plan bound reached ({SCRIPT_REPLAN_MAX})"))
                 return False
             return True
         except Exception as e:  # noqa: BLE001 — a script must never kill the loop
@@ -3573,6 +3621,53 @@ Respond with ONLY a JSON array. Example:
             # cached ScriptTick cannot outlive the script it was built from.
             self._script_tick = None
             self._script_loaded = False
+        return True
+
+    def _resubmit_yielded_goal(self, goal_id: str, goal_text: str) -> bool:
+        """Put a yielded goal back in front of the planner. Task 2a.15.
+
+        Unbinding a script removes it as the driver, but `plan_orchestrator.
+        execute_task` runs once per goal on a worker thread and has already
+        returned by the time the script yields -- so nothing would otherwise
+        consult `call_plan` again and the bot sits idle with the goal dropped.
+        Trial 4.1 confirmed that live: after the yield line there was no
+        `L3 PLAN` call. This re-submits the goal explicitly, on the same kind
+        of thread the inbound dispatch uses (`_run_orchestrator`), so the goal
+        is planned again rather than merely abandoned.
+
+        Bounded by SCRIPT_REPLAN_MAX and counted per goal: a goal whose planner
+        keeps answering with a script that cannot dispatch must not re-plan
+        forever. A new goal_id resets the count, so an old goal's spent budget
+        never blocks a fresh instruction.
+
+        Returns True if a re-plan was started.
+        """
+        if not (goal_text or "").strip():
+            return False
+        if goal_id != self._replan_goal_id:
+            self._replan_goal_id = goal_id
+            self._replan_attempts = 0
+        if self._replan_attempts >= SCRIPT_REPLAN_MAX:
+            return False
+        self._replan_attempts += 1
+        # The yield already ended the hold on the script side; the re-plan's
+        # own run takes a fresh hold, exactly as an inbound goal does, so the
+        # original script is not resumed while the planner works.
+        try:
+            t = threading.Thread(
+                target=self._run_orchestrator,
+                args=(goal_text, "script-yield"),
+                kwargs={"goal_id": goal_id},
+                name=f"orch:{self.name}:replan",
+                daemon=True,
+            )
+            t.start()
+        except Exception as e:  # noqa: BLE001 — a failed re-plan must not kill the loop
+            print(f"[{self.name}/script] re-plan failed to start: {e}")
+            return False
+        print(
+            f"[{self.name}/script] re-planning yielded goal {goal_id!r} "
+            f"(attempt {self._replan_attempts}/{SCRIPT_REPLAN_MAX})")
         return True
 
     def _get_script_tick(self):

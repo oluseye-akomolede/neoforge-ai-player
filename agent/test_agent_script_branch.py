@@ -235,12 +235,86 @@ class AllRefusedYieldsTest(unittest.TestCase):
         self.a._plan_steps = ["mine something"]
         self.a._plan_step_idx = 0
         self.a._plan_instruction = "keep mining"
+        # Task 2a.15: the ACTIVE goal, not `_script_hold`. The bind releases
+        # the hold (2a.6), and a hold present here would make the tick return
+        # SCRIPT_HELD before reaching any dispatch at all -- a fixture that
+        # never exercises the code under test.
+        self.a._script_hold = None
+        self.a._active_goal_id = "g-1"
+        self.a._active_goal_text = "keep mining"
+        self.a._replan_goal_id = ""
+        self.a._replan_attempts = 0
+        # The re-plan starts a thread targeting this; a Mock records the call
+        # without running a planner. A real thread would race the assertions.
+        self.a._run_orchestrator = mock.Mock()
 
     def _with_tick(self, tick_result):
         class Stub:
             def tick(_self):
                 return tick_result
         self.a._script_tick = Stub()
+
+    def _all_refused(self):
+        # Re-establish the in-force planner script each pass. The unbind sets
+        # `_script_loaded = False`, so without this the next tick rebuilds the
+        # tick from disk (`no SCRIPT_RUNNER_URL`) instead of running the stub,
+        # and the re-plan bound is never exercised.
+        self.a._planner_script = "while (true) { api.mine(); }"
+        self.a._script_loaded = True
+        self.a._l3_orchestrator_dispatch = mock.Mock(
+            return_value="FAILED UNKNOWN_KIND no such kind")
+        self._with_tick((True, [{"kind": "UNKNOWN_KIND"}],
+                         [{"seq": 1, "error": "unknown kind"}], "ok"))
+
+    def test_a_yielded_goal_produces_exactly_one_new_plan_call(self):
+        # Task 2a.15 / "A Yielded Goal Returns To The Planner": the yield must
+        # put the goal back in front of call_plan. Unbinding alone does not --
+        # execute_task returned on its own thread -- so the re-submit is
+        # explicit. Exactly ONE, not zero (the bug) and not many (a spin).
+        self._all_refused()
+        self.a._run_script_tick()
+        self.assertEqual(
+            self.a._run_orchestrator.call_count, 1,
+            "a yielded goal must be re-submitted exactly once")
+        args, kwargs = self.a._run_orchestrator.call_args
+        self.assertEqual(args[0], "keep mining",
+                         "the re-plan must carry the yielded goal's text")
+        self.assertEqual(kwargs.get("goal_id"), "g-1",
+                         "the re-plan must carry the goal identity")
+
+    def test_the_spin_bound_stops_a_goal_that_keeps_yielding(self):
+        # Removing the bound lets a goal re-plan forever, one thread per pass.
+        # Drive the same goal past the limit and assert it stops.
+        max_replans = self.agent_mod.SCRIPT_REPLAN_MAX
+        for _ in range(max_replans):
+            self._all_refused()
+            self.a._planner_script = "while (true) { api.mine(); }"
+            self.a._run_script_tick()
+        self.assertEqual(self.a._run_orchestrator.call_count, max_replans)
+        # One more yield must NOT start another re-plan.
+        self._all_refused()
+        self.a._planner_script = "while (true) { api.mine(); }"
+        self.a._run_script_tick()
+        self.assertEqual(
+            self.a._run_orchestrator.call_count, max_replans,
+            "the goal re-planned past SCRIPT_REPLAN_MAX -- an unbounded spin")
+
+    def test_a_new_goal_is_not_blocked_by_an_old_goals_spent_budget(self):
+        # The count is per goal. Without the reset, one goal that burned the
+        # budget would silence every later instruction on that bot.
+        for _ in range(self.agent_mod.SCRIPT_REPLAN_MAX):
+            self._all_refused()
+            self.a._planner_script = "while (true) { api.mine(); }"
+            self.a._run_script_tick()
+        before = self.a._run_orchestrator.call_count
+        self.a._active_goal_id = "g-2"
+        self.a._active_goal_text = "find a flower"
+        self._all_refused()
+        self.a._planner_script = "while (true) { api.mine(); }"
+        self.a._run_script_tick()
+        self.assertEqual(
+            self.a._run_orchestrator.call_count, before + 1,
+            "a fresh goal inherited a spent re-plan budget")
 
     def test_an_all_refused_tick_unbinds_on_the_first_tick(self):
         # No second tick, no waiting for a streak: option 1 acts immediately.
