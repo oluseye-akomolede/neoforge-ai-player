@@ -108,6 +108,19 @@ def normalise_directive_name(name) -> str:
 # to run inside the same tick.
 SCRIPT_TIMEOUT = 0.3
 
+# The bind-time DRY tick gets its own, longer bound. `SCRIPT_TIMEOUT` above is
+# sized against a *warm* snapshot cache (median 99.4 ms measured), and a dry
+# tick is by definition the first thing a freshly written script does: on prod
+# 2026-11-22 the first-ever prod runner call paid a cold-sandbox start, the dry
+# tick passed 0.3 s, and a 4824-character planner script was refused as
+# `fallback_timeout` although the script was good.
+#
+# Two seconds is the tick cadence itself: a dry tick is not sharing a tick with
+# a planner call, so it may spend the whole cadence once, at bind time. The
+# LIVE bound stays 0.3 s and MUST NOT be widened by this -- a live tick must
+# still leave the planner room inside the same 2 s tick.
+DRY_TICK_TIMEOUT = 2.0
+
 # Runner states, as they are reported to the dashboard. "script" means the tick
 # came from the runner; every other value is a fallback that a player must be
 # able to see rather than infer from a motionless bot (§4.3).
@@ -218,7 +231,7 @@ class ScriptResult:
         return f"ScriptResult(state={self.state!r}, n_actions={len(self.actions)}, detail={self.detail!r})"
 
 
-def call_runner(api, bot_state, *, post=None):
+def call_runner(api, bot_state, *, post=None, dry=False):
     """POST one tick to the runner and return a ScriptResult.
 
     The bound is sent EXPLICITLY as ``SCRIPT_TIMEOUT``. ``api._post`` defaults
@@ -233,14 +246,24 @@ def call_runner(api, bot_state, *, post=None):
     it: they pinned the default's value, not the absence of an override. Read
     straight from the module constant it cannot be overridden by construction.
 
+    The ONE exception is the dry tick, and it is keyed on a semantic flag, not
+    on a caller-supplied number. A dry tick runs once, at bind time, against a
+    cold sandbox, and it needs ``DRY_TICK_TIMEOUT`` (2 s); a live tick runs
+    every two seconds against a warm one and keeps 0.3 s. Selecting the bound
+    from ``dry`` -- a boolean that already exists because the runner body needs
+    it -- rather than from a ``timeout`` argument keeps the property above
+    intact: no caller can pass an arbitrary bound, only choose which of two
+    named ones applies.
+
     Returns a fallback result rather than raising on every runner failure: the
     caller's job is to run the planner instead, not to handle exceptions.
     """
     import requests
 
+    bound = DRY_TICK_TIMEOUT if dry else SCRIPT_TIMEOUT
     poster = post if post is not None else api._post
     try:
-        payload = poster("/v1/tick", bot_state, timeout=SCRIPT_TIMEOUT)
+        payload = poster("/v1/tick", bot_state, timeout=bound)
     except requests.exceptions.ConnectTimeout as e:
         # Accepted-then-silent, or refused after the connect phase. Both are
         # treated as a stall: the bot cannot tell them apart and must not wait.

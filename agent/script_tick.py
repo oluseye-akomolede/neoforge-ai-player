@@ -547,7 +547,7 @@ class ScriptTick:
             if (SCRIPT_RUNNER_URL or "").strip() and not runner_token():
                 return False, [], [], no_token_detail()
             return False, [], [], no_runner_detail()
-        result = call_runner(self._api, body, post=poster)
+        result = call_runner(self._api, body, post=poster, dry=self._dry)
 
         if result.state != STATE_SCRIPT:
             # Timeout, refused, error -- every non-script state falls through.

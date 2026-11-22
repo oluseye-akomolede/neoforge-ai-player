@@ -34,6 +34,7 @@ _spec.loader.exec_module(_sc)
 
 DIRECTIVE_KINDS = _sc.DIRECTIVE_KINDS
 SCRIPT_TIMEOUT = _sc.SCRIPT_TIMEOUT
+DRY_TICK_TIMEOUT = _sc.DRY_TICK_TIMEOUT
 STATE_FALLBACK_ERROR = _sc.STATE_FALLBACK_ERROR
 STATE_FALLBACK_REFUSED = _sc.STATE_FALLBACK_REFUSED
 STATE_FALLBACK_TIMEOUT = _sc.STATE_FALLBACK_TIMEOUT
@@ -286,6 +287,56 @@ class BoundTest(unittest.TestCase):
         self.assertNotIn("kw", inspect.signature(_smuggler).parameters,
                          "the name-based check unexpectedly caught **kwargs; "
                          "the reviewed finding says it could not")
+
+    # ── The dry tick's own, longer bound ──────────────────────────────────
+    #
+    # Prod Mystic 2026-11-22 12:55-13:00Z: the first-ever prod runner call paid
+    # a cold-sandbox start, the BIND-TIME dry tick exceeded the 0.3 s live
+    # bound, and a 4824-char planner script was refused as fallback_timeout
+    # although it was good. The dry tick now gets DRY_TICK_TIMEOUT.
+
+    def test_a_dry_tick_uses_the_longer_bound(self):
+        # The claim is about the VALUE sent to the transport, not just that a
+        # constant exists: a dry flag threaded to the body but not to the bound
+        # would pass every body-shape test and still refuse good scripts.
+        seen = {}
+
+        def fake_post(path, data=None, **kw):
+            seen["timeout"] = kw.get("timeout")
+            return {"actions": []}
+
+        call_runner(None, {"bot": "Scout"}, post=fake_post, dry=True)
+        self.assertEqual(seen["timeout"], DRY_TICK_TIMEOUT)
+        self.assertGreater(DRY_TICK_TIMEOUT, SCRIPT_TIMEOUT,
+                           "the dry bound must be LONGER than the live one")
+
+    def test_a_live_tick_keeps_the_short_bound(self):
+        # The positive control for the test above, and the regression that
+        # matters most: widening the dry bound must not widen the live one. A
+        # live tick that waited 2 s would consume the whole tick cadence and
+        # leave the planner nothing.
+        seen = {}
+
+        def fake_post(path, data=None, **kw):
+            seen["timeout"] = kw.get("timeout")
+            return {"actions": []}
+
+        call_runner(None, {"bot": "Scout"}, post=fake_post)
+        self.assertEqual(seen["timeout"], SCRIPT_TIMEOUT)
+        self.assertLess(SCRIPT_TIMEOUT, 2.0,
+                        "the live bound must still fit inside a 2 s tick")
+
+    def test_dry_is_not_a_timeout_override(self):
+        # The distinction this design rests on: a caller may choose WHICH named
+        # bound applies, never supply one. If someone later "simplifies" dry=
+        # into timeout=, a caller regains the "pass a bigger number" escape
+        # hatch that the guard at test_bound_cannot_be_overridden_by_a_caller
+        # exists to forbid.
+        params = inspect.signature(call_runner).parameters
+        self.assertIn("dry", params)
+        self.assertNotIn("timeout", params,
+                         "call_runner regained a timeout parameter; the dry "
+                         "bound must be selected, not passed")
 
 
 if __name__ == "__main__":

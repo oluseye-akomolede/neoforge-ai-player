@@ -1166,3 +1166,108 @@ know. The prompt MUST state that a script's own report of an action is a
 - **THEN** the prompt says the action takes effect after the tick returns
 - **AND** the prompt does not imply the script can read the outcome in the same
   tick that dispatched it
+
+### Requirement: The Dry Tick's Time Bound Is Its Own And Is Longer Than A Live Tick's
+
+A dry tick runs ONCE, at bind time, and it is the first time a freshly written
+script meets the runner. A live tick runs every two seconds against an already
+warmed sandbox. Sharing one bound couples two different jobs to the slower
+one's failure.
+
+The two runs MUST use different bounds, and each MUST be a named constant:
+
+- the **live tick** bound stays `SCRIPT_TIMEOUT = 0.3` s
+  (`agent/script_client.py:109`), unchanged;
+- the **dry tick** bound MUST be longer, `DRY_TICK_TIMEOUT = 2.0` s, and MUST
+  be reached without widening the live bound.
+
+Prod Mystic on image `aeab1dab` (2026-11-22 12:55-13:00Z) showed why: the first
+ever prod runner call paid a cold-sandbox start, the dry tick exceeded 0.3 s,
+and the agent logged `dry tick failed (runner fallback_timeout: read timeout
+...)` on a 4824-character planner script that was otherwise good. A correct
+script was refused for being the first to touch a cold sandbox.
+
+The dry bound MUST NOT be reachable by a caller overriding the live bound, and
+must not become a general "pass a bigger number" escape hatch: the live tick's
+call path (`call_runner`) deliberately reads `SCRIPT_TIMEOUT` from the module
+so it cannot be overridden, and that property MUST survive this change. The
+dry bound is selected by the dry call itself, not by an argument any caller
+can pass to the live path.
+
+#### Scenario: A slow dry tick binds
+
+- **GIVEN** a planner-authored script whose dry tick takes about 1 s to return
+- **AND** the live tick bound is 0.3 s
+- **THEN** the dry tick succeeds and the script is bound
+
+#### Scenario: A slow live tick still falls back
+
+- **GIVEN** a script already bound to the bot
+- **WHEN** a live tick takes about 1 s to return
+- **THEN** the live tick falls back to the planner as it does today
+- **AND** the dry bound of 2 s does not extend the live tick's patience
+
+### Requirement: A Script Reply Without A Task Echo Is Not A Rejected Plan
+
+A reply that signals a script is not a step list, and the goal's text is
+already known to the caller. Requiring the model to echo the goal back as a
+`task` field, and rejecting the whole reply when it does not, fails a plan
+whose action is otherwise complete.
+
+When a plan reply signals a script (per `_signals_a_script`), a missing `task`
+MUST be filled from the goal text rather than raised
+(`agent/plan_schema.py:127` is where it is raised today). A reply that signals
+NO script MUST keep the full contract, including `task`: the step-list path is
+the ordinary case and its validation MUST NOT be weakened.
+
+Prod Mystic, try 1 (2026-11-22 12:55-13:00Z) logged
+`planning failed: plan missing required field: task` because the model omitted
+the echo. The plan carried everything needed to run.
+
+#### Scenario: A script reply with no task still plans
+
+- **GIVEN** a plan reply that signals a script and omits `task`
+- **AND** the goal text is "tell me when it gets dark"
+- **WHEN** the reply is validated
+- **THEN** the plan is accepted
+- **AND** its `task` is the goal text
+
+#### Scenario: A step-list reply with no task is still rejected
+
+- **GIVEN** a plan reply that does NOT signal a script and omits `task`
+- **WHEN** the reply is validated
+- **THEN** it is rejected with "plan missing required field: task"
+
+### Requirement: A Refused Script Bind With Nothing To Run Fails The Goal
+
+When the planner hands back a script and the bind is refused, the orchestrator
+falls back to the reply's step list so exactly one thing drives the goal. If
+the reply has no steps, that fallback runs zero steps and marks the goal
+complete: the player is told nothing and the goal looks successful
+(`agent/plan_orchestrator.py:381-382`, then the phase-2 loop at `:398-403`).
+
+A refused bind that leaves nothing to execute MUST end the goal **failed**,
+with the refusal reason recorded, and MUST tell the player in a short chat line
+that the script could not be started. It MUST NOT end `complete`, and MUST NOT
+be silent.
+
+Prod Mystic, try 2 (2026-11-22 12:55-13:00Z), after the bind was refused for the
+dry-tick timeout: `goal not handed to its script; executing the step list`, zero
+steps, then `plan finalized: complete`.
+
+#### Scenario: A refused bind with no steps fails loudly
+
+- **GIVEN** the planner's reply carries a script but no subtasks
+- **AND** the bind is refused
+- **WHEN** the orchestrator drives the goal
+- **THEN** the goal is marked failed
+- **AND** the refusal reason is recorded on the plan
+- **AND** the player is sent a short chat line saying the script could not start
+
+#### Scenario: A refused bind with steps still runs the steps
+
+- **GIVEN** the planner's reply carries a script AND a non-empty step list
+- **AND** the bind is refused
+- **WHEN** the orchestrator drives the goal
+- **THEN** the step list runs as it does today
+- **AND** the goal's status is decided by those steps, not by the refusal
