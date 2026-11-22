@@ -307,6 +307,15 @@ module that does not exist prints `Ran 1 test ... FAILED (errors=1)`, which is
 an **import error wearing a test result** -- it reads as "this test is red"
 when nothing was tested. Do not quote that as a failure, and do not chase it.
 
+The exit code cannot save you here: a missing module and a genuinely failing
+test both exit 1 (measured at `07d21bd`). The marker is `_FailedTest` in the
+reported name -- `ERROR: test_plan_schema
+(unittest.loader._FailedTest.test_plan_schema)` -- which is a synthetic
+TestCase the loader invents, plus a runtime of `0.000s`. A wrong class or
+method name inside a module that *does* exist produces the same shape, so
+`Ran 1 test` alone is not enough; read whether the name is a TestCase anyone
+wrote.
+
 Scope a test or a mutant by **what reaches the changed field**, never by the
 module's name or the set of files you edited. Grep for the symbol (counts at
 `07d21bd`):
