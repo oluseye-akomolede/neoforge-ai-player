@@ -1330,13 +1330,17 @@ survives past 30,000 once its two inner refs are disposed.
 
 The install path MUST dispose the refs it created on both the success and the
 failure path. `evaluate()` catches a throw from the install, so without this a
-failed install is silent and its refs leak: measured at ~480 KB per failed
-install, enough to exhaust a 32 MiB runtime in about 66 of them. The failure
-path is reachable in production, not only in tests — a tick can tear down
-between install and bind, which is why `#installApi` gained a `try/finally` on
-2026-11-13.
+failed install is silent and its refs leak. The leaked size is proportional to
+the installed payload, because QuickJS retains that payload inside the stranded
+handle: measured against the real runtime at ~209.5 KB per failed install for
+the 40-bot, 200-message snapshot used above, and ~68 KB for a single bot. It is
+not one fixed figure, and an earlier draft's "~480 KB, enough to exhaust a
+32 MiB runtime in about 66 of them" was not reproducible and is withdrawn (R-2,
+2026-11-22). The failure path is reachable in production, not only in tests — a
+tick can tear down between install and bind, which is why `#installApi` gained a
+`try/finally` on 2026-11-13.
 
-#### Scenario: A dispose that throws does not mask the install failure
+#### Scenario: A throwing cleanup does not replace the install failure
 
 - **GIVEN** a context that has already been disposed
 - **WHEN** the install path runs its cleanup
@@ -1345,10 +1349,23 @@ between install and bind, which is why `#installApi` gained a `try/finally` on
 
 A bare `try/finally` is necessary but NOT sufficient here. On a disposed
 context `dispose()` itself throws `Lifetime not alive` — measured — so a
-`finally` that calls `dispose()` unguarded replaces the original error with a
-cleanup error and hides the cause. An optional call (`dispose?.()`) does NOT
-avoid this: the handle is non-null, so the call still runs and still throws.
-Each dispose in the cleanup MUST be individually guarded.
+`finally` that calls `dispose()` unguarded lets a SECOND throw, from the
+cleanup, replace the `setProp` failure the caller was about to receive, and
+skip the remaining disposes. An optional call (`dispose?.()`) does NOT avoid
+this: the handle is non-null, so the call still runs and still throws. Each
+dispose in the cleanup MUST be individually guarded.
+
+The scope of that claim is deliberately narrow (R-1, 2026-11-22, corrected
+after review). The guard does NOT rescue a failure the caller would otherwise
+miss, and it does NOT change the recycle decision. Measured against the real
+runtime: `setProp` on a disposed context throws
+`QuickJSUseAfterFree("Lifetime not alive")`, which `evaluate()` classifies as
+`wasm_trap` with `trap: true`, so `mustRecycle` is true with or without this
+change, on both revisions. An earlier draft said the parent reported a
+substituted `"context is gone"` message and flipped the recycle decision; that
+was an artefact of a hand-written test fixture, not the runtime, and is
+withdrawn. What the guard buys is exactly the two things above: the install
+error stays the error the caller sees, and every later dispose still runs.
 
 Guarding the dispose does NOT reclaim the handle, and a comment claiming it
 does was measured false (2026-11-22): a handle whose context is already
