@@ -128,9 +128,31 @@ class PlannerPromptDocumentsPtcTest(unittest.TestCase):
         prompt = _rendered_prompt()
 
         for needed in ("look.blocks(", "look.entities(", "look.age()",
-                       "api.result("):
+                       "look.task(", "api.result("):
             self.assertIn(needed, prompt,
                           f"the planner prompt must name {needed}")
+
+    def test_the_prompt_names_the_fields_look_task_actually_returns(self):
+        # KILLS (review F-1 on 465b61e): the prompt told scripts to check
+        # arrival against a result no lookup returned. The documented field
+        # names are pinned to the runner's own lookup, so a prompt that names
+        # a field look.task() does not carry fails here rather than in a
+        # spin-the-tick script.
+        surface = planner.SCRIPT_SURFACE
+        self.assertIn("look.task()", surface)
+        for field in ("arrived_at", "adjusted_from", "adjusted_to",
+                      "failure_reason", "COMPLETED", "FAILED"):
+            self.assertIn(field, surface,
+                          f"SCRIPT_SURFACE must name {field}, which look.task() "
+                          f"returns to a script")
+
+    def test_the_prompt_says_do_ok_is_acceptance_not_completion(self):
+        # KILLS: the whole reason F-1 went unnoticed -- `{ok: true, seq}` reads
+        # like success. A prompt that omits this leaves a script believing
+        # `ok` means the action happened.
+        surface = planner.SCRIPT_SURFACE
+        self.assertIn("ACCEPTED", surface)
+        self.assertIn("never means it", surface)
 
     def test_the_prompt_states_look_is_free_and_result_is_not(self):
         # KILLS: listing the calls without the budget rule, which would have a
@@ -211,7 +233,7 @@ class PlannerPromptRendersTest(unittest.TestCase):
             planner.decompose("test-model", "chop a tree")
 
         for needed in ("look.blocks(", "look.entities(", "look.age()",
-                       "api.result("):
+                       "look.task(", "api.result("):
             self.assertIn(needed, sent["prompt"])
 
 

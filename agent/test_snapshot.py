@@ -83,9 +83,21 @@ class _FakeApi:
                               "health": 10.0}]}
 
     def get_directive(self, bot):
+        # The WHOLE GET /bot/{name}/directive body, as the route really answers
+        # it: HttpApiServer.java:1338 -> BotBrain.toMap(), which nests the
+        # directive under "directive" beside "progress". A fake that returned
+        # the inner map directly would agree with the F-1 bug (build_state
+        # reading only the directive and dropping progress) and no test here
+        # could see it -- the fixture-must-come-from-the-producer rule.
         self.calls.append(("directive", bot))
         self._maybe_fail("directive")
-        return {"type": "STORE_ALL", "status": "running"}
+        return {
+            "state": "idle",
+            "directive": {"id": 12, "type": "GOTO", "status": "COMPLETED",
+                          "x": 10.0, "y": 64.0, "z": 10.0},
+            "progress": {"phase": "done",
+                         "result": {"arrived_at": {"x": 10.1, "y": 65.0, "z": 9.8}}},
+        }
 
 
 class BuildStateTest(unittest.TestCase):
@@ -111,6 +123,28 @@ class BuildStateTest(unittest.TestCase):
         self.assertEqual(state["nearby"]["blocks"][0]["id"], "minecraft:chest")
         self.assertEqual(state["nearby"]["mobs"][0]["type"], "minecraft:cow")
         self.assertEqual(state["nearby"]["mobs"][0]["distance"], "4.2")
+
+    def test_state_task_carries_the_progress_a_script_reads(self):
+        """KILLS (review F-1 on 465b61e): the arrival a GOTO reported could not
+        reach a script, because state.task held only the inner directive map and
+        progress.result was thrown away on the way in.
+
+        The assertion is on the path the runner walks -- look.js reads
+        state.task.progress.result -- so this fails if build_state starts
+        narrowing the body again, whatever the lookup does.
+        """
+        state, _ = build_state(_FakeApi(), "Scout")
+
+        task = state["task"]
+        self.assertEqual(task["directive"]["type"], "GOTO")
+        self.assertEqual(task["directive"]["status"], "COMPLETED")
+        self.assertEqual(task["progress"]["result"]["arrived_at"],
+                         {"x": 10.1, "y": 65.0, "z": 9.8})
+
+    def test_a_dead_directive_read_is_still_no_task(self):
+        state, errors = build_state(_FakeApi(fail={"directive"}), "Scout")
+        self.assertIsNone(state["task"])
+        self.assertIn("directive", [e["reader"] for e in errors])
 
     def test_one_dead_reader_degrades_that_field_only(self):
         # A mod endpoint being down must not blank the snapshot: the script can
@@ -349,7 +383,16 @@ class SnapshotCacheTest(unittest.TestCase):
             envelope["task"],
             "envelope['task'] is None while the bot has a directive running - "
             "the script's in-flight guard is dead")
-        self.assertEqual(envelope["task"].get("type"), "STORE_ALL")
+        # The task is the route's WHOLE body: the directive (id/type/status)
+        # and its progress. The earlier version of this test asserted a bare
+        # {type, status} because the fake answered a bare map -- so it passed
+        # while the code dropped the progress a script needs (F-1, 465b61e).
+        directive = envelope["task"].get("directive") or {}
+        self.assertEqual(directive.get("type"), "GOTO")
+        self.assertEqual(directive.get("status"), "COMPLETED")
+        self.assertIn("progress", envelope["task"],
+                      "the task must carry the directive's progress, where its "
+                      "result -- a GOTO's arrived_at -- reaches a script")
 
     def test_envelope_task_is_none_when_nothing_is_running(self):
         # The control. A fixture that always reports a directive would let a

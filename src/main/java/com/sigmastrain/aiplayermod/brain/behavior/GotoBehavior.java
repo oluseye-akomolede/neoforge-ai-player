@@ -157,7 +157,11 @@ public class GotoBehavior implements Behavior {
         }
 
         if (++totalTicks > MAX_TICKS) {
-            progress.setFailureReason("Timed out after " + MAX_TICKS + " ticks");
+            // Name the destination that was actually being walked to: when the
+            // target was lifted, describeState() says a place the caller never
+            // asked for, and a timeout that reports only the tick count leaves
+            // that as the only explanation they get.
+            progress.setFailureReason(timeoutReason(MAX_TICKS, targetX, targetY, targetZ));
             return BehaviorResult.FAILED;
         }
 
@@ -221,6 +225,16 @@ public class GotoBehavior implements Behavior {
         player.move(MoverType.SELF, new Vec3(direction.x * SPRINT_SPEED, yVelocity, direction.z * SPRINT_SPEED));
         bot.lookAt(targetX, targetY, targetZ);
         return BehaviorResult.RUNNING;
+    }
+
+    /**
+     * The reason a timed-out GOTO reports. Named separately so the message --
+     * which must carry the destination actually walked to, i.e. the lifted
+     * target rather than the requested one -- is testable without a server.
+     */
+    public static String timeoutReason(int maxTicks, double x, double y, double z) {
+        return String.format("Timed out after %d ticks at %.1f, %.1f, %.1f",
+                maxTicks, x, y, z);
     }
 
     @Override

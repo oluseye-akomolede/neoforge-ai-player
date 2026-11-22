@@ -82,6 +82,18 @@ call cost, no network). It answers the world as of THIS tick, not a live query:
   is no `snapshot.self`; reading that gives `undefined` and an arrival check
   written on it never passes, so the script re-issues the same movement
   forever. Compare `look.self().position` against the target.
+- `look.task()` → `{ok: true, id, type, status, result, phase, failure_reason}`,
+  the directive the bot is running and what it has REPORTED. `api.do` answers
+  `{ok: true, seq}`, which means the action was ACCEPTED — it never means it
+  happened or where it ended up. `status` is `RUNNING`, `COMPLETED`, `FAILED`
+  or `CANCELLED`, and `id` says which directive, so you can ignore a stale
+  completion from an earlier one. `result` carries the fields the finished
+  action reported: a `GOTO` puts `arrived_at` (`{x, y, z}` where the bot
+  actually stopped), and `adjusted_from`/`adjusted_to` when the target was
+  lifted. `result` is `{}` before anything is reported, so
+  `result.arrived_at` is `undefined` rather than an error; `failure_reason` is
+  where a failure explains itself (e.g. `target_enclosed`). With no directive
+  running it answers `directive: null`, `result: {}`, `status: null`.
 - A failed query answers `{ok: false, reason, message}`.
 - `kind`/`type` match the entry's id or display name, case-insensitive, and a
   leading `minecraft:` on either side is ignored, so `'iron_ore'` and
@@ -131,8 +143,9 @@ Rules for scripts:
   digging to it; if the destination was lifted up to 3 blocks to a clear
   standing spot, the COMPLETED result carries `adjusted_from` and
   `adjusted_to` -- the requested and the actual destination, each an
-  `{x, y, z}` map. Write an arrival check against `adjusted_to`, or against
-  `look.self().position`, never against the coordinates you asked for."""
+  `{x, y, z}` map. Write an arrival check against `look.task().result`
+  (`arrived_at`, `adjusted_to`) or against `look.self().position`, never
+  against the coordinates you asked for."""
 
 
 def _render_kind_list(kinds):

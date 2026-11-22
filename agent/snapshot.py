@@ -118,6 +118,13 @@ def build_state(api, bot, *, block_radius=8, entity_radius=24.0):
             "blocks": _obs("blocks", lambda: api.blocks(bot, block_radius), "blocks"),
             "mobs": _obs("entities", lambda: api.entities(bot, entity_radius), "entities"),
         },
+        # The WHOLE GET /directive body, not the bare `directive` map inside it.
+        # The mod answers that route with BotBrain.toMap (HttpApiServer.java:1338):
+        # `directive` (Directive.toMap: id/type/status/x/y/z) plus `progress`,
+        # which is where a behaviour's result lives. Taking only the inner map
+        # made `progress.result` -- and therefore a GOTO's arrived_at -- a field
+        # no script could read. The directive stays reachable (its id and status
+        # tell a script WHICH directive finished) at state.task.directive.
         "task": directive,
     }, errors
 

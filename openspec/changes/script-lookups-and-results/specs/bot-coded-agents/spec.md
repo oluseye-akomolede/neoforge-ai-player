@@ -792,6 +792,60 @@ COMPLETED, and nothing yielded until a human restarted the agent.
 - **WHEN** it has been re-submitted `SCRIPT_REPLAN_MAX` times
 - **THEN** it MUST stop re-planning, exactly as an all-refused yield does
 
+### Requirement: A Script Can Read The Directive's Result
+
+A script MUST be able to read what the directive it dispatched has reported,
+including on the tick after it completes. `api.do` answers `{ok, seq}`
+(`agent-script-runner/src/binding.js:324`), which says the action was ACCEPTED
+and carries no progress, so a script that checks a completed action had no
+route to its outcome at all. That is review F-1 on `465b61e`: the GOTO emitted
+`arrived_at` correctly, and no script could see it.
+
+The lookup is `look.task()`, read from `state.task`. `state.task` IS the mod's
+whole `GET /bot/{name}/directive` body (`HttpApiServer.java:1338` answers it with
+`BotBrain.toMap()`, `BotBrain.java:212-229`), so it carries the directive
+(`Directive.toMap()`) AND `progress` (`ProgressReport.toMap()`), and
+`progress.result` is where a behaviour's `putResult` fields land. Passing only
+the inner `directive` map here is what made `result` unreadable, and the
+envelope's `events` field is NOT the carrier: nothing populates it
+(`snapshot.py:125-146` defaults it to `[]` and no caller passes it).
+
+`look.task()` MUST return `{ok: true, id, type, status, result, phase,
+failure_reason}`:
+- `id`, `type`, `status` come from the directive, so a script can tell WHICH
+  directive finished and whether it `COMPLETED` or `FAILED`. `status` is the
+  field to trust for "is it done" -- `ok` from `do` never means that.
+- `result` is the directive's `progress.result` map. It MUST be an empty object,
+  not `undefined`, when the directive has reported nothing, so reading
+  `result.arrived_at` is `undefined` rather than a throw.
+- With no snapshot the answer is `{ok: false, reason: "no-snapshot"}`; with no
+  directive it is `{ok: true, directive: null, result: {}, status: null}`. These
+  are different facts and MUST NOT be reported as each other.
+
+`SCRIPT_SURFACE` MUST document `look.task()`, naming `result` and the fields a
+completed action puts there. It MUST NOT tell a script to write an arrival check
+against a field no lookup returns.
+
+#### Scenario: A script sees where its GOTO arrived
+- **GIVEN** a script that dispatched `GOTO` and on a later tick reads
+  `look.task()`
+- **WHEN** the directive has completed at a destination that was lifted
+- **THEN** `status` MUST be `COMPLETED`
+- **AND** `result.arrived_at` MUST be the `{x, y, z}` the bot actually reached
+- **AND** `result.adjusted_from` MUST name the coordinates requested and
+  `result.adjusted_to` the lifted ones
+
+#### Scenario: A failed directive's reason reaches the script
+- **GIVEN** a `GOTO` that failed with `target_enclosed`
+- **WHEN** the script reads `look.task()`
+- **THEN** `status` MUST be `FAILED`
+- **AND** `failure_reason` MUST start with `target_enclosed`
+
+#### Scenario: An idle bot reports no directive, not a missing snapshot
+- **GIVEN** a snapshot whose `state.task` is `null`
+- **WHEN** a script calls `look.task()`
+- **THEN** it MUST return `ok: true` with `directive: null` and `result: {}`
+
 ### Requirement: GOTO Fails Rather Than Silently Relocating An Enclosed Target
 
 A `GOTO` whose target block is enclosed MUST fail with the reason
@@ -822,9 +876,13 @@ When the target IS lifted within the bound, the COMPLETED result MUST carry the
 actual arrival position and an `adjusted_from` field naming the coordinates
 that were asked for, so a script's own arrival check can be written against
 what happened rather than what it requested. The result MUST ride the existing
-`ProgressReport.putResult` channel, which reaches the script as the `COMPLETED
-<type> {...} result={...}` line (`agent.py:1410-1413`); no new protocol is
-introduced.
+`ProgressReport.putResult` channel. That channel has two consumers and they are
+NOT the same: `agent.py:1410-1413` renders it into a `COMPLETED <type> {...}
+result={...}` line for the PLANNER, and `look.task()` reads it back to the
+SCRIPT (see "A Script Can Read The Directive's Result"). Emitting it is only
+half of this requirement; a script that cannot read it is the other half, and
+an arrival check written against an unreadable field is the re-issuing-forever
+shape of trial 4.3.
 
 A distance-teleport (`GotoBehavior.java:171`, beyond `TELEPORT_THRESHOLD`)
 MUST use the same bounded, reported target. It reads `targetY`, which `start`

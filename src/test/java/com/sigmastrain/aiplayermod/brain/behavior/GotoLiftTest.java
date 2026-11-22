@@ -104,6 +104,20 @@ class GotoLiftTest {
     }
 
     @Test
+    void a_timed_out_goto_names_the_destination_it_was_walking_to() {
+        // Review note (a) on 465b61e: the timeout reason said only the tick
+        // count, while describeState() kept reporting the LIFTED target -- so
+        // for a lifted GOTO the only destination the caller ever saw was one
+        // they did not ask for. The reason must name where it was going.
+        String reason = GotoBehavior.timeoutReason(600, 10.0, 65.0, -3.0);
+
+        assertTrue(reason.contains("600"), reason);
+        assertTrue(reason.contains("10.0") && reason.contains("65.0")
+                        && reason.contains("-3.0"),
+                "the timeout must name the destination, got: " + reason);
+    }
+
+    @Test
     void the_lift_is_bounded_so_it_never_searches_to_the_surface() {
         // A vertical shaft, clear only far above. The old code climbed to it.
         BlockPos requested = new BlockPos(7, -60, 7);
