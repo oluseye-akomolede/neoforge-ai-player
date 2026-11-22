@@ -640,83 +640,6 @@ that record them.
 - **AND** the orchestrator executes the reply's steps, so the goal is still
   driven by exactly one thing
 
-### Requirement: A Script That Never Dispatches Anything Yields The Goal
-
-"Exactly One Driver Per Goal" says what happens when a script *takes* a goal.
-This requirement covers a driver that has taken the goal and can never act on it.
-
-When every action a script proposes in a tick is refused by the binding,
-`_run_script_tick` returns `False` and the caller falls through to the planner
-(`agent/agent.py:3230`). That fall-through does not hand the goal back. The
-script stays bound, and the planner is not asked for a new one: `_plan_steps`
-still holds the steps from the reply that carried the script, and
-`_check_task_board` is skipped because that list is non-empty. The loop then
-repeats identically on the next tick.
-
-Trial 4.1 measured it at 2026-11-21 22:25Z: 69 refusals, 69 "falling back to
-planner" lines, 1 L3 SCRIPT call, 0 new plans, over six minutes, for a goal
-whose only action was an unknown kind. The log said the agent was falling back.
-Nothing was.
-
-An all-refused tick MUST do one of two things, and the implementation MUST
-state which in the log:
-
-1. **Yield the goal.** Unbind the script the first time a tick refuses every
-   action it proposes, and hand the goal back so `call_plan` is asked again.
-   Preferred, because the goal is still pursued and the refusals are the signal
-   that the script was wrong. This option needs no counter: an all-refused tick
-   is not a thing to wait out, it is a script that cannot dispatch.
-2. **Stop and report.** After N consecutive all-refused ticks, unbind the script
-   and say why in chat and in the log. If this option is chosen, the counter
-   MUST be consecutive -- a tick that dispatches something resets it -- so a
-   script that intermittently succeeds is never torn down.
-
-Silently rerunning a script that cannot dispatch is neither.
-
-Option 1 is the shipped behaviour for this change. It is recorded here as a
-permanent choice rather than a dated one: the goal is pursued either way, and
-option 2 leaves the bot idle on a goal a planner could have taken. Option 2
-remains the stated alternative for a future implementation that has a reason to
-prefer stopping.
-
-Under option 1 there is no `N` and no counter, so the reset-consecutive property
-below does not apply: a script is unbound on its first all-refused tick whether
-or not earlier ticks dispatched. An implementation that adopts option 2 MUST
-define `N` as a single named constant rather than a literal at the comparison,
-and MUST record the observation that chose it. The measured failure that
-prompted this requirement ran 69 consecutive refusals, so any `N` below about 30
-would have fired; a small value risks tearing down a script that was about to
-dispatch.
-
-#### Scenario: A script whose only action is refused stops being the driver
-
-- **GIVEN** a bound script whose only action is an unknown kind
-- **WHEN** a tick refuses every action it proposes
-- **THEN** the script is unbound and the goal is handed back for `call_plan`
-- **AND** the reason is visible in the log
-- **AND** the goal is not left with no driver
-
-#### Scenario: A tick that dispatches one action is not all-refused (option 1)
-
-- **GIVEN** a script that proposes an unknown kind and a bindable kind on the
-  same tick
-- **WHEN** one action is refused and one dispatches
-- **THEN** the script stays bound, because the tick did NOT refuse every action
-- **AND** this is the boundary that keeps a partly-working script alive
-
-#### Scenario: Serialising to option 2 replaces the counter behaviour
-
-- **GIVEN** an implementation that chose option 2 instead of option 1, and a
-  script whose ticks have so far alternated refused and dispatched, so an
-  all-refused run has started and been reset before
-- **WHEN** fewer than `N` all-refused ticks occur in a row, and then a tick
-  dispatches
-- **THEN** the script stays bound, because that dispatch reset the count
-- **AND** when a later run of `N` all-refused ticks happens with no dispatch
-  between them, the script is unbound and the reason is in chat and in the log
-- **NOTE** this scenario applies only to option 2; the shipped behaviour has no
-  counter and unbinds on the first all-refused tick
-
 ### Requirement: Binding A Script Is Atomic Against The Bot's Tick
 Binding happens on the orchestrator's thread while the bot's own tick loop is
 running on another, and the bind touches state the tick reads. `_bind_planner_script`
@@ -1122,3 +1045,111 @@ therefore leaks nothing that the planner prompt did not already determine.
 - **WHEN** that script is loaded
 - **THEN** this logging path MUST NOT emit its source, because the file is the
   record a human already keeps
+
+### Requirement: A Script That Never Dispatches Anything Yields The Goal
+
+Trial 4.1's first run measured the failure at 2026-11-21 22:25Z: 69 refusals, 69
+"falling back to planner" lines, 1 L3 SCRIPT call, 0 new plans, over six
+minutes, for a goal whose only action was an unknown kind. The log said the
+agent was falling back. Nothing was.
+
+An all-refused tick MUST do one of two things, and the implementation MUST
+state which in the log:
+
+1. **Yield the goal.** Unbind the script the first time a tick refuses every
+   action it proposes, and clear the stale step list. Preferred, because the
+   refusals are the signal that the script was wrong. This option needs no
+   counter: an all-refused tick is not a thing to wait out, it is a script that
+   cannot dispatch.
+2. **Stop and report.** After N consecutive all-refused ticks, unbind the script
+   and say why in chat and in the log. If this option is chosen, the counter
+   MUST be consecutive -- a tick that dispatches something resets it -- so a
+   script that intermittently succeeds is never torn down.
+
+Silently rerunning a script that cannot dispatch is neither.
+
+Option 1 is the shipped behaviour for this change. It is recorded here as a
+permanent choice rather than a dated one, because option 2 leaves the bot idle
+on a goal a planner could have taken. Option 2 remains the stated alternative
+for a future implementation that has a reason to prefer stopping.
+
+**Yielding alone does NOT return the goal to a planner.** Unbinding and
+clearing `_plan_steps` removes the script as driver; it does not put the goal
+back in front of `call_plan`. The goal is carried by
+`plan_orchestrator.execute_task`, which runs once per goal on a worker thread
+(`agent/agent.py:954`, `:1754`) and returns when that run ends. There is no
+re-entry path: a cleared step list leaves the bot with no plan and no worker.
+Trial 4.1's rerun on 2026-11-22 00:20-00:31Z confirmed this live -- after the
+yield line the bot logged no `L3 PLAN` call and sat idle. A requirement that
+yield alone re-plans the goal would be false; the obligation to re-plan is
+stated separately in "A Yielded Goal Returns To The Planner".
+
+Under option 1 there is no `N` and no counter, so the reset-consecutive property
+does not apply: a script is unbound on its first all-refused tick whether or
+not earlier ticks dispatched. An implementation that adopts option 2 MUST
+define `N` as a single named constant rather than a literal at the comparison,
+and MUST record the observation that chose it. The measured failure that
+prompted this requirement ran 69 consecutive refusals, so any `N` below about 30
+would have fired; a small value risks tearing down a script that was about to
+dispatch.
+
+#### Scenario: A script whose only action is refused stops being the driver
+
+- **GIVEN** a bound script whose only action is an unknown kind
+- **WHEN** a tick refuses every action it proposes
+- **THEN** the script is unbound and the stale step list is cleared
+- **AND** the reason is visible in the log
+- **AND** the goal is NOT claimed to be handed back, because this step does not
+  reach `call_plan`
+
+#### Scenario: A tick that dispatches one action is not all-refused (option 1)
+
+- **GIVEN** a bound script that proposes two actions, one refused and one
+  dispatched
+- **WHEN** that tick runs
+- **THEN** the script stays bound, because the tick did not refuse every action
+
+### Requirement: A Yielded Goal Returns To The Planner
+
+Yielding a goal off a script MUST NOT leave the bot with no driver. After an
+all-refused tick unbinds the script, the goal MUST be put back in front of
+`call_plan` so a plan is attempted again. Nothing in the current agent code
+does this: `execute_task` has already returned by the time the script yields,
+so the yield must re-submit the goal rather than rely on the next loop pass.
+
+The re-submission MUST be bounded so a goal that cannot be planned does not
+spin: if the re-planned attempt also yields, it MUST NOT re-submit
+indefinitely, and the bound MUST be a single named constant with the reason
+for its value recorded, not a literal.
+
+#### Scenario: A yielded goal is planned again
+
+- **GIVEN** a bound script that refuses every action it proposes
+- **WHEN** the script yields the goal
+- **THEN** a plan call is made for that goal
+- **AND** the bot does not sit idle with the goal dropped
+
+#### Scenario: A goal that yields repeatedly does not spin
+
+- **GIVEN** a goal whose re-planned script also yields
+- **WHEN** the re-submissions reach the stated bound
+- **THEN** the agent stops re-submitting and says so in the log
+- **AND** the bot does not re-plan the same goal forever
+
+### Requirement: The Script Prompt Says Actions Take Effect After The Tick
+
+An action a script dispatches is queued for the mod and takes effect after the
+tick returns; the script cannot observe its outcome in the tick that requested
+it. Trial 4.1's rerun at 2026-11-22 00:28Z showed the consequence: a script
+logged "Sheared sheep ... 1/2" in the same tick it queued the action, before
+anything had happened, so the log claimed a result the script could not yet
+know. The prompt MUST state that a script's own report of an action is a
+*request*, and that whether it succeeded is visible only on a later tick.
+
+#### Scenario: The prompt states the one-tick delay
+
+- **GIVEN** the rendered `SCRIPT_SURFACE` prompt
+- **WHEN** a model reads what an action does
+- **THEN** the prompt says the action takes effect after the tick returns
+- **AND** the prompt does not imply the script can read the outcome in the same
+  tick that dispatched it

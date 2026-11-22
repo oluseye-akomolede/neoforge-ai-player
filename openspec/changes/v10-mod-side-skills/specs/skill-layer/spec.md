@@ -81,3 +81,38 @@ the seed skills intact.
 - WHEN registration proceeds
 - THEN least-recently-used generated entries are evicted
 - AND every seed skill remains registered
+
+### Requirement: A Bot Can Shear A Sheep
+
+No mod action can currently shear. The bot's action set has 25 `BotAction`
+implementations; the only item-on-something paths are `PlaceBlockAction`
+(`UseOnContext`, a block) and `BuildBehavior:236` (also a block). Vanilla
+shearing is `interactOn(entity, hand)`, and nothing in the mod calls it:
+`UseItemAction` calls `gameMode.useItem`, which uses the held item **in air**,
+not on an entity. `USE_ITEM`, `CONJURE` and `SHEAR` are all absent from
+`BINDABLE_KINDS` (45 kinds), so a script cannot reach any of them either.
+
+The smallest change that lets a script shear is therefore a new capability, not
+a new argument: a mod action that right-clicks a held item on a named or
+nearest entity of a given type, mirroring `CombatBehavior`'s target selection
+rather than inventing a second one. Behind 5 blocks, as `CombatBehavior` uses
+at `:509`.
+
+This requirement states the capability and its refusal; it does not pick the
+kind string. The implementation MUST add the kind to `BINDABLE_KINDS` so a
+script can dispatch it, and MUST round-trip it through `bind_action` like any
+other kind.
+
+#### Scenario: A script shears a sheep it can see
+
+- **GIVEN** a sheep within 5 blocks and shears in the bot's inventory
+- **WHEN** a script dispatches the shear action against that sheep
+- **THEN** the sheep is sheared and the wool is in the bot's inventory
+- **AND** the action reports success only after the entity actually changed
+
+#### Scenario: A shear with no sheep in range is refused, not silently idle
+
+- **GIVEN** no sheep within 5 blocks
+- **WHEN** a script dispatches the shear action
+- **THEN** the action fails with a reason naming the missing target
+- **AND** the script's tick does not report the action as having happened
