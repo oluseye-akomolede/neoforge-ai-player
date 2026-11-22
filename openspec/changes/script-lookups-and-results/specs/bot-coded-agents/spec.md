@@ -260,6 +260,80 @@ Triggers other than `done` keep the existing delivery path.
 - **WHEN** the bot's active goal is now B
 - **THEN** the result MUST be discarded rather than closing or re-planning B
 
+### Requirement: A Result Whose Script Said It Failed Must Not Close The Goal As Done
+
+A result whose text reports failure MUST NOT close its goal as though the work
+succeeded. A goal closed as `done` is terminal: the script binding is released
+and nothing re-plans it, so closing on a failure strand the player's request
+with a green chat line and no further attempt.
+
+WHAT "REPORTS FAILURE" MEANS: the script's own boolean `done` field, not its
+prose. A script reports success or failure by passing an object to
+`api.result({done: true, ...})` / `api.result({done: false, reason: ...})`; the
+tick carries that flag to the result slot as `ok`, and it alone selects the
+trigger. Text-matching was the alternative and is unusable: a successful result
+may legitimately contain the word "failed" ("first attempt failed, retried"),
+and a failed one need not use it. A result that carries no verdict -- a plain
+string, a non-object JSON value, a non-boolean `done`, or text cut mid-JSON by
+the size cap -- MUST keep the `done` trigger it had before this requirement, so
+every script written against the older contract keeps working.
+
+DECISION: a failure result MUST hand the goal back to the planner, bounded by
+the same per-bot caps as any other result-triggered call, rather than closing
+as done-with-failure. The reasoning is that the two outcomes are not
+symmetrical. A `done` result is the end of the work: re-planning it makes the
+planner decompose text it already finished (the 03:22Z clarify question). A
+failure is the *absence* of the outcome the player asked for, and the planner is
+the only component that can choose a different approach -- retry the same target
+from elsewhere, pick another ore, or tell the player it cannot be done. Closing
+it as done silently converts "could not" into "did", which is the one reading
+no script is entitled to make on the player's behalf.
+
+The caps are what make this safe: an unbounded re-plan on a failure is the
+trial 4.2 retry loop one layer up, so a failing script MUST NOT be able to drive
+one planner call per tick. A failure result MUST consume the same per-bot
+hourly cap and cooldown as a `done` result, and when both are exhausted the
+goal MUST be left open for the player rather than closed as done.
+
+#### Scenario: A failure result re-plans instead of closing
+- **GIVEN** a pending result whose script reported `{done: false}`
+- **WHEN** the result-delivery point runs and the caps allow a call
+- **THEN** the planner MUST be asked what to do next
+- **AND** the goal MUST NOT be closed as done
+- **AND** the player MUST NOT be told the work succeeded
+
+#### Scenario: A failure result is bounded like any other delivery
+- **GIVEN** a pending `{done: false}` result and the per-bot cooldown already running
+- **WHEN** the result-delivery point runs
+- **THEN** no planner call MUST happen
+- **AND** the goal MUST be left open rather than closed as done
+
+#### Scenario: A successful result still closes
+- **GIVEN** a pending result whose script reported `{done: true}`
+- **WHEN** the result-delivery point runs
+- **THEN** the goal MUST be closed and its outcome reported, as before
+
+### Requirement: A Failed Tick's Result Must Not Be Silently Dropped
+
+A tick the runner reports as `error` MUST NOT discard a result the script
+stored in that same tick. The runner already carries it (`src/main.js` sets
+`result` on both the ok and error responses, for a script that calls
+`api.result` and then throws), but the agent treats every non-`ok` status as a
+fallback and returns before holding the result -- so the one case the runner
+went out of its way to preserve is the one the agent throws away.
+
+A failed tick MUST still fall back to the planner, as it does today: the
+script's actions for that tick are not trusted. Only the *result* MUST survive,
+delivered with the failure classification above so it cannot close the goal as
+done.
+
+#### Scenario: A script that reports and then throws keeps its result
+- **GIVEN** a script whose tick calls `api.result` and then throws
+- **WHEN** the runner answers `status: error` with that result
+- **THEN** the result MUST be held rather than dropped
+- **AND** it MUST be treated as a failure result, not a done one
+- **AND** the tick MUST still fall back to the planner
+
 #### Scenario: The return value is not the result
 - **GIVEN** a script whose top-level `return` carries a value and which never
   calls `api.result`

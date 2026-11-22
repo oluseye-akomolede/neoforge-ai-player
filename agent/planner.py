@@ -68,6 +68,14 @@ through these calls:
   this call is how a script reports. Use it to say what a goal found, or why
   it stopped.
 
+  Say whether the work SUCCEEDED by passing an object with a boolean `done`
+  field: `api.result({done: true, found: 3})` closes the goal, while
+  `api.result({done: false, reason: "no diamond_ore within 32 blocks"})` keeps
+  it open and re-plans. The `done` field is what decides — not the wording, so
+  a successful result may contain the word "failed" and a failed one need not
+  use it. A plain-string result carries no verdict and is treated as done, so
+  a script that must report failure has to set `done: false`.
+
 `look` — read-only questions about the tick's snapshot, already in hand (no
 call cost, no network). It answers the world as of THIS tick, not a live query:
 

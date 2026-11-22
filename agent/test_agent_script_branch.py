@@ -1961,6 +1961,55 @@ class ScriptResultReachesTheSlotTest(unittest.TestCase):
                          "the closed goal must not outlive its close")
         self.a._unbind_planner_script.assert_called_once()
 
+    def test_a_failed_result_re_plans_and_leaves_the_goal_open(self):
+        # The lead's report (05:15Z): a script whose result said a failure
+        # closed the goal as done, so nothing ever re-planned and the bot sat
+        # with the work unfinished. A failure must reach the planner AND leave
+        # the goal open -- closing it is what made the wait permanent.
+        #
+        # KILLS: storing every result with trigger "done" -- the goal closes
+        # on a failure and `_plan_with_result` is never reached.
+        self.a._plan_steps = []
+        self.a._active_goal_id = "goal-A"
+        self.a._result_slot.store(
+            "goal-A", {"text": '{"done": false}'}, "error")
+        self.a._unbind_planner_script = mock.Mock(return_value=True)
+        with mock.patch.object(self.agent_mod.threading, "Thread") as Thread:
+            with mock.patch("builtins.print"), \
+                 mock.patch.object(self.agent_mod.api, "system_chat") as chat:
+                self.a._maybe_plan_on_result()
+        Thread.assert_called_once()
+        chat.assert_not_called()
+        self.assertEqual(self.a._active_goal_id, "goal-A",
+                         "a failure must keep its goal open to re-plan against")
+        self.a._unbind_planner_script.assert_not_called()
+
+    def test_the_verdict_decides_the_trigger_the_slot_receives(self):
+        # The seam between script_tick's `ok` field and the slot's trigger.
+        # KILLS: hard-coding "done" at the store -- every script result then
+        # closes its goal whatever the script said.
+        self.a._script_hold = {"goal_id": "goal-A"}
+        self.a._active_goal_id = "goal-A"
+        self.a._hold_script_result(
+            {"text": '{"done": false}', "truncated": False, "ok": False})
+        _, _, trigger = self.a._result_slot.peek()
+        self.assertEqual(trigger, "error",
+                         "the script's own `done: false` must not be stored "
+                         "as a successful trigger")
+
+    def test_a_result_with_no_verdict_keeps_the_old_done_trigger(self):
+        # Every script written before the flag existed reports a plain string.
+        # Silently re-planning those would change behaviour under them, so "no
+        # verdict" keeps `done` -- explicitly, not by accident.
+        # KILLS: treating a missing `ok` as failure.
+        self.a._script_hold = {"goal_id": "goal-A"}
+        self.a._active_goal_id = "goal-A"
+        self.a._hold_script_result(
+            {"text": "Failed: no diamond_ore found", "truncated": False,
+             "ok": None})
+        _, _, trigger = self.a._result_slot.peek()
+        self.assertEqual(trigger, "done")
+
     def test_a_done_result_closes_even_during_a_planner_cooldown(self):
         # Closing makes no planner call, so the planner-call caps must not
         # hold it: a finished goal must not stay open until a 15-minute

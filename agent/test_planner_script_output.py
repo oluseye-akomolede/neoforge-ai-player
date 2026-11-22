@@ -283,6 +283,18 @@ class GotoWarningTest(unittest.TestCase):
         self.assertIsNotNone(m, "GOTO_MAX_LIFT not found in GotoBehavior.java")
         self.assertIn(f"lifted up to {m.group(1)} blocks", planner.SCRIPT_SURFACE)
 
+    def test_the_prompt_documents_the_done_flag_that_decides_the_trigger(self):
+        # The prompt said a result reaches the planner "when the script ENDS
+        # (done, an error, or escalate)" without ever saying how a script
+        # CHOOSES. A script author reading that would keep returning prose and
+        # their failure would close the goal as done -- the lead's 05:15Z
+        # report. The flag must be documented, in both forms.
+        # KILLS: documenting only `done: true`, which leaves a script no way
+        # to report failure.
+        self.assertIn("done: true", planner.SCRIPT_SURFACE)
+        self.assertIn("done: false", planner.SCRIPT_SURFACE)
+        self.assertIn("re-plans", planner.SCRIPT_SURFACE)
+
 
 if __name__ == "__main__":
     unittest.main()

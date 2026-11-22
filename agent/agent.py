@@ -3375,7 +3375,14 @@ Respond with ONLY a JSON array. Example:
         hold = getattr(self, "_script_hold", None) or {}
         goal_id = (getattr(self, "_active_goal_id", "")
                    or hold.get("goal_id", ""))
-        self._result_slot.store(goal_id, value, "done")
+        # The script's own verdict decides the trigger, so a `{done: false}`
+        # result re-plans instead of closing the goal as done. A result that
+        # carries no verdict keeps the old `"done"` -- that is the behaviour
+        # every already-written script was tested against, and silently
+        # re-planning a plain-text result would change it under them.
+        verdict = result.get("ok")
+        trigger = "done" if verdict is None else ("done" if verdict else "error")
+        self._result_slot.store(goal_id, value, trigger)
 
     def _note_script_idle(self):
         """Say, at most once per interval, that the script proposed nothing.
@@ -3922,6 +3929,13 @@ Respond with ONLY a JSON array. Example:
         The ACTIVE bound is per-type (SCRIPT_DIRECTIVE_MAX_BY_TYPE) because a
         COMBAT's legitimate 6000 ticks and a FOLLOW's unbounded run cannot share
         one number. Reads the same body as _directive_in_progress.
+
+        The caller upper-cases this before the table lookup. That is
+        unreachable defence for any mod-sent type -- Directive.toMap emits
+        type.name(), already upper-case for all 36 members -- but it is not
+        dead: a lower-case type from another producer would otherwise miss
+        every entry and silently fall through to the 9000 default, turning a
+        short bound into a long one without any symptom.
         """
         task = getattr(st, "last_task", None) or {}
         directive = task.get("directive") or {}

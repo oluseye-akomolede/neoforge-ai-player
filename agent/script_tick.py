@@ -101,6 +101,34 @@ def cap_result(value=None, *, text=None):
     return raw[:room].decode("utf-8", "ignore") + RESULT_TRUNCATED_MARKER, True
 
 
+def result_verdict(text):
+    """Whether the script's reported result says the work SUCCEEDED.
+
+    The trigger the planner sees used to be hard-coded `"done"` whatever the
+    script reported, so a script that returned `"Failed: no diamond_ore found"`
+    closed its goal as DONE and the goal then never re-planned. The classifier
+    is the script's OWN structured flag -- the `done` field the prompt and the
+    spec already show (`api.result({done: true, ...})`) -- NOT its prose: a
+    script reporting `{done: false}` must not have to avoid the word "failed"
+    in a message, and a successful result is free to contain it.
+
+    Returns True (succeeded), False (reported failure), or None (no verdict:
+    not a JSON object, or no boolean `done`). None is NOT success -- callers
+    must treat "the script did not say" as distinct from "the script said
+    done", so a plain-text result keeps whatever handling it had before.
+    """
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(parsed, dict) or "done" not in parsed:
+        return None
+    done = parsed["done"]
+    if not isinstance(done, bool):
+        return None
+    return done
+
+
 def no_runner_detail():
     """One wording, used by both the constructor check and the tick."""
     return "no SCRIPT_RUNNER_URL configured"
@@ -624,7 +652,8 @@ class ScriptTick:
         text, cut = cap_result(text=str(reported["text"]))
         if text is not None:
             self.last_result = {"text": text,
-                                "truncated": bool(reported.get("truncated")) or cut}
+                                "truncated": bool(reported.get("truncated")) or cut,
+                                "ok": result_verdict(text)}
 
     def _build_snapshot(self):
         """Return `(envelope, errors)` -- an ENVELOPE on both paths.

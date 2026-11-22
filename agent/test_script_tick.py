@@ -816,7 +816,8 @@ class TestTheTickHoldsWhatTheScriptReported(unittest.TestCase):
         # "\"{\\\"found\\\":\\\"oak\\\"}\"" instead of the report.
         self.assertEqual(self._tick_with({"text": '{"found":"oak"}',
                                           "truncated": False}),
-                         {"text": '{"found":"oak"}', "truncated": False})
+                         {"text": '{"found":"oak"}', "truncated": False,
+                          "ok": None})
 
     def test_no_report_holds_none(self):
         # KILLS: initialising last_result to {} -- an empty report is not the
@@ -841,6 +842,64 @@ class TestTheTickHoldsWhatTheScriptReported(unittest.TestCase):
         # runner's flag makes a truncated report read as whole.
         held = self._tick_with({"text": "abc", "truncated": True})
         self.assertTrue(held["truncated"])
+
+
+class TestTheScriptsOwnVerdict(unittest.TestCase):
+    """Whether a result says the work SUCCEEDED, from the script's `done` field.
+
+    Every result used to be stored as trigger "done" whatever it said, so a
+    script returning `{done: false, reason: "no diamond_ore within 32 blocks"}`
+    CLOSED its goal as done -- the goal then never re-planned (lead report,
+    05:15Z). The classifier is the structured flag, never the prose.
+    """
+
+    def test_done_false_is_a_failure(self):
+        # The reported shape. KILLS: treating any result as done -- the goal
+        # closes and the bot stops with the work unfinished.
+        self.assertIs(_st.result_verdict('{"done": false, "reason": "none"}'),
+                      False)
+
+    def test_done_true_is_success(self):
+        self.assertIs(_st.result_verdict('{"done": true, "found": 3}'), True)
+
+    def test_the_word_failed_alone_is_not_a_verdict(self):
+        # The lead's Forge script reported the STRING "Failed: no diamond_ore
+        # found". Matching prose would make a script unable to use the word in
+        # a success message, and unable to report failure without it. A
+        # string is no verdict.
+        self.assertIsNone(_st.result_verdict(
+            "Failed: no diamond_ore found within 32 blocks"))
+
+    def test_a_success_message_may_contain_the_word_failed(self):
+        # The converse must hold, or the flag is not a flag.
+        self.assertIs(_st.result_verdict(
+            '{"done": true, "note": "first attempt failed, retried"}'), True)
+
+    def test_a_non_boolean_done_is_no_verdict(self):
+        # "false" the STRING is truthy in some languages and false in others.
+        # Guessing here would silently invert a result, so it is not a verdict.
+        for text in ('{"done": "false"}', '{"done": 0}', '{"done": null}'):
+            self.assertIsNone(_st.result_verdict(text), text)
+
+    def test_a_json_value_that_is_not_an_object_is_no_verdict(self):
+        for text in ("[1,2]", "42", '"done"', "null", ""):
+            self.assertIsNone(_st.result_verdict(text), text)
+
+    def test_undecodable_text_is_no_verdict_not_an_error(self):
+        # A truncated result is re-cut mid-JSON by design (the cap), so the
+        # common case is unparseable text. It must not raise.
+        self.assertIsNone(_st.result_verdict('{"done": tr... [truncated]'))
+        self.assertIsNone(_st.result_verdict(None))
+
+    def test_the_held_result_carries_the_verdict(self):
+        # The seam agent.py reads (`result.get("ok")`). KILLS: dropping the
+        # "ok" key from _hold_result -- the trigger is then None forever and
+        # every failed result closes its goal.
+        tick = _st.ScriptTick.__new__(_st.ScriptTick)
+        tick.last_result = None
+        tick._hold_result(_rc.ScriptResult(
+            "script", result={"text": '{"done": false}', "truncated": False}))
+        self.assertIs(tick.last_result["ok"], False)
 
 
 if __name__ == "__main__":
