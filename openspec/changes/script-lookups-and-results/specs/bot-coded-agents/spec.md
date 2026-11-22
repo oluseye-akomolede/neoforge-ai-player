@@ -196,6 +196,42 @@ trigger: it stores a value, and the trigger remains done/error/escalate.
 - **THEN** exactly one result MUST be delivered
 - **AND** the binding MUST be released
 
+### Requirement: A Result Carries Its Goal, And `done` Closes It
+
+A delivered result MUST carry the id of the goal whose script produced it.
+`_script_hold` is not that goal: the bind RELEASES the hold (2a.6), so by the
+time a script reports, the hold is already None and cannot name its owner. The
+surviving record is the active goal id, and the result MUST be stored with it
+rather than with an empty string.
+
+A result whose trigger is `done` MUST close its goal. It MUST NOT be handed to
+the orchestrator as a new task, and the planner MUST NOT be asked to decompose
+it: doing so produced a plan for the text "Script result (done): ..." and the
+L3 planner declined with a clarify question, asking the player whether there
+was a new task (observed on test 03:22Z). The player asked for one thing and
+got a question back.
+
+Reporting the outcome to the player is part of closing, not a separate plan.
+Triggers other than `done` keep the existing delivery path.
+
+#### Scenario: A done result carries the goal it was bound for
+- **GIVEN** a script bound while running goal `chat:dashboard:hello#1`
+- **WHEN** the script reports `done`
+- **THEN** the stored result's goal id MUST be `chat:dashboard:hello#1`
+- **AND** it MUST NOT be the empty string
+
+#### Scenario: A done result closes its goal instead of planning again
+- **GIVEN** a pending `done` result for the bot's current goal
+- **WHEN** the result-delivery point runs
+- **THEN** the goal MUST be closed and its outcome reported to the player
+- **AND** no new orchestrator run MUST start from the result text
+- **AND** the planner MUST NOT be asked whether there is a new task
+
+#### Scenario: A result for a goal that is no longer current is still dropped
+- **GIVEN** a pending result stored for goal A
+- **WHEN** the bot's active goal is now B
+- **THEN** the result MUST be discarded rather than closing or re-planning B
+
 #### Scenario: The return value is not the result
 - **GIVEN** a script whose top-level `return` carries a value and which never
   calls `api.result`

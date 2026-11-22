@@ -1046,23 +1046,91 @@ class BotRunner:
         if self._plan_steps:
             # Already planning a goal: queue into the one slot, do not call.
             return
-        goal_id = (self._script_hold or {}).get("goal_id", "")
+        goal_id = self._current_result_goal_id()
+        pending_goal, value, trigger = slot.peek()
+        if pending_goal != goal_id:
+            # The goal the result belonged to is gone; discard it so it
+            # cannot leak into a later goal. Checked before the caps: this is
+            # identity, not rate, and a result for a dead goal must neither
+            # close nor steer the current one.
+            print(f"[{self.name}/result] dropped: goal changed")
+            slot.clear()
+            return
+        if trigger == "done":
+            # A done result CLOSES its goal. Handing it to the orchestrator
+            # made the planner decompose the text "Script result (done): ..."
+            # as a new task and then decline with a clarify question, asking
+            # the player whether there was a new task (test, 03:22Z). The
+            # player asked for one thing and got a question back.
+            #
+            # Deliberately BEFORE the planner-call caps: closing makes no
+            # planner call, so it must not consume that budget, and holding a
+            # finished goal until a 15-minute cooldown expires would leave it
+            # open long after the work is over.
+            slot.clear()
+            self._close_result_goal(goal_id, value)
+            return
         allowed, reason = slot.may_call(goal_id=goal_id)
         if not allowed:
             if reason in ("hour-cap", "cooldown"):
                 print(f"[{self.name}/result] held ({reason}); "
                       f"{len(slot._recent_calls())} call(s) this hour")
-            elif reason == "goal-changed":
-                # The goal the result belonged to is gone; discard it so it
-                # cannot leak into a later goal.
-                print(f"[{self.name}/result] dropped: goal changed")
-                slot.clear()
             return
         goal_id_used, value, trigger = slot.peek()
         slot.record_call()
         print(f"[{self.name}/result] delivering {trigger} result for goal "
               f"{goal_id_used!r}: {str(value)[:120]}")
         self._plan_with_result(value, trigger, goal_id_used)
+
+    def _current_result_goal_id(self):
+        """The goal a pending result belongs to, as the bot currently sees it.
+
+        `_script_hold` is NOT it: the bind releases the hold (2a.6), so by the
+        time a script reports it is already None. Reading the hold here made
+        every result look like it belonged to goal "", which both mislabelled
+        the result and defeated the goal-changed discard -- "" never differs
+        from the empty id a result was stored under.
+        """
+        hold = getattr(self, "_script_hold", None) or {}
+        return (getattr(self, "_active_goal_id", "")
+                or hold.get("goal_id", ""))
+
+    def _close_result_goal(self, goal_id, value):
+        """Close a goal whose script reported `done`, and report it to the player.
+
+        Closing is the whole action: no orchestrator run, no planner call. The
+        report goes through the same chat the plan-complete path uses, so the
+        player sees one answer rather than silence or a question.
+        """
+        print(f"[{self.name}/result] goal {goal_id!r} done; closing "
+              f"without re-planning: {str(value)[:120]}")
+        text = value.get("text") if isinstance(value, dict) else value
+        if text:
+            try:
+                api.system_chat(self.name, str(text)[:200], "green")
+            except Exception:
+                pass
+        try:
+            shared_state.push_event({"bot": self.name, "type": "goal_done_by_script",
+                                     "goal_id": goal_id})
+        except Exception:
+            pass
+        if getattr(self, "_current_task_id", None):
+            try:
+                self._complete_task_board_task()
+            except Exception as e:
+                print(f"[{self.name}/result] could not close task board entry: {e}")
+        # The goal is terminal, so nothing of it may outlive the close: the
+        # script binding goes and the remembered goal id is dropped, so a
+        # later result is not compared against a goal that no longer exists.
+        self._unbind_planner_script()
+        self._plan_steps = []
+        self._plan_step_idx = 0
+        self._plan_instruction = ""
+        self._active_goal_id = ""
+        self._active_goal_text = ""
+        # The slot is already empty: record_call() in the caller consumed the
+        # result before we got here.
 
     def _plan_with_result(self, value, trigger, goal_id):
         """The call the result triggers (task 3.5): one call, result in prompt.
@@ -3171,14 +3239,14 @@ Respond with ONLY a JSON array. Example:
         result raises no trigger of its own (task 3.7); `_maybe_plan_on_result`
         is what turns it into a call, under the per-bot caps.
 
-        The result carries NO goal. Whatever is in `_script_hold` here is the
-        goal the runner refused to tick in this pass (a held script returns
-        SCRIPT_HELD before `st.tick()`), so it is not this result's owner, and
-        the entry that delivers a result reads its goal from that same hold.
-        The slot's discard rule (task 3.9) therefore compares a result with
-        the goal that receives it, both read from the hold -- never the goal
-        that ran the script, which the tick does not carry out of the sandbox.
-        That part of 3.9 is not reachable from here and is recorded on 3.9.
+        The result carries the goal whose script produced it. `_script_hold` is
+        NOT that goal: the bind releases the hold (2a.6), so by the time a
+        script reports it is already None. Storing the hold's id here stored ""
+        every time (observed on test 03:22Z: "delivering done result for goal
+        ''" for a script bound while running `chat:dashboard:...#1`). The
+        surviving record is the active goal, read the same way the 2a.15
+        re-plan reads it, with the hold as fallback for a goal that never
+        reached the orchestrator.
         """
         if not result:
             return
@@ -3186,7 +3254,10 @@ Respond with ONLY a JSON array. Example:
         if not text:
             return
         value = {"text": text, "truncated": bool(result.get("truncated"))}
-        self._result_slot.store("", value, "done")
+        hold = getattr(self, "_script_hold", None) or {}
+        goal_id = (getattr(self, "_active_goal_id", "")
+                   or hold.get("goal_id", ""))
+        self._result_slot.store(goal_id, value, "done")
 
     def _note_script_idle(self):
         """Say, at most once per interval, that the script proposed nothing.

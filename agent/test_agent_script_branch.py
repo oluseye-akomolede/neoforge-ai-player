@@ -1595,9 +1595,9 @@ class ScriptResultReachesTheSlotTest(unittest.TestCase):
         # a method that does not exist, which drops every report silently.
         #
         # No hold is set, because a held script returns SCRIPT_HELD before it
-        # ticks at all (`_run_script_tick`). That is the same reason the tick
-        # cannot carry a goal id out of the sandbox, so the result's goal
-        # stays "" (see `test_a_tick_copies_no_hold_onto_the_report`).
+        # ticks at all (`_run_script_tick`). The goal is read from the ACTIVE
+        # goal (the bind released the hold), so that is what this supplies.
+        self.a._active_goal_id = "goal-A"
         self._tick_reporting({"text": "a red flower", "truncated": False},
                              goal_id=None)
         with mock.patch("builtins.print"):
@@ -1605,27 +1605,34 @@ class ScriptResultReachesTheSlotTest(unittest.TestCase):
         self.assertTrue(self.a._result_slot.has_pending(),
                         "a script's api.result() must be parked, not dropped")
         goal_id, value, trigger = self.a._result_slot.peek()
-        self.assertEqual(goal_id, "")
+        self.assertEqual(goal_id, "goal-A",
+                         "the result must carry the goal it was bound for")
         self.assertEqual(value["text"], "a red flower")
         self.assertEqual(trigger, "done")
 
-    def test_a_tick_copies_no_hold_onto_the_report(self):
-        # The holder in `_script_hold` is the goal this pass REFUSED to tick,
-        # so it is not the result's owner: the entry that delivers a result
-        # reads `_script_hold["goal_id"]` as the receiving goal. Copying the
-        # holder onto the result would name a goal the script never ran for.
+    def test_a_report_carries_the_active_goal_not_the_hold(self):
+        # Live evidence (lead, 03:22Z): "delivering done result for goal ''"
+        # for a script bound while running `chat:dashboard:...#1`. The hold is
+        # released by the bind (2a.6), so by report time it is None; the
+        # active goal is the surviving record, the same one 2a.15 reads.
         #
-        # A held script never reaches the hold-the-result code (measured:
-        # `_run_script_tick` returns SCRIPT_HELD first), so this test calls
-        # that code in the state it names -- a hold present -- rather than
-        # through a tick that cannot have one. It would fail if the method
-        # copied the holder, which is the only reachable way to get there.
-        #
-        # KILLS: storing `_script_hold["goal_id"]` as the result's goal.
+        # KILLS: storing `_script_hold`'s id, or "", as the result's goal.
+        self.a._active_goal_id = "chat:dashboard:hello#1"
         self.a._script_hold = {"goal_id": "goal-not-mine", "goal_text": "t"}
         self.a._hold_script_result({"text": "a red flower", "truncated": False})
         goal_id, _value, _trigger = self.a._result_slot.peek()
-        self.assertEqual(goal_id, "")
+        self.assertEqual(goal_id, "chat:dashboard:hello#1",
+                         "the hold names a goal the script never ran for")
+
+    def test_with_no_active_goal_the_hold_is_the_fallback(self):
+        # A goal that never reached the orchestrator has no active id, so the
+        # hold is still the best record available; an empty result goal is
+        # the last resort, not the default.
+        self.a._active_goal_id = ""
+        self.a._script_hold = {"goal_id": "goal-B", "goal_text": "t"}
+        self.a._hold_script_result({"text": "a red flower", "truncated": False})
+        goal_id, _value, _trigger = self.a._result_slot.peek()
+        self.assertEqual(goal_id, "goal-B")
 
     def test_a_tick_with_no_report_stores_nothing(self):
         # KILLS: storing a placeholder for every tick, which would make the
@@ -1653,8 +1660,11 @@ class ScriptResultReachesTheSlotTest(unittest.TestCase):
         # KILLS: parking the result and never delivering it -- the defect the
         # lead found in the design, where a done script's result only reached
         # the planner if a player happened to speak.
+        #
+        # Trigger `escalate`: a `done` result closes its goal instead (see
+        # `test_a_done_result_closes_its_goal_without_a_planner_call`).
         self.a._plan_steps = []
-        self.a._result_slot.store("", {"text": "a red flower"}, "done")
+        self.a._result_slot.store("", {"text": "a red flower"}, "escalate")
         with mock.patch.object(self.agent_mod.threading, "Thread") as Thread:
             with mock.patch("builtins.print"):
                 self.a._maybe_plan_on_result()
@@ -1665,12 +1675,79 @@ class ScriptResultReachesTheSlotTest(unittest.TestCase):
         self.assertFalse(self.a._result_slot.has_pending(),
                          "a delivered result must be consumed, not re-delivered")
 
+    def test_a_done_result_closes_its_goal_without_a_planner_call(self):
+        # The lead's issue 2 (03:22Z): a done result was fed to the
+        # orchestrator as a new task, the planner decomposed "Script result
+        # (done): ..." and declined with a clarify question, asking the player
+        # whether there was a new task.
+        #
+        # KILLS: handing a done result to `_plan_with_result`.
+        self.a._plan_steps = []
+        self.a._active_goal_id = "goal-A"
+        self.a._result_slot.store("goal-A", {"text": "mined 3 dirt"}, "done")
+        self.a._unbind_planner_script = mock.Mock(return_value=True)
+        with mock.patch.object(self.agent_mod.threading, "Thread") as Thread:
+            with mock.patch("builtins.print"), \
+                 mock.patch.object(self.agent_mod.api, "system_chat") as chat:
+                self.a._maybe_plan_on_result()
+        Thread.assert_not_called()
+        chat.assert_called_once()
+        self.assertIn("mined 3 dirt", str(chat.call_args),
+                      "closing must report the outcome to the player")
+        self.assertFalse(self.a._result_slot.has_pending(),
+                         "a closed goal leaves no pending result")
+        self.assertEqual(self.a._active_goal_id, "",
+                         "the closed goal must not outlive its close")
+        self.a._unbind_planner_script.assert_called_once()
+
+    def test_a_done_result_closes_even_during_a_planner_cooldown(self):
+        # Closing makes no planner call, so the planner-call caps must not
+        # hold it: a finished goal must not stay open until a 15-minute
+        # cooldown expires. The caps exist to bound LLM calls, not to delay
+        # a result the player is waiting on.
+        #
+        # KILLS: checking `may_call` before the done branch.
+        slot = self.a._result_slot
+        slot._cooldown = 3600              # would hold any delivery
+        self.a._plan_steps = []
+        self.a._active_goal_id = "goal-A"
+        slot.store("goal-A", {"text": "mined 3 dirt"}, "done")
+        self.a._unbind_planner_script = mock.Mock(return_value=True)
+        with mock.patch.object(self.agent_mod.threading, "Thread") as Thread:
+            with mock.patch("builtins.print"), \
+                 mock.patch.object(self.agent_mod.api, "system_chat"):
+                self.a._maybe_plan_on_result()
+        Thread.assert_not_called()
+        self.assertFalse(slot.has_pending())
+
+    def test_a_done_result_for_a_superseded_goal_does_not_close_the_current_one(self):
+        # Identity is checked before the trigger: a stale done result must not
+        # close a goal it never ran for.
+        #
+        # KILLS: closing on `trigger == "done"` without comparing goals.
+        self.a._plan_steps = []
+        self.a._active_goal_id = "goal-B"
+        self.a._result_slot.store("goal-A", {"text": "stale"}, "done")
+        self.a._unbind_planner_script = mock.Mock(return_value=True)
+        with mock.patch.object(self.agent_mod.threading, "Thread") as Thread:
+            with mock.patch("builtins.print"), \
+                 mock.patch.object(self.agent_mod.api, "system_chat") as chat:
+                self.a._maybe_plan_on_result()
+        Thread.assert_not_called()
+        chat.assert_not_called()
+        self.assertEqual(self.a._active_goal_id, "goal-B",
+                         "goal B was running and must survive A's stale result")
+        self.a._unbind_planner_script.assert_not_called()
+
     def test_no_pending_result_makes_no_call(self):
-        # The property: a pass with nothing pending starts no call. NOTE
-        # (measured): the early `has_pending` guard in `_maybe_plan_on_result`
-        # is redundant with the `no-result` branch of `slot.may_call`, so
-        # deleting the guard does NOT red this test -- it is an equivalent
-        # mutant. The guard is kept as defence in depth, not as the enforcement.
+        # The property: a pass with nothing pending starts no call.
+        #
+        # NOTE (measured, 2026-11-22): the `has_pending` guard is NO LONGER
+        # redundant. It used to be, because `may_call`'s `no-result` branch
+        # caught the empty slot. The done-close change reads `slot.peek()`
+        # before `may_call`, so removing the guard raises TypeError on a None
+        # unpack -- this test errors, it does not merely fail. The guard is
+        # the enforcement, not defence in depth.
         self.a._plan_steps = []
         with mock.patch.object(self.agent_mod.threading, "Thread") as Thread:
             self.a._maybe_plan_on_result()
@@ -1746,7 +1823,7 @@ class ScriptResultReachesTheSlotTest(unittest.TestCase):
         self.a._reply_in_character = mock.Mock()
         self.a._plan_steps = []
         self.a._result_slot = self.agent_mod.ResultSlot()
-        self.a._result_slot.store("", {"text": "a red flower"}, "done")
+        self.a._result_slot.store("", {"text": "a red flower"}, "escalate")
         prompts = self._run_pass(["Player: scout the hill"])
         self.assertEqual(prompts, [], "the legacy planner path hands no task "
                                       "to a thread")
@@ -1761,7 +1838,7 @@ class ScriptResultReachesTheSlotTest(unittest.TestCase):
         # KILLS: a guard that never lets the result entry run.
         self.a._plan_steps = []
         self.a._result_slot = self.agent_mod.ResultSlot()
-        self.a._result_slot.store("", {"text": "a red flower"}, "done")
+        self.a._result_slot.store("", {"text": "a red flower"}, "escalate")
         prompts = self._run_pass([])
         self.assertEqual(len(prompts), 1)
         self.assertIn("a red flower", prompts[0])
@@ -1789,7 +1866,7 @@ class ScriptResultReachesTheSlotTest(unittest.TestCase):
 
         with mock.patch.object(self.agent_mod.threading, "Thread", Thread):
             for _ in range(5):
-                self.a._result_slot.store("", {"text": "found"}, "done")
+                self.a._result_slot.store("", {"text": "found"}, "escalate")
                 with mock.patch("builtins.print") as pr:
                     self.a._maybe_plan_on_result()
         self.assertEqual(len(calls), 4, "four calls an hour, then held")
@@ -1813,10 +1890,10 @@ class ScriptResultReachesTheSlotTest(unittest.TestCase):
             return mock.Mock()
 
         with mock.patch.object(self.agent_mod.threading, "Thread", thread):
-            self.a._result_slot.store("", {"text": "found"}, "done")
+            self.a._result_slot.store("", {"text": "found"}, "escalate")
             with mock.patch("builtins.print"):
                 self.a._maybe_plan_on_result()
-            self.a._result_slot.store("", {"text": "found again"}, "done")
+            self.a._result_slot.store("", {"text": "found again"}, "escalate")
             with mock.patch("builtins.print") as pr:
                 self.a._maybe_plan_on_result()
         self.assertEqual(len(calls), 1)
@@ -1828,7 +1905,7 @@ class ScriptResultReachesTheSlotTest(unittest.TestCase):
         # KILLS: starting a second planner while one is live, which would put
         # two planners on one bot. The result must survive the wait.
         self.a._plan_steps = ["step-1"]
-        self.a._result_slot.store("", {"text": "x"}, "done")
+        self.a._result_slot.store("", {"text": "x"}, "escalate")
         with mock.patch.object(self.agent_mod.threading, "Thread") as Thread:
             self.a._maybe_plan_on_result()
         Thread.assert_not_called()
@@ -1931,8 +2008,13 @@ class PlannerForPassHonoursTheCapsTest(unittest.TestCase):
         return b
 
     def _pass(self, value="a red flower", goal_id=""):
-        """One pass with no message and `value` pending. Returns True if it planned."""
-        self.a._result_slot.store(goal_id, {"text": value, "truncated": False}, "done")
+        """One pass with no message and `value` pending. Returns True if it planned.
+
+        Trigger `escalate`, not `done`: a `done` result now CLOSES its goal
+        without a planner call, so it would never reach the caps these tests
+        measure. `escalate` is the delivery path that still plans.
+        """
+        self.a._result_slot.store(goal_id, {"text": value, "truncated": False}, "escalate")
         before = len(self.plan_calls)
         with mock.patch("builtins.print"):
             self.a._run_planner_for_pass([])
@@ -1987,12 +2069,17 @@ class PlannerForPassHonoursTheCapsTest(unittest.TestCase):
     def test_the_goal_the_delivery_is_attributed_to_turns_it_red(self):
         # KILLS: passing a constant or empty goal_id to `_plan_with_result` --
         # the reviewer's exact deletion, which left 81 tests green.
+        #
+        # The hold is the fallback that names the goal when no active id is
+        # set (a goal that never reached the orchestrator); the active id is
+        # the primary record and is covered separately.
+        self.a._active_goal_id = ""
         self.a._script_hold = {"goal_id": "goal-A", "goal_text": "t"}
         self.assertTrue(self._pass(goal_id="goal-A"))
         self.assertEqual(self.plan_calls[0]["goal_id"], "goal-A",
                          f"the planner call must carry the held goal: "
                          f"{self.plan_calls!r}")
-        self.assertIn("Script result (done)", self.plan_calls[0]["text"])
+        self.assertIn("Script result (escalate)", self.plan_calls[0]["text"])
         self.assertIn("a red flower", self.plan_calls[0]["text"])
 
 
@@ -2013,7 +2100,7 @@ class PlannerForPassHonoursTheCapsTest(unittest.TestCase):
         c = self._bot("C", calls_c)
 
         def one_pass(bot):
-            bot._result_slot.store("", {"text": "r", "truncated": False}, "done")
+            bot._result_slot.store("", {"text": "r", "truncated": False}, "escalate")
             with mock.patch("builtins.print"):
                 bot._run_planner_for_pass([])
 
@@ -2031,7 +2118,7 @@ class PlannerForPassHonoursTheCapsTest(unittest.TestCase):
         # both would refuse the real reason is the cooldown. Naming the cap
         # there put 424 of 466 of the reviewer's refusals on the wrong reason.
         slot = self.a._result_slot
-        slot.store("", {"text": "r", "truncated": False}, "done")
+        slot.store("", {"text": "r", "truncated": False}, "escalate")
         slot._call_times = [self.now[0] - 60] * 4   # 4 calls, newest 60s ago
         allowed, reason = slot.may_call(goal_id="")
         self.assertFalse(allowed)
@@ -2043,7 +2130,7 @@ class PlannerForPassHonoursTheCapsTest(unittest.TestCase):
         # named "hour-cap". Without this, "always return cooldown" would pass
         # the test above.
         slot = self.a._result_slot
-        slot.store("", {"text": "r", "truncated": False}, "done")
+        slot.store("", {"text": "r", "truncated": False}, "escalate")
         slot._call_times = [self.now[0] - 1800] * 4  # 4 calls, newest 30m ago
         allowed, reason = slot.may_call(goal_id="")
         self.assertFalse(allowed)
