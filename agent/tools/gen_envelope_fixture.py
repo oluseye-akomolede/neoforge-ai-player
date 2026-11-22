@@ -38,8 +38,19 @@ import snapshot  # noqa: E402
 # worth having if it comes out of the code that makes the envelope, so this is
 # hand-written as the WRAPPED responses of HttpApiServer.java:469/504/505 and
 # goes through build_state below.
+#
+# POSITIONS ARE {x,y,z} MAPS, NOT STRINGS. The same fault this comment warns
+# about above survived in the VALUES: "16.5, 86.0, -15.5" and "18 86 -15" were
+# hand-written strings, but the mod sends a map for every position --
+# BotPlayer.formatPos returns Map<String,Double> {x,y,z} (rounded to 1dp) for
+# the bot and for entities, and NearbyBlockIndex.positionOf returns
+# Map<String,Integer> {x,y,z} for blocks. A fixture holding strings made
+# look.self() read position:null off a bot that was standing somewhere, which
+# is the same class of lie: tests agreeing on a shape the game never sends.
+# `distance` is genuinely a String in the mod (BotPlayer.java:886,
+# String.format("%.1f", ...)), so it stays one here.
 RAW_RESPONSES = {
-    "position": "16.5, 86.0, -15.5",
+    "position": {"x": 16.5, "y": 86.0, "z": -15.5},
     # Non-empty so the look.inventory() tests prove something: an empty
     # inventory would make every inventory assertion pass vacuously, which is
     # the same defect as a fixture that mirrors the bug it should catch. These
@@ -60,20 +71,20 @@ RAW_RESPONSES = {
     # HttpApiServer:505 -- blocks arrives wrapped in "blocks".
     "blocks": {"blocks": [
         {"id": "minecraft:iron_ore", "block": "iron_ore",
-         "position": "18 86 -15"},
+         "position": {"x": 18, "y": 86, "z": -15}},
         # Two chests so the immutability and re-query tests have a stable
         # pair to compare; the trial's iron_ore and sheep stay so the
         # fixture still describes the world the two bots idled in.
         {"id": "minecraft:chest", "block": "chest",
-         "position": "17 86 -15"},
+         "position": {"x": 17, "y": 86, "z": -15}},
         {"id": "minecraft:chest", "block": "chest",
-         "position": "17 86 -14"},
+         "position": {"x": 17, "y": 86, "z": -14}},
     ]},
     # HttpApiServer:504 -- entities arrives wrapped in "entities"; the
     # snapshot's key for it is "mobs".
     "entities": {"entities": [
         {"type": "minecraft:sheep", "name": "Sheep",
-         "position": "19.5 86 -13.5", "distance": "3.6"},
+         "position": {"x": 19.5, "y": 86.0, "z": -13.5}, "distance": "3.6"},
     ]},
 }
 
