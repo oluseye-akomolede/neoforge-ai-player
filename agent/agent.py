@@ -482,6 +482,12 @@ class BotRunner:
         )
 
     def start(self):
+        # One line per bot stating whether the planner may write scripts and
+        # why. This is the only way a deployment can confirm the per-bot
+        # switch took effect from its logs, without reading its manifests
+        # back; the three "off" reasons are worded apart on purpose.
+        _offered, _why = planner.script_mode(self.name)
+        print(f"[{self.name}] {_why}")
         api.spawn(self.name)
         time.sleep(0.5)
         try:
@@ -1123,7 +1129,7 @@ class BotRunner:
                     print(f"[{self.name}/planner] Using {memory_context.count(chr(10))+1} memories as context")
                 tc = _transmute.get_context_string() if _transmute else ""
                 inv_context = self._get_my_inventory_summary()
-                steps = planner.decompose(self.model, text, memory_context, tc, inv_context, sender=sender)
+                steps = planner.decompose(self.model, text, memory_context, tc, inv_context, sender=sender, bot_name=self.name)
                 # M3-2 step (a): the planner may answer with a program instead
                 # of steps. Bind it in memory and let the script path run; do
                 # not fall through to plan execution, which would drive an
@@ -2131,7 +2137,7 @@ class BotRunner:
                     print(f"[{self.name}/planner] Decomposing task board task: {desc[:80]}")
                     tc = _transmute.get_context_string() if _transmute else ""
                     inv_context = self._get_my_inventory_summary()
-                    steps = planner.decompose(self.model, desc, memory_context, tc, inv_context)
+                    steps = planner.decompose(self.model, desc, memory_context, tc, inv_context, bot_name=self.name)
                     # M3-2 step (a): a task-board goal may also come back as a
                     # program. Without this the empty step list reads as "Plan
                     # (0 steps)" and the bot quietly does nothing, which is the

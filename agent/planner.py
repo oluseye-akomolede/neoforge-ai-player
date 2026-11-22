@@ -268,6 +268,41 @@ SCRIPT_SURFACE = _fill_required_fields(SCRIPT_SURFACE, _REQUIRED_FIELDS,
                                        _REQUIRED_COORDS)
 
 
+def script_mode(bot_name, enabled_bots=None, runner_url=None):
+    """Whether THIS bot is offered the script surface, and why.
+
+    Returns `(offered, reason)`. The reason is for the startup log and is
+    worded so a deployment can tell the three "off" cases apart without
+    reading its own manifests: not named, no runner, or nothing enabled.
+
+    Deliberately defaults to OFF. `SCRIPT_BOTS` unset means no bot is offered
+    scripts, because the alternative -- "unset means everyone" -- is how prod
+    (no runner, five bots) would reach the state this gate exists to prevent.
+
+    `runner_url` is the other half and is not implied by the name: a bot named
+    in `SCRIPT_BOTS` on a deployment with no runner has nowhere to run a
+    script, so listing it MUST NOT be enough to offer one.
+
+    Read at call time, not import time, so tests and a deployment can set the
+    environment without reimporting the module, and so two bots in one process
+    can differ.
+    """
+    import os
+    if enabled_bots is None:
+        enabled_bots = os.environ.get("SCRIPT_BOTS", "")
+    if runner_url is None:
+        runner_url = os.environ.get("SCRIPT_RUNNER_URL", "")
+    names = {n.strip().lower() for n in (enabled_bots or "").split(",") if n.strip()}
+    if not names:
+        return False, ("script mode off: SCRIPT_BOTS names no bot")
+    if (bot_name or "").strip().lower() not in names:
+        return False, (f"script mode off: {bot_name!r} is not named in SCRIPT_BOTS")
+    if not (runner_url or "").strip():
+        return False, ("script mode off: no SCRIPT_RUNNER_URL, so there is "
+                       "nothing to run a script on")
+    return True, "script mode on: enabled in SCRIPT_BOTS with a runner configured"
+
+
 PLANNER_PROMPT = """You are a Minecraft task planner. Break the player's instruction into simple, sequential steps that a bot can execute one at a time.
 
 ## How to decompose
@@ -365,7 +400,7 @@ or, for a repetitive/conditional goal:
 }}"""
 
 
-def _script_from(parsed):
+def _script_from(parsed, bot_name=None, enabled_bots=None, runner_url=None):
     """The planner's script source from a parsed answer, or None.
 
     Kept deliberately strict: a script is a non-empty string under "script".
@@ -378,27 +413,46 @@ def _script_from(parsed):
     if not isinstance(parsed, dict):
         return None
     script = parsed.get("script")
-    if isinstance(script, str) and script.strip():
-        return script
-    return None
+    if not (isinstance(script, str) and script.strip()):
+        return None
+    # A bot not offered the surface may still emit a "script": the prompt it
+    # saw did not ask for one, so this is noise rather than a contract. Log
+    # once and drop it -- the goal proceeds on the plan's steps. Ignoring
+    # beats failing here, because failing would punish the model for a field
+    # the prompt stopped requesting.
+    offered, why = script_mode(bot_name, enabled_bots, runner_url)
+    if not offered:
+        print(f"[planner] ignoring a 'script' field from {bot_name!r}: {why}")
+        return None
+    return script
 
 
-def render_planner_prompt(memory_section="", transmute_section="", inventory_section=""):
+def render_planner_prompt(memory_section="", transmute_section="",
+                          inventory_section="", bot_name=None,
+                          enabled_bots=None, runner_url=None):
     """The planner prompt as the model receives it.
 
     SCRIPT_SURFACE is substituted AFTER .format, not through it: it holds
     plain single braces (real API shapes like {ok, seq}) which .format would
     read as fields. l3_planner substitutes the same constant the same way, so
     one string serves both prompts and they cannot drift apart.
+
+    The script section is offered only when `script_mode` says this bot has
+    both an opt-in and a runner; otherwise the slot is replaced with an empty
+    string and the prompt reads as though scripts did not exist. `bot_name`
+    defaults to None, which is OFF -- a caller that has not said which bot it
+    is rendering for must not be assumed to be one that has opted in.
     """
+    offered, _why = script_mode(bot_name, enabled_bots, runner_url)
     return PLANNER_PROMPT.format(
         script_section=_SCRIPT_SURFACE_SLOT,
         memory_section=memory_section, transmute_section=transmute_section,
         inventory_section=inventory_section,
-    ).replace(_SCRIPT_SURFACE_SLOT, SCRIPT_SURFACE)
+    ).replace(_SCRIPT_SURFACE_SLOT, SCRIPT_SURFACE if offered else "")
 
 
-def decompose(model, instruction, memory_context="", transmute_context="", inventory_context="", sender=""):
+def decompose(model, instruction, memory_context="", transmute_context="",
+              inventory_context="", sender="", bot_name=None):
     """Break an instruction into a list of step strings."""
     memory_section = ""
     if memory_context and memory_context != "No relevant memories.":
@@ -417,7 +471,7 @@ def decompose(model, instruction, memory_context="", transmute_context="", inven
 
     prompt = render_planner_prompt(
         memory_section=memory_section, transmute_section=transmute_section,
-        inventory_section=inventory_section) + sender_section
+        inventory_section=inventory_section, bot_name=bot_name) + sender_section
 
     with brain.ollama_lock:
         resp = requests.post(
@@ -453,7 +507,7 @@ def decompose(model, instruction, memory_context="", transmute_context="", inven
         else:
             return PlannerResult([instruction])
 
-    script = _script_from(parsed)
+    script = _script_from(parsed, bot_name=bot_name)
     if script is not None:
         # A program answer: there is no step list to execute. Returning it with
         # zero steps keeps every caller's iteration correct (it does nothing)

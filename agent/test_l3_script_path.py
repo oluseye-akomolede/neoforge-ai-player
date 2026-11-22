@@ -1469,7 +1469,13 @@ class TestTheL3ScriptPromptShowsLookAndResult(unittest.TestCase):
         # re-encoded the render here, and so rendered through the very defect
         # reviewer F-1 found: both prompts read "{{ok, seq}}" while every test
         # passed.
-        return l3_planner.render_script_system_prompt("Scout", "scout", "- x")
+        # Opted in through the environment, the way a deployment does: the
+        # script switch defaults to OFF, so a test about the script prompt
+        # must see what a script-enabled bot is shown, not what one that was
+        # never offered scripts sees (that is test_script_mode_gate.py's job).
+        with mock.patch.dict(os.environ, {"SCRIPT_BOTS": "Scout",
+                                     "SCRIPT_RUNNER_URL": "http://runner"}):
+            return l3_planner.render_script_system_prompt("Scout", "scout", "- x")
 
     def test_the_l3_script_prompt_has_no_doubled_braces(self):
         """KILLS: the regression where the shared surface kept its escaped
@@ -1501,7 +1507,9 @@ class TestTheL3ScriptPromptShowsLookAndResult(unittest.TestCase):
         guidance = "only when something changed since the last tick"
         for name, rendered in (
                 ("l3", self._rendered()),
-                ("planner", planner.render_planner_prompt())):
+                ("planner", planner.render_planner_prompt(
+                    bot_name="Forge", enabled_bots="Forge",
+                    runner_url="http://runner"))):
             with self.subTest(prompt=name):
                 flat = _norm(rendered)
                 self.assertIn(guidance, flat,

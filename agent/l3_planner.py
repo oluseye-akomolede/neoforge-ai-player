@@ -29,6 +29,7 @@ from plan_schema import Plan, PlanValidationError, Subtask, validate_plan_dict, 
 # One source of truth for the script API surface: the L3 script prompt and the
 # legacy planner's script section must not drift apart (gap seen live 2026-11-21).
 from planner import SCRIPT_SURFACE as _SCRIPT_SURFACE
+from planner import script_mode
 
 log = logging.getLogger("aibot.l3-planner")
 
@@ -1634,10 +1635,14 @@ def render_script_system_prompt(bot_name: str, persona: str, skills: str | None 
     regression green). The script surface carries plain single braces and is
     spliced in as a value, never through .format.
     """
+    # The same gate as the planner prompt, for the same bot. The two surfaces
+    # MUST agree: offering scripts in one and not the other would let a bot
+    # that was never offered a script reach the L3 call for one.
+    _offered, _why = script_mode(bot_name)
     return _SCRIPT_SYSTEM_PROMPT.format(
         bot_name=bot_name, persona=persona,
         skills=_skills_lines() if skills is None else skills,
-        script_surface=_SCRIPT_SURFACE)
+        script_surface=_SCRIPT_SURFACE if _offered else "")
 
 
 def call_script(

@@ -1240,3 +1240,70 @@ states, and the log MUST say which one happened.
   stopped
 - **AND** it MUST remain bound, so the player's deployment is not erased
 - **AND** the next goal the bot accepts MUST let it dispatch again
+
+### Requirement: The Script Surface Is Offered Per Bot, Not Per Deployment
+
+Scripts MUST be offered to a bot's planner only when that bot is BOTH enabled
+for scripts AND has a runner configured. Today `render_planner_prompt`
+substitutes `SCRIPT_SURFACE` unconditionally, so every bot in every deployment
+is offered scripts -- including prod, which has no runner at all. There, all
+five bots could write scripts that fail at tick for want of a runner and fall
+back, spending planner calls to learn something the prompt should never have
+offered.
+
+The enabled set MUST come from deployment config, never from a default:
+
+- `SCRIPT_BOTS` is a comma-separated list of bot names, matched case-
+  insensitively and stripped of surrounding whitespace.
+- Empty or unset `SCRIPT_BOTS` means NO bot is enabled. The default MUST be
+  none: a deployment that has not opted in must not silently start offering
+  scripts, which is how prod would reach the state this requirement exists to
+  prevent.
+- A bot is offered scripts only if it is named in `SCRIPT_BOTS` AND a runner
+  (`SCRIPT_RUNNER_URL`) is configured. Naming a bot while the runner is unset
+  MUST NOT offer scripts -- there is nothing for a script to run on.
+
+A bot that is not offered the surface gets the planner prompt WITHOUT the
+script section, and any `script` field it returns anyway MUST be ignored with
+one log line naming the bot and saying why. Ignoring is not an error: the
+prompt no longer asks for a script, so a stray field is noise, and failing the
+plan for it would punish the model for a field the prompt stopped requesting.
+
+`SCRIPT_SURFACE` is spliced into both the planner prompt and the L3 script
+prompt, so the two MUST stay in step: whichever gate decides for one decides
+for the other, and a change that gates one but not the other is a defect even
+though each alone looks right.
+
+At startup the agent MUST log, per bot, whether script mode is on or off and
+why -- enabled-and-runner-configured, not in `SCRIPT_BOTS`, or no runner. This
+is the only way a deployment can see from its logs that the switch took effect
+without reading its own manifests back.
+
+#### Scenario: An enabled bot with a runner is offered the surface
+- **GIVEN** `SCRIPT_BOTS` names this bot
+- **AND** `SCRIPT_RUNNER_URL` is set
+- **WHEN** the planner prompt is rendered
+- **THEN** it MUST contain the script surface
+- **AND** the startup log MUST say script mode is on and why
+
+#### Scenario: A bot not named is offered nothing
+- **GIVEN** `SCRIPT_BOTS` names some other bot
+- **WHEN** this bot's planner prompt is rendered
+- **THEN** it MUST NOT contain the script surface
+- **AND** a `script` field returned anyway MUST be ignored with one log line
+- **AND** the goal MUST proceed on the plan's steps rather than failing
+
+#### Scenario: No runner means no bot is offered scripts
+- **GIVEN** `SCRIPT_BOTS` names this bot
+- **AND** `SCRIPT_RUNNER_URL` is unset
+- **WHEN** the planner prompt is rendered
+- **THEN** it MUST NOT contain the script surface
+- **AND** the startup log MUST say script mode is off because there is no runner
+
+#### Scenario: An unset enabled set offers nothing
+- **GIVEN** `SCRIPT_BOTS` is unset or empty
+- **AND** a runner is configured
+- **WHEN** any bot's planner prompt is rendered
+- **THEN** it MUST NOT contain the script surface
+- **AND** the startup log MUST say script mode is off and name the bot as not
+  enabled

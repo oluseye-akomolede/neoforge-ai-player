@@ -17,6 +17,7 @@ re-run the experiment rather than trust the green.
 """
 
 import json
+import os
 import unittest
 from unittest.mock import patch
 
@@ -39,12 +40,20 @@ def _ollama_body(content):
 
 
 def _decompose_with(content):
-    """Run decompose against a canned model answer, no network."""
+    """Run decompose against a canned model answer, no network.
+
+    The script switch defaults to OFF, so this opts the bot in through the
+    same environment a deployment uses rather than bypassing the gate: a
+    test about script output must see the prompt a script-enabled bot sees.
+    """
     with patch.object(planner.requests, "post",
                       return_value=_FakeResponse(_ollama_body(content))), \
-         patch.object(planner, "openai_brain") as fake_l4:
+         patch.object(planner, "openai_brain") as fake_l4, \
+         patch.dict(os.environ, {"SCRIPT_BOTS": "Forge",
+                                 "SCRIPT_RUNNER_URL": "http://runner"}):
         fake_l4.is_available.return_value = False
-        return planner.decompose("test-model", "chop a tree")
+        return planner.decompose("test-model", "chop a tree",
+                                 bot_name="Forge")
 
 
 class ScriptOutputTest(unittest.TestCase):
@@ -98,7 +107,14 @@ def _rendered_prompt():
     bug and cannot observe it (reviewer F-1, 2026-11-21: my first version did
     exactly that and passed while both prompts carried {{ok, seq}}).
     """
-    return planner.render_planner_prompt()
+    # An EXPLICIT enabled bot, passed as arguments rather than through the
+    # environment: these tests are about what the script surface SAYS, and
+    # the switch (which decides whether it appears at all) is gated to off by
+    # default. That default is the point of the switch, so a prompt-content
+    # test must opt in the way a deployment does -- otherwise it would red on
+    # a change that was working as intended (see test_script_mode_gate.py).
+    return planner.render_planner_prompt(
+        bot_name="Forge", enabled_bots="Forge", runner_url="http://runner")
 
 
 def _assert_no_doubled_braces(testcase, rendered, where):
@@ -248,9 +264,11 @@ class PlannerPromptRendersTest(unittest.TestCase):
             return _FakeResponse(_ollama_body('{"steps": ["walk"]}'))
 
         with patch.object(planner.requests, "post", side_effect=capture), \
-                patch.object(planner, "openai_brain") as fake_l4:
+                patch.object(planner, "openai_brain") as fake_l4, \
+                patch.dict(os.environ, {"SCRIPT_BOTS": "Forge",
+                                        "SCRIPT_RUNNER_URL": "http://runner"}):
             fake_l4.is_available.return_value = False
-            planner.decompose("test-model", "chop a tree")
+            planner.decompose("test-model", "chop a tree", bot_name="Forge")
 
         for needed in ("look.blocks(", "look.entities(", "look.age()",
                        "look.task(", "api.result("):
