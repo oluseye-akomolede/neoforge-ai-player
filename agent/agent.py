@@ -408,6 +408,11 @@ class BotRunner:
         # cannot exist here. Cleared to None on restart by construction --
         # there is nothing to reload it from, which is the spec's stated cost.
         self._planner_script = None
+        # A player's "stop" halted the bound script. Not a hold: a hold is
+        # owned by a goal and releases when it ends, while this ends the work,
+        # so it clears where a NEW goal begins. Keeps a hand-written binding
+        # (the player's deployment) without letting it dispatch while stopped.
+        self._script_halted_for_stop = False
         # Result delivery (change: script-lookups-and-results, task 3.8).
         # Per bot, process-lifetime: `reset()` deliberately does NOT clear it.
         # A reset ends a plan and releases a script hold, but it is not an
@@ -761,6 +766,23 @@ class BotRunner:
                         api.cancel_directive(self.name)
                     except Exception:
                         pass
+                    # A player's "stop" must stop a script that MINEs or walks,
+                    # not only the planner that wrote it. api.stop above halts
+                    # the directive server-side; this stops the SCRIPT ticking,
+                    # which is what kept running (lead's live TEST log, 11-22
+                    # 05:59Z: "stop" logged "plan finalized: cancelled" and the
+                    # script kept delivering "suppressed 1 repeat(s)").
+                    #
+                    # Two outcomes, because the two kinds of script differ:
+                    # a planner script is unbound outright (its goal is over),
+                    # a hand-written one is HALTED -- `_unbind_planner_script`
+                    # cannot reach it, and erasing the player's deployment on a
+                    # "stop" would undo a deliberate choice the planner is not
+                    # allowed to overwrite (task 2.7).
+                    if self._unbind_planner_script():
+                        print(f"[{self.name}/nav] stop unbound the planner's script")
+                    else:
+                        self._halt_script_for_stop()
                     api.chat(self.name, "Stopping. Standing by.")
                     print(f"[{self.name}/nav] Direct stop (shortcut)")
                 return
@@ -1252,6 +1274,19 @@ class BotRunner:
         text = (f"Script result ({trigger}): {json.dumps(value)[:2000]}"
                 if not isinstance(value, str) else f"Script result ({trigger}): {value[:2000]}")
         self._plan_instruction = text
+        # The script reported it could not do the job and the planner is
+        # choosing another approach, so this script is not the thing to keep
+        # running: held at (cooldown) forever it pays a runner call every tick
+        # and can suppress its own `say` indefinitely (lead's live TEST log,
+        # 11-22 05:55Z: 34 holds in ~5 min). Unbinding is
+        # `_unbind_planner_script` itself, which refuses a hand-written script
+        # structurally, so calling it here cannot erase a deployment.
+        #
+        # NOT wrapped with a goal-less guard: the goal is open by construction
+        # -- only the `done` close unbinds, and this is the failure path.
+        if self._unbind_planner_script():
+            print(f"[{self.name}/result] unbound the planner's script as its "
+                  f"result is handed back ({trigger})")
         try:
             t = threading.Thread(
                 target=self._run_orchestrator,
@@ -1688,6 +1723,17 @@ class BotRunner:
             "goal_id": goal_id,
             "goal_text": (goal_text or "")[:120],
         }
+        # A new goal ends the stop period: a "stop" halts a hand-written script
+        # only until the bot is given work again, which is the spec's scenario
+        # ("the next goal the bot accepts MUST let it dispatch again"). Cleared
+        # here because this is the one place an accepted goal starts its plan,
+        # so the halt cannot outlive the stop by being cleared somewhere a goal
+        # can arrive without.
+        if getattr(self, "_script_halted_for_stop", False):
+            with self._lock:
+                self._script_halted_for_stop = False
+            print(f"[{self.name}/hold] halt from a stop is lifted by goal "
+                  f"{goal_id!r}; the bound script may dispatch again")
         print(f"[{self.name}/hold] script held by goal {goal_id!r}"
               + (f" (replacing {prev.get('goal_id')!r})" if prev else ""))
         # Deliberately NOT calling _cancel_orchestrator here: see the docstring.
@@ -3869,6 +3915,33 @@ Respond with ONLY a JSON array. Example:
               f"{_script_excerpt(source)}")
         return True
 
+    def _halt_script_for_stop(self) -> bool:
+        """Stop a hand-written script dispatching until the bot next has a goal.
+
+        The counterpart to `_unbind_planner_script` on the stop path. A
+        hand-written script cannot be unbound -- `bindings.json` is the
+        player's deployment -- but a player's "stop" must still stop it, so it
+        is halted instead: dispatch stops now, the binding survives, and the
+        next goal the bot accepts clears the halt.
+
+        Deliberately NOT `_script_hold`. A hold is a pause owned by a goal and
+        releases when THAT goal ends; a stop ends the work, so a hold here
+        would wait for a release that never comes and the script would stay
+        halted forever. The halt is its own flag, cleared where a goal begins
+        (`_begin_script_hold`'s callers already mark a new goal), and it is
+        logged so the two states cannot be confused in a log read.
+
+        Returns True if a halt was actually set, False if no script is bound.
+        """
+        if not ((self._bound_script_path() or "").strip()
+                or (getattr(self, "_planner_script", None) or "").strip()):
+            return False
+        with self._lock:
+            self._script_halted_for_stop = True
+        print(f"[{self.name}/nav] stop halted the bound script until the next "
+              f"goal; the binding is kept")
+        return True
+
     def _unbind_planner_script(self):
         """Drop a PLANNER-AUTHORED script so the planner is consulted again.
 
@@ -4084,6 +4157,15 @@ Respond with ONLY a JSON array. Example:
         # reading them one at a time here could pair the NEW source with the OLD
         # cached ScriptTick, or a cleared latch with the stale source.
         with self._lock:
+            # A player's "stop" halted this script until the next goal. Gated
+            # HERE rather than in _run_script_tick because this is the only
+            # place a ScriptTick is materialised: returning None means the tick
+            # never reaches the runner at all, which is the behaviour the lead
+            # measured as missing (a halted script must not pay a runner call
+            # every tick). The binding is untouched, so the next goal resumes
+            # the player's deployment rather than erasing it.
+            if getattr(self, "_script_halted_for_stop", False):
+                return None
             if self._script_loaded:
                 return self._script_tick
             self._script_loaded = True

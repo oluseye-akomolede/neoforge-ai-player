@@ -1181,3 +1181,62 @@ a lifted surface position.
   or a position within reach, not the block itself
 - **AND** it MUST NOT suggest that GOTO into a solid block is adjusted for the
   caller
+
+### Requirement: A Planner Script Is Unbound When Its Work Ends Without Succeeding
+
+A planner-authored script MUST NOT outlive the work it was written for. Three
+transitions end that work, and each MUST leave the bot in a state where the
+script is no longer ticking:
+
+1. The goal closes `done` -- already true, and before this change the only
+   case that unbound (`_unbind_planner_script` at the `done` close,
+   `agent.py:1259` at this change's base commit).
+2. A failure result is handed back to the planner. The script reported that it
+   could not do the job; the planner is choosing another approach, so the old
+   script is not the thing to keep running. Held at `(cooldown)` forever, it
+   pays a runner call every tick and can suppress its own `say` indefinitely.
+3. The player sends a stop. A player's "stop" MUST stop a script that mines or
+   walks, not only the planner that wrote it.
+
+For (2) and (3) the unbind MUST be `_unbind_planner_script` itself, not a
+second mechanism that clears the same fields. That function already refuses to
+touch a hand-written script (`_planner_script` is empty for one), so the
+"deployment-bound scripts are not unbound" half is structural rather than a
+condition someone must remember to check -- which is the property that makes
+it safe to call from a path that does not know which kind it has.
+
+A stop is NOT a hold. `_script_hold` is a pause owned by a goal and cleared
+when that goal ends; a stop ends the work, so reusing the hold would leave a
+halted script waiting for a release that never comes. The two MUST be separate
+states, and the log MUST say which one happened.
+
+#### Scenario: A failed hand-back unbinds the planner's script
+- **GIVEN** a planner-authored script bound to goal G
+- **AND** a tick whose result the planner receives as a failure
+- **WHEN** the hand-back path starts the planner
+- **THEN** the planner's script MUST be unbound
+- **AND** the next tick MUST NOT call the runner for it
+- **AND** the goal MUST remain open, so the planner answers it
+
+#### Scenario: A failed hand-back leaves a hand-written script bound
+- **GIVEN** a script bound from `bindings.json` for this bot
+- **AND** a tick whose result is handed back to the planner as a failure
+- **WHEN** the hand-back runs
+- **THEN** the hand-written script MUST still be bound
+- **AND** it MUST keep ticking
+
+#### Scenario: A stop unbinds the planner's script
+- **GIVEN** a planner-authored script bound and ticking
+- **WHEN** the player sends exactly `stop`
+- **THEN** the script MUST be unbound
+- **AND** a subsequent tick MUST NOT call the runner
+- **AND** the stop MUST still cancel the orchestrator and the directive, as it
+  does today
+
+#### Scenario: A stop halts a hand-written script for the stop period
+- **GIVEN** a script bound from `bindings.json` for this bot
+- **WHEN** the player sends exactly `stop`
+- **THEN** the script MUST NOT dispatch a further action while the bot is
+  stopped
+- **AND** it MUST remain bound, so the player's deployment is not erased
+- **AND** the next goal the bot accepts MUST let it dispatch again

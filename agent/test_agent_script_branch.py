@@ -1937,6 +1937,166 @@ class PlannerScriptBindTest(unittest.TestCase):
         self.assertIsNone(self.a._planner_script)
 
 
+class ScriptLifetimeTest(unittest.TestCase):
+    """A planner script must not outlive the work it was written for (lead's
+    live TEST report, 11-22 05:55Z/05:59Z).
+
+    Three transitions end that work: the done close (already true and already
+    tested), a failure handed back to the planner, and a player's stop. The
+    live symptom was a failed script held at (cooldown) 34 times in ~5 min and
+    still ticking after a "stop" logged "plan finalized: cancelled".
+
+    Every test here drives the real method; a mutant that removes each unbind
+    reds its own test, so the three paths cannot be satisfied by one shared
+    happy accident.
+    """
+
+    def setUp(self):
+        agent_mod = _agent_module()
+        self.agent_mod = agent_mod
+        self.a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
+        self.a._lock = threading.Lock()
+        self.a._script_say_guard = agent_mod.ScriptSayGuard()
+        self.a.name = "Mystic"
+        self.a.profile = {}
+        self.a._script_tick = None
+        self.a._script_loaded = False
+        self.a._script_hold = None
+        self.a._planner_script = None
+        self.a._script_halted_for_stop = False
+        self.a._bound_path = None
+        # __init__ never ran; the stop branch touches the task board before it
+        # reaches the unbind, and an AttributeError there would read as a bug
+        # in the stop path rather than in this fixture.
+        self.a._current_task_id = None
+        self.a._awaiting_taskboard = False
+
+    def _bind_planner(self, src="api.say('hi');"):
+        with mock.patch.object(self.a, "_bound_script_path",
+                               return_value=None), \
+             mock.patch.object(self.a, "_dry_tick", return_value=True):
+            self.assertTrue(self.a._bind_planner_script(src))
+
+    def _bind_hand_written(self):
+        self.a._bound_path = "/scripts/mystic.js"
+
+    # ── (2) failure hand-back ───────────────────────────────────────────
+
+    def test_a_failed_hand_back_unbinds_the_planners_script(self):
+        # KILLS: leaving the bound script ticking after its failure re-planned.
+        # 34 (cooldown) holds in five minutes is a runner call and a picked-at
+        # cooldown every tick for a script the planner has already abandoned.
+        self._bind_planner()
+        with mock.patch.object(self.a, "_bound_script_path",
+                               return_value=None), \
+             mock.patch.object(self.a, "_run_orchestrator"), \
+             mock.patch("threading.Thread") as fake_thread:
+            fake_thread.return_value.start.return_value = None
+            self.a._plan_with_result({"reason": "no ancient_debris"},
+                                     "error", "goal-A")
+        self.assertIsNone(self.a._planner_script,
+                          "a failure handed back to the planner must unbind "
+                          "the script that reported it")
+
+    def test_a_failed_hand_back_keeps_a_hand_written_script(self):
+        # The other half, and the one that matters for owner state: the
+        # player's bindings.json deployment must survive. Structural, not a
+        # remembered condition -- _unbind_planner_script only clears
+        # _planner_script, and a hand-written bot has none.
+        self._bind_hand_written()
+        with mock.patch.object(self.a, "_bound_script_path",
+                               return_value="/scripts/mystic.js"), \
+             mock.patch("threading.Thread"):
+            self.a._plan_with_result({"reason": "no ancient_debris"},
+                                     "error", "goal-A")
+        # The binding survives because the path can only reach
+        # _unbind_planner_script, and that clears _planner_script -- which a
+        # hand-written bind never sets. Assert both halves of that, since the
+        # safety is the conjunction: a hand-written bot has no in-memory
+        # script AND the file binding is untouched by this call.
+        self.assertIsNone(self.a._planner_script)
+        self.assertFalse(self.a._unbind_planner_script(),
+                         "_unbind_planner_script claimed to drop an in-memory "
+                         "script for a hand-written bot; it must refuse")
+
+    # ── (3) stop ────────────────────────────────────────────────────────
+
+    def test_a_stop_unbinds_the_planners_script(self):
+        # KILLS: a stop that cancels the orchestrator but leaves the script
+        # ticking -- the lead watched it deliver "suppressed 1 repeat(s)"
+        # every tick after "plan finalized: cancelled". Driven through
+        # _maybe_plan, the real pre-scan that handles a "stop" message: a test
+        # that calls _unbind_planner_script directly proves nothing about
+        # whether the stop branch calls it, which is exactly the defect.
+        self._bind_planner()
+        with mock.patch.object(self.a, "_bound_script_path",
+                               return_value=None), \
+             mock.patch.object(self.a, "_cancel_orchestrator"), \
+             mock.patch.object(self.a, "_consume_message"), \
+             mock.patch.object(self.agent_mod.api, "stop"), \
+             mock.patch.object(self.agent_mod.api, "cancel_directive"), \
+             mock.patch.object(self.agent_mod.api, "chat"):
+            self.a._maybe_plan(["Steve: stop"])
+        self.assertIsNone(self.a._planner_script,
+                          "a player's stop must unbind the planner's script, "
+                          "not only cancel the orchestrator")
+
+    def test_a_stop_halts_a_hand_written_script_without_unbinding_it(self):
+        # The chosen shape, spec'd: a "stop" halts a ConfigMap script for the
+        # stop period. It must NOT be unbound (the player deployed it), and it
+        # must NOT keep dispatching (the player asked it to stop).
+        self._bind_hand_written()
+        with mock.patch.object(self.a, "_bound_script_path",
+                               return_value="/scripts/mystic.js"), \
+             mock.patch.object(self.a, "_cancel_orchestrator"), \
+             mock.patch.object(self.a, "_consume_message"), \
+             mock.patch.object(self.agent_mod.api, "stop"), \
+             mock.patch.object(self.agent_mod.api, "cancel_directive"), \
+             mock.patch.object(self.agent_mod.api, "chat"):
+            self.a._maybe_plan(["Steve: stop"])
+        self.assertTrue(self.a._script_halted_for_stop,
+                        "a stop must halt the bound hand-written script")
+        # The gate must be what returns None, so give the bot a REAL source
+        # and an UNLATCHED tick: without those, _get_script_tick returns None
+        # for its own reasons (no source, or an already-cached None) and the
+        # gate could be deleted with this test still green -- which is exactly
+        # what the first mutant proved. A sentinel tick object makes the
+        # difference visible: gate removed => the sentinel comes back.
+        sentinel = object()
+        self.a._planner_script = "api.say('hi');"
+        self.a._script_tick = sentinel
+        self.a._script_loaded = True
+        with mock.patch.object(self.a, "_bound_script_path",
+                               return_value="/scripts/mystic.js"):
+            self.assertIsNone(self.a._get_script_tick(),
+                              "a halted script must not reach the runner")
+
+    def test_a_new_goal_lifts_the_halt(self):
+        # The spec's scenario: "the next goal the bot accepts MUST let it
+        # dispatch again". A halt that cleared nowhere would leave the
+        # player's script dead until a restart.
+        self._bind_hand_written()
+        self.a._script_halted_for_stop = True
+        with mock.patch.object(self.a, "_bound_script_path",
+                               return_value="/scripts/mystic.js"):
+            self.a._begin_script_hold("goal-B", "go mine")
+        self.assertFalse(self.a._script_halted_for_stop,
+                         "a new goal must lift the stop halt")
+
+    def test_the_halt_is_not_a_hold(self):
+        # KILLS: reusing _script_hold for the stop. A hold is owned by a goal
+        # and releases when it ends; a stop ends the work, so a hold would wait
+        # for a release that never comes. The two must be separate fields.
+        self._bind_hand_written()
+        self.a._script_hold = None
+        with mock.patch.object(self.a, "_bound_script_path",
+                               return_value="/scripts/mystic.js"):
+            self.a._halt_script_for_stop()
+        self.assertIsNone(self.a._script_hold,
+                          "a stop must not masquerade as a goal-owned hold")
+        self.assertTrue(self.a._script_halted_for_stop)
+
+
 class ScriptResultReachesTheSlotTest(unittest.TestCase):
     """The script's report must arrive in the bot's result slot (task 3.4).
 
@@ -2109,7 +2269,12 @@ class ScriptResultReachesTheSlotTest(unittest.TestCase):
         chat.assert_not_called()
         self.assertEqual(self.a._active_goal_id, "goal-A",
                          "a failure must keep its goal open to re-plan against")
-        self.a._unbind_planner_script.assert_not_called()
+        # Inverted on 2026-11-22: this used to assert NOT called, from when a
+        # failed result merely re-planned. The requirement now says the
+        # hand-back must unbind the planner script as well -- the goal stays
+        # open so the planner can pick another approach, but the failing
+        # script that produced this result must not keep ticking.
+        self.a._unbind_planner_script.assert_called_once()
 
     def test_the_verdict_decides_the_trigger_the_slot_receives(self):
         # The seam between script_tick's `ok` field and the slot's trigger.
@@ -2359,6 +2524,9 @@ class NoPlannerPathMintsAGoalIdTest(unittest.TestCase):
         self.a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
         # __init__ never ran, so supply the guard it would have created.
         self.a._script_say_guard = agent_mod.ScriptSayGuard()
+        # __init__ never ran; the result hand-back now unbinds the planner
+        # script, and that path takes this lock.
+        self.a._lock = threading.Lock()
         self.a.name = "Scout"
         self.a._script_hold_seq = 4
         self.a._script_hold = {"goal_id": "chat:Player:mine#4", "goal_text": "mine"}
