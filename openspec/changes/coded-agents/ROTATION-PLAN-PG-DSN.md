@@ -262,7 +262,7 @@ The password is taken from the **LIVE** TEST DSN, not from a backup, and never p
 ```bash
 ssh controlplane 'bash -s' <<'REMOTE'
 set -eu
-# The production password comes from the live secret — the one that is still valid right now.
+# The password comes from the LIVE TEST secret — the one that is still valid right now.
 # Rehearsing with the backup's value would test a different code path and could rotate the
 # role to a password no consumer holds if the backup were stale.
 kubectl -n minecraft-test get secret agent-config -o jsonpath='{.data.PG_DSN}' | base64 -d > /tmp/pgdsn.live
@@ -281,8 +281,18 @@ Then prove it was a genuine no-op — the consumers still authenticate:
 ```bash
 ssh controlplane 'bash -s' <<'REMOTE'
 set -u
+# Runs in the CONSUMER pod, like 6d, so this connect is over TCP against scram rather than
+# loopback trust. The DSN happens to name its host today; running it from a consumer pod
+# means the check does not depend on that continuing to be true.
 kubectl -n minecraft-test get secret agent-config -o jsonpath='{.data.PG_DSN}' | base64 -d > /tmp/pgdsn.check
-out=$(kubectl -n minecraft-test exec -i deploy/pgvector -- psql "$(cat /tmp/pgdsn.check)" -tAc 'select 1' 2>&1 | tail -1)
+out=$(kubectl -n minecraft-test exec -i deploy/aibot-agent-test -c agent -- python3 -c '
+import sys, psycopg2
+try:
+    c = psycopg2.connect(sys.stdin.read().strip(), connect_timeout=5)
+    cur = c.cursor(); cur.execute("select 1"); print(cur.fetchone()[0])
+except Exception as e:
+    print(type(e).__name__)
+' < /tmp/pgdsn.check 2>&1 | tail -1)
 rm -f /tmp/pgdsn.check
 echo "post-rehearsal DSN connect -> $out"
 REMOTE
@@ -401,18 +411,44 @@ ssh controlplane "kubectl -n minecraft-test logs deploy/hive-service --tail=100"
 
 ### 6d. The pass criterion — the new password actually authenticates
 
+**Both probes in this section run from a pod that is NOT `pgvector`, over the network.**
+That is the whole point of the section and it cost a rewrite to learn: `pgvector`'s
+`pg_hba.conf` (read read-only from the pod; it contains no secrets) is
+
+```
+local   all  all                          trust
+host    all  all  127.0.0.1/32            trust
+host    all  all  ::1/128                 trust
+host    all  all  all                     scram-sha-256
+```
+
+so **anything arriving on loopback or the Unix socket is trusted** and needs no password.
+A check run from inside `pgvector` therefore passes for any password at all — measured, not
+argued: `env PGPASSWORD=wrongwrongwrong psql -U aibot -h /var/run/postgresql -d postgres -tAc
+'select 1'` returns `1`. A check that cannot fail is not a check, and both of 6d's probes
+were in that shape before this section ran them from a consumer pod.
+
 ```bash
 ssh controlplane 'bash -s' <<'REMOTE'
-# Prove the role authenticates with the NEW password by making the server accept it,
-# without printing it: connect through the pgvector pod using the DSN it does not hold.
-# All three holders, prod included: the pass criterion is 1 from each, and prod's
-# botmemory is the same server and role as TEST's.
+set -u
+# Every holder, prod included: the pass criterion is 1 from each, and prod's botmemory is
+# the same server and role as TEST's. Runs in a CONSUMER pod (python3 + psycopg2 are there),
+# never in pgvector, so the connection arrives over TCP and must satisfy scram-sha-256.
+# The password is used in-process and never echoed.
 for t in "minecraft-test agent-config botmemory_test" \
          "minecraft-test hive-credentials hivemind_test" \
          "minecraft      agent-config botmemory"; do
   set -- $t
   kubectl -n "$1" get secret "$2" -o jsonpath='{.data.PG_DSN}' | base64 -d > /tmp/pgdsn.check
-  out=$(kubectl -n minecraft-test exec -i deploy/pgvector -- psql "$(cat /tmp/pgdsn.check)" -tAc 'select 1' 2>&1 | tail -1)
+  out=$(kubectl -n minecraft-test exec -i deploy/aibot-agent-test -c agent -- \
+        python3 -c '
+import sys, psycopg2
+try:
+    c = psycopg2.connect(sys.stdin.read().strip(), connect_timeout=5)
+    cur = c.cursor(); cur.execute("select 1"); print(cur.fetchone()[0])
+except Exception as e:
+    print(type(e).__name__ + ": " + str(e)[:80])
+' < /tmp/pgdsn.check 2>&1 | tail -1)
   rm -f /tmp/pgdsn.check
   echo "$1/$2 ($3) -> $out"
 done
@@ -420,52 +456,43 @@ REMOTE
 ```
 
 **Expect `1` for all three**, including the prod holder `minecraft/agent-config (botmemory)`.
-Anything else (including no output) is a FAIL — an empty result is the empty-read trap again.
+An error line naming an authentication failure is a FAIL; an error naming a host, DNS or
+connectivity problem is a FAIL with a different cause; an empty result is the empty-read trap.
 
-Note that a DSN carries its own host. The TEST DSNs point at the in-cluster service name,
-so `psql "$DSN"` reaches the server over TCP from outside its loopback — the same path the
-prod check must take. The next block is the one that has to be careful about where it
-connects *from*, and why.
-
-**A second, independent check that an OLD password is now rejected** proves the rotation
-took rather than merely that *a* connection works — and it must **not** use the value held
-in the backup. Reading the old password back out of the backup only re-uses the material
-the rotation exists to retire; it also means the check cannot run after the backup is
-deleted. Feed the server a deliberately wrong password instead:
+**Both directions must be asserted.** A probe that only shows the right password works
+cannot distinguish a good rotation from an unchanged database — if the secret still held the
+*old* password, `select 1` would also return 1. So run the same probe with a value that is
+definitely wrong and require it to fail:
 
 ```bash
 ssh controlplane 'bash -s' <<'REMOTE'
 set -u
-# Host is the SERVICE NAME, never 127.0.0.1. pgvector's pg_hba.conf, read read-only from
-# the pod and containing no secrets, is:
-#     local  all  all                   trust
-#     host   all  all  127.0.0.1/32     trust
-#     host   all  all  ::1/128          trust
-#     host   all  all  all              scram-sha-256
-# So a loopback connection is TRUSTED and gets in with any password at all: this check
-# would print 1, and report "NOT rejected" on a perfectly good rotation. Only the
-# non-loopback rule demands scram-sha-256, so the check must arrive over the network.
-PGV=pgvector.minecraft-test.svc.cluster.local
-# 32 hex chars that were never a credential for anyone. Not derived from any secret.
-WRONG=00000000000000000000000000000000
+# Same consumer pod, same code path, same server -- only the password differs. This is the
+# direction that proves the rotation happened: if this ever returns 1, the password is not
+# being checked at all (a trust line, or the wrong host) and the first block's 1 means nothing.
+WRONG=00000000000000000000000000000000   # never a credential for anyone; not derived from any secret
 for db in botmemory_test hivemind_test botmemory; do
-  out=$(kubectl -n minecraft-test exec -i deploy/pgvector -- \
-    env PGPASSWORD="$WRONG" psql -h "$PGV" -U aibot -d "$db" -tAc 'select 1' 2>&1 | tail -1)
-  case "$out" in
-    *"password authentication failed"*) echo "$db -> rejected (ok)" ;;
-    *) echo "$db -> NOT rejected: $out" ;;
-  esac
+  kubectl -n minecraft-test exec -i deploy/aibot-agent-test -c agent -- \
+    env WRONG="$WRONG" DB="$db" python3 -c '
+import os, psycopg2
+dsn = "postgresql://aibot:%s@pgvector.minecraft-test.svc.cluster.local:5432/%s" % (os.environ["WRONG"], os.environ["DB"])
+try:
+    c = psycopg2.connect(dsn, connect_timeout=5)
+    cur = c.cursor(); cur.execute("select 1"); print("ACCEPTED", cur.fetchone()[0])
+except Exception as e:
+    print("rejected" if "password" in str(e).lower() else "OTHER: " + type(e).__name__)
+' 2>&1 | tail -1 | sed "s/^/$db -> /"
 done
 REMOTE
 ```
 
-**Expect `rejected (ok)` for all three databases.** Any other line — including `1`, which
-would mean the server accepted a wrong password, or an empty result — is a FAIL. This also
-covers prod's database `botmemory`, which is the same server and the same role.
+**Expect `rejected` for all three databases.** `ACCEPTED 1` anywhere means the server is not
+checking passwords on that path and **every other result in this section is void** — stop and
+investigate before trusting 6a–6e. `OTHER:` is a failure too, but of a different kind.
 
-**The host in this block is load-bearing, not decoration.** `-h "$PGV"` is what makes the
-check able to fail. If this line ever reverts to `-h 127.0.0.1`, the block goes back to
-reporting success for every password and silently stops testing anything.
+**The host is load-bearing, not decoration.** `pgvector.minecraft-test.svc.cluster.local` is
+what forces the scram path. If either block is ever changed to `-h 127.0.0.1`, or to run inside
+`pgvector`, it silently reverts to accepting any password.
 
 ### 6e. PROD's own pass check — the prod agent connects and its bots come back
 
