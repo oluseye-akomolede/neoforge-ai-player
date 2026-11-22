@@ -1319,3 +1319,42 @@ survives past 30,000 once its two inner refs are disposed.
 - **THEN** the heap is flat
 - **AND** the snapshot-leak test does not depend on this path, because a
   snapshot-free tick never enters the leaking branch
+
+#### Scenario: A failed install strands no refs
+
+- **GIVEN** a runtime limited to a known heap
+- **WHEN** a tick installs a snapshot whose `setProp` throws on a context that
+  has already been disposed, and this happens repeatedly
+- **THEN** the retained-memory growth stays flat across every attempt
+- **AND** the growth does not scale with the number of failed installs
+
+The install path MUST dispose the refs it created on both the success and the
+failure path. `evaluate()` catches a throw from the install, so without this a
+failed install is silent and its refs leak: measured at ~480 KB per failed
+install, enough to exhaust a 32 MiB runtime in about 66 of them. The failure
+path is reachable in production, not only in tests — a tick can tear down
+between install and bind, which is why `#installApi` gained a `try/finally` on
+2026-11-13.
+
+#### Scenario: A dispose that throws does not mask the install failure
+
+- **GIVEN** a context that has already been disposed
+- **WHEN** the install path runs its cleanup
+- **THEN** the cleanup does not throw
+- **AND** the error the caller sees is the original install failure
+
+A bare `try/finally` is necessary but NOT sufficient here. On a disposed
+context `dispose()` itself throws `Lifetime not alive` — measured — so a
+`finally` that calls `dispose()` unguarded replaces the original error with a
+cleanup error and hides the cause. An optional call (`dispose?.()`) does NOT
+avoid this: the handle is non-null, so the call still runs and still throws.
+Each dispose in the cleanup MUST be individually guarded.
+
+Guarding the dispose does NOT reclaim the handle, and a comment claiming it
+does was measured false (2026-11-22): a handle whose context is already
+disposed is NOT freed by that context's teardown -- `dispose()` throws
+`Lifetime not alive`, the handle stays in the runtime-wide table, and
+`rt.dispose()` later aborts with `list_empty(&rt->gc_obj_list)`. So the guard's
+job is narrow: keep a cleanup error from replacing the install error. The
+strand it leaves is permanent, and the only thing that avoids it is not
+installing into a torn-down context at all.
