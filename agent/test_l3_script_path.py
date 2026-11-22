@@ -143,9 +143,15 @@ class TestCallPlanTwoCalls(unittest.TestCase):
             logged.append(kw)
             return "call-%d" % len(logged)
 
+        # This class is about the two-call shape, so the bot must actually be
+        # offered scripts: call_plan now declines the fetch for a bot outside
+        # SCRIPT_BOTS even when wants_script is set, because a prompt is not a
+        # contract. The gate itself is covered in test_script_mode_gate.
+        env = {"SCRIPT_BOTS": "Scout", "SCRIPT_RUNNER_URL": "http://runner.test"}
         with mock.patch.object(l3_planner.requests, "post", side_effect=fake_post), \
              mock.patch.object(l3_planner.trajectory_log, "log_call",
-                               side_effect=fake_log_call):
+                               side_effect=fake_log_call), \
+             mock.patch.dict(os.environ, env):
             plan = l3_planner.call_plan("m", "Scout", "keep the furnace fed")
         return plan, calls, logged
 
@@ -233,7 +239,9 @@ class TestCallPlanTwoCalls(unittest.TestCase):
 
         with mock.patch.object(l3_planner.requests, "post", side_effect=fake_post), \
              mock.patch.object(l3_planner.trajectory_log, "log_call",
-                               return_value="c"):
+                               return_value="c"), \
+             mock.patch.dict(os.environ, {"SCRIPT_BOTS": "Scout",
+                                          "SCRIPT_RUNNER_URL": "http://runner.test"}):
             plan = l3_planner.call_plan("m", "Scout", "keep the furnace fed")
 
         self.assertEqual(len(calls), 2, "the script call was not made")
@@ -260,7 +268,7 @@ class TestThePlanPromptStatesWhenToScript(unittest.TestCase):
         """KILLS: a prompt that describes the script field's syntax but never
         says when to use it — the planner then has a capability and no rule."""
         import l3_planner
-        prompt = l3_planner._PLAN_SYSTEM_PROMPT.lower()
+        prompt = l3_planner._PLAN_SCRIPT_SECTION.lower()
         self.assertIn("keep the furnace fed", prompt,
                       "the prompt does not give the repeating-goal example")
         self.assertIn("repeating", prompt)
@@ -270,7 +278,7 @@ class TestThePlanPromptStatesWhenToScript(unittest.TestCase):
         """KILLS: a prompt that lists only script cases, so the planner
         scripts 'craft 8 iron ingots'."""
         import l3_planner
-        prompt = l3_planner._PLAN_SYSTEM_PROMPT.lower()
+        prompt = l3_planner._PLAN_SCRIPT_SECTION.lower()
         # The one-shot examples the lead named must appear as step-list cases.
         self.assertIn("go to", prompt)
         self.assertIn("craft", prompt)
@@ -281,7 +289,7 @@ class TestThePlanPromptStatesWhenToScript(unittest.TestCase):
         import l3_planner
         out = l3_planner._PLAN_SYSTEM_PROMPT.format(
             bot_name="Scout", persona="generalist", dimensions="",
-            skills="")
+            skills="", script_section="")
         self.assertIn("Scout", out)
 
 
@@ -1422,7 +1430,7 @@ class TestThePromptsNameTheApiTheSandboxBinds(unittest.TestCase):
         prohibition ("Do NOT call api.get_snapshot()"); what it must not do is
         offer one as part of the API. So: every mention of a dead name must be
         inside a "Do NOT call" clause."""
-        p = l3_planner._PLAN_SYSTEM_PROMPT
+        p = l3_planner._PLAN_SCRIPT_SECTION
         for dead in ("get_snapshot", "get_directive", "api.memory"):
             for line in p.splitlines():
                 if dead not in line:
@@ -1432,7 +1440,7 @@ class TestThePromptsNameTheApiTheSandboxBinds(unittest.TestCase):
                     f"{dead!r} offered as API outside a prohibition: {line!r}")
 
     def test_the_plan_prompt_names_the_real_methods(self):
-        p = l3_planner._PLAN_SYSTEM_PROMPT
+        p = l3_planner._PLAN_SCRIPT_SECTION
         for m in ("api.do(", "api.say(", "api.send(", "api.recall(",
                   "api.remember(", "api.log("):
             self.assertIn(m, p, m)
@@ -1441,7 +1449,7 @@ class TestThePromptsNameTheApiTheSandboxBinds(unittest.TestCase):
         """The two prompts must not contradict each other: that contradiction
         is what a model resolves by following the more detailed one.
         KILLS: fixing one prompt and leaving the other stale."""
-        for p in (l3_planner._PLAN_SYSTEM_PROMPT, l3_planner._SCRIPT_SYSTEM_PROMPT):
+        for p in (l3_planner._PLAN_SCRIPT_SECTION, l3_planner._SCRIPT_SYSTEM_PROMPT):
             self.assertNotIn("get_snapshot()", p.replace(
                 "Do NOT call api.get_snapshot()", ""))
             self.assertIn("snapshot", p)
@@ -1451,7 +1459,8 @@ class TestThePromptsNameTheApiTheSandboxBinds(unittest.TestCase):
         format time, which is how this change first broke 18 tests.
         KILLS: adding an unescaped brace to either prompt."""
         l3_planner._PLAN_SYSTEM_PROMPT.format(
-            bot_name="Scout", persona="scout", dimensions="", skills="X")
+            bot_name="Scout", persona="scout", dimensions="", skills="X",
+            script_section=l3_planner._PLAN_SCRIPT_SECTION)
         l3_planner._SCRIPT_SYSTEM_PROMPT.format(
             bot_name="Scout", persona="scout", skills="X",
             script_surface=l3_planner._SCRIPT_SURFACE)

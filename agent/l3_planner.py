@@ -287,6 +287,58 @@ def _collapse_to_skill(directives: list[dict]) -> list[dict]:
 # ── Phase 1: plan ──────────────────────────────────────────────────────────
 
 
+_PLAN_SCRIPT_SECTION = """Choose between a STEP LIST and a SCRIPT:
+- A step list is the default. Use it for one-shot goals that finish: "go to X",
+  "craft 8 iron ingots", "dig a 3x3 hole here", "bring 16 wheat".
+- For goals that REPEAT, WAIT on a condition, or REACT over time, and so never
+  finish on their own — "keep the furnace fed", "store items whenever your
+  inventory fills", "tell me when it gets dark" — answer with the plan JSON as
+  usual and then append a fenced script block after it (see the output schema).
+  A step list cannot express these; it runs once and ends.
+- If a goal is clearly one-shot, use a step list even when it mentions a time
+  word ("bring me X before dark" is still one-shot). If a goal could be read
+  either way, it is your call.
+
+A script is plain JavaScript for one tick, run every tick. Its API is exactly:
+- api.do(action)      — queue one game action this tick
+- api.say(text)       — speak in chat (rate limited)
+- api.send(target, t) — send a chat message to another bot
+- api.recall()        — the memory blob this tick started with (or null)
+- api.remember(v)     — persist a STRING across ticks; read it back next tick
+                        via api.recall(). One blob, 16 KiB, last write wins.
+- api.log(level, t)   — write a line to the agent log ("info"/"warn"/...)
+The world state is a read-only global named `snapshot`, NOT an api method:
+  const s = snapshot;
+  if (s) { /* s.self, s.bots, s.inventory, ... */ }
+Do NOT call api.get_snapshot() or api.get_directive() — they do not exist, and
+a call to a missing method throws and discards your whole script.
+Return an array of actions (or [] to do nothing this tick). A script that
+throws is discarded and the step-list path takes over.
+
+Output schema (step list — the common case):
+{
+  "task": "<echo the task text>",
+  "subtasks": [
+    {
+      "id": 1,
+      "description": "...",
+      "criteria": "..."
+    },
+    ...
+  ]
+}
+(or, instead of the above, {"kind": "clarify"|"refuse", "reason": "..."})
+
+Script flag — for a repeating/conditional goal ONLY (see WHEN TO ASK FOR A
+SCRIPT above), add one boolean to the same object:
+
+  "wants_script": true
+
+Nothing else changes about this reply. Do NOT write the script here, and do
+NOT add a "script" key — a separate call is made for the script if and only if
+you set this flag. For a one-shot goal, omit the flag or set it false."""
+
+
 _PLAN_SYSTEM_PROMPT = """You are {bot_name}, an AI bot in Minecraft.
 Persona: {persona}.
 
@@ -385,56 +437,7 @@ Return instead of a plan:
 A fabricated plan is worse than a refusal: the player acts on it and it cannot
 succeed. Keep the reason to one sentence, in the bot's voice.
 
-Choose between a STEP LIST and a SCRIPT:
-- A step list is the default. Use it for one-shot goals that finish: "go to X",
-  "craft 8 iron ingots", "dig a 3x3 hole here", "bring 16 wheat".
-- For goals that REPEAT, WAIT on a condition, or REACT over time, and so never
-  finish on their own — "keep the furnace fed", "store items whenever your
-  inventory fills", "tell me when it gets dark" — answer with the plan JSON as
-  usual and then append a fenced script block after it (see the output schema).
-  A step list cannot express these; it runs once and ends.
-- If a goal is clearly one-shot, use a step list even when it mentions a time
-  word ("bring me X before dark" is still one-shot). If a goal could be read
-  either way, it is your call.
-
-A script is plain JavaScript for one tick, run every tick. Its API is exactly:
-- api.do(action)      — queue one game action this tick
-- api.say(text)       — speak in chat (rate limited)
-- api.send(target, t) — send a chat message to another bot
-- api.recall()        — the memory blob this tick started with (or null)
-- api.remember(v)     — persist a STRING across ticks; read it back next tick
-                        via api.recall(). One blob, 16 KiB, last write wins.
-- api.log(level, t)   — write a line to the agent log ("info"/"warn"/...)
-The world state is a read-only global named `snapshot`, NOT an api method:
-  const s = snapshot;
-  if (s) {{ /* s.self, s.bots, s.inventory, ... */ }}
-Do NOT call api.get_snapshot() or api.get_directive() — they do not exist, and
-a call to a missing method throws and discards your whole script.
-Return an array of actions (or [] to do nothing this tick). A script that
-throws is discarded and the step-list path takes over.
-
-Output schema (step list — the common case):
-{{
-  "task": "<echo the task text>",
-  "subtasks": [
-    {{
-      "id": 1,
-      "description": "...",
-      "criteria": "..."
-    }},
-    ...
-  ]
-}}
-(or, instead of the above, {{"kind": "clarify"|"refuse", "reason": "..."}})
-
-Script flag — for a repeating/conditional goal ONLY (see WHEN TO ASK FOR A
-SCRIPT above), add one boolean to the same object:
-
-  "wants_script": true
-
-Nothing else changes about this reply. Do NOT write the script here, and do
-NOT add a "script" key — a separate call is made for the script if and only if
-you set this flag. For a one-shot goal, omit the flag or set it false.
+{script_section}
 """
 
 
@@ -472,15 +475,38 @@ Multi-line JavaScript is expected and fine. Keep it under 64 KiB.
 """
 
 
+def render_plan_prompt(bot_name: str, dimensions: str = "",
+                       offered: bool | None = None) -> str:
+    """Render the L3 plan prompt for one bot.
+
+    `offered` is decided by the caller from `script_mode`, so there is one gate
+    and one renderer: a test that wants to check what a non-offered bot is told
+    calls THIS, and so exercises the same format call production uses. Passing
+    None looks it up, which is what a caller outside the plan path wants.
+    """
+    if offered is None:
+        offered, _why = script_mode(bot_name)
+    return _PLAN_SYSTEM_PROMPT.format(
+        bot_name=bot_name,
+        persona=BOT_PERSONAS.get(bot_name, "generalist"),
+        dimensions=dimensions,
+        skills=_skills_lines(),
+        script_section=_PLAN_SCRIPT_SECTION if offered else "")
+
+
 def call_plan(model: str, bot_name: str, task: str,
               world_state_summary: str = "",
               dimensions: list[str] | None = None) -> Plan:
     persona = BOT_PERSONAS.get(bot_name, "generalist")
     log.info("[%s] L3 PLAN call — task: %s", bot_name, task[:60])
     dim_lines = _dim_lines(dimensions)
-    sys_prompt = _PLAN_SYSTEM_PROMPT.format(
-        bot_name=bot_name, persona=persona, dimensions=dim_lines,
-        skills=_skills_lines())
+    # The invitation and the capability must agree: a bot not offered scripts is
+    # not taught how to ask for one, so the model never spends a second call
+    # learning that the surface is missing. call_plan ALSO refuses the fetch
+    # below, because a prompt is not a contract.
+    offered, why = script_mode(bot_name)
+    sys_prompt = render_plan_prompt(
+        bot_name, dimensions=dim_lines, offered=offered)
     user = f"World state: {world_state_summary}\n\nTask: {task}" if world_state_summary else task
 
     with ollama_lock:
@@ -591,6 +617,14 @@ def call_plan(model: str, bot_name: str, task: str,
     # a second call made — a step-list goal makes exactly one call and its
     # reply shape is unchanged apart from the wants_script field itself.
     if data.get("wants_script") is True:
+        # A prompt is not a contract. The plan prompt above already withholds
+        # the invitation, but a model can set this flag from a stale cached
+        # prompt or from habit, and a second call is the cost. Refusing to fetch
+        # is not an error: the goal proceeds on the plan's steps, the same way a
+        # stray `script` field is ignored rather than failed.
+        if not offered:
+            log.info("[%s] not fetching a script: %s", bot_name, why)
+            return plan
         script = call_script(
             bot_name=bot_name, task=task, plan=data, model=model,
             world_state_summary=world_state_summary)

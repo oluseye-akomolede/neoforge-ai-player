@@ -11,8 +11,10 @@ tell them apart.
 """
 
 import json
+import json as _json
 import os
 import unittest
+from unittest import mock
 from unittest.mock import patch
 
 import planner
@@ -146,6 +148,104 @@ class DecomposeThreadsTheBotTest(unittest.TestCase):
                           {"SCRIPT_BOTS": "Mystic",
                            "SCRIPT_RUNNER_URL": "http://r"}, "Forge")
         self.assertIsNone(r.script)
+
+
+class TestThePlanPromptDoesNotInviteWhatIsNotOffered(unittest.TestCase):
+    """Withholding the surface inside a call that still happens does not save
+    the call. The L3 plan prompt taught `wants_script` unconditionally and
+    call_plan fired the second call on it, so a bot outside SCRIPT_BOTS asked
+    for a script it could not have and paid a planner call to find out."""
+
+    _PLAN = {"task": "keep the furnace fed",
+             "subtasks": [{"id": 1, "description": "feed", "criteria": "fed"}],
+             "wants_script": True}
+
+    def _prompt(self, bot_name, env):
+        """Render through production's own renderer, never a copy of it: a test
+        that re-implements the gate passes even when production's is removed."""
+        import l3_planner
+        with patch.dict(os.environ, env, clear=True):
+            return l3_planner.render_plan_prompt(bot_name)
+
+    def test_a_disabled_bot_is_not_taught_wants_script(self):
+        """KILLS: gating only the surface, so the plan prompt still explains
+        the flag and the model asks for what the deployment cannot honour."""
+        p = self._prompt("Forge", {"SCRIPT_BOTS": "Mystic",
+                                   "SCRIPT_RUNNER_URL": "http://r"})
+        self.assertNotIn("wants_script", p)
+        self.assertNotIn("Choose between a STEP LIST and a SCRIPT", p)
+        self.assertNotIn("api.do(action)", p,
+                         "the surface leaked into a disabled bot's plan prompt")
+
+    def test_an_enabled_bot_is_taught_it(self):
+        """KILLS: gating the invitation so hard that a bot WITH scripts loses
+        the teaching and never scripts a repeating goal."""
+        p = self._prompt("Forge", {"SCRIPT_BOTS": "Forge",
+                                   "SCRIPT_RUNNER_URL": "http://r"})
+        self.assertIn("wants_script", p)
+        self.assertIn("Choose between a STEP LIST and a SCRIPT", p)
+        self.assertIn("api.do(action)", p)
+
+    def test_a_disabled_bot_that_asks_anyway_costs_no_second_call(self):
+        """A prompt is not a contract. KILLS: relying on the prompt alone, so a
+        model that sets the flag from habit still pays the script call."""
+        import l3_planner
+        calls = []
+
+        def _p(content):
+            r = mock.Mock()
+            r.raise_for_status = mock.Mock()
+            r.json = mock.Mock(return_value={"message": {"content": content},
+                                             "done_reason": "stop"})
+            return r
+
+        def fake_post(url, json=None, timeout=None, **kw):
+            calls.append(json)
+            return _p(_json.dumps(self._PLAN))
+
+        with patch.object(l3_planner.requests, "post", side_effect=fake_post), \
+                patch.object(l3_planner.trajectory_log, "log_call",
+                             return_value="c"), \
+                patch("builtins.print"), \
+                patch.dict(os.environ, {"SCRIPT_BOTS": "Mystic",
+                                        "SCRIPT_RUNNER_URL": "http://r"},
+                           clear=True):
+            plan = l3_planner.call_plan("m", "Forge", "keep the furnace fed")
+
+        self.assertEqual(len(calls), 1, "a second call was made for a bot not offered scripts")
+        self.assertIsNone(getattr(plan, "script", None))
+        self.assertEqual(len(plan.subtasks), 1,
+                         "declining the script must still run the plan's steps")
+
+    def test_an_enabled_bot_that_asks_still_gets_its_script(self):
+        """KILLS: refusing the fetch unconditionally -- the gate must decide
+        per bot, so threading bot_name wrongly cannot silently disable every
+        legitimate script."""
+        import l3_planner
+        calls = []
+
+        def _p(content):
+            r = mock.Mock()
+            r.raise_for_status = mock.Mock()
+            r.json = mock.Mock(return_value={"message": {"content": content},
+                                             "done_reason": "stop"})
+            return r
+
+        def fake_post(url, json=None, timeout=None, **kw):
+            calls.append(json)
+            return _p(_json.dumps(self._PLAN) if len(calls) == 1
+                      else "```javascript\napi.say('fed');\n```")
+
+        with patch.object(l3_planner.requests, "post", side_effect=fake_post), \
+                patch.object(l3_planner.trajectory_log, "log_call",
+                             return_value="c"), \
+                patch.dict(os.environ, {"SCRIPT_BOTS": "Forge",
+                                        "SCRIPT_RUNNER_URL": "http://r"},
+                           clear=True):
+            plan = l3_planner.call_plan("m", "Forge", "keep the furnace fed")
+
+        self.assertEqual(len(calls), 2, "the enabled bot lost its script call")
+        self.assertIsNotNone(getattr(plan, "script", None))
 
 
 if __name__ == "__main__":

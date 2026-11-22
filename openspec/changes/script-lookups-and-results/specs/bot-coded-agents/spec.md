@@ -1307,3 +1307,52 @@ without reading its own manifests back.
 - **THEN** it MUST NOT contain the script surface
 - **AND** the startup log MUST say script mode is off and name the bot as not
   enabled
+
+### Requirement: The Plan Prompt Must Not Invite A Script A Bot Is Not Offered
+
+A bot that is not offered the script surface MUST NOT be taught how to ask for
+one. Withholding the surface inside a call that still happens does not save the
+call: the L3 plan prompt (`_PLAN_SYSTEM_PROMPT`) both explains "Choose between a
+STEP LIST and a SCRIPT" and instructs the model to set `"wants_script": true`,
+and `call_plan` fires `call_script` whenever that flag is set, with no gate of
+its own. A bot outside `SCRIPT_BOTS` therefore reads an invitation, accepts it,
+and spends a second planner call to be handed a script prompt with the entire
+surface blanked -- the same wasted call this group of requirements exists to
+remove, arriving one layer above where the previous gate looks.
+
+The invitation and the capability MUST agree. When a bot is not offered the
+surface, the script section of the plan prompt -- the "Choose between a STEP
+LIST and a SCRIPT" teaching, the example surface, and the `wants_script` flag --
+MUST be absent, so the model is never told to ask for what the deployment cannot
+honour. `call_plan` MUST ALSO decline to fetch a script for a bot that is not
+offered one, because a plan prompt is not a contract: a model that sets the flag
+from habit or from a stale cached prompt MUST NOT cost a second call. Both
+halves are required; either alone leaves the invitation and the capability able
+to disagree.
+
+Declining to fetch is not an error: the goal MUST proceed on the plan's steps,
+exactly as a stray `script` field is ignored rather than failed.
+
+#### Scenario: The plan prompt of a non-enabled bot invites no script
+- **GIVEN** `SCRIPT_BOTS` names some other bot
+- **WHEN** this bot's plan prompt is rendered
+- **THEN** it MUST NOT teach `wants_script`
+- **AND** it MUST NOT contain the script API surface
+- **AND** the instruction to choose between a step list and a script MUST be
+  absent
+
+#### Scenario: A non-enabled bot that asks anyway costs no second call
+- **GIVEN** `SCRIPT_BOTS` does not name this bot
+- **AND** the plan reply carries `"wants_script": true`
+- **WHEN** `call_plan` processes that reply
+- **THEN** it MUST NOT make the second, script-writing call
+- **AND** the goal MUST proceed on the plan's steps rather than failing
+- **AND** it MUST log one line naming the bot and saying why no script was
+  fetched
+
+#### Scenario: An enabled bot with a runner keeps both halves
+- **GIVEN** `SCRIPT_BOTS` names this bot
+- **AND** `SCRIPT_RUNNER_URL` is set
+- **WHEN** its plan prompt is rendered and the reply sets `wants_script`
+- **THEN** the prompt MUST teach `wants_script` and contain the surface
+- **AND** `call_plan` MUST make the second, script-writing call

@@ -71,6 +71,9 @@ class RebuiltTextIsWhatGetsSent(unittest.TestCase):
             dimensions=l3_planner._dim_lines(
                 ["minecraft:overworld", "minecraft:the_end"]),
             skills="  - mine: Dig a block.  [params: x:int]",
+            # The fixture's recorded prompt carries no script section, so the
+            # rebuild recovers "", which is what that call actually sent.
+            script_section="",
         )
         self.assertEqual(norm(system), norm(expected))
         self.assertIn(norm("a plausible substitution is still a lie"),

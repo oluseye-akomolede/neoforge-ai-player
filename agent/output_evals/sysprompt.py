@@ -147,6 +147,20 @@ _DIM_SECTION = re.compile(
     r"(Available dimensions[^\n]*\n)((?:[ \t]*-[^\n]*\n)+)")
 
 
+def _script_section_from_prompt(planner, text):
+    """The script section the recorded plan prompt carried, or "" if it had none.
+
+    Unlike the dimension list and skills catalog, absence here is a real shape
+    rather than an unbuildable case: a bot not offered scripts was sent a plan
+    prompt with this section deliberately blanked. So a record without it
+    rebuilds to "" -- exactly what that call sent.
+    """
+    section = getattr(planner, "_PLAN_SCRIPT_SECTION", "")
+    if section and section in text:
+        return section
+    return ""
+
+
 def dimensions_from_prompt(text):
     """The dimension ids the recorded plan prompt listed, or None.
 
@@ -180,11 +194,18 @@ def _rebuild_plan(case, planner, skills, recorded=None):
         skills = skills_from_prompt(recorded)
         if skills is None:
             raise Unscorable("plan: no skills section in the recorded prompt")
+    # The script section is gated per bot, so it cannot be derived from the bot
+    # name: the recorded prompt is the only place that says whether THIS call
+    # offered scripts. Rebuilding it from SCRIPT_BOTS would measure against a
+    # prompt the model may never have seen, the same trap the dimension list
+    # and skills catalog above avoid.
+    section = _script_section_from_prompt(planner, recorded)
     return planner._PLAN_SYSTEM_PROMPT.format(
         bot_name=case.bot,
         persona=_persona(planner, case.bot),
         dimensions=planner._dim_lines(dims),
         skills=skills,
+        script_section=section,
     )
 
 
