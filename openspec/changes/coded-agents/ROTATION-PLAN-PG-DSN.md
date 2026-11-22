@@ -178,6 +178,7 @@ done
 kubectl -n minecraft-test get pods -l app=pgvector -o wide || ABORT=1
 [ "$ABORT" -eq 0 ] || { echo "ABORT: preconditions failed; do not proceed"; exit 1; }
 echo "--- preconditions complete"
+echo "--- end"
 REMOTE
 ```
 
@@ -222,6 +223,7 @@ do
   [ -n "$a" ] && [ -n "$b" ] && [ "$a" = "$b" ] || { echo "ABORT: copy $NS/$DST .data differs from $NS/$SRC"; exit 1; }
   echo "$NS/$DST verified whole .data fp=$b"
 done
+echo "--- end"
 REMOTE
 # expect exactly three lines. Under (A) the third is minecraft/pgdsn-backup-agent-config-prod.
 ```
@@ -241,6 +243,7 @@ o=json.load(sys.stdin)["data"]
 print(sys.argv[1], {k: len(v) for k, v in sorted(o.items())})
 ' "$1/$2"
 done
+echo "--- end"
 REMOTE
 # expect: each copy line carries PG_DSN at the SAME length as its source line.
 ```
@@ -273,6 +276,7 @@ rm -f /tmp/pgdsn.live
 kubectl -n minecraft-test exec deploy/pgvector -- psql -U aibot -d postgres -v ON_ERROR_STOP=1 \
   -c "ALTER ROLE aibot PASSWORD '$OLD'" || { echo "ABORT: rehearsal ALTER ROLE failed"; exit 1; }
 echo "rehearsal: ALTER ROLE executed"
+echo "--- end"
 REMOTE
 ```
 
@@ -281,6 +285,7 @@ Then prove it was a genuine no-op — the consumers still authenticate:
 ```bash
 ssh controlplane 'bash -s' <<'REMOTE'
 set -u
+trap 'rm -f /tmp/pgdsn.check' EXIT
 # Runs in the CONSUMER pod, like 6d, so this connect is over TCP against scram rather than
 # loopback trust. The DSN happens to name its host today; running it from a consumer pod
 # means the check does not depend on that continuing to be true.
@@ -295,6 +300,7 @@ except Exception as e:
 ' < /tmp/pgdsn.check 2>&1 | tail -1)
 rm -f /tmp/pgdsn.check
 echo "post-rehearsal DSN connect -> $out"
+echo "--- end"
 REMOTE
 ```
 
@@ -367,6 +373,7 @@ pw=urlsplit(raw).password or ""
 print("OK %s/%s len=%d pwfp=%s" % (o["metadata"]["namespace"],o["metadata"]["name"],len(pw),hashlib.sha256(pw.encode()).hexdigest()[:12]))
 ' "$1" "$2"
 done
+echo "--- end"
 REMOTE
 ```
 
@@ -431,6 +438,7 @@ were in that shape before this section ran them from a consumer pod.
 ```bash
 ssh controlplane 'bash -s' <<'REMOTE'
 set -u
+trap 'rm -f /tmp/pgdsn.check' EXIT
 # Every holder, prod included: the pass criterion is 1 from each, and prod's botmemory is
 # the same server and role as TEST's. Runs in a CONSUMER pod (python3 + psycopg2 are there),
 # never in pgvector, so the connection arrives over TCP and must satisfy scram-sha-256.
@@ -452,6 +460,7 @@ except Exception as e:
   rm -f /tmp/pgdsn.check
   echo "$1/$2 ($3) -> $out"
 done
+echo "--- end"
 REMOTE
 ```
 
@@ -481,8 +490,9 @@ try:
     cur = c.cursor(); cur.execute("select 1"); print("ACCEPTED", cur.fetchone()[0])
 except Exception as e:
     print("rejected" if "password" in str(e).lower() else "OTHER: " + type(e).__name__)
-' 2>&1 | tail -1 | sed "s/^/$db -> /"
+' </dev/null 2>&1 | tail -1 | sed "s/^/$db -> /"
 done
+echo "--- end"
 REMOTE
 ```
 
@@ -563,6 +573,7 @@ print(len(live))
   esac
   exit 0
 done
+echo "--- end"
 REMOTE
 ```
 
@@ -631,6 +642,7 @@ kubectl -n minecraft-test get secret pgdsn-backup-agent-config -o jsonpath='{.da
 OLD=$(python3 -c 'from urllib.parse import urlsplit;print(urlsplit(open("/tmp/pgdsn.rb").read()).password)')
 rm -f /tmp/pgdsn.rb
 kubectl -n minecraft-test exec deploy/pgvector -- psql -U aibot -d postgres -v ON_ERROR_STOP=1 -c "ALTER ROLE aibot PASSWORD '$OLD'"
+echo "--- end"
 REMOTE
 
 # --- 2. The TEST secrets.
@@ -653,6 +665,7 @@ rm -f /tmp/prod.b64
 back=$(kubectl -n minecraft get secret agent-config -o jsonpath='{.data.PG_DSN}' | wc -c)
 [ "$back" -gt 0 ] || { echo "ABORT: prod PG_DSN read back empty"; exit 1; }
 echo "prod PG_DSN restored, $back base64 chars"
+echo "--- end"
 REMOTE
 
 # --- 4. Only now, every consumer restarts -- all secrets already hold the old password.
@@ -688,6 +701,7 @@ rm -f /tmp/prod.b64
 back=$(kubectl -n minecraft get secret agent-config -o jsonpath='{.data.PG_DSN}' | wc -c)
 [ "$back" -gt 0 ] || { echo "ABORT: prod PG_DSN read back empty"; exit 1; }
 echo "prod PG_DSN restored, $back base64 chars"
+echo "--- end"
 REMOTE
 ```
 
