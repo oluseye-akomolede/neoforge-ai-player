@@ -76,6 +76,12 @@ call cost, no network). It answers the world as of THIS tick, not a live query:
 - `look.age()` → `{ok: true, ageMs}`, how old the snapshot is
 - `look.inventory()` → `{ok: true, items: [...]}`, what the bot is carrying
   right now (same snapshot). Read-only: it cannot change the inventory.
+- `look.self()` → `{ok: true, position: {x, y, z}, health, food}`, the bot's
+  OWN body this tick. `position` is the bot, the same `{x, y, z}` shape a block
+  or mob entry has. This is how a script checks whether it has ARRIVED — there
+  is no `snapshot.self`; reading that gives `undefined` and an arrival check
+  written on it never passes, so the script re-issues the same movement
+  forever. Compare `look.self().position` against the target.
 - A failed query answers `{ok: false, reason, message}`.
 - `kind`/`type` match the entry's id or display name, case-insensitive, and a
   leading `minecraft:` on either side is ignored, so `'iron_ore'` and

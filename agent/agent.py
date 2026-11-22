@@ -80,6 +80,34 @@ SCRIPT_LOG_CAP = 4096
 # bound above 1 would have changed nothing there).
 SCRIPT_REPLAN_MAX = 3
 
+# How many times in a row the SAME action may COMPLETE before the script is
+# treated as spinning and the goal is yielded (spec, "A Repeatedly Completed
+# Identical Action Yields The Goal"). The signal is the identical action
+# completing again, not a diff of world state: position, ages and mob health
+# move between ticks for reasons unrelated to whether the action worked, so a
+# state-equality test would fire on a slow action or stay silent on a spin.
+# An identical completed action is the thing that is wrong -- the script asked
+# for work it has already been told is done, so its own completion check is not
+# firing. Trial 4.3 (2026-11-22, bot Axiom) re-sent one GOTO 10+ times, each
+# COMPLETED, until a human restarted the agent. Sized at 5: above the
+# "re-issue once or twice while the world catches up" that a correct script
+# sometimes does, and small enough that a broken check yields within seconds.
+# Unmeasured against live trials.
+SCRIPT_REPEAT_MAX = 5
+
+
+def _script_action_key(directive: dict) -> str:
+    """A stable identity for one bound action, for the spin counter.
+
+    The bound directive is `{"kind": KIND, ...args}`. `seq` is not inside it
+    (it rides beside, in `_last_action_seqs`), so the dict is already free of
+    the per-dispatch counter. Sorted keys make the key independent of argument
+    order, and json makes nested values (a target list) compare by value, so
+    the same GOTO is the same key on every tick and a different one is not.
+    """
+    import json
+    return json.dumps(directive, sort_keys=True, default=str)
+
 
 def _script_digest(source: str) -> str:
     """First 16 hex of the source's sha256 -- the same value _revision_of
@@ -359,6 +387,11 @@ class BotRunner:
         self._active_goal_id = ""
         self._active_goal_text = ""
         self._cached_inventory = []  # updated on each observe tick
+        # The spin counter: the identity key of the one action completed on the
+        # last tick, and how many ticks in a row it has completed. Reset by any
+        # different action. Bound is SCRIPT_REPEAT_MAX.
+        self._script_repeat_key = None
+        self._script_repeat_count = 0
         self._terrain_tick = 0
         self._lock = threading.Lock()
         self._memory_file = os.path.join(
@@ -3395,6 +3428,12 @@ Respond with ONLY a JSON array. Example:
             # own call, which is M2 §8.2's evidence requirement.
             seqs = list(getattr(st, "_last_action_seqs", []) or [])
             ran = 0
+            # The action(s) that actually ran this tick, in dispatch order, as
+            # their identity keys. Used after the loop for the spin check: a
+            # tick that dispatched a non-empty set but ran nothing is the
+            # all-refused case and is handled below, so this is only reached
+            # when something completed.
+            ran_keys = []
             for i, act in enumerate(actions):
                 if not isinstance(act, dict) or not act.get("kind"):
                     continue
@@ -3410,6 +3449,7 @@ Respond with ONLY a JSON array. Example:
                     print(f"[{self.name}/script] not executed: {result}")
                     continue
                 ran += 1
+                ran_keys.append(_script_action_key(directive))
                 if "interrupted_by_chat" in str(result):
                     return True
             if ran == 0:
@@ -3434,27 +3474,18 @@ Respond with ONLY a JSON array. Example:
                     # goal is re-submitted explicitly here, under the spin
                     # bound. The ACTIVE goal is read, not `_script_hold`: the
                     # bind released that hold (2a.6), so it is already None.
-                    hold = self._script_hold or {}
-                    hold_goal_id = (getattr(self, "_active_goal_id", "")
-                                    or hold.get("goal_id", ""))
-                    goal_text = (getattr(self, "_active_goal_text", "")
-                                 or hold.get("goal_text", "")
-                                 or self._plan_instruction)
-                    yielded = self._unbind_planner_script()
-                    self._plan_steps = []
-                    self._plan_step_idx = 0
-                    self._plan_instruction = ""
-                    print(
-                        f"[{self.name}/script] option 1: all {len(refusals)} "
-                        f"action(s) refused; "
-                        + ("script unbound" if yielded else "no planner script to unbind"))
-                    resubmitted = self._resubmit_yielded_goal(hold_goal_id, goal_text)
-                    if not resubmitted:
-                        print(
-                            f"[{self.name}/script] no re-plan: "
-                            + ("no goal text to re-submit" if not goal_text.strip()
-                               else f"re-plan bound reached ({SCRIPT_REPLAN_MAX})"))
+                    self._yield_script_to_planner(
+                        f"option 1: all {len(refusals)} action(s) refused")
                 return False
+            # The script dispatched work that COMPLETED. If it keeps completing
+            # the IDENTICAL action, its own completion check is not firing and
+            # re-issuing cannot fix that -- trial 4.3 re-sent one GOTO 10+ times
+            # until a human restarted the agent. Counted per identical action,
+            # reset by any different one, and yielded through the same path as
+            # an all-refused tick so the re-plan is bounded too.
+            if ran_keys and self._note_script_repeat(ran_keys):
+                self._yield_script_to_planner(
+                    f"spin: the same action completed {SCRIPT_REPEAT_MAX} times in a row")
             return True
         except Exception as e:  # noqa: BLE001 — a script must never kill the loop
             print(f"[{self.name}/script] tick error, using planner: {e}")
@@ -3693,6 +3724,66 @@ Respond with ONLY a JSON array. Example:
             self._script_tick = None
             self._script_loaded = False
         return True
+
+    def _yield_script_to_planner(self, why: str) -> None:
+        """Unbind the script and put the goal back in front of the planner.
+
+        One implementation for both yields: the all-refused tick (task 2a.14)
+        and the spin (spec, "A Repeatedly Completed Identical Action Yields The
+        Goal"). Two copies of this sequence would be two rules that agree only
+        until one is edited -- the exact defect the look module's ONE
+        IMPLEMENTATION comment exists to prevent.
+
+        `why` is the logged cause; it says which bound yielded.
+        """
+        # Capture the goal BEFORE clearing the plan. The ACTIVE goal is read,
+        # not `_script_hold`: the bind released that hold (2a.6), so it is None.
+        hold = self._script_hold or {}
+        hold_goal_id = (getattr(self, "_active_goal_id", "")
+                        or hold.get("goal_id", ""))
+        goal_text = (getattr(self, "_active_goal_text", "")
+                     or hold.get("goal_text", "")
+                     or self._plan_instruction)
+        yielded = self._unbind_planner_script()
+        self._plan_steps = []
+        self._plan_step_idx = 0
+        self._plan_instruction = ""
+        self._script_repeat_key = None
+        self._script_repeat_count = 0
+        print(
+            f"[{self.name}/script] yielding goal ({why}); "
+            + ("script unbound" if yielded else "no planner script to unbind"))
+        resubmitted = self._resubmit_yielded_goal(hold_goal_id, goal_text)
+        if not resubmitted:
+            print(
+                f"[{self.name}/script] no re-plan: "
+                + ("no goal text to re-submit" if not goal_text.strip()
+                   else f"re-plan bound reached ({SCRIPT_REPLAN_MAX})"))
+
+    def _note_script_repeat(self, ran_keys) -> bool:
+        """Count identical completed actions; True when the bound is reached.
+
+        `ran_keys` are this tick's completed actions, in order. The run is
+        counted only when the tick's completed set is exactly one repeated
+        action: a tick that ran a DIFFERENT action resets the run, so a script
+        alternating between useful steps is never a spin. A tick that ran more
+        than one distinct action also resets -- the same action among others is
+        progress, not a loop.
+        """
+        if len(ran_keys) != 1:
+            self._script_repeat_key = None
+            self._script_repeat_count = 0
+            return False
+        key = ran_keys[0]
+        # getattr, not attribute access: tests build BotRunner with __new__ and
+        # skip __init__, exactly as the rest of this class already allows for.
+        if key != getattr(self, "_script_repeat_key", None):
+            self._script_repeat_key = key
+            self._script_repeat_count = 1
+            return False
+        count = getattr(self, "_script_repeat_count", 1) + 1
+        self._script_repeat_count = count
+        return count >= SCRIPT_REPEAT_MAX
 
     def _resubmit_yielded_goal(self, goal_id: str, goal_text: str) -> bool:
         """Put a yielded goal back in front of the planner. Task 2a.15.

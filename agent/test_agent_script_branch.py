@@ -2211,5 +2211,142 @@ class BoundScriptSourceIsLoggedTest(unittest.TestCase):
         self.assertNotIn("planner script source", out)
         self.assertNotIn("human script", out)
 
+class ScriptSpinTest(unittest.TestCase):
+    """Spec, "A Repeatedly Completed Identical Action Yields The Goal".
+
+    The identical completed action is the signal, not a world-state diff:
+    position and ages move every tick for reasons unrelated to the action, so a
+    diff would fire on a slow action or stay silent on a spin. Trial 4.3
+    (2026-11-22, bot Axiom) re-sent one GOTO 10+ times, each COMPLETED.
+    """
+
+    def setUp(self):
+        agent_mod = _agent_module()
+        self.agent_mod = agent_mod
+        self.a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
+        self.a._lock = threading.Lock()
+        self.a.name = "Scout"
+        self.a.profile = {}
+        self.a._script_tick = None
+        self.a._script_say_guard = agent_mod.ScriptSayGuard()
+        self.a._script_loaded = True
+        self.a._l3_orchestrator_dispatch = mock.Mock(return_value="COMPLETED GOTO ok")
+        self.a._unbind_planner_script = mock.Mock(return_value=True)
+        self.a._resubmit_yielded_goal = mock.Mock(return_value=True)
+        self.a._script_repeat_key = None
+        self.a._script_repeat_count = 0
+        self.a._active_goal_id = "goal-A"
+        self.a._active_goal_text = "walk to the cache"
+        self.a._script_hold = None
+        self.a._plan_instruction = ""
+
+    def _run_identically(self, n, act=None):
+        """Run n ticks whose single action is identical and COMPLETES."""
+        act = act or {"kind": "GOTO", "x": "-15", "y": "77", "z": "-28"}
+
+        class Stub:
+            def tick(_self):
+                return (True, [dict(act)], [], "ok")
+
+        self.a._script_tick = Stub()
+        results = []
+        with mock.patch("builtins.print"):
+            for _ in range(n):
+                results.append(self.a._run_script_tick())
+        return results
+
+    def test_trial_4_3_identical_goto_yields_at_the_bound(self):
+        # KILLS: never yielding on a spin (the shipped behaviour that needed a
+        # human restart).
+        results = self._run_identically(self.agent_mod.SCRIPT_REPEAT_MAX)
+        # Every tick up to and including the Nth ran the action.
+        self.assertTrue(all(results), results)
+        self.a._unbind_planner_script.assert_called_once()
+        self.a._resubmit_yielded_goal.assert_called_once()
+        self.assertEqual(self.a._resubmit_yielded_goal.call_args[0][0], "goal-A",
+                         "the ACTIVE goal must be the one re-submitted")
+
+    def test_it_does_not_yield_before_the_bound(self):
+        # KILLS: yielding one tick early, which would break a slow but correct
+        # movement by re-planning it away.
+        results = self._run_identically(self.agent_mod.SCRIPT_REPEAT_MAX - 1)
+        self.assertTrue(all(results), results)
+        self.a._unbind_planner_script.assert_not_called()
+
+    def test_a_different_kind_resets_the_count(self):
+        # KILLS: keying the run on anything coarser than the whole action (e.g.
+        # "how many ticks ran", or ignoring the kind). A script alternating
+        # GOTO and MINE is making progress; if the key missed the action it
+        # would be yielded as a spin and lose its goal mid-job.
+        self._run_identically(self.agent_mod.SCRIPT_REPEAT_MAX - 1)
+        results = self._run_identically(1, {"kind": "MINE", "target": "dirt"})
+        self.assertTrue(results[0])
+        self.a._unbind_planner_script.assert_not_called()
+        self.assertEqual(getattr(self.a, "_script_repeat_count", 1), 1,
+                         "a different KIND must start a new run")
+
+    def test_a_different_coordinate_is_a_different_action(self):
+        # KILLS: keying only on the kind. A bot patrolling between waypoints
+        # re-issues GOTO with new coordinates each time; that is progress and
+        # must not be yielded.
+        self._run_identically(self.agent_mod.SCRIPT_REPEAT_MAX - 1)
+        results = self._run_identically(1, {"kind": "GOTO", "x": "9", "y": "2", "z": "3"})
+        self.assertTrue(results[0])
+        self.a._unbind_planner_script.assert_not_called()
+
+    def test_a_two_action_tick_is_never_a_spin(self):
+        # KILLS: treating "the same action appears among several" as a loop.
+        # A tick that ran more than one distinct action is progress.
+        acts = [{"kind": "GOTO", "x": "1", "y": "2", "z": "3"},
+                {"kind": "MINE", "target": "dirt"}]
+
+        class Stub:
+            def tick(_self):
+                return (True, [dict(x) for x in acts], [], "ok")
+
+        self.a._script_tick = Stub()
+        with mock.patch("builtins.print"):
+            for _ in range(self.agent_mod.SCRIPT_REPEAT_MAX + 2):
+                self.assertTrue(self.a._run_script_tick())
+        self.a._unbind_planner_script.assert_not_called()
+
+    def test_the_spin_yield_logs_the_action_and_the_count(self):
+        self._run_identically(self.agent_mod.SCRIPT_REPEAT_MAX)
+        # The yield message names the cause; capture the prints to prove the
+        # operator can tell a spin yield from an all-refused one. _run_identically
+        # patches print itself, so drive the ticks here rather than nesting a
+        # second patch over it -- an inner patch would swallow every call and
+        # make this assertion read an empty string.
+        self.a._unbind_planner_script.reset_mock()
+        act = {"kind": "GOTO", "x": "-15", "y": "77", "z": "-28"}
+
+        class Stub:
+            def tick(_self):
+                return (True, [dict(act)], [], "ok")
+
+        self.a._script_tick = Stub()
+        with mock.patch("builtins.print") as pr:
+            for _ in range(self.agent_mod.SCRIPT_REPEAT_MAX):
+                self.a._run_script_tick()
+        text = " ".join(str(c) for c in pr.call_args_list)
+        self.assertIn("spin", text)
+        self.assertIn(str(self.agent_mod.SCRIPT_REPEAT_MAX), text)
+
+
+class ScriptSurfaceNamesSelfTest(unittest.TestCase):
+
+    def test_the_prompt_names_look_self_and_its_fields(self):
+        # Spec, "The prompt names look.self and its fields". Trial 4.3's
+        # planner guessed snapshot.self.position because no self lookup was
+        # documented; the fix must be visible where a planner reads.
+        import planner
+        src = planner.SCRIPT_SURFACE
+        self.assertIn("look.self()", src)
+        self.assertIn("health", src)
+        self.assertIn("food", src)
+        self.assertIn("snapshot.self", src,
+                      "the surface must warn against the path the trial guessed")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

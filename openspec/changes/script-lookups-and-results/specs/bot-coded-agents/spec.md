@@ -673,3 +673,105 @@ because they answer different questions.
 - WHEN a planner reads it
 - THEN it names `GOTO` and `TELEPORT` as needing `x`, `y` and `z`
 - AND the kinds it names come from the same table the binding checks
+
+### Requirement: A Script Can Read The Bot's Own Body
+
+A script MUST be able to read the bot's own position, health and food level from
+the same snapshot every other lookup answers from, without a host call.
+
+The agent already sends these: `snapshot.build_state` (`agent/snapshot.py`)
+places `health`, `food` and `position` at the top level of `state`, read from the
+game's `/bot/{name}/status` (`BotPlayer.getStatus`, `BotPlayer.java:755-762`).
+`position` is `{x, y, z}` as numbers, rounded to one decimal
+(`formatPos`, `BotPlayer.java:1235-1240`); `health` and `food` are numbers.
+
+The lookup MUST be `look.self()`, returning `{ok: true, position, health, food}`,
+and MUST read `snapshot.state`, not any other path. A script that guesses a
+shape the envelope does not carry MUST NOT be left to fail silently.
+
+The document that lists the script surface MUST name `look.self()` with its
+returned fields, in the same form as the existing `look` calls, so a planner
+does not have to guess how to read the bot's own position.
+
+Trial 4.3 (2026-11-22, bot Axiom, script `b6e61fbe`) is the failure this
+requirement exists to stop: a script issued `GOTO x=-15 y=77 z=-28`, then
+checked arrival with `snapshot.self.position` — a path that does not exist. The
+bot reached `(-13.7, 77.4, -27.5)`, the check never passed, and the script
+re-sent the identical GOTO every tick, each one COMPLETED.
+
+#### Scenario: A script reads its own position from the real envelope
+- **GIVEN** a tick whose snapshot is the real envelope, carrying
+  `state.position` of `{x: -13.7, y: 77.4, z: -27.5}`, `state.health` and
+  `state.food`
+- **WHEN** the script calls `look.self()`
+- **THEN** it MUST return `ok: true` with that `position` and those numbers
+- **AND** it MUST NOT read `snapshot.self` or any path the envelope lacks
+
+#### Scenario: Trial 4.3's arrival check passes when the bot has arrived
+- **GIVEN** the envelope above, where the bot is within three blocks of
+  `(-15, 77, -28)`
+- **WHEN** a script checks `look.self().position` against that target within
+  three blocks
+- **THEN** the check MUST pass, so the script does not re-issue the GOTO
+
+#### Scenario: The prompt names look.self and its fields
+- **GIVEN** the rendered script prompt
+- **WHEN** a planner reads it
+- **THEN** it names `look.self()` and says it returns `position`, `health` and
+  `food`
+
+### Requirement: A Repeatedly Completed Identical Action Yields The Goal
+
+A script that re-dispatches the SAME action that has already COMPLETED, N times
+in a row, MUST yield the goal back to the planner and MUST log why, rather than
+re-issuing it forever.
+
+The signal is the identical action completing again, not a diff of world state.
+Position, ages and mob health all move between ticks for reasons unrelated to
+whether the action worked, so a state-equality test would either fire on a
+slow action making progress or stay silent on a spin. An identical completed
+action is the thing that is actually wrong: the script asked for the same work
+it has already been told is done, which means its own completion check is not
+firing (trial 4.3), and no amount of re-issuing resolves that.
+
+N is `SCRIPT_REPEAT_MAX = 5`. The bound is a recovery from a script whose own
+check is broken, not a retry policy: a legitimate action that needs more than
+five identical completed re-issues to show progress is one whose completion
+test is measuring something other than what it acts on, and the planner is
+better placed to see that than the tick loop. The count is per identical
+action: a different action resets it, so a script alternating between two
+useful steps is not counted as a spin.
+
+Yielding on a spin MUST reuse the all-refused yield path: unbind the script,
+drop the step list, and re-submit the goal to the planner under
+`SCRIPT_REPLAN_MAX`, so a spinning script cannot re-plan forever either. The
+yield MUST log the action and the count.
+
+Trial 4.3 is the case: the identical GOTO was re-sent ten or more times, each
+COMPLETED, and nothing yielded until a human restarted the agent.
+
+#### Scenario: Trial 4.3's repeated GOTO yields the goal, by count
+- **GIVEN** a script that dispatches `GOTO x=-15 y=77 z=-28`
+- **AND** that identical action COMPLETES on each tick with no different action
+  between
+- **WHEN** it has COMPLETED `SCRIPT_REPEAT_MAX` times in a row
+- **THEN** the goal MUST be yielded to the planner
+- **AND** the yield MUST log the action and the count
+- **AND** the script MUST NOT dispatch it an `(N+1)`th time
+
+#### Scenario: A different action resets the count
+- **GIVEN** a script that dispatches the same GOTO four times, then a MINE
+- **WHEN** it dispatches the GOTO again
+- **THEN** that GOTO MUST be the first of its run, not the fifth
+- **AND** it MUST NOT yield
+
+#### Scenario: The bound does not fire before N
+- **GIVEN** the same action COMPLETED `N-1` times in a row
+- **WHEN** the next tick dispatches it again
+- **THEN** it MUST NOT yield yet
+
+#### Scenario: A yielding spin is still bounded by the re-plan count
+- **GIVEN** a goal whose script spins, yields, and whose planner answers with
+  the same spinning script
+- **WHEN** it has been re-submitted `SCRIPT_REPLAN_MAX` times
+- **THEN** it MUST stop re-planning, exactly as an all-refused yield does
