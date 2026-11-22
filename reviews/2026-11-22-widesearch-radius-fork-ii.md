@@ -1,14 +1,24 @@
-# WIDE_SEARCH radius fork (ii): 3927924, f7c5ef4, b95971c, 8c7c12f — PASS with two notes
+# WIDE_SEARCH radius fork (ii): 3927924, f7c5ef4, b95971c, 8c7c12f — ~~PASS~~ NOT PASS (amended)
 
 Reviewer: minecraft-reviewer@minecraft. 2026-11-22. Answers the two items the
 builder said they could not check.
 
 ## Verdict
 
-**PASS.** Both numbers the builder asked me to confirm reproduce from the real
-code, the spec delta is structurally sound, and the tests are load-bearing.
-Two notes: one uncited task tick (**F-1**), and the mod suite genuinely did not
-run (**N-1**, which the builder declared honestly and I agree is an absence).
+**NOT PASS — amended 30 minutes after first filing.** My original PASS was wrong
+on requirement 2. I verified the new rev's arithmetic against itself instead of
+against the parent rev, so I recorded "1089 cells, unchanged" when the change had
+in fact halved the default reach from 512 to 256. Details and corrected counts
+in the amended section (a); the lead caught this, not me.
+
+What still stands: the spec delta is structurally sound, the tests are
+load-bearing, radius 4 → 1 cell is correct, and the mod suite genuinely did not
+run (**N-1**, declared honestly — an absence, not a pass). One uncited task tick
+(**F-1**).
+
+The blocking item is **requirement 2**: `resolveMaxRadius` must default to 512,
+with a test pinning no-radius → max 512 and shells 32..512, and the spec delta
+and vocabulary corrected to match.
 
 ---
 
@@ -32,24 +42,51 @@ for (cx = center-r; cx <= center+r; cx += 16)   // -4, +12 -> one step
 | 64 | 9 | 81 | 81 ✓ |
 | 256 | 33 | **1089** | 1089 ✓ |
 
-Both claims hold: **radius 4 → 1 cell**, and **radius 256 → 1089 cells**
-(`33*33`). The builder was right to single out the 1089 as the regression that
-matters, and it is correct.
+The two per-radius counts hold: **radius 4 → 1 cell**, and **radius 256 → 1089
+cells** (`33*33`).
 
-The default walk, computed shell by shell (no radius → `maxRadius` 256):
-
-```
-shell 0 ( 32) ->   25 cells
-shell 1 ( 64) ->   81 cells
-shell 2 (128) ->  289 cells
-shell 3 (256) -> 1089 cells
-cumulative        1484
-```
-
-Note for the spec: the scenario says "escalation proceeds 32 → 64 → 128 → 256,
-stopping at the default ceiling of 256", which matches. The builder's correction
-of their own earlier text ("walks the default 32-block cube first" → the walk
-continues) is accurate.
+> **AMENDED 2026-11-22 (supersedes the "regression unchanged" conclusion below).**
+> This section originally reported the default walk as 32/64/128/256 → **1484
+> cells** and called requirement 2 satisfied. **That was wrong, and the error was
+> mine.** I computed the default from `MAX_RADIUS` at the *new* rev (256) and
+> never opened the **parent** rev to ask what the default used to be. Requirement
+> 2 says "no radius = today's behaviour unchanged" — a claim that can only be
+> tested against `3927924^`, which I did not read.
+>
+> The lead caught it. At `3927924^` (`eb5498f`) line 90 reads:
+>
+> ```java
+> maxRadius = directive.getRadius() > 0 ? directive.getRadius() : 512;
+> ```
+>
+> So the parent default was **512**, and `resolveMaxRadius` at `8c7c12f:488`
+> sets **256**. The change **halves** today's default reach — the exact
+> regression requirement 2 was written to prevent.
+>
+> The walk stops early because of the clamp: at `8c7c12f:361`,
+> `if (nextRadius <= prevRadius ...)` fires as soon as the clamped next radius
+> stops growing. `SHELL_RADII` contains 1024, but with the default at 512 the
+> walk terminates at 512 and **1024 is never reached** — so "the walk reaches
+> 1024" is false at both revs.
+>
+> Corrected counts, computed from the rev's own cell enumeration
+> (`(2r/16 + 1)^2`):
+>
+> | rev | no-radius max | shells walked | cells |
+> |---|---|---|---|
+> | `eb5498f` (parent) | 512 | 32,64,128,256,512 | 25+81+289+1089+4225 = **5709** |
+> | `8c7c12f` (reviewed) | 256 | 32,64,128,256 | 25+81+289+1089 = **1484** |
+>
+> The lead's 5709 is exact. My 1484 is the correct count *for the new rev* and
+> is precisely the defect: 1484 ≠ 5709. The verdict on this requirement is
+> **NOT PASS**; it needs `resolveMaxRadius`'s default restored to 512, a test
+> pinning no-radius → max 512 with shells 32..512, and the spec delta plus
+> vocabulary corrected to match. The builder is fixing it; I will review the fix
+> commit.
+>
+> Everything else in this review — the 1-cell-at-radius-4 check, the delta's
+> scenario coverage, the mutant count — stands, since none of it depended on the
+> default.
 
 ## (b) The MODIFIED delta **adds** a scenario rather than dropping one — CONFIRMED, with caveat
 
