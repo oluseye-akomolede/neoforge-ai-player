@@ -81,6 +81,34 @@ NOT spend a host call, reach the network, or reach the mod.
 - **AND** the two forms MUST compare equal in both directions, so a script
   never has to know which form the game sends
 
+#### Scenario: An ore kind also matches its deepslate variant
+- **GIVEN** a snapshot whose `nearby.blocks` carries `id`
+  `minecraft:deepslate_diamond_ore`, as trial 4.2 did (2026-11-22 05:02Z)
+- **WHEN** the script calls `look.blocks('diamond_ore')`
+- **THEN** it MUST match that entry, so a caller that asks for an ore is
+  not silently told there is none
+- **AND** the bare form MUST behave identically, so `look.blocks('minecraft:diamond_ore')`
+  and `look.blocks('diamond ore')` give the same answer
+- **AND** the reverse MUST hold: a `diamond_ore` entry MUST match a
+  `deepslate_diamond_ore` needle, because the caller cannot know which
+  variant the world happens to contain
+
+#### Scenario: The deepslate variant is a fallback, not a replacement
+- **GIVEN** a snapshot carrying BOTH `minecraft:diamond_ore` and
+  `minecraft:deepslate_diamond_ore`
+- **WHEN** the script calls `look.blocks('diamond_ore')`
+- **THEN** BOTH MUST be returned, because the caller asked for the ore and
+  the deeper variant is the same ore
+- **AND** a kind with no deepslate counterpart MUST match exactly one
+  entry, so the rule never widens a non-ore lookup
+
+#### Scenario: Only ores get the variant rule
+- **GIVEN** a snapshot whose `nearby.blocks` carries `id` `minecraft:deepslate`
+  and another carrying `minecraft:cobbled_deepslate`
+- **WHEN** the script calls `look.blocks('stone')`, `look.blocks('deepslate')`
+- **THEN** the variant rule MUST NOT apply, because neither is an `_ore`,
+  and the exact-match scenarios above MUST still hold
+
 #### Scenario: Only a leading namespace is stripped
 - **GIVEN** a snapshot whose `nearby.blocks` carries `id` `a:minecraft:b`
 - **WHEN** the script calls `look.blocks('minecraft:b')`
@@ -912,9 +940,15 @@ It MUST also be reset by any tick that dispatches an action: a dispatched
 action is new work, so a directive still `ACTIVE` afterwards is a new wait
 rather than the continuation of the one being bounded -- otherwise a script
 issuing a directive every tick would accrue to the bound while making progress.
-The bound MUST be set above every self-bounded behaviour's own limit
-(`GOTO`'s `MAX_TICKS = 600`, `GotoBehavior.java:37`), so no correctly bounded
-behaviour can reach it.
+The bound MUST be set per directive type, above that type's own longest
+legitimate run, because behaviours do not share a unit: `GOTO` bounds itself
+at `MAX_TICKS = 600` (`GotoBehavior.java:37`), while `COMBAT` defaults to 6000
+ticks (`CombatBehavior.DEFAULT_DURATION`, `:68`, and more when a count is
+given) and `FOLLOW` against a present player has no bound at all. A single
+number large enough for `COMBAT` would never fire on `FOLLOW`; one small
+enough for `FOLLOW` would cut a working `COMBAT` in half. A type absent from
+the table MUST get the largest bound, so it is bounded loosely rather than
+not at all.
 
 #### Scenario: A goal-less bot does not yield
 - **GIVEN** a bound script that dispatches nothing and no active goal

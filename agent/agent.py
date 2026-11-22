@@ -121,24 +121,51 @@ SCRIPT_IDLE_MAX = 5
 # read from the Java; it is NOT a measured tick count. An earlier version of
 # this comment claimed 5000 "driven" ticks, which came from a harness that
 # raised TypeError on entry and never entered the method (reviewer correction,
-# 2026-11-22 05:06Z) -- so no run established any such figure. 38 behaviour
-# classes, 2 self-bounded (GOTO 600, FOLLOW 400), and Behavior is an interface
-# with no inherited bound.
+# 2026-11-22 05:06Z) -- so no run established any such figure. The package has
+# 38 behavior/ files, of which 36 implement Behavior, one is the interface
+# itself and one is BehaviorFactory; Behavior is an interface, so nothing
+# inherits a bound.
+# Behaviours do not share a unit, so "self-bounded" does not imply "short".
+# Reading only tick constants: FollowBehavior.OFFLINE_GIVEUP_TICKS 400 (a
+# VANISHED target only -- a present one never reaches it), BrewBehavior
+# MAX_WAIT_TICKS 500, GotoBehavior MAX_TICKS 600, WideSearchBehavior
+# NAV_TIMEOUT 600, RequisitionBehavior MAX_WAIT 300. Others bound by DURATION
+# instead: CombatBehavior DEFAULT_DURATION is 6000 ticks (and getCount()*20
+# above that), CultivateBehavior MAX_SECONDS is 86400. A flat 3000 therefore
+# cut a working COMBAT in half -- which is why this is a per-type table and
+# not one number.
 #
-# Sized at 3000 ticks (~100 min at TICK_DELAY=2.0, a derived figure from the
-# configured delay, not a measurement): five times GOTO's own 600-tick bound
-# (~20 min), so no correctly bounded behaviour can reach it,
-# while a genuinely stuck one yields within about an hour and a half rather
-# than never. This bounds the WAIT, not the work: the directive is not
-# cancelled, only unbound from the goal, so re-planning can re-issue it and it
-# stops counting.
+# No figure here is a measurement. Tick values are read from the behaviours'
+# own constants; minutes are arithmetic from TICK_DELAY (config.py:103, 2.0 s),
+# stated so a reader can redo it rather than take it on trust.
+#
+# This bounds the WAIT, not the work: the directive is not cancelled, only
+# unbound from the goal, so re-planning can re-issue it and it stops counting.
 #
 # FOLLOW is the one behaviour meant to run indefinitely, and a duration bound
 # is the wrong instrument for it long-term -- it should be bounded by target
 # STALENESS instead (no movement, no proximity change). That needs a mod-side
 # signal the agent does not have; this bound is the backstop until then, and
 # NC-1 records it (qitem-20261122045802-740b42e3250d56f9).
-SCRIPT_DIRECTIVE_MAX_TICKS = 3000
+#
+# One number cannot serve both: COMBAT defaults to 6000 ticks
+# (CombatBehavior.DEFAULT_DURATION, and getCount()*20 above that), so a flat 3000
+# would yield a working fight halfway through -- the false positive the idle
+# guard exists to avoid. So each type gets a bound just above its own longest
+# legitimate run, and anything unlisted gets the largest. A type missing from the
+# table is therefore bounded LOOSELY, never not at all.
+SCRIPT_DIRECTIVE_MAX_TICKS = 9000
+SCRIPT_DIRECTIVE_MAX_BY_TYPE = {
+    # no self-bound, meant to run while the target is present
+    "FOLLOW": 3000,
+    # DEFAULT_DURATION 6000, extendable by count*20
+    "COMBAT": 9000,
+}
+
+
+def _directive_max_ticks(directive_type: str) -> int:
+    """The ACTIVE-tick bound for one directive type."""
+    return SCRIPT_DIRECTIVE_MAX_BY_TYPE.get(directive_type, SCRIPT_DIRECTIVE_MAX_TICKS)
 
 
 def _script_action_key(directive: dict) -> str:
@@ -3493,10 +3520,12 @@ Respond with ONLY a JSON array. Example:
                         return False
                     self._script_active_run = getattr(
                         self, "_script_active_run", 0) + 1
-                    if self._script_active_run >= SCRIPT_DIRECTIVE_MAX_TICKS:
+                    _active_max = _directive_max_ticks(
+                        (self._directive_type_in_progress(st) or "").upper())
+                    if self._script_active_run >= _active_max:
                         self._script_active_run = 0
                         self._yield_script_to_planner(
-                            f"directive ACTIVE for {SCRIPT_DIRECTIVE_MAX_TICKS} "
+                            f"directive ACTIVE for {_active_max} "
                             "consecutive ticks (no terminal result) while its "
                             "goal was unfinished -- re-planning so the wait "
                             "cannot outlive the bound")
@@ -3886,6 +3915,19 @@ Respond with ONLY a JSON array. Example:
         task = getattr(st, "last_task", None) or {}
         directive = task.get("directive") or {}
         return directive.get("status") == "ACTIVE"
+
+    def _directive_type_in_progress(self, st):
+        """The directive type the bot is running, or None when nothing is.
+
+        The ACTIVE bound is per-type (SCRIPT_DIRECTIVE_MAX_BY_TYPE) because a
+        COMBAT's legitimate 6000 ticks and a FOLLOW's unbounded run cannot share
+        one number. Reads the same body as _directive_in_progress.
+        """
+        task = getattr(st, "last_task", None) or {}
+        directive = task.get("directive") or {}
+        if directive.get("status") != "ACTIVE":
+            return None
+        return directive.get("type")
 
     def _yield_script_to_planner(self, why: str) -> None:
         """Unbind the script and put the goal back in front of the planner.

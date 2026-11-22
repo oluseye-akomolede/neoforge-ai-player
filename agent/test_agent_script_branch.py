@@ -444,8 +444,40 @@ class AllRefusedYieldsTest(unittest.TestCase):
         self._with_tick((True, [], [], "ok"), last_task=last_task)
 
     @staticmethod
-    def _task(status):
-        return {"directive": {"id": 7, "type": "GOTO", "status": status}}
+    def _task(status, directive_type="GOTO"):
+        return {"directive": {"id": 7, "type": directive_type, "status": status}}
+
+    def test_the_bound_is_per_type_so_a_combat_is_not_cut_mid_fight(self):
+        # COMBAT defaults to 6000 ticks (CombatBehavior.DEFAULT_DURATION), so a
+        # flat 3000 bound yielded a working fight halfway through -- the false
+        # positive the idle guard exists to avoid. The bound now comes from
+        # SCRIPT_DIRECTIVE_MAX_BY_TYPE.
+        mod = self.agent_mod
+        self.assertGreaterEqual(mod._directive_max_ticks("COMBAT"), 6000,
+                                "a default COMBAT must be able to finish")
+        self.assertLess(mod._directive_max_ticks("FOLLOW"),
+                        mod._directive_max_ticks("COMBAT"),
+                        "FOLLOW has no legitimate long run; COMBAT does")
+        self.assertEqual(mod._directive_max_ticks("NEVER_HEARD_OF_IT"),
+                         mod.SCRIPT_DIRECTIVE_MAX_TICKS,
+                         "an unlisted type must be bounded LOOSELY, not unbounded")
+
+    def test_a_combat_running_past_the_follow_bound_is_not_yielded(self):
+        # Seeded from a LITERAL, not from _directive_max_ticks("COMBAT"). Seeding
+        # from the same symbol the code reads makes the constant cancel, so the
+        # test passes whatever the bound is (reviewer, 2026-11-22 04:56Z: their
+        # SCRIPT_IDLE_MAX=500 survived on that mistake). 4000 is past a flat
+        # FOLLOW-sized 3000 and short of COMBAT's 9000, so only a per-type bound
+        # keeps counting here.
+        self.a._script_active_run = 4000
+        with mock.patch("builtins.print") as printed:
+            # _run_script_tick() directly, as the bound test above does:
+            # _idle_tick() reroutes through the idle/suppression path and never
+            # reaches the in-progress branch, so it would pass vacuously.
+            self._with_tick((True, [], [], "ok"), last_task=self._task("ACTIVE", "COMBAT"))
+            self.a._run_script_tick()
+        self.assertEqual(self.a._plan_steps, ["mine something"], "a long fight keeps its plan")
+        self.assertNotIn("not yielding", str(printed.call_args_list))
 
     def test_a_directive_active_past_its_own_bound_yields_the_goal(self):
         # NC-1 (reviewer, 2026-11-22 04:58Z): a behaviour with no terminal exit
