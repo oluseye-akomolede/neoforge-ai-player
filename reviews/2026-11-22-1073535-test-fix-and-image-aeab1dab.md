@@ -57,8 +57,25 @@ hashes are **identical at `0eea399` and at `1073535`** — I checked both. The
 comparison therefore confirms the image's production code is correct, but it cannot
 distinguish an image built from `1073535` from one built from the commit before it.
 Nothing in the pod labels or annotations names the rev. That is not a defect in the
-image; it is a limit on what this check can settle, and the same limit applies to
-prod's `aea76462`, whose production files are byte-identical to this one.
+image; it is a limit on what this check can settle.
+
+**Amendment (lead correction, 13:04Z; verified).** This paragraph originally ended "the
+same limit applies to prod's `aea76462`, whose production files are byte-identical to
+this one." **That clause was wrong and is withdrawn.** `aea76462` is prod running
+`eb5498f`; `aeab1dab` is `1073535`. They are different revs and their files differ:
+
+| file | `eb5498f` (prod `aea76462`) | `1073535` (`aeab1dab`) |
+|---|---|---|
+| `agent.py` | `793518bbb751` | `8bfcf4efe006` |
+| `planner.py` | `2c9586a05748` | `2c9586a05748` |
+| `script_tick.py` | `09cdcdfd40c4` | `9c3baf88ccbb` |
+
+The caveat above survives, but on its correct pair: `1073535` sits exactly one commit
+after `0eea399`, and `git diff 0eea399 1073535` touches **only** `agent/test_script_tick.py`
+(+11/−3). The two revs' production hashes are identical — `agent.py` `8bfcf4efe006`,
+`planner.py` `2c9586a05748`, `script_tick.py` `9c3baf88ccbb` at both — so the stated limit
+(nothing shipped distinguishes an image built from `1073535` from one built from
+`0eea399`) holds. The error was conflating that pair with the prod pair.
 
 ## 3. Code-hours cap: no metering exists — noted, not `0eea399`'s
 
