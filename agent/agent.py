@@ -80,6 +80,32 @@ SCRIPT_LOG_CAP = 4096
 # bound above 1 would have changed nothing there).
 SCRIPT_REPLAN_MAX = 3
 
+# Nav shortcut phrases, module-level so the "is this a STOP?" question can be
+# asked and tested without driving the whole message loop. The distinction is
+# load-bearing: a stop supersedes the goal generation, while follow and goto
+# replace the work and must NOT -- advancing on a goto would refuse the bind
+# for the new instruction it is about to start.
+NAV_FOLLOW_PHRASES = ["follow me", "follow us", "keep following", "come with me",
+                      "with me", "escort me", "stick with me", "on me", "form up"]
+NAV_GOTO_PHRASES = ["come to me", "come here", "get over here", "come over here",
+                    "get to me", "walk to me", "run to me", "tp to me",
+                    "to my location", "to me", "come to my"]
+NAV_STOP_PHRASES = ["stop following", "go idle", "stand still", "stay here",
+                    "stay put", "halt", "wait here", "stop what you"]
+NAV_STOP_EXACT = ["stop"]
+
+
+def is_stop_instruction(text) -> bool:
+    """True if `text` is a player's stop.
+
+    `NAV_STOP_EXACT` is exact-match only: "stop" ends the work, while a
+    sentence merely containing it does not. `NAV_STOP_PHRASES` are substring
+    matches, as they always were.
+    """
+    low = (text or "").lower().strip()
+    return (any(p in low for p in NAV_STOP_PHRASES)
+            or any(low == p for p in NAV_STOP_EXACT))
+
 # How many times in a row the SAME action may COMPLETE before the script is
 # treated as spinning and the goal is yielded (spec, "A Repeatedly Completed
 # Identical Action Yields The Goal"). The signal is the identical action
@@ -438,6 +464,14 @@ class BotRunner:
         # so it clears where a NEW goal begins. Keeps a hand-written binding
         # (the player's deployment) without letting it dispatch while stopped.
         self._script_halted_for_stop = False
+        # The generation that stop and reset supersede (change:
+        # script-lookups-and-results). `_cancel_orchestrator` only signals the
+        # run executing NOW; a re-plan started after a stop is a NEW run that
+        # never sees an event set before it began, so it bound a script to a
+        # goal the player had just stopped (live 2026-11-22 07:01:40Z). A stop
+        # and a reset each advance this; a plan run captures it at start and
+        # refuses to bind or set a plan once it is stale. Process-lifetime.
+        self._goal_generation = 0
         # Result delivery (change: script-lookups-and-results, task 3.8).
         # Per bot, process-lifetime: `reset()` deliberately does NOT clear it.
         # A reset ends a plan and releases a script hold, but it is not an
@@ -588,6 +622,9 @@ class BotRunner:
         print(f"[{self.name}/reset] Clearing all state")
         # Abort any in-flight orchestrator before clearing local state.
         self._cancel_orchestrator(reason="reset")
+        # A reset is terminal like a stop, so it supersedes in-flight runs for
+        # the same reason: a re-plan started before this never sees the cancel.
+        self._supersede_goal(reason="reset")
         # If there was an active plan, mark it failed on disk before clearing
         if self._plan_steps:
             self._shadow_plan_finalize(success=False)
@@ -745,14 +782,10 @@ class BotRunner:
         if not new_messages:
             return
 
-        _follow_phrases = ["follow me", "follow us", "keep following", "come with me",
-                           "with me", "escort me", "stick with me", "on me", "form up"]
-        _goto_phrases = ["come to me", "come here", "get over here", "come over here",
-                         "get to me", "walk to me", "run to me", "tp to me",
-                         "to my location", "to me", "come to my"]
-        _stop_phrases = ["stop following", "go idle", "stand still", "stay here", "stay put",
-                         "halt", "wait here", "stop what you"]
-        _stop_exact = ["stop"]
+        _follow_phrases = NAV_FOLLOW_PHRASES
+        _goto_phrases = NAV_GOTO_PHRASES
+        _stop_phrases = NAV_STOP_PHRASES
+        _stop_exact = NAV_STOP_EXACT
 
         # ── Pre-scan: find the newest nav shortcut in the batch ──
         # Must run BEFORE any non-shortcut processing, because non-shortcut
@@ -771,14 +804,19 @@ class BotRunner:
             text_lower = text.lower().strip()
             is_follow = any(p in text_lower for p in _follow_phrases)
             is_goto = any(p in text_lower for p in _goto_phrases)
-            is_stop = (any(p in text_lower for p in _stop_phrases)
-                       or any(text_lower.strip() == p for p in _stop_exact))
+            is_stop = is_stop_instruction(text_lower)
             if is_follow or is_goto or is_stop:
                 # Abort any in-flight orchestrator first: clearing _plan_steps
                 # here only touches THIS thread, while the plan runs on the
                 # orch:<name> daemon thread and would otherwise replay for
                 # minutes after a "stop".
                 self._cancel_orchestrator(reason=f"nav shortcut: {text_lower[:30]}")
+                # Only a STOP supersedes the goal generation. This branch also
+                # serves follow and goto, which replace the work rather than
+                # ending it; advancing there would refuse the bind for the new
+                # instruction they are about to start.
+                if is_stop:
+                    self._note_stop_supersedes(text_lower)
                 self._plan_steps = []
                 self._plan_step_idx = 0
                 self._plan_instruction = ""
@@ -1711,6 +1749,49 @@ class BotRunner:
         return [f"{f['what']} at ({f['x']},{f['y']},{f['z']}) in {f['dimension']}"
                 for f in items]
 
+    def _note_stop_supersedes(self, text_lower: str) -> int:
+        """Record that the player's stop superseded work already in flight.
+
+        Called from the nav-shortcut branch ONLY when the text is a stop --
+        follow and goto replace the work rather than ending it, so they must
+        not advance the generation (that would refuse the bind for the new
+        instruction they are about to start).
+
+        A method rather than an inline call so the advance has one testable
+        body: the guard it feeds is only useful if the stop path actually
+        reaches it, and an inline two-liner there was killed by no test.
+        """
+        return self._supersede_goal(reason=f"stop: {text_lower[:30]}")
+
+    def _supersede_goal(self, reason: str) -> int:
+        """Advance the goal generation, cancelling work that outlives a run.
+
+        Called by a stop and a reset, and by nothing else. `_cancel_orchestrator`
+        cannot do this job: it signals the run executing now, and a re-plan
+        spawned afterwards is a new run that never observes an event set before
+        it started -- which is how a script bound to a stopped goal on
+        2026-11-22 at 07:01:40Z.
+
+        Returns the new generation, so a caller can log the id it superseded.
+        """
+        with self._lock:
+            self._goal_generation = getattr(self, "_goal_generation", 0) + 1
+            gen = self._goal_generation
+        print(f"[{self.name}/cancel] goal generation {gen} ({reason})")
+        return gen
+
+    def _goal_generation_is_stale(self, generation) -> bool:
+        """True if a stop or reset superseded `generation`.
+
+        A caller that captured no generation (None) is not treated as stale:
+        that is the pre-change path, and refusing it would unbind every script
+        the moment this shipped. The counter only ever increases, so reading it
+        without the lock cannot see a torn value.
+        """
+        if not isinstance(generation, int):
+            return False
+        return generation != getattr(self, "_goal_generation", 0)
+
     def _cancel_orchestrator(self, reason: str = "") -> bool:
         """Signal the running orchestrator thread to abort. Returns True if one
         was running. The plan itself is finalized as 'cancelled' by
@@ -1912,6 +1993,10 @@ class BotRunner:
         # surviving record, and the per-goal re-plan bound keys off it.
         if goal_id:
             self._active_goal_id = goal_id
+        # The generation this run belongs to. A stop or reset after this point
+        # makes every bind and plan from this run void -- checked at the bind
+        # and at the re-submit, the two places a superseded run can still act.
+        self._active_goal_generation = getattr(self, "_goal_generation", 0)
         self._active_goal_text = task_text
         # A goal-less bot's idle run must not be inherited by this one: the
         # run that reaches the bound must belong to the goal it yields.
@@ -3926,6 +4011,16 @@ Respond with ONLY a JSON array. Example:
         """
         if not source or not source.strip():
             return False
+        if self._goal_generation_is_stale(
+                getattr(self, "_active_goal_generation", None)):
+            # A stop or reset landed while this plan was in flight. Binding now
+            # would put a script live for work the player ended; the log line
+            # names the goal so "nothing happened" stays distinguishable from
+            # "something was correctly refused".
+            print(f"[{self.name}/script] refusing to bind: goal "
+                  f"{getattr(self, '_active_goal_id', '')!r} was superseded by "
+                  f"a stop or reset")
+            return False
         if (self._bound_script_path() or "").strip():
             # A hand-written binding is deployed for this bot. It wins; this is
             # the spec's condition 2 made structural rather than remembered.
@@ -4161,6 +4256,15 @@ Respond with ONLY a JSON array. Example:
         Returns True if a re-plan was started.
         """
         if not (goal_text or "").strip():
+            return False
+        if self._goal_generation_is_stale(
+                getattr(self, "_active_goal_generation", None)):
+            # The player stopped or reset after this goal yielded. Re-planning
+            # it now would bind a script to work the player ended -- the exact
+            # 2026-11-22 07:01:40Z failure. Refused here, on the path that
+            # creates the re-plan, so a run finishing late cannot create it.
+            print(f"[{self.name}/script] no re-plan: goal {goal_id!r} was "
+                  f"superseded by a stop or reset")
             return False
         if goal_id != self._replan_goal_id:
             self._replan_goal_id = goal_id
