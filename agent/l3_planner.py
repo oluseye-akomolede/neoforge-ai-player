@@ -779,8 +779,9 @@ RAW DIRECTIVE REFERENCE (fallback — use ONLY when NO skill above covers the su
                      sweeps one cube of that radius and then stops, so radius 4
                      scans only the single 16-block cell it stands in. Omit
                      radius entirely to keep the default expanding search (32,
-                     then 64, 128, 256) — never pass a large N "to be safe",
-                     that just overrides the default.
+                     then 64, 128, 256, then 512, where it gives up) — never
+                     pass a large N "to be safe", that just overrides the
+                     default.
   ME_STORE         — {{ "kind":"ME_STORE", "target":"minecraft:cobblestone", "count":64 }}
                      target "all" stores everything evictable. Uses the worn
                      wireless terminal — works from ANYWHERE, no movement.

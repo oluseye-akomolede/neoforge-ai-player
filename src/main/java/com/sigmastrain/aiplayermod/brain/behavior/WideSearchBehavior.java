@@ -49,6 +49,11 @@ public class WideSearchBehavior implements Behavior {
      *  wide search exists to reach the far shells, so the ceiling is the last
      *  shell rather than a small constant. */
     private static final int MAX_RADIUS = SHELL_RADII[SHELL_RADII.length - 1];
+    /**
+     * The radius an unconfigured search stops at. Preserved from before
+     * radius handling existed: 512, not the 1024 ceiling.
+     */
+    static final int DEFAULT_RADIUS = 512;
     /** Radius the current shell was actually clamped to. The unclamped
      *  SHELL_RADII entry is not what the bot searched, so the failure message
      *  must use this instead. */
@@ -485,7 +490,11 @@ public class WideSearchBehavior implements Behavior {
                 // strictly better than failing the whole directive over a typo.
             }
         }
-        if (requested <= 0) requested = 256;
+        // No radius at all means today's behaviour, and today's default is 512
+        // (3927924^:90 used `getRadius() > 0 ? getRadius() : 512`). The walk
+        // stops at the first shell that cannot grow, so 512 is also the last
+        // shell an unconfigured search ever sweeps.
+        if (requested <= 0) requested = DEFAULT_RADIUS;
         return Math.max(1, Math.min(requested, MAX_RADIUS));
     }
 
