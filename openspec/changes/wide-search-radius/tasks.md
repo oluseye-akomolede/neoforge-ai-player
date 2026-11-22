@@ -5,7 +5,7 @@
 
 ## 2. Behavior
 - [x] 2.1 Read `extra.radius`, falling back to the top-level radius, clamped [1, ceiling]
-- [x] 2.2 Keep the default path byte-identical: no radius means 32 first shell, escalation to 256
+- [x] 2.2 Keep the default path unchanged: no radius means 32 first shell, escalating 32/64/128/256/512
 - [x] 2.3 Report the radius actually searched on the failure path
 
 ## 3. Surfaces
@@ -16,8 +16,8 @@
 - [x] 4.1 Small radius scans 1 cell, not the 25-cell sweep
 - [x] 4.2 `extra.radius` overrides the top-level field
 - [x] 4.3 No radius keeps the default maximum at 512 and the shells 32..512, 5709 cells total
-- [x] 4.4 Failure message states the searched radius, not 32
-- [x] 4.5 Each test red with the fix removed (mutant: 4 of 5 assertions red, incl. 4 blocks -> 25 cells)
+- [ ] 4.4 Failure message states the searched radius, not 32 -- code reviewed by inspection; untestable without the mod suite, could not instantiate BotPlayer/progress
+- [x] 4.5 Mutants bite: reverting the extra parse to top-level-only reds 4 of 9 tests (incl. 4 blocks -> 1 cell); the 512->256 default mutant reds 4 assertions (incl. the 5709 count); a cap of 64 reds 5; clamping 0/negative to 1 reds only the test named for it
 
 ## 5. Verify
 - [ ] 5.1 Mod tests pass under the JVM exception -- BLOCKED: no gradle wrapper jar in the worktree, no system gradle. Logic exercised directly instead.
