@@ -325,6 +325,12 @@ class FallbackTest(unittest.TestCase):
         # KILLS: dropping the result on any non-script state (the old code),
         # and holding it with no classification (which the trigger mapper
         # turns into `done`).
+        #
+        # `error: True` is asserted, not incidental: it is what distinguishes
+        # this throw from a script that returns `{done: false}` and is still
+        # WORKING. Both carry `ok: False`, so without it the caller cannot
+        # tell a failure from a wait and either unbinds a live script or
+        # reports a dead one as pending (0eea399).
         st = ScriptTick(_FakeApi(), "Scout", "x",
                         post=_poster(state="error", result={
                             "text": "partial scan, 3 blocks", "truncated": False}))
@@ -335,9 +341,11 @@ class FallbackTest(unittest.TestCase):
                          "a failed tick's actions are not trusted")
         self.assertEqual(
             st.last_result,
-            {"text": "partial scan, 3 blocks", "truncated": False, "ok": False},
-            "the result a throwing tick carried must be held, and held as a "
-            "failure: a no-verdict result is treated as `done` downstream")
+            {"text": "partial scan, 3 blocks", "truncated": False,
+             "ok": False, "error": True},
+            "the result a throwing tick carried must be held, as a FAILURE "
+            "(`error: True`), not merely as `ok: False` -- a no-verdict "
+            "result is read as `done` downstream")
 
     def test_a_failed_tick_with_no_result_holds_nothing(self):
         # The control: a bare error (a timeout, a refusal) carries no result,
