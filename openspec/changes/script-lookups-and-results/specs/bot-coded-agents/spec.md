@@ -1411,3 +1411,79 @@ as a lie everywhere else it can distinguish the cases.
 - **WHEN** the prompt is rebuilt
 - **THEN** the case MUST be reported unscorable rather than rebuilt as empty
 - **AND** the reason MUST say the recorded prompt offered scripts
+
+### Requirement: The Script Surface Needs The L3 Path, And `SCRIPT_BOTS` Opts A Bot Into It
+
+The script surface is spliced into the L3 plan prompt only, so a bot whose chat
+reaches the legacy `decompose` path can never write a script. Prod proves the
+gap rather than the theory: its agent config has no `USE_L3_PLAN_LAYER`,
+`config.py` defaults the flag to false, and prod therefore plans every chat
+through `decompose` -- which makes every script requirement above unreachable
+on prod no matter what `SCRIPT_BOTS` says.
+
+`USE_L3_PLAN_LAYER` is asked once per deployment and read at three separate
+call sites (chat gating, L3 acceptance, and the order lane), so flipping it
+moves every bot in the deployment at once. That is the wrong granularity twice
+over: prod cannot enable scripts for one bot without re-planning all five, and
+`SCRIPT_BOTS` -- which already names the bots that may script -- has no say in
+whether those bots can reach the path their scripts run on.
+
+Routing MUST therefore be decided per bot by a single predicate used at all
+three sites, never by the flag alone and never by three copies that can drift:
+
+- The predicate is true when `USE_L3_PLAN_LAYER` is true, OR when this bot is
+  named in `SCRIPT_BOTS`. Deployment-level enablement stays a fleet-wide switch;
+  naming a bot adds that bot to the L3 path without moving any other bot.
+- A bot not named in `SCRIPT_BOTS` MUST behave exactly as it does today for
+  whichever value the flag holds. With the flag unset it plans through
+  `decompose`; with the flag true it uses L3, unchanged.
+- Naming a bot MUST NOT, by itself, offer it the script surface. Reachability
+  and offering stay separate: a bot in `SCRIPT_BOTS` with no
+  `SCRIPT_RUNNER_URL` reaches L3 and gets the plan prompt WITHOUT the script
+  section. That composition is the point -- the path is necessary and not
+  sufficient.
+
+Because all three sites must agree, the predicate MUST be one function rather
+than three conditions. A change that routes chat to L3 while the order lane
+still refuses, or vice versa, leaves a bot that accepts a goal it cannot order,
+which is a defect even though each site alone looks correct.
+
+#### Scenario: Flag unset and the bot is listed
+- **GIVEN** `USE_L3_PLAN_LAYER` is unset or false
+- **AND** `SCRIPT_BOTS` names this bot
+- **WHEN** the bot is handed an instruction
+- **THEN** it MUST take the L3 path, and MUST NOT fall through to `decompose`
+- **AND** this MUST hold at the chat gate, the acceptance check and the order
+  lane alike
+
+#### Scenario: Flag unset and the bot is not listed
+- **GIVEN** `USE_L3_PLAN_LAYER` is unset or false
+- **AND** `SCRIPT_BOTS` names some other bot, or is unset
+- **WHEN** this bot is handed an instruction
+- **THEN** it MUST plan through `decompose`, exactly as today
+- **AND** the order lane MUST still report the L3 layer as disabled for it
+
+#### Scenario: Flag true and the bot is not listed
+- **GIVEN** `USE_L3_PLAN_LAYER` is true
+- **AND** `SCRIPT_BOTS` does not name this bot
+- **WHEN** this bot's plan prompt is rendered
+- **THEN** the bot MUST still take the L3 path, because the deployment asked
+  for it
+- **AND** the prompt MUST NOT contain the script section, because a bot not in
+  `SCRIPT_BOTS` is never offered scripts
+
+#### Scenario: Listing a bot without a runner moves no other bot and offers no script
+- **GIVEN** `USE_L3_PLAN_LAYER` is unset
+- **AND** `SCRIPT_BOTS` names this bot
+- **AND** `SCRIPT_RUNNER_URL` is unset
+- **WHEN** the deployment starts
+- **THEN** this bot MUST reach the L3 path
+- **AND** its plan prompt MUST NOT contain the script section
+- **AND** no bot outside `SCRIPT_BOTS` MUST change its routing
+
+#### Scenario: One predicate, three sites
+- **GIVEN** any combination of the flag and `SCRIPT_BOTS`
+- **WHEN** the chat gate, the acceptance check and the order lane each decide
+- **THEN** all three MUST return the same answer for the same bot
+- **AND** a test that overrides only one site's condition MUST fail this
+  scenario

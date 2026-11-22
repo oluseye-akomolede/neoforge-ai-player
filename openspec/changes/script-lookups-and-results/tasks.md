@@ -247,6 +247,30 @@ shears and could not tell).
 - [x] 4.4 Runner suite 189/189 (`npm test`); agent `test_l3_script_path`
       90 OK. Every mutant restored with `diff -q` identical.
 
+## 4a. Per-bot planner path (2026-11-22)
+
+Prod sets no `USE_L3_PLAN_LAYER`, so every prod chat planned through
+`decompose` and the script surface -- spliced into the L3 plan prompt only --
+was unreachable there. The flag was read at three sites, so enabling it moved
+all five prod bots at once.
+
+- [x] 4a.1 Spec: "The Script Surface Needs The L3 Path, And `SCRIPT_BOTS` Opts A
+      Bot Into It", with scenarios for flag-unset+listed, flag-unset+unlisted,
+      and flag-true+unlisted. `openspec validate script-lookups-and-results
+      --strict` passes.
+- [x] 4a.2 `planner.l3_path_enabled(bot_name, ...)`: one predicate, true when
+      the flag is set OR the bot is named in `SCRIPT_BOTS`; the reason names
+      which. `agent._l3_path_enabled` delegates to it so the three sites cannot
+      drift.
+- [x] 4a.3 All three sites routed through it (chat gate, L3 acceptance, order
+      lane), and the order lane's failure detail corrected to name the per-bot
+      reason rather than "disabled on this agent".
+- [x] 4a.4 A startup line per bot, separate from the script-mode line, saying
+      which path it took and why.
+- [x] 4a.5 `test_l3_path_per_bot` (10 tests). Mutant: predicate reduced to
+      flag-only, the pre-change behaviour -> 5 red. Restored, `MUTANT` count 0.
+      Adjacent suites 137 OK.
+
 ## 5. Trials on test (run by the lead)
 
 - [ ] 5.1 Lookup within the snapshot: a sheep goal shears only when a sheep is
