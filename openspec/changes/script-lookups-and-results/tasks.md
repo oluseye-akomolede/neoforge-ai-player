@@ -309,29 +309,37 @@ there is no `self` or `bots` at all) — so the script guessed at `time`,
 `world_time`, `day_time`, `server_time`, found nothing, and fell back to
 `(6000 + ticks*10) % 12000`, which reaches 0 after 600 ticks and calls 0 night.
 
-- [ ] 4c.1 Spec: "A Script That Needs World Time Reads It, Never Estimates It",
+- [x] 4c.1 Spec: "A Script That Needs World Time Reads It, Never Estimates It",
       with four scenarios (wait-for-dark fires once on the real field; the
       status carries real day time across the wrap; the prompt describes the
       shape the agent actually sends; a missing fact is refused, not invented).
-- [ ] 4c.2 Mod: `GET /bot/{bot}/status` reports `day_time`
+- [x] 4c.2 Mod: `GET /bot/{bot}/status` reports `day_time`
       (`level.getDayTime() % 24000`, floored) and `is_night` (true for
       13000..23000, the vanilla monster-spawn window). `BotPlayer.getStatus`.
       Measured at those bounds, not reasoned about: 13000 and 23000 are the
       edges of the window vanilla uses, and 0 (sunrise) must be false — the
       exact value the prod script called night.
-- [ ] 4c.3 Agent: `build_state` carries `state.world = {day_time, is_night}`
+- [x] 4c.3 Agent: `build_state` carries `state.world = {day_time, is_night}`
       from the status, defaults to `{"day_time": None, "is_night": None}` when
       the mod does not send them, and does not invent a time. `snapshot.py`.
-- [ ] 4c.4 Prompt: both `l3_planner.py` sites state the snapshot's real shape
+- [x] 4c.4 Prompt: both `l3_planner.py` sites state the snapshot's real shape
       (`s.state.health`, `s.state.position`, `s.state.inventory`,
       `s.state.nearby.{blocks,mobs}`, `s.state.world.{day_time,is_night}`,
       `s.task`) and carry the no-estimation rule. The shape is copied from a
       generated envelope (`agent/tools/gen_envelope_fixture.py`), not retyped.
-- [ ] 4c.5 Tests: `test_snapshot.py` for 4c.3; a new Java test for 4c.2; a
+- [x] 4c.5 Tests: `test_snapshot.py` for 4c.3; a new Java test for 4c.2; a
       prompt test asserting the schema text against the generated envelope; and
       the regression scenario (a wait-for-dark script announcing only when
       `is_night`). Mutants: remove `world` from build_state; make `is_night`
       always false; restore `s.self` in the prompt.
+
+      4c done (lead, 11-23): code f57ec62 (same tree as the deployed 8e72c05),
+      reviewed PASS (reviews/2026-11-22-world-clock-snapshot-planner-schema.md).
+      Live on test 11-22 ~16:00Z and prod ~16:35Z. Every prod bot (Mystic, Axiom,
+      Forge, Tiller, Scout) passed a "tell me when it gets dark" goal started in
+      daytime: each announced only after the server clock passed 13000, with no
+      script errors, OOMs or planner fallbacks, then a clean 1-hour soak.
+      The rest of this change stays open (1.2, 1.4, 1.5, 3.9, section 5).
 
 ## 5. Trials on test (run by the lead)
 
