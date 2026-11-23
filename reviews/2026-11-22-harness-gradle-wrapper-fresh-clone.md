@@ -68,9 +68,37 @@ honest description of what this row buys, and TESTING.md is the durable mitigati
 
 I could not reproduce the builder's `failOnNoMatchingTests` experiment from the branch,
 because a cleanly reverted attempt leaves no trace — no revert commit and no
-`failOnNoMatchingTests` in `build.gradle` at `71f6199`. That is consistent with the
-account but is not independent confirmation of the byte-identical-output measurement.
-Recorded as unverified, not contradicted.
+`failOnNoMatchingTests` in `build.gradle` at `71f6199`. The builder then pointed at the
+attempt's own commit, `f6bc244` ("Fail test with a distinct message when the --tests filter
+matches no class"), which is reachable by sha from `84926f8` and adds only an 8-line
+`filter { failOnNoMatchingTests = true }` block. I reproduced it (`/tmp/f6-probe`,
+`git archive f6bc244 | tar -x`), and the claim holds with a sharper mechanism than
+"already the default":
+
+```
+nice -n 19 <cached gradle-8.14> --offline test --rerun-tasks --tests '*NoSuchTest*'
+rc=1
+> Task :test FAILED
+> No tests found for given includes: [*NoSuchTest*](--tests filter)
+```
+
+No test result is produced at all (an empty `build/test-results/test/` holding only
+`binary/`), so the filter never reached a runner and `failOnNoMatchingTests` has nothing
+to decide. It is **unreachable on that path**, not inert-by-default. Positive control in
+the same tree: `--tests '*WorldTimeTest*' --rerun-tasks` gives `> Task :test` and
+`BUILD SUCCESSFUL`, and its JUnit XML reads `tests="8" skipped="0" failures="0"
+errors="0"` — so the instrument was live for the zero as well as the run.
+
+Two corrections to the recipe as given, neither changing the conclusion. The
+`git archive f6bc244` and `git archive 71f6199` trees are **not** the same tree (the former
+has no TESTING.md and no wrapper jar), so "every substantive line identical" can only be a
+claim about the failure lines, and those are byte-identical. And the recipe's ordering
+matters: a first run on a cold `build/` dies at `:test` with
+`No tests found for given includes: [*BoundedWaitTest*]` — a class that plainly exists —
+because `compileTestJava` was served `FROM-CACHE` and no test classes were written to
+`build/classes/java/test`. The non-match reading is only trustworthy on a tree whose tests
+have compiled in that build directory, or with `--rerun-tasks`; that is a third way to
+manufacture the red-looking tail, alongside absent-class and wrong-tree.
 
 ## Findings
 
@@ -100,7 +128,9 @@ where it lives rather than only in TESTING.md.
 ## Not done, stated plainly
 
 - Nothing pushed, nothing applied to the cluster — read-only plus a scratch clone.
-- I did not independently reproduce the `failOnNoMatchingTests` measurement (see above).
+- I first recorded the `failOnNoMatchingTests` measurement as unverified; it is now
+  reproduced at `f6bc244` with a positive control (see above), with the mechanism corrected
+  from "already the default" to "unreachable on the non-match path".
 - I verified the hazard message byte-form directly (see F-1) and found the builder's
   quoted line exact; my initial objection to it was wrong.
 
