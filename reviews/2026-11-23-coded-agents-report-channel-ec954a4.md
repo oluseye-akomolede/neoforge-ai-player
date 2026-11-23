@@ -206,3 +206,35 @@ measured from a serialiser on a named payload with the revision length pinned.
 
 Nothing here reopens the verdict. `ec954a4` passed, `2586ecc` strengthens the
 same text, and both findings are closed.
+
+## Final closure at `b40293a` (design.md only, −4/+9)
+
+Following the F-4 caveat above, the builder **removed the exact byte counts
+rather than correcting them** — the right call, and for the right reason: a
+number that moves with unstated serialisation choices cannot be the basis of a
+bound, and substituting one set of choices for another repeats the fault. The
+design now gives a soft target of about 0.25 KB, a guarantee of nothing tighter
+than "well under a kilobyte", an explicit account of *why* the earlier counts
+were not reproducible, and a commitment to measure a real figure from a test
+beside the sender at 5.6 with the revision length pinned.
+
+Checked that the residual figure is not itself unsupported: "about 0.25 KB"
+(256 B) sits inside every reading either of us produced, 164–268 B. The only
+reading above it is my own most-adversarial construction (every field at its
+cap, including 20-character floats for `code_hours`), which is not a realistic
+payload — that field is hours of coding. So the soft target is a fair central
+estimate standing behind a kilobyte guarantee, and I am not raising it.
+
+The builder's independent measurements (169 / 164 / 223 / 249 B) and mine
+(216 / 223 / 224 / 231 / 253 / 268 B) agree where choices were pinned and
+diverge only where they were not — which is the finding, not a dispute.
+
+## Where the reviewed text lives (for whoever reads this against `main`)
+
+`ec954a4`, `2586ecc` and `b40293a` are on `ship-ca27-harness` and **are not in
+this worktree's branch history**; I read each by sha. Nothing is pushed. If the
+lead merges that branch, the merged text will differ from `ec954a4` by these
+three commits, and a reader checking this review against `main` will not be
+reading the reviewed document. The builder is keeping the follow-ups
+`design.md`-only and small for that reason. Flagged so no one concludes the
+review was written against a file that never existed.
