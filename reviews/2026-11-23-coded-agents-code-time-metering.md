@@ -49,6 +49,9 @@ this row (the meter is agent-side only); I did not deploy or drive a bot.
 
 ## F-1 — the claim of what "accrues nothing" covers is wider than the code
 
+> **CLOSED at `ba57b33`** (see "F-1 follow-up" at the end). The finding below
+> describes `5619b0a` and is kept as the record of what was wrong.
+
 The commit message, `code_time.py`'s docstring and the "DONE" text in
 `tasks.md` 5.1 all say a **"held, paused, disabled, deleted or fallen-back
 script accrues nothing"**, and the module's docstring explains it as *"the
@@ -135,6 +138,44 @@ go to the lead as a question for the owner before 5.4 is built, not after.
 - I did not run a refused tick against a live runner (no sandbox); see F-1's
   scope note for exactly what that leaves unmeasured.
 - 5.3/5.4 not reviewed (out of this row's scope).
+
+## F-1 follow-up — closed at `ba57b33` (verified from a clean archive)
+
+Diff `5619b0a..ba57b33` is 3 files, +23/−8: `agent/agent.py` (the `__init__`
+comment), `agent/code_time.py` (module docstring and `record_tick` docstring),
+`openspec/changes/coded-agents/tasks.md` 5.1. **No code line changed** — every
+hunk is inside a comment or `"""…"""`. Confirmed by reading the diff, not by the
+commit message.
+
+The prose now says what the code does at all three sites: held / paused /
+deleted / fallen-back accrue nothing *because no tick is sent*, and **a tick the
+runner refuses or times out on does reach the counter and is billed one period**,
+with billability named as 5.4's call. That is exactly the narrow reading F-1
+proposed, and it matches my measurement.
+
+One wording change worth recording: the old text said "held, paused, **disabled**,
+deleted or fallen-back"; the new text drops "disabled" rather than asserting what
+gates it. I had not measured the disabled path and did not test it here, so I
+neither endorse nor contest that omission — it is the honest choice over a claim
+nobody checked, and nothing else in the change depends on it.
+
+Re-ran at `ba57b33` from `git archive` into `/tmp/f1chk/t` (prose-only, so this
+is a no-regression check, not a new proof of behaviour):
+
+```
+cd /tmp/f1chk/t/agent && python3 -m unittest test_code_time
+                        ... Ran 8 tests ... OK            rc=0
+cd /tmp/f1chk/t/agent && python3 -m unittest test_code_time test_agent_script_branch
+                        ... Ran 149 tests ... OK          rc=0
+```
+
+My first attempt at this used `-s agent -t .` from the archive root and died with
+`ImportError: Start directory is not importable: '…/agent'` — `agent/` is not a
+package. The tests are written to run with `agent/` as the cwd; run them that way
+or you get an error that looks like a red suite. Recorded because it cost a round
+trip and will cost the next person one too.
+
+**Verdict on F-1: closed.** Nothing was pushed or deployed for either commit.
 
 ## Repro
 
