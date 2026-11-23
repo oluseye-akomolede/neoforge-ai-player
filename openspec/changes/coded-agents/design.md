@@ -102,7 +102,10 @@ One request per bot per reporting interval, body:
 | `observed_at` | 20 bytes | the agent's clock at send, so the mod can date staleness from the sender's own view and detect clock skew |
 | `revision` | ≤ 72 bytes | the script revision in effect, so the state is never attributed to a revision that did not produce it |
 
-Whole body is under 220 bytes. It is not a log and is not retained: the mod
+Body size: **about 0.25 KB**. Measured from these caps as compact JSON, the
+example payload above is 223 bytes and an all-caps payload is 267 -- so this is
+a soft target, not a guarantee, and nothing downstream may depend on a bound
+tighter than "well under a kilobyte". It is not a log and is not retained: the mod
 keeps the latest report per bot and nothing older. That is what the spec's
 "a repeat report does not accumulate" scenario requires, and it is why this does
 not need storage.
@@ -191,7 +194,18 @@ These are listed, not started. The lead reviews this design before any code row.
   non-`ok` ticks disable a script.
 - **Whether usage persists across a restart, and what window `code_hours`
   covers.** Both are 5.4's. This channel transports whatever the meter holds
-  and adds no window of its own; a restart or a day rollover producing a fall
-  is observable from `previous_code_hours` without the channel deciding which.
+  and adds no window of its own.
+- **What a fall is observable for, and what it is not.** A **day rollover** that
+  produces a fall is observable from `previous_code_hours`. A **restart's** fall
+  is not, and cannot be from this payload: `previous_code_hours` is absent on a
+  bot's first report, and after a restart the meter is a new process at
+  `_seconds = 0.0`, so that first report carries `code_hours: 0.0` with nothing
+  to compare against -- it is precisely the report where 1.4 h becomes 0.0 h.
+  From the receiver a restarted bot reads as a bot appearing at 0.0 h. The three
+  ways out are all outside this channel: persist the counter (5.4's), keep a
+  history in the mod (forbidden by latest-only storage), or send a cause marker
+  (rejected above: the sender cannot distinguish restart from day rollover). So
+  the design guarantees no more than this, and whether a restart reading as a
+  fresh bot at 0.0 h must be labelled is 5.4's.
 - **The cap's source.** Unchanged and still open; this channel reads the
   counter, not the cap.
