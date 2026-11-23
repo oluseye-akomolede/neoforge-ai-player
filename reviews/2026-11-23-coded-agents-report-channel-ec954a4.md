@@ -52,6 +52,8 @@ as spending, and declines to say *what* a fall means. Sound.
 
 ## F-3 (non-blocking) — a restart's fall is the one the field cannot carry
 
+> **Closed at `2586ecc`** — see "Closure" at the end of this file.
+
 `design.md:193-196` says: "a restart or a day rollover producing a fall **is
 observable from `previous_code_hours`**". For a day rollover that is true — the
 same process reports the new day's figure against the previous one. For a
@@ -116,6 +118,8 @@ noting it because the design now leans on `ticks` meaning something precise.
 
 ## F-4 (non-blocking) — the corrected size bound is still under the real cap
 
+> **Closed at `2586ecc`** — see "Closure" at the end of this file.
+
 The builder corrected "under 200 bytes" to "under 220". Both are low. Measured
 from the design's own field caps, serialised compactly, counting keys, quotes,
 commas and braces:
@@ -157,3 +161,48 @@ before committing.
   restart genuinely omits `previous_code_hours` — that is from the design text
   plus `code_time.py`'s `__init__`, since no sender code exists at this rev.
   The claim in F-3 rests on those two things and would become checkable at 5.6.
+
+## Closure at `2586ecc` (design.md only, +17/−4, verified 2026-11-23)
+
+The builder flagged this commit itself, after the PASS and after the row closed,
+so the approved design and the tree would not diverge silently. Checked: the
+delta touches `openspec/changes/coded-agents/design.md` and nothing else.
+
+**F-3 closed, and closed better than I worded it.** The design now splits the
+claims rather than qualifying the old sentence: a day-rollover fall *is*
+observable from `previous_code_hours`; a restart's fall is not, and the design
+says why in the mechanism's own terms — `previous_code_hours` is absent on a
+bot's first report, and the new process starts at `_seconds = 0.0`, so that
+first report is exactly the one carrying `1.4h -> 0.0h` with nothing to compare
+against. From the receiver "a restarted bot reads as a bot appearing at 0.0 h".
+It then names all three routes out and why each is closed *here*: persist the
+counter (5.4's), keep a history in the mod (forbidden by latest-only storage),
+send a cause marker (rejected earlier — the sender cannot tell a restart from a
+day rollover). Whether a restart must be *labelled* is handed to 5.4 instead of
+being answered by implication. That is the shape F-3 asked for: a stated limit,
+its reason, and the owner of the open question.
+
+**F-4 closed, with a caveat about the number, not the conclusion.** The design
+now says **about 0.25 KB**, describes it as a soft target rather than a
+guarantee, and forbids anything downstream depending on a bound tighter than
+"well under a kilobyte". That is the right call and I would not ask for another
+round. But "the example payload above is 223 bytes and an all-caps payload is
+267" is not reproducible, and I record that rather than adjudicating the byte:
+
+| Reading | Bytes |
+|---|---|
+| printed example exactly as written (11-char `"sha256:0d5c…"`) | 164–175, depending on whether the ellipsis is one char or three and on `ensure_ascii` |
+| printed example with a full-length revision | 216, 223 or 224 depending on the same choices |
+| every string field at its cap, numbers of ordinary width | 253 |
+| numbers widened to their own 20/10-byte caps | 231 |
+| all fields at cap, my earlier construction | 268 (builder: 267) |
+
+The spread is ~50 bytes and moves under choices the design does not state. So
+the "measured" figure is not falsifiable as written — and that is precisely why
+the new soft-target framing is correct, since nothing may depend on the number.
+My own 223 and 268 are as unstable as the builder's 267; I am not claiming a
+right answer. If the figure is ever needed for a real limit, it has to be
+measured from a serialiser on a named payload with the revision length pinned.
+
+Nothing here reopens the verdict. `ec954a4` passed, `2586ecc` strengthens the
+same text, and both findings are closed.
