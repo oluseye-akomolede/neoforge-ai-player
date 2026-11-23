@@ -9,6 +9,28 @@ clean `git archive`, not the builder's worktree.
 One narrower finding (F-1) survives, in a place the fix did not reach — same
 class, smaller blast radius, and it does not reopen the outcome of 3.3.
 
+> **Forward pointer (added 11-23 10:2xZ, post-park).** The builder took the
+> *reword* option, not the code fix, at `dddf493` (doc-only against `c1ff2cc`);
+> I re-verified that commit and the verdict stays **PASS**. Measured at
+> `dddf493`: suite 5 OK, rc=0, and the planner-slot mutant still reproduces —
+> replacing `dispatch_fn` at `agent.py:2202` with an unrelated lambda leaves
+> **5 OK**, real-dispatcher call count unchanged at 10 — so the finding was real
+> and the new text now states the limitation rather than papering over it. The
+> docstring and `tasks.md` 3.3 carry separate PROVEN/ASSUMED headings naming
+> `agent.py:2202` as assumed, with the reason (`_run_plan_orchestrator_task` is
+> not driven by this harness, which supplies the dispatcher as an argument) and
+> what would pin it. That is exactly the shape I said I would accept.
+>
+> Two residual notes, neither blocking. (a) **Nit:** the new docstring says
+> "`_both` hands each path the **bound** `_l3_orchestrator_dispatch`". The script
+> path does; the planner path is handed `recording_dispatch` as a *free*
+> function — `_planner_dispatched_directives` passes it in the `dispatch_fn`
+> positional slot. It is the same slip the paragraph exists to fix, one notch
+> smaller; worth three words in a future doc pass. (b) The `escalation` shim is
+> `mock.Mock()` in `sys.modules` — fine for the three actions tested, load-bearing
+> for `ASK_PLAYER`, now documented as a limitation rather than fixed. Accepting
+> that for this row.
+
 ## F-1 from the first review: fixed, measured
 
 `make_dispatcher()` now calls `real(br, d)` with `api` swapped for a `Mock` and
