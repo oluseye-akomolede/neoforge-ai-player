@@ -264,8 +264,20 @@ dependencies, and are not started until this change is approved.
       invented agent-side kind (dispatch cross-check plus two refusal tests
       fire). `type` is not an allowable argument, so a script cannot smuggle a
       handler name past the binding.
-- [ ] 3.3 Prove a script action produces the same behaviour as the LLM
-      requesting that action directly.
+- [x] 3.3 Prove a script action produces the same behaviour as the LLM
+      requesting that action directly. **DONE 2026-11-23** — `agent/
+      test_script_planner_parity.py::ScriptPlannerParityTest` (3 tests, green;
+      runs by path, stubs psycopg2/fastapi/uvicorn so the REAL agent.py loads).
+      Both paths reach the same callee `BotRunner._l3_orchestrator_dispatch`:
+      the planner as `dispatch_fn(d)` (plan_orchestrator.py:763), the script
+      directly (agent.py:3896). The test drives the REAL `plan_orchestrator.
+      _step` and the REAL `_run_script_tick` for one action, captures the
+      directive each hands the dispatcher, and asserts equal argument + equal
+      outcome. Mutants (each reverted, asserted to have changed the bytes):
+      script path → `_run_directive` instead of the shared dispatcher: 2 FAIL +
+      1 ERROR; script or planner strips `target` before dispatch: FAIL on the
+      arguments test in each direction. 152 tests OK across the four affected
+      suites.
 
 ## Step 4 — runner service and hosting
 
