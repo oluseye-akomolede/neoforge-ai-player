@@ -556,6 +556,78 @@ so that a cap enabled later has a measured basis.
 - **WHEN** the daily cap is set to unlimited
 - **THEN** usage is still recorded
 
+### Requirement: A Per-Bot Report Names What The Mod Cannot Observe
+Some state in this change lives only in the agent — the process that holds each
+bot's script binding and sends its ticks — and until this requirement existed
+the bot interface could only read mod-held state. The bot interface is served by
+the game mod: its bot listing (`GET /bots`, `GET /bot/{name}/status`) is answered
+from the mod's own tick-refreshed status cache, and the mod never sees the
+agent's per-tick runner outcome or its usage counter.
+
+The agent MUST therefore **report** two facts per scripted bot to the mod over a
+single authenticated channel, and the mod MUST show them in each bot's status:
+
+| Reported fact | Meaning | Source in the agent |
+|---|---|---|
+| `script_state` | the outcome of the bot's most recent sent tick, from the runner-state vocabulary (`script`, `fallback_connect_refused`, `fallback_timeout`, `fallback_error`) | the runner result the agent already receives |
+| `script_code_hours` | that bot's accumulated active script time, in hours | `CodeTimeMeter.usage_hours()` for that bot |
+
+This paragraph EXTENDS "A Reported Condition Has A Defined Shape": it does not
+define a second kind of report. A report MUST be per bot, MUST carry the bot's
+own name as its scope identifier, and MUST be de-duplicated by bot while the
+reported values are unchanged — a report that repeats every tick MUST NOT appear
+as a new entry per tick or per bot. The condition vocabulary in that requirement
+stays closed: `runner_unreachable` and `allowance_exhausted` are unchanged, and
+this channel reports the **values** those conditions are derived from rather
+than adding kinds. Whether a given `script_state` value raises a condition, and
+which, remains that requirement's decision.
+
+A report MUST NOT be treated as current for longer than a stated freshness
+bound: the agent sends one report per bot at a fixed interval, and if none
+arrives within the bound the mod MUST mark that bot's reported values as
+**stale** and MUST NOT present them as current. A bot whose reported value is
+stale MUST be visible as stale rather than silently showing its last value, for
+the same reason a motionless bot must not be read as healthy.
+
+A report for a bot the mod does not know MUST be refused and counted, never
+silently stored against a name that may be created later.
+
+#### Scenario: A runner fallback is visible on the bot that suffered it
+- **WHEN** a scripted bot's tick returns `fallback_timeout` three ticks running
+- **THEN** the bot's status in the bot interface shows that its last tick fell
+  back, and which kind
+- **AND** a player does not have to infer it from a bot that has stopped moving
+
+#### Scenario: Usage is read where the player already looks
+- **WHEN** a bot has a script that has been active for 90 minutes
+- **THEN** that bot's status shows its accumulated script time
+- **AND** the figure is the same one the cap (when configured) is measured with,
+  not a separately counted approximation
+
+#### Scenario: A repeat report does not accumulate
+- **WHEN** the agent has sent the same values for an unchanged bot across many
+  reporting intervals
+- **THEN** the bot interface shows one current value, not one entry per interval
+- **AND** the number of stored reports for that bot does not grow with time
+
+#### Scenario: A dead agent does not leave current-looking state
+- **WHEN** the agent stops reporting while a bot's script is still bound
+- **THEN** the bot's reported script state and usage are marked stale after the
+  freshness bound
+- **AND** a player is not shown the last values as though they were current
+
+#### Scenario: Usage does not carry over from a previous process
+- **WHEN** the agent restarts and the counter it holds begins again at zero
+- **THEN** the bot interface shows the new process's usage, not the pre-restart
+  figure
+- **AND** the drop is explained as the counter restarting, not presented as
+  usage having been spent
+
+#### Scenario: A report for an unknown bot changes nothing
+- **WHEN** the agent reports for a bot name the mod has never spawned
+- **THEN** the report is refused
+- **AND** no status for that name appears, and no bot is created by the report
+
 ### Requirement: Daily Code-Hour Cap Is Set In Mod Settings
 The daily cap is a **per-bot** allowance, configured in the mod settings
 following the existing `serverDir/config/aiplayermod-*.json` convention, and

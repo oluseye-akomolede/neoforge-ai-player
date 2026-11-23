@@ -373,6 +373,17 @@ dependencies, and are not started until this change is approved.
       asserts the seam never fires. Within ONE process lifetime -- the spec is
       silent on surviving an agent-pod restart and nothing persists the
       counter, so that is reported, not claimed as covered.**
+- [ ] 5.6 Agent side of the report channel (`design.md`, option 1): one
+      `CodeTimeMeter` read plus the bot's most recent runner state, POSTed to
+      the mod at `REPORT_INTERVAL` (15 s) and immediately on a state change,
+      never queued, dropped on failure and re-sent next interval, with an
+      explicit restart marker on the first report after agent start. Unit test
+      with a fake poster: cadence, on-change send, no retry/backlog, restart.
+- [ ] 5.7 Mod side: `POST /bot/{name}/script_report` behind the existing
+      `checkAuth` (`MOD_API_KEY`, named only), storing per bot on `BotPlayer`,
+      refusing an unknown bot (404, counted), and expiring the stored report to
+      `stale` after `STALE_AFTER` (3 x `REPORT_INTERVAL`). Handler-level test:
+      accepted, refused, and aged-to-stale.
 
 ## Step 6 — read-only script view
 
@@ -384,6 +395,13 @@ dependencies, and are not started until this change is approved.
       rather than deferred, so no implementer tries to invent an ownership check.
       Same owner answer as 5.2 (2026-11-10 14:12Z).
 - [ ] 6.3 Prove no endpoint accepts script text from a player.
+- [ ] 6.4 Show the reported script state and code hours on the status a player
+      already fetches: a `script` object (`state`, `code_hours`, `stale`,
+      `observed_at`) on each bot in `GET /bots` and on
+      `GET /bot/{name}/status`. No new read endpoint. `stale` and
+      never-reported (`state: "none"`, no hours) MUST be distinguishable from
+      each other and from `code_hours: 0`. Test: a stored report, then the same
+      report aged past `STALE_AFTER`.
 
 ## Step 7 — LLM rewrite loop
 
