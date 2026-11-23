@@ -129,12 +129,14 @@ payload holds only what a player is meant to see.
   never as current. This is deliberately longer than the interval (so one
   dropped request is not a lie) and shorter than any human timescale for acting
   on it.
-- **Restart:** the counter restarts at zero because nothing persists it today
-  (the same silence `code_time.py` records). The agent sends an explicit
-  `restarted: true` on its first report after start for each bot, and the mod
-  clears the previous value rather than showing a figure falling from 1.4 h to
-  0.0 h unexplained. Persisting the counter across restarts is a separate
-  question the spec leaves open, and is not answered here.
+- **A usage drop that is not at the day boundary:** reported and marked as a
+  **counter reset**, not as usage spent, whatever caused it (a restart, a
+  replaced meter, a figure the channel cannot account for). Nothing persists
+  the counter today (`code_time.py` records that silence), so a restart is one
+  cause -- but whether a restart *should* reset is an open question (tasks 5.4,
+  day boundary and restart persistence), and this channel neither requires nor
+  forbids the reset. It must not show a figure falling from 1.4 h to 0.0 h
+  unlabelled.
 - **Unknown bot:** the mod refuses the report (404) and counts it in a single
   counter; it MUST NOT create a bot or store a value under an unspawned name.
 
@@ -158,7 +160,8 @@ Text-level only, no mockup:
 - **5.6** (metering) — the report sender in the agent: one `CodeTimeMeter` read
   and one per-tick script state per bot, POSTed at `REPORT_INTERVAL` and on
   change, never queued, dropped on failure. Unit test with a fake poster:
-  cadence, on-change send, no retry, restart marker.
+  cadence, on-change send, no retry, and a falling figure sent as a reset
+  rather than as a negative delta.
 - **5.7** (metering) — the mod receiver: `POST /bot/{name}/script_report`
   behind the existing auth, storing on `BotPlayer`, refusing unknown bots, and
   expiring to stale after `STALE_AFTER`. Tested at the handler level.

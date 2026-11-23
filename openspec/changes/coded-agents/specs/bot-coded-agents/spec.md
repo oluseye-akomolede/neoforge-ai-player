@@ -616,12 +616,21 @@ silently stored against a name that may be created later.
   freshness bound
 - **AND** a player is not shown the last values as though they were current
 
-#### Scenario: Usage does not carry over from a previous process
-- **WHEN** the agent restarts and the counter it holds begins again at zero
-- **THEN** the bot interface shows the new process's usage, not the pre-restart
-  figure
-- **AND** the drop is explained as the counter restarting, not presented as
-  usage having been spent
+#### Scenario: Usage shows the meter's current figure for the current day
+- **WHEN** the bot interface displays a bot's code-time usage
+- **THEN** it shows the figure the agent's meter holds for that bot and the
+  current day, not a total summed across days or across processes
+- **AND** whether that figure persists across an agent restart is not decided by
+  this channel; the channel reports what the meter holds, and the day boundary
+  and restart persistence are settled separately
+
+#### Scenario: A drop in usage is reported as a reset, not as spending
+- **WHEN** the reported usage for a bot falls, and the fall is not at the day
+  boundary
+- **THEN** the bot interface marks the change as the counter having reset
+- **AND** it does not present the difference as usage having been spent
+- **AND** this holds whatever causes the reset: a restart, a meter replacement,
+  or a figure the channel cannot account for
 
 #### Scenario: A report for an unknown bot changes nothing
 - **WHEN** the agent reports for a bot name the mod has never spawned
