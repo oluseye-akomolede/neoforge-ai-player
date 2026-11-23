@@ -268,13 +268,24 @@ dependencies, and are not started until this change is approved.
       requesting that action directly. **DONE 2026-11-23** — `agent/
       test_script_planner_parity.py::ScriptPlannerParityTest` (5 tests, green;
       runs by path, stubs psycopg2/fastapi/uvicorn so the REAL agent.py loads).
-      Both paths reach the same callee `BotRunner._l3_orchestrator_dispatch`:
-      the planner as `dispatch_fn(d)` (plan_orchestrator.py:763), the script
-      directly (agent.py:3896). The test drives the REAL `plan_orchestrator.
-      _step` and the REAL `_run_script_tick` and calls the REAL dispatcher
-      body (api/escalation/_run_directive patched at the I/O boundary), so the
-      body's own transforms run: the key filter, the LOCATE `share_with`
-      defaulting, and the kind→type rename.
+      Demanded callee: `BotRunner._l3_orchestrator_dispatch`, planner as
+      `dispatch_fn` (agent.py:2202 → plan_orchestrator.py:763), script direct
+      (agent.py:3896).
+      **PROVEN by this test**: once a directive reaches the seam, the SAME
+      dispatcher BODY runs on both paths — the test drives the REAL
+      `plan_orchestrator._step` and the REAL `_run_script_tick` and calls the
+      REAL body (api/escalation/_run_directive patched at the I/O boundary),
+      so the body's transforms run: key filter, LOCATE `share_with` defaulting,
+      kind→type rename, STORE_ALL→VAULT_STORE.
+      **PROVEN**: the SCRIPT call site agent.py:3896 still targets this function
+      — it is inside `_run_script_tick`, which the harness runs for real
+      (mutating :3896 to call `_run_directive` gives 4 FAIL + 1 ERROR).
+      **ASSUMED, by inspection not by this test** (re-review 01d32ec): the
+      PLANNER call site agent.py:2202. It is inside `_run_plan_orchestrator_task`,
+      which the harness does not run (it drives `plan_orchestrator._step` and
+      supplies the dispatcher as an argument), so a `lambda` stub at :2202 left
+      5 OK. Pinning it needs a driver that runs `_run_plan_orchestrator_task`,
+      larger than a parity check warrants; recorded here, not claimed otherwise.
       Review fda4f8e caught the first version: it bound the real method but
       never called it (a stub returning `f"COMPLETED {kind}"`), so
       `test_same_action_produces_same_outcome` was tautological and a

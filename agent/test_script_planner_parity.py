@@ -9,13 +9,32 @@ Both paths dispatch through the SAME function, `BotRunner._l3_orchestrator_dispa
     `directive = dict(act)`, where `act` is a BOUND action
     `{"kind": KIND, **allowed_args}` (action_binding.py:82).
 
-Parity is structural (one callee), but nothing PROVED it: a change could make
-the script path call `_run_directive` directly, or hand the planner a different
-shape, and no test would notice. This test pins the argument each path delivers
-to the shared dispatcher and the outcome each gets back, for the same action.
+Parity is structural (one callee). What this test PROVES and what it ASSUMES
+(reviewer finding on c1ff2cc, coded-agents 3.3):
 
-It fails if either path stops going through the shared dispatcher, or changes
-what it passes -- proven by mutants (see the commit message).
+PROVEN -- once a directive reaches the seam, the SAME dispatcher body runs on
+both paths. `_both` hands each path the bound `_l3_orchestrator_dispatch` off a
+real BotRunner with only the network/escalation/_run_directive boundary
+patched, so the body's real transforms (the api.set_directive key filter, the
+LOCATE share_with defaulting, the kind->type rename, the STORE_ALL->VAULT_STORE
+special case) execute for both. The outcome test pins the literal body output
+(`COMPLETED STORE_ALL {}`), and body mutants (short-circuit, raise, key-filter
+disabled, LOCATE-default disabled) each redden it -- so it cannot pass by two
+paths agreeing on a wrong answer.
+
+PROVEN -- the SCRIPT call site at agent.py:3896 still targets this function:
+that line lives inside `_run_script_tick`, which the harness runs for real, so
+changing :3896 to call anything else reddens the suite (measured: mutating it
+gives 4 FAIL + 1 ERROR).
+
+ASSUMED -- the PLANNER call site at agent.py:2202
+(`dispatch_fn=self._l3_orchestrator_dispatch`). It lives inside
+`_run_plan_orchestrator_task`, which the harness does NOT run: it drives
+`plan_orchestrator._step` and wires the dispatcher in as the `dispatcher`
+argument, so substituting :2202 with a different callable would NOT redden it
+(measured on c1ff2cc: a `lambda d: "COMPLETED " + ...` stub there left 5 OK).
+That one line is verified by inspection. Pinning it needs a driver that runs
+`_run_plan_orchestrator_task`, larger than a parity check warrants.
 """
 from __future__ import annotations
 
