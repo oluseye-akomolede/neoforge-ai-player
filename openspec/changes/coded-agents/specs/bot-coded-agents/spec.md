@@ -616,21 +616,27 @@ silently stored against a name that may be created later.
   freshness bound
 - **AND** a player is not shown the last values as though they were current
 
-#### Scenario: Usage shows the meter's current figure for the current day
+#### Scenario: Usage shown is the figure the agent reported
 - **WHEN** the bot interface displays a bot's code-time usage
-- **THEN** it shows the figure the agent's meter holds for that bot and the
-  current day, not a total summed across days or across processes
-- **AND** whether that figure persists across an agent restart is not decided by
-  this channel; the channel reports what the meter holds, and the day boundary
-  and restart persistence are settled separately
+- **THEN** it shows the figure the agent last reported for that bot, which is
+  the figure the agent's meter holds for it
+- **AND** it is not a figure the mod computed, estimated or accumulated itself
+- **AND** the window that figure covers -- a day, a process lifetime, some
+  other period -- is not asserted by this channel, because the unit and its
+  boundaries are task 5.4's to settle
+- **AND** whether the figure persists across an agent restart is likewise not
+  asserted here; the channel transports what the meter holds
 
-#### Scenario: A drop in usage is reported as a reset, not as spending
-- **WHEN** the reported usage for a bot falls, and the fall is not at the day
-  boundary
-- **THEN** the bot interface marks the change as the counter having reset
-- **AND** it does not present the difference as usage having been spent
-- **AND** this holds whatever causes the reset: a restart, a meter replacement,
-  or a figure the channel cannot account for
+#### Scenario: A fall carries its previous value
+- **WHEN** the agent reports a usage figure lower than the last figure it
+  reported for that bot
+- **THEN** the report carries the figure it is replacing, so a fall is readable
+  from the report itself rather than needing a history of reports
+- **AND** the bot interface does not present the difference as usage having
+  been spent
+- **AND** what a fall MEANS -- a counter reset, a new day, a restarted agent --
+  is not decided by this channel, because the day boundary and persistence are
+  task 5.4's to settle
 
 #### Scenario: A report for an unknown bot changes nothing
 - **WHEN** the agent reports for a bot name the mod has never spawned

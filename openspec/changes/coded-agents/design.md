@@ -86,6 +86,7 @@ One request per bot per reporting interval, body:
 {
   "script_state": "fallback_timeout",
   "code_hours": 1.502777,
+  "previous_code_hours": 1.502111,
   "ticks": 2705,
   "observed_at": "2026-11-23T10:20:04Z",
   "revision": "sha256:0d5c…"
@@ -95,12 +96,13 @@ One request per bot per reporting interval, body:
 | Field | Size | Purpose |
 |---|---|---|
 | `script_state` | ≤ 24 bytes | the four-value vocabulary; absent when the bot has no script |
-| `code_hours` | ≤ 20 bytes | `usage_hours()` as sent; the mod shows it, it does not re-derive it |
-| `ticks` | ≤ 10 bytes | the counter's unit, so a reader can tell "zero usage" from "never ticked" |
+| `code_hours` | ≤ 20 bytes | `usage_hours()` as sent; the mod shows it, it does not re-derive it. Its window (day, process lifetime) is **not** asserted by this channel -- 5.4's |
+| `previous_code_hours` | ≤ 20 bytes | the figure this one replaces; present once the bot has reported before, absent on its first report. So a fall is readable from one report without the mod keeping a history -- still latest-only storage |
+| `ticks` | ≤ 10 bytes | the counter's unit, so a reader can tell "zero usage" from "never ticked" **within one process**; it restarts with the process, so hours > 0 with ticks 0 is normal after a restart (see the silence bullet below) |
 | `observed_at` | 20 bytes | the agent's clock at send, so the mod can date staleness from the sender's own view and detect clock skew |
 | `revision` | ≤ 72 bytes | the script revision in effect, so the state is never attributed to a revision that did not produce it |
 
-Whole body is under 200 bytes. It is not a log and is not retained: the mod
+Whole body is under 220 bytes. It is not a log and is not retained: the mod
 keeps the latest report per bot and nothing older. That is what the spec's
 "a repeat report does not accumulate" scenario requires, and it is why this does
 not need storage.
@@ -129,14 +131,24 @@ payload holds only what a player is meant to see.
   never as current. This is deliberately longer than the interval (so one
   dropped request is not a lie) and shorter than any human timescale for acting
   on it.
-- **A usage drop that is not at the day boundary:** reported and marked as a
-  **counter reset**, not as usage spent, whatever caused it (a restart, a
-  replaced meter, a figure the channel cannot account for). Nothing persists
-  the counter today (`code_time.py` records that silence), so a restart is one
-  cause -- but whether a restart *should* reset is an open question (tasks 5.4,
-  day boundary and restart persistence), and this channel neither requires nor
-  forbids the reset. It must not show a figure falling from 1.4 h to 0.0 h
-  unlabelled.
+- **A usage drop:** the report carries `previous_code_hours`, so a fall is
+  readable from the new report alone and the mod still keeps only the latest.
+  The channel does not say what a fall MEANS. A restart, a day rollover and a
+  replaced meter all produce one, and which of those this is, and whether the
+  figure should persist at all, is tasks 5.4's (day boundary and restart
+  persistence), not this channel's. What it must not do is show a figure
+  falling from 1.4 h to 0.0 h unlabelled.
+- **The figure's window:** `usage_hours()` is a process-lifetime monotonic total
+  today (`code_time.py:84`/`:101`/`:113` -- starts at `0.0`, only `+=`). There
+  is no `day` field, no rollover, and no per-day figure anywhere in the meter or
+  this payload, so the channel MUST NOT describe what it carries as a daily
+  figure, and nobody downstream should read it as one. If 5.4 makes the meter
+  per-day, the payload changes with it; this channel only transports whatever
+  the meter holds.
+- **`ticks` after a restart:** `ticks` comes from the same process-lifetime
+  counter (`code_time.py:85`/`:100`, read at `:124`), so a bot showing nonzero hours with `ticks: 0`
+  is normal after an agent restart, not evidence of never having ticked. Ticks
+  distinguishes zero-usage from never-ticked only within one process.
 - **Unknown bot:** the mod refuses the report (404) and counts it in a single
   counter; it MUST NOT create a bot or store a value under an unspawned name.
 
@@ -160,8 +172,8 @@ Text-level only, no mockup:
 - **5.6** (metering) — the report sender in the agent: one `CodeTimeMeter` read
   and one per-tick script state per bot, POSTed at `REPORT_INTERVAL` and on
   change, never queued, dropped on failure. Unit test with a fake poster:
-  cadence, on-change send, no retry, and a falling figure sent as a reset
-  rather than as a negative delta.
+  cadence, on-change send, no retry, and a report carrying the previous figure
+  so a fall is readable from one report.
 - **5.7** (metering) — the mod receiver: `POST /bot/{name}/script_report`
   behind the existing auth, storing on `BotPlayer`, refusing unknown bots, and
   expiring to stale after `STALE_AFTER`. Tested at the handler level.
@@ -177,7 +189,9 @@ These are listed, not started. The lead reviews this design before any code row.
   stay closed; that mapping is "A Reported Condition Has A Defined Shape"'s
   decision, and `script_disabled` already covers the case where three
   non-`ok` ticks disable a script.
-- **Whether usage persists across a restart.** Reported as not persisted; not
-  chosen.
+- **Whether usage persists across a restart, and what window `code_hours`
+  covers.** Both are 5.4's. This channel transports whatever the meter holds
+  and adds no window of its own; a restart or a day rollover producing a fall
+  is observable from `previous_code_hours` without the channel deciding which.
 - **The cap's source.** Unchanged and still open; this channel reads the
   counter, not the cap.
