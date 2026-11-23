@@ -102,10 +102,15 @@ One request per bot per reporting interval, body:
 | `observed_at` | 20 bytes | the agent's clock at send, so the mod can date staleness from the sender's own view and detect clock skew |
 | `revision` | ≤ 72 bytes | the script revision in effect, so the state is never attributed to a revision that did not produce it |
 
-Body size: **about 0.25 KB**. Measured from these caps as compact JSON, the
-example payload above is 223 bytes and an all-caps payload is 267 -- so this is
-a soft target, not a guarantee, and nothing downstream may depend on a bound
-tighter than "well under a kilobyte". It is not a log and is not retained: the mod
+Body size: **about 0.25 KB, a soft target and not a guarantee.** Nothing
+downstream may depend on a bound tighter than "well under a kilobyte". Earlier
+drafts of this line quoted exact byte counts; those were not reproducible,
+because the figure moves with unstated serialisation choices (compact vs
+spaced, `ensure_ascii`, whether the printed `…` in the example revision is
+one character or three, and whether padding fields are filled with digits or
+letters). To keep this honest the only figures given here are order-of-magnitude
+and the real figure is to be measured by a test next to the sender when 5.6 is
+implemented, on a named payload with the revision length pinned. It is not a log and is not retained: the mod
 keeps the latest report per bot and nothing older. That is what the spec's
 "a repeat report does not accumulate" scenario requires, and it is why this does
 not need storage.
