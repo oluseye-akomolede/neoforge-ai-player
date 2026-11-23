@@ -483,8 +483,10 @@ class BotRunner:
         self._script_loaded = False
         # Code-time metering (change: coded-agents, task 5.1). One meter per
         # bot, fed ONLY at the script-tick send point (:3731, below the hold
-        # check) so a held/paused/disabled/deleted/fallen-back script -- none
-        # of which sends a tick -- accrues nothing. Process-lifetime; the day
+        # check) so a held/paused/deleted/fallen-back script -- none of which
+        # sends a tick -- accrues nothing. A tick the runner refuses or times
+        # out on DOES count one period (reviewer F-1); billability is 5.4's
+        # call. Process-lifetime; the day
         # boundary and restart persistence are undefined in the spec and are
         # reported, not invented (see code_time.py).
         self.code_time = CodeTimeMeter()

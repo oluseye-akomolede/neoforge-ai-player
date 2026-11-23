@@ -10,9 +10,16 @@ alternatives explicitly wrong (spec, "Code Time Is Metered Per Bot"):
     so a CPU-counted cap would silently never fire.
   * A wall clock read between ticks would bill time the bot was not allowed to
     run. The counter is fed only at the send point, so time a script spends
-    paused, disabled, deleted, fallen back to the planner, or HELD for a player
-    goal accrues nothing -- because no tick is sent for any of those, and the
-    tick is the only thing this counter sees.
+    paused, deleted, fallen back to the planner, or HELD for a player goal
+    accrues nothing -- for those, no tick is sent at all, and the tick is the
+    only thing this counter sees.
+
+  * NOT gated here: a tick that IS sent but that the runner refuses or times
+    out on (an unreachable runner returns `handled=False` with a "runner
+    fallback..." detail). That call still reaches the counter and is billed one
+    period. This counter meters "a tick was sent", not "the runner ran it"; the
+    reviewer flagged it (F-1, 2026-11-23) and it is left deliberately -- whether
+    refused time is billable is task 5.4's decision, not 5.1's.
 
 The game (here, the Python agent; spec.md:123) sends the tick. This module is
 the one place that turns a sent tick into usage.
@@ -84,8 +91,10 @@ class CodeTimeMeter:
         """Count ONE sent tick. The sole way usage increases.
 
         Called at the send point, after the hold check, so a held, paused,
-        disabled, deleted or fallen-back script -- none of which sends a tick
-        -- never reaches here and accrues nothing.
+        deleted or fallen-back script -- none of which sends a tick -- never
+        reaches here and accrues nothing. A tick the runner REFUSED or timed out
+        on DOES reach here and is billed one period (see the module docstring);
+        whether that should bill is 5.4's call, not this meter's.
         """
         with self._lock:
             self._ticks += 1

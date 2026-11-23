@@ -310,7 +310,11 @@ dependencies, and are not started until this change is approved.
       earlier "in the runner" wording per the lead's spec.md:123 delta).** One
       `CodeTimeMeter` per bot (`agent/code_time.py`), fed once per SENT tick at
       the single non-dry send point, below the hold early-return, so a held,
-      paused, disabled, deleted or fallen-back script accrues nothing. Unit is
+      paused, deleted or fallen-back script accrues nothing (no tick is sent
+      for those). A tick that IS sent but the runner refuses or times out on
+      still counts one period -- this meter counts "a tick was sent", not "the
+      runner ran it"; whether refused time is billable is 5.4's decision
+      (reviewer finding F-1, 2026-11-23). Unit is
       the tick period (2.0 s), not CPU and not a wall clock between ticks.
       Accessor: `usage_hours()` / `usage_seconds()` / `tick_count()`. The cap
       seam `daily_cap_hours()` is hardwired to UNLIMITED (no env var, no wire
