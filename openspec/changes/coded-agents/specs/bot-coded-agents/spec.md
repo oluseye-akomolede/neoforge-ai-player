@@ -120,7 +120,7 @@ a host ceiling**. Both regimes matter and the limit rows below record both.
 | CPU per tick | 20 | ms | runner interrupt handler; per-tick CPU reported to the game, which applies its own cap |
 | Wall clock per host call | 2 | s | runner |
 | Host calls per tick | 8 | count | runner |
-| Tick rate per bot | ≤ 1 per second (a ceiling; every active script is also ticked at this cadence, never less) | rate | the game drives the tick and sends it; "runner owns the loop" means the sandbox-execution loop, not tick initiation |
+| Tick rate per bot | ≤ 1 per second (a ceiling; every active script is also ticked at this cadence, never less) | rate | the Python agent drives the tick and sends it (`agent.py`, one per `TICK_DELAY` = 2.0 s); "runner owns the loop" means the sandbox-execution loop, not tick initiation |
 | `api.log` | 1 KB/line, 100 lines/min | size, rate | server |
 | Script source | 64 KB, 20 versions | size, count | server |
 | Script memory (`api.remember`) | 16 | KB per bot | server |

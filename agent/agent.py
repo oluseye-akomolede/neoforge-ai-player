@@ -27,6 +27,7 @@ import openai_brain
 import waypoints
 from result_delivery import ResultSlot
 from script_say_guard import ScriptSayGuard
+from code_time import CodeTimeMeter
 import mc_items
 import terrain_db
 import skill_author
@@ -480,6 +481,13 @@ class BotRunner:
         # than in __init__ so a broken script file cannot stop a bot booting.
         self._script_tick = None
         self._script_loaded = False
+        # Code-time metering (change: coded-agents, task 5.1). One meter per
+        # bot, fed ONLY at the script-tick send point (:3731, below the hold
+        # check) so a held/paused/disabled/deleted/fallen-back script -- none
+        # of which sends a tick -- accrues nothing. Process-lifetime; the day
+        # boundary and restart persistence are undefined in the spec and are
+        # reported, not invented (see code_time.py).
+        self.code_time = CodeTimeMeter()
         # A script the planner authored, carried as SOURCE TEXT in the process
         # and never written to disk (spec, "A Planner-Authored Script Lives In
         # Memory, Not On Disk"). It is the only form available: the agent has
@@ -3660,6 +3668,21 @@ Respond with ONLY a JSON array. Example:
         self._script_idle_run = ticks
         return ticks >= SCRIPT_IDLE_MAX
 
+    def _record_code_time_tick(self):
+        """Count one sent tick against this bot's code time (task 5.1).
+
+        The single call site is `_run_script_tick`, just after `st.tick()` and
+        below the hold early-return. Kept as a method, not an inline attribute
+        read, for two reasons: the test suite builds runners with `__new__` so
+        `__init__` never runs and `self.code_time` would be absent (this
+        creates it lazily, matching how a metered tick is the only thing that
+        ever needs it), and it gives 5.5 one seam to drive without a sandbox.
+        """
+        meter = getattr(self, "code_time", None)
+        if meter is None:
+            meter = self.code_time = CodeTimeMeter()
+        meter.record_tick()
+
     def _run_script_tick(self):
         """Run one script-mode tick. Return True if the script handled it.
 
@@ -3697,6 +3720,15 @@ Respond with ONLY a JSON array. Example:
                 print(f"[{self.name}/script] held by goal {hold.get('goal_id')!r}, not dispatching")
                 return SCRIPT_HELD
             handled, actions, refusals, detail = st.tick()
+            # Code-time metering (task 5.1): count THIS sent tick, one period.
+            # Placed exactly here -- AFTER the hold early-return above, and at
+            # the only non-dry tick site -- so it counts a tick the game really
+            # sent and nothing else. A held script returns before this line;
+            # the dry/rehearsal path (:4009) is a different call and never
+            # reaches this one, which is why metering is NOT a ScriptTick
+            # method. The unit is the tick period, not CPU or a wall clock
+            # between ticks (spec, "Code Time Is Metered Per Bot").
+            self._record_code_time_tick()
             # `say`/`send` are delivered HERE, through the same functions the
             # planner uses, not through the directive dispatch below: they are
             # runner actions with no `kind` (contract §4.1; agent-script-runner

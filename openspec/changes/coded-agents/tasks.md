@@ -304,8 +304,20 @@ dependencies, and are not started until this change is approved.
 
 ## Step 5 — metering and the daily cap
 
-- [ ] 5.1 Measure script execution time per bot in the runner, where the time
-      is actually spent (not inferred in the game server).
+- [x] 5.1 Measure script execution time per bot in the runner, where the time
+      is actually spent (not inferred in the game server). **Done in the
+      Python agent, the real tick driver (`agent.py:3731`, corrected from the
+      earlier "in the runner" wording per the lead's spec.md:123 delta).** One
+      `CodeTimeMeter` per bot (`agent/code_time.py`), fed once per SENT tick at
+      the single non-dry send point, below the hold early-return, so a held,
+      paused, disabled, deleted or fallen-back script accrues nothing. Unit is
+      the tick period (2.0 s), not CPU and not a wall clock between ticks.
+      Accessor: `usage_hours()` / `usage_seconds()` / `tick_count()`. The cap
+      seam `daily_cap_hours()` is hardwired to UNLIMITED (no env var, no wire
+      field; source still open, lead taking it to the owner). Proof:
+      `agent/test_code_time.py` (8 tests, green; 3 go red with the meter call
+      removed). Day boundary and restart persistence are SILENT in the spec and
+      deliberately not chosen -- see the module docstring and the handoff.
 - [x] 5.2 Per-bot allowance. **Settled by the owner: option 3, no bot-to-player
       link for now; the cap is counted per bot and is set in mod settings.**
       Record usage against the bot itself, never summed across bots. No player
@@ -317,7 +329,13 @@ dependencies, and are not started until this change is approved.
       unlimited, following the existing JSON convention.
 - [ ] 5.4 At exhaustion: pause that bot's script, bot keeps itself safe,
       condition shown in the bot interface. Other bots' allowances are unaffected.
-- [ ] 5.5 Prove metering records usage while the cap is unlimited.
+- [x] 5.5 Prove metering records usage while the cap is unlimited. **Proven:
+      `test_an_active_tick_is_metered_while_the_cap_is_unlimited` drives the
+      real `_run_script_tick` with the cap at its UNLIMITED default and asserts
+      a sent tick is counted and usage is > 0; `test_cap_is_unlimited_and_never_exhausts`
+      asserts the seam never fires. Within ONE process lifetime -- the spec is
+      silent on surviving an agent-pod restart and nothing persists the
+      counter, so that is reported, not claimed as covered.**
 
 ## Step 6 — read-only script view
 
