@@ -266,18 +266,28 @@ dependencies, and are not started until this change is approved.
       handler name past the binding.
 - [x] 3.3 Prove a script action produces the same behaviour as the LLM
       requesting that action directly. **DONE 2026-11-23** — `agent/
-      test_script_planner_parity.py::ScriptPlannerParityTest` (3 tests, green;
+      test_script_planner_parity.py::ScriptPlannerParityTest` (5 tests, green;
       runs by path, stubs psycopg2/fastapi/uvicorn so the REAL agent.py loads).
       Both paths reach the same callee `BotRunner._l3_orchestrator_dispatch`:
       the planner as `dispatch_fn(d)` (plan_orchestrator.py:763), the script
       directly (agent.py:3896). The test drives the REAL `plan_orchestrator.
-      _step` and the REAL `_run_script_tick` for one action, captures the
-      directive each hands the dispatcher, and asserts equal argument + equal
-      outcome. Mutants (each reverted, asserted to have changed the bytes):
-      script path → `_run_directive` instead of the shared dispatcher: 2 FAIL +
-      1 ERROR; script or planner strips `target` before dispatch: FAIL on the
-      arguments test in each direction. 152 tests OK across the four affected
-      suites.
+      _step` and the REAL `_run_script_tick` and calls the REAL dispatcher
+      body (api/escalation/_run_directive patched at the I/O boundary), so the
+      body's own transforms run: the key filter, the LOCATE `share_with`
+      defaulting, and the kind→type rename.
+      Review fda4f8e caught the first version: it bound the real method but
+      never called it (a stub returning `f"COMPLETED {kind}"`), so
+      `test_same_action_produces_same_outcome` was tautological and a
+      body-mutant (`return "FAILED MUTANT_BODY"`) left 3 OK. Fixed: the
+      outcome test now pins the real body's exact output
+      (`COMPLETED STORE_ALL {}`), not just the two paths agreeing, and two
+      tests read the params reaching `_run_directive` to pin the body's
+      key-drop and LOCATE defaulting.
+      Mutants (each reverted): body short-circuit → 3 FAIL; key filter
+      disabled → FAIL; LOCATE default disabled → FAIL. 5 tests OK; 154
+      unittest tests across the four affected suites (8 code_time + 141
+      script_branch + 5 parity), plus test_dispatch_must_start's own 61 PASS
+      checks (custom runner, not unittest).
 
 ## Step 4 — runner service and hosting
 

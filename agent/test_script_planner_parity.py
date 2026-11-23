@@ -177,20 +177,46 @@ class ScriptPlannerParityTest(unittest.TestCase):
             br = self.agent_mod.BotRunner.__new__(self.agent_mod.BotRunner)
             br.name = "Scout"
             br.profile = {}
+            br._task_sender = ""
+            br._run_directive = mock.Mock(return_value={"success": True, "reason": "ok"})
 
             def disp(d):
-                # Bind the real method to this instance, but short-circuit the
-                # actual mod call so both paths see a deterministic outcome.
                 with mock.patch.object(self.agent_mod, "api", mock.Mock()):
-                    if not isinstance(d, dict) or "kind" not in d:
-                        return f"FAILED bad_directive {d}"
-                    return f"COMPLETED {str(d.get('kind', '')).upper()}"
+                    with mock.patch.dict(sys.modules, {"escalation": mock.Mock()}):
+                        return real(br, d)
             return disp
 
         p_pass, p_res = _planner_dispatched_directives([action], make_dispatcher())
         s_pass, s_res = _script_dispatched_directives(
             action, make_dispatcher(), self.agent_mod)
         return p_pass, s_pass, p_res, s_res
+
+    def _params_reaching_run_directive(self, action):
+        """The params dict the REAL dispatcher body hands to _run_directive, for
+        each path. Captures the body's own transforms -- the key filter and the
+        LOCATE share_with defaulting -- which an outcome-only assertion cannot
+        see (STORE_ALL maps to VAULT_STORE and returns before that tail)."""
+        real = self.agent_mod.BotRunner._l3_orchestrator_dispatch
+
+        def make_dispatcher(sink):
+            br = self.agent_mod.BotRunner.__new__(self.agent_mod.BotRunner)
+            br.name = "Scout"
+            br.profile = {}
+            br._task_sender = "alice"
+            br._run_directive = mock.Mock(
+                side_effect=lambda params: (sink.append(dict(params)),
+                                            {"success": True, "reason": "ok"})[1])
+
+            def disp(d):
+                with mock.patch.object(self.agent_mod, "api", mock.Mock()):
+                    with mock.patch.dict(sys.modules, {"escalation": mock.Mock()}):
+                        return real(br, d)
+            return disp
+
+        p_seen, s_seen = [], []
+        _planner_dispatched_directives([action], make_dispatcher(p_seen))
+        _script_dispatched_directives(action, make_dispatcher(s_seen), self.agent_mod)
+        return p_seen, s_seen
 
     def test_same_action_reaches_dispatcher_with_same_arguments(self):
         action = {"kind": "STORE_ALL"}
@@ -211,6 +237,15 @@ class ScriptPlannerParityTest(unittest.TestCase):
         self.assertEqual(
             p_res[0], s_res[0],
             f"paths disagree on outcome: planner={p_res[0]!r} script={s_res[0]!r}")
+        # Pin the outcome to what the REAL dispatcher body produces, not just
+        # to the two paths agreeing. Agreeing is satisfied by both returning
+        # the same wrong string -- a body mutant that short-circuits to
+        # "FAILED MUTANT" would keep this test green if it only compared the
+        # paths to each other. STORE_ALL is special-cased to VAULT_STORE and
+        # _run_directive is mocked success, so the body's tail is deterministic.
+        self.assertEqual(
+            p_res[0], "COMPLETED STORE_ALL {}",
+            f"planner outcome is not the real dispatcher's: {p_res[0]!r}")
 
     def test_bound_arguments_survive_on_both_paths(self):
         # A bound action carries its allowed args beside `kind`; both paths
@@ -219,6 +254,29 @@ class ScriptPlannerParityTest(unittest.TestCase):
         p_pass, s_pass, _, _ = self._both(action)
         self.assertEqual(p_pass[0], action)
         self.assertEqual(s_pass[0], action)
+
+    def test_key_filter_drops_stray_key_on_both_paths(self):
+        # The dispatcher body drops any key not in api.set_directive's
+        # signature before _run_directive. An outcome-only test cannot see this
+        # (the stray key would just reach the callee). Pin it on both paths so
+        # the body's filter is exercised, not bypassed.
+        action = {"kind": "MINE", "target": "iron_ore", "stray_key": "x"}
+        p_seen, s_seen = self._params_reaching_run_directive(action)
+        for seen in (p_seen, s_seen):
+            self.assertEqual(len(seen), 1)
+            self.assertNotIn("stray_key", seen[0], "stray key reached the callee")
+            self.assertEqual(seen[0].get("type"), "MINE")
+            self.assertEqual(seen[0].get("target"), "iron_ore")
+
+    def test_locate_defaults_share_with_on_both_paths(self):
+        # The body defaults LOCATE's share_with to _task_sender. This is a body
+        # behaviour with no outcome signal, so it is only observable by reading
+        # what reaches _run_directive.
+        action = {"kind": "LOCATE", "target": "end_city"}
+        p_seen, s_seen = self._params_reaching_run_directive(action)
+        for seen in (p_seen, s_seen):
+            self.assertEqual(len(seen), 1)
+            self.assertEqual((seen[0].get("extra") or {}).get("share_with"), "alice")
 
 
 if __name__ == "__main__":
