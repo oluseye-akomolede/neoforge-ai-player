@@ -137,3 +137,51 @@ console. `ScriptReportStoreTest` is 14 of them (87 elsewhere — the 83 pre-exis
 added since the harness row). The first attempt failed with zero tests and no `> Task :test`
 line: `--offline` cannot build a cold archive, the same cold-cache hazard as before. That
 failure is an instrument fault, not a red suite, and seeding the cache is what resolved it.
+
+---
+
+## Closure — F-1, F-2, F-3 fixed at `b56f3c3` (reviewer-verified 2026-11-24 04:3xZ)
+
+The builder closed all three in a follow-up commit rather than a re-open. I verified each from
+a clean `git archive b56f3c3`, not from their report.
+
+**F-1 — closed.** `design.md:147` no longer says "must not show a figure falling from 1.4 h to
+0.0 h unlabelled". It now conditions the guarantee on the transport: a fall *is* labelled where
+`previous_code_hours` is present, and the first-report case is explicitly named as the one that
+cannot be, deferred to 5.4 with a pointer to the "What a fall is observable for" bullet. The
+condition is now the transport's, which is a promise this payload can keep. `grep unlabelled`
+returns nothing. The contradiction I introduced by approving the 5.4 bullet without re-reading
+the document around it is gone.
+
+**F-2 — closed.** The static-store deviation now sits under 5.7, whose wording is "per bot on
+`BotPlayer`", immediately after the tick it deviates from. 6.3 carries no note and remains
+`[ ]` unticked — the builder's own note there had made it read as done, which they named as the
+worse of their two errors. Correct call.
+
+**F-3 — closed, and the test is the right shape.** `agent.py` now reads `state` once, returns
+explicitly when it is `None`, and passes the same `state` to `sender.report()`; the comment
+states why the blanket `except` must not be the thing that catches it.
+
+I re-ran the discriminator rather than accept "asserts report() is not called":
+- Four affected suites at `b56f3c3`: **231 OK**, `agent.py` md5 `f5b32be…` matching the
+  builder's stated restore.
+- Mutant `if state is None:` → `if False:` (skip removed): **exactly one test reddens**, the new
+  `test_a_tick_that_never_reached_the_runner_skips_the_report`, and it fails on the `calls`
+  assertion with `[('Scout', None, 0.0005556…, 1, …)] != []` — i.e. `report()` really was
+  called with `None`. That is the defect, not a coincidental failure.
+- Restored to md5 `f5b32be…`; green.
+
+The builder's own account of nearly shipping this green is worth keeping: their first version
+asserted only `rec.sent == []`, which stays green with the skip removed, because a clean skip
+and a swallowed raise both send nothing. They found it by mutating. The committed test adds the
+call-count assertion, which is the only observable that distinguishes the two — and it is
+commented as such, so the next person does not soften it back.
+
+`openspec validate coded-agents --strict`: valid at `b56f3c3`. No Java touched this round, so
+the `435e14b` Java measurement (97 / 11 classes / 0 failures) still stands.
+
+**Standing, unchanged:** `is_exhausted()`'s `return False` survivor (code-time F-2) is still
+open for whoever writes 5.4. `tick_count`'s pre-existing docstring is untouched.
+
+**Provenance, unchanged:** `b56f3c3`, like `435e14b` and the design commits before it, is on
+`ship-ca27-harness` and is not in `minecraft-wt-qwen`'s history; read by sha. Unpushed.
