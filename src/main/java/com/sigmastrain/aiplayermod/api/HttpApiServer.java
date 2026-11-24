@@ -27,6 +27,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.Executors;
+import com.sigmastrain.aiplayermod.telemetry.ScriptReportStore;
 
 public class HttpApiServer {
     private final int port;
@@ -290,9 +291,25 @@ public class HttpApiServer {
 
     // ── /bots ── (GET = list, POST = spawn)
 
+    /**
+     * coded-agents 6.4: the bot's cached status plus the script report the agent
+     * last sent, rendered by {@link ScriptReportStore#toJson}.
+     *
+     * <p>A stale report is rendered as state {@code "stale"}, not dropped and
+     * not shown as its old state: an agent that stopped reporting must not read
+     * as {@code "script"}. The store owns that rule; this only attaches it.
+     */
+    private static Map<String, Object> withScriptReport(String botName,
+                                                        Map<String, Object> cached) {
+        Map<String, Object> out = new LinkedHashMap<>(cached);
+        out.put("script_report",
+                ScriptReportStore.toJson(botName,
+                        ScriptReportStore.get(botName), System.currentTimeMillis()));
+        return out;
+    }
+
     private void handleBots(HttpExchange exchange) throws IOException {
         if (!checkAuth(exchange)) return;
-
         if ("GET".equals(exchange.getRequestMethod())) {
             List<Map<String, Object>> botList = new ArrayList<>();
             for (var entry : BotManager.getAllBots().entrySet()) {
@@ -343,7 +360,26 @@ public class HttpApiServer {
 
         try {
         switch (action) {
-            case "status" -> sendJson(exchange, 200, bot.getCachedStatus());
+            case "status" -> sendJson(exchange, 200, withScriptReport(botName, bot.getCachedStatus()));
+            // coded-agents 5.7: the agent reports its script state and usage
+            // here; the status surface reads it back from the same route. The
+            // bot is already resolved above, so an unknown name is the existing
+            // 404 and nothing new is stored for it.
+            case "script_report" -> {
+                if ("GET".equals(exchange.getRequestMethod())) {
+                    var e = com.sigmastrain.aiplayermod.telemetry.ScriptReportStore.get(botName);
+                    sendJson(exchange, 200,
+                            com.sigmastrain.aiplayermod.telemetry.ScriptReportStore.toJson(
+                                    botName, e, System.currentTimeMillis()));
+                    return;
+                }
+                if (!com.sigmastrain.aiplayermod.telemetry.ScriptReportStore.record(
+                        botName, body, System.currentTimeMillis())) {
+                    sendJson(exchange, 400, Map.of("error", "invalid report"));
+                    return;
+                }
+                sendJson(exchange, 200, Map.of("ok", true));
+            }
             case "voxel" -> sendJson(exchange, 200, bot.getCachedVoxel());
             case "chat" -> {
                 String message = body.get("message").getAsString();

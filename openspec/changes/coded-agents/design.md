@@ -97,7 +97,7 @@ One request per bot per reporting interval, body:
 |---|---|---|
 | `script_state` | ≤ 24 bytes | the four-value vocabulary; absent when the bot has no script |
 | `code_hours` | ≤ 20 bytes | `usage_hours()` as sent; the mod shows it, it does not re-derive it. Its window (day, process lifetime) is **not** asserted by this channel -- 5.4's |
-| `previous_code_hours` | ≤ 20 bytes | the figure this one replaces; present once the bot has reported before, absent on its first report. So a fall is readable from one report without the mod keeping a history -- still latest-only storage |
+| `previous_code_hours` | ≤ 20 bytes | the figure this one replaces. **Absent unless this report's figure is LOWER than the last one sent.** So a fall is readable from one report without the mod keeping a history -- still latest-only storage -- and it cannot be misread as describing a rise, which is what a day rollover may produce once 5.4 settles one |
 | `ticks` | ≤ 10 bytes | the counter's unit, so a reader can tell "zero usage" from "never ticked" **within one process**; it restarts with the process, so hours > 0 with ticks 0 is normal after a restart (see the silence bullet below) |
 | `observed_at` | 20 bytes | the agent's clock at send, so the mod can date staleness from the sender's own view and detect clock skew |
 | `revision` | ≤ 72 bytes | the script revision in effect, so the state is never attributed to a revision that did not produce it |

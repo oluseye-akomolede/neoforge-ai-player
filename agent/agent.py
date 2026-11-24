@@ -3685,6 +3685,47 @@ Respond with ONLY a JSON array. Example:
             meter = self.code_time = CodeTimeMeter()
         meter.record_tick()
 
+    @staticmethod
+    def _report_observed_at():
+        """UTC now in the `%Y-%m-%dT%H:%M:%SZ` shape the design's example uses.
+
+        Seconds resolution and a trailing `Z`, not `isoformat()`: the mod parses
+        this to date staleness from the SENDER's clock, so the format is part of
+        the contract rather than a convenience.
+        """
+        import datetime
+        return datetime.datetime.now(datetime.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
+
+    def _report_script_state(self, st):
+        """Send this bot's state to the mod if the report channel says it is due.
+
+        Task 5.6. Called once per SENT tick from `_run_script_tick`, beside the
+        metering call and for the same reason: the report says what the tick
+        that was actually sent did. Wrapped so a reporter failure -- a dead mod,
+        a slow socket, a bug in this channel -- can never break a tick that has
+        already done real work.
+        """
+        try:
+            sender = getattr(self, "script_reporter", None)
+            if sender is None:
+                return
+            meter = getattr(self, "code_time", None)
+            hours = meter.usage_hours() if meter is not None else None
+            ticks = meter.tick_count() if meter is not None else None
+            sender.report(
+                self.name,
+                getattr(st, "last_state", None),
+                hours,
+                ticks,
+                self._report_observed_at(),
+                getattr(st, "_revision", None),
+            )
+        except Exception:
+            # One dropped report, superseded by the next interval. See
+            # script_report.py: nothing is queued or retried here either.
+            pass
+
     def _run_script_tick(self):
         """Run one script-mode tick. Return True if the script handled it.
 
@@ -3731,6 +3772,11 @@ Respond with ONLY a JSON array. Example:
             # method. The unit is the tick period, not CPU or a wall clock
             # between ticks (spec, "Code Time Is Metered Per Bot").
             self._record_code_time_tick()
+            # Task 5.6: report this bot's state to the mod, if due. Same seam as
+            # the meter and for the same reason -- both describe the tick that
+            # was actually sent. A no-op unless `script_reporter` is attached,
+            # so every existing caller is unaffected.
+            self._report_script_state(st)
             # `say`/`send` are delivered HERE, through the same functions the
             # planner uses, not through the directive dispatch below: they are
             # runner actions with no `kind` (contract §4.1; agent-script-runner

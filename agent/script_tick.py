@@ -477,6 +477,12 @@ class ScriptTick:
         # text and already capped by the runner. None when it reported nothing.
         # An attribute for the same reason as the two above.
         self.last_result = None
+        # The runner state this tick ended in, from the same four-value
+        # vocabulary the dashboard already uses (STATE_SCRIPT or one of the
+        # STATE_FALLBACK_*). None until the first tick has run. Read by the
+        # report channel (task 5.6) so the mod is told the state of the tick
+        # that was actually sent, not a state the agent inferred afterwards.
+        self.last_state = None
 
     @property
     def enabled(self):
@@ -497,6 +503,9 @@ class ScriptTick:
         self.last_deliveries = []
         self.last_result = None
         self.last_task = None
+        # Cleared with the rest: a tick that dies before reaching the runner
+        # must not report the previous tick's state as this one's.
+        self.last_state = None
 
         if not self._source:
             return False, [], [], "no script"
@@ -548,6 +557,11 @@ class ScriptTick:
                 return False, [], [], no_token_detail()
             return False, [], [], no_runner_detail()
         result = call_runner(self._api, body, post=poster, dry=self._dry)
+        # Recorded once, here, so every return path below reports the state of
+        # the tick that was actually sent. Assigned before the branch rather
+        # than in each arm: a new early return added later would otherwise
+        # silently report `None` (or a stale value) for a real runner state.
+        self.last_state = result.state
 
         if result.state != STATE_SCRIPT:
             # Timeout, refused, error -- every non-script state falls through.

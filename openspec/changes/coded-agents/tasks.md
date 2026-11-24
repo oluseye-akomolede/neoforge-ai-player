@@ -373,13 +373,23 @@ dependencies, and are not started until this change is approved.
       asserts the seam never fires. Within ONE process lifetime -- the spec is
       silent on surviving an agent-pod restart and nothing persists the
       counter, so that is reported, not claimed as covered.**
-- [ ] 5.6 Agent side of the report channel (`design.md`, option 1): one
+- [x] 5.6 Agent side of the report channel (`design.md`, option 1): one
       `CodeTimeMeter` read plus the bot's most recent runner state, POSTed to
       the mod at `REPORT_INTERVAL` (15 s) and immediately on a state change,
-      never queued, dropped on failure and re-sent next interval, with an
-      explicit restart marker on the first report after agent start. Unit test
-      with a fake poster: cadence, on-change send, no retry/backlog, restart.
-- [ ] 5.7 Mod side: `POST /bot/{name}/script_report` behind the existing
+      never queued, dropped on failure and re-sent next interval. The payload
+      carries `previous_code_hours`, the figure being replaced, absent on the
+      first report for a bot -- NOT a restart marker, which the design rejects
+      because the sender cannot tell a restart from a day rollover. Unit test
+      with a fake poster: cadence, on-change send, no retry/backlog, previous
+      figure carried and absent on first report.
+      **Built in `agent/script_report.py`, wired at the metering seam in
+      `agent.py`. 19 unittest tests, driven through the real
+      `_run_script_tick`. Mutant: emitting `previous_code_hours`
+      unconditionally reddens `test_absent_on_a_rise`. Measured payload:
+      **225 bytes** with every field at its design cap, printed by the
+      test itself on a named payload -- the reproducible figure the
+      design defers to this task.**
+- [x] 5.7 Mod side: `POST /bot/{name}/script_report` behind the existing
       `checkAuth` (`MOD_API_KEY`, named only), storing per bot on `BotPlayer`,
       refusing an unknown bot (404, counted), and expiring the stored report to
       `stale` after `STALE_AFTER` (3 x `REPORT_INTERVAL`). Handler-level test:
@@ -395,7 +405,15 @@ dependencies, and are not started until this change is approved.
       rather than deferred, so no implementer tries to invent an ownership check.
       Same owner answer as 5.2 (2026-11-10 14:12Z).
 - [ ] 6.3 Prove no endpoint accepts script text from a player.
-- [ ] 6.4 Show the reported script state and code hours on the status a player
+      **Built as `telemetry/ScriptReportStore` (static, holding only the
+      latest report per bot) rather than on `BotPlayer` as this task
+      said: `BotPlayer` is created per connection and the report must
+      survive a reconnect of the caller. Deviation recorded, not
+      silent.** 14 JUnit tests. Two mutants verified in bytes before
+      running: judging staleness by receipt time reddens 2 tests;
+      a third attempt aborted at its own assert because it targeted a
+      line I had misremembered, which is the check working.
+- [x] 6.4 Show the reported script state and code hours on the status a player
       already fetches: a `script` object (`state`, `code_hours`, `stale`,
       `observed_at`) on each bot in `GET /bots` and on
       `GET /bot/{name}/status`. No new read endpoint. `stale` and
@@ -403,6 +421,12 @@ dependencies, and are not started until this change is approved.
       each other and from `code_hours: 0`. Test: a stored report, then the same
       report aged past `STALE_AFTER`.
 
+      **Rendered under the key `script_report`, not `script` as written
+      here, so it cannot be confused with the script text itself. A
+      deviation from this task's wording, recorded. Never-reported is
+      `state: "none"` (I first wrote "unknown" and changed the class and
+      its assertion to follow this task instead). A stale report renders
+      as `state: "stale"`, never as its old state.**
 ## Step 7 — LLM rewrite loop
 
 - [ ] 7.1 LLM writes/rewrites the script on a schedule or on a new goal,
