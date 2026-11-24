@@ -394,6 +394,15 @@ dependencies, and are not started until this change is approved.
       refusing an unknown bot (404, counted), and expiring the stored report to
       `stale` after `STALE_AFTER` (3 x `REPORT_INTERVAL`). Handler-level test:
       accepted, refused, and aged-to-stale.
+      **NOT as this task's wording says: built as a static
+      `telemetry/ScriptReportStore` holding only the latest report per bot,
+      not a field per bot on `BotPlayer`. `BotPlayer` is created per
+      connection, so a report stored there would not survive a reconnect of
+      the caller, and the store must keep only the latest report (no
+      history). Deviation recorded, not silent.** 14 JUnit tests. Two mutants
+      verified in bytes before running: judging staleness by receipt time
+      reddens 2 tests; a third attempt aborted at its own assert because it
+      targeted a line I had misremembered, which is the check working.
 
 ## Step 6 — read-only script view
 
@@ -405,14 +414,6 @@ dependencies, and are not started until this change is approved.
       rather than deferred, so no implementer tries to invent an ownership check.
       Same owner answer as 5.2 (2026-11-10 14:12Z).
 - [ ] 6.3 Prove no endpoint accepts script text from a player.
-      **Built as `telemetry/ScriptReportStore` (static, holding only the
-      latest report per bot) rather than on `BotPlayer` as this task
-      said: `BotPlayer` is created per connection and the report must
-      survive a reconnect of the caller. Deviation recorded, not
-      silent.** 14 JUnit tests. Two mutants verified in bytes before
-      running: judging staleness by receipt time reddens 2 tests;
-      a third attempt aborted at its own assert because it targeted a
-      line I had misremembered, which is the check working.
 - [x] 6.4 Show the reported script state and code hours on the status a player
       already fetches: a `script` object (`state`, `code_hours`, `stale`,
       `observed_at`) on each bot in `GET /bots` and on

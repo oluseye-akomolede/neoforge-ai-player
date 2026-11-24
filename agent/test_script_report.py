@@ -304,6 +304,47 @@ class RunnerSeamTest(unittest.TestCase):
         self.assertEqual(body["script_state"], "script")
         self.assertIn("code_hours", body)
 
+    def test_a_tick_that_never_reached_the_runner_skips_the_report(self):
+        """F-3: `last_state` is None on the three early returns (no script, no
+        runner, no token), and `report()` raises on a state outside the
+        vocabulary. The seam's blanket `except` used to swallow that as though
+        it were a transport failure -- losing the report without counting it in
+        `dropped`. It must be a clean skip instead, and must not be a send."""
+        a = self._runner()
+
+        class NeverTicked:
+            last_state = None
+            last_deliveries = []
+            last_result = None
+            last_logs = []
+            _revision = "sha256:abc"
+
+            def tick(_self):
+                return (False, [], [], "no script")
+
+        a._script_tick = NeverTicked()
+        rec = Recorder()
+        sender = sr.ReportSender(rec, clock=FakeClock())
+        a.script_reporter = sender
+        # Spy on `report`: a clean skip never enters it, whereas the old
+        # pass-through called it with `None`, raised, and had that swallowed by
+        # the seam's blanket `except`. Asserting only `rec.sent == []` does NOT
+        # distinguish the two -- both send nothing -- which is why this is a
+        # call-count assertion.
+        calls = []
+        real_report = sender.report
+
+        def spy(*args, **kw):
+            calls.append(args)
+            return real_report(*args, **kw)
+
+        sender.report = spy
+        a._run_script_tick()  # must not raise
+        self.assertEqual(rec.sent, [], "a tick that never reached the runner reported")
+        self.assertEqual(calls, [], "report() was called with no runner state; "
+                                    "the skip must happen before it")
+        self.assertEqual(sender.dropped, 0, "a skip was counted as a dropped report")
+
     def test_a_held_tick_reports_nothing(self):
         # A held script does not tick, so it must not report: reporting would
         # tell the mod the bot is running a script it is not running.

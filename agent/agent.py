@@ -3710,12 +3710,21 @@ Respond with ONLY a JSON array. Example:
             sender = getattr(self, "script_reporter", None)
             if sender is None:
                 return
+            state = getattr(st, "last_state", None)
+            if state is None:
+                # No tick reached the runner (no script, no runner, no token),
+                # so there is no runner state to report. `report()` would raise
+                # on it -- `None` is deliberately not in the state vocabulary --
+                # and the except below would swallow that as though it were a
+                # transport failure, losing a report without counting it. Skip
+                # explicitly: the next tick that reaches the runner reports.
+                return
             meter = getattr(self, "code_time", None)
             hours = meter.usage_hours() if meter is not None else None
             ticks = meter.tick_count() if meter is not None else None
             sender.report(
                 self.name,
-                getattr(st, "last_state", None),
+                state,
                 hours,
                 ticks,
                 self._report_observed_at(),

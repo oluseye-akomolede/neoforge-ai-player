@@ -144,8 +144,13 @@ payload holds only what a player is meant to see.
   The channel does not say what a fall MEANS. A restart, a day rollover and a
   replaced meter all produce one, and which of those this is, and whether the
   figure should persist at all, is tasks 5.4's (day boundary and restart
-  persistence), not this channel's. What it must not do is show a figure
-  falling from 1.4 h to 0.0 h unlabelled.
+  persistence), not this channel's. What it must not do is pass on a rising or
+  falling figure as though it were flat: where the report carries
+  `previous_code_hours`, a fall is labelled as a fall. Where it cannot -- a
+  restarted bot's first report, which arrives with no previous value at all --
+  the figure reads as a bot appearing at 0.0 h, and labelling THAT case is
+  5.4's (see "What a fall is observable for", below). The channel must never
+  present the second case as if it were the first.
 - **The figure's window:** `usage_hours()` is a process-lifetime monotonic total
   today (`code_time.py:84`/`:101`/`:113` -- starts at `0.0`, only `+=`). There
   is no `day` field, no rollover, and no per-day figure anywhere in the meter or
