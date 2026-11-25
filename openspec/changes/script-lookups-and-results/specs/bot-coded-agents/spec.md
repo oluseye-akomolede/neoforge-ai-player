@@ -15,11 +15,15 @@ NOT spend a host call, reach the network, or reach the mod.
   sheep's `distance`
 - **AND** `hostCalls` for the tick is unchanged by the call
 
-#### Scenario: A lookup beyond the snapshot says so
+#### Scenario: A lookup beyond the snapshot points at the query function
 - **GIVEN** a snapshot whose `nearby.blocks` covers radius 5
 - **WHEN** the script asks for a block within 40 blocks
 - **THEN** the lookup MUST NOT return an empty list that reads as "nothing there"
-- **AND** it MUST report that the search did not extend that far
+- **AND** it MUST report that the search did not extend that far, and name the
+  beyond-snapshot search (its exact name is settled by the lead once
+  `tasks.md` §7's option is chosen; do not hard-code `query.blocks` in code until
+  then)
+- **AND** the snapshot lookup itself MUST still spend no host call
 
 #### Scenario: A lookup reports the age of what it searched
 - **GIVEN** a tick whose snapshot was refreshed up to 2000 ms before the tick
@@ -54,6 +58,8 @@ NOT spend a host call, reach the network, or reach the mod.
 - **THEN** it MUST hold no reference to `api`
 - **AND** no lookup path MUST reach `accept()`, the function that spends the
   host-call budget
+- **AND** the `query` functions added beside it MUST be the same: they spend a
+  host call but can only read, and none of them dispatches a directive
 
 #### Scenario: A lookup result is a copy
 - **GIVEN** a lookup that returned a list
@@ -116,6 +122,63 @@ NOT spend a host call, reach the network, or reach the mod.
   removed from each side and nothing else is rewritten
 - **AND** matching MUST remain exact after that one strip, so
   `look.blocks('iron')` MUST NOT match `minecraft:iron_ore`
+
+### Requirement: A Script Can Search The World Beyond The Snapshot
+
+A script MUST be able to search beyond its snapshot, the way the planner's own
+`find_blocks` / `find_entities` / `locate` do (owner A2, 2026-11-25 00:59Z). How
+that is exposed is NOT yet decided, because the code as it stands forbids the
+obvious synchronous form and the choice is architectural.
+
+**The constraint, stated so no implementer repeats the first draft's mistake.**
+The script runs in QuickJS (`agent-script-runner/src/engine.js`), one fresh context
+per tick, whose only globals are `api`, `snapshot`, `look` and `memory`
+(`src/engine.js:399-423`, `:593-637`, `:708-710`). It has no `fetch`, `require`,
+`os` or `std` (`:13`). The only outbound path, `api.*` (`src/binding.js:192-500`), installed via `newFunction` at `src/engine.js:863-864`),
+queues directives into `state.actions` that the Python agent dispatches AFTER the
+tick (`agent/agent.py:3738`). Nothing in the sandbox can make a synchronous call to
+the mod and read the answer back inside the same tick. So a synchronous
+`query.blocks()` returning matches is not buildable without changing the sandbox
+boundary -- see `tasks.md` §7 for the three options and their costs.
+
+Whatever is chosen, these MUST hold: a search MUST be read-only and MUST NOT reach
+`do`; a search above any maximum MUST be clamped and MUST report the clamp rather
+than answer "not found" for a search that never ran that far; and a search that
+fails or times out MUST be `{ ok: false, reason, message }`, never an empty
+`matches`, because "searched and found none" and "could not search" are different
+facts and a script is entitled to tell them apart (`src/look.js:103-110`).
+
+The mod clamps nothing: `HttpApiServer.java:1117-1134` takes whatever `radius` and
+`max` it is sent, and `findBlocks` iterates the full cube
+(`BotPlayer.java:1286-1309`). Any bound lives on the caller side.
+
+#### Scenario: A search beyond the snapshot does not read as "nothing there"
+- **GIVEN** a snapshot whose `nearby.blocks` covers radius 5
+- **WHEN** the script asks for a block within 40 blocks
+- **THEN** the answer MUST NOT be an empty list that reads as "nothing there"
+- **AND** it MUST distinguish "did not search that far" from "searched, none found"
+- **AND** the snapshot lookup itself MUST still spend no host call
+
+#### Scenario: A search cannot act
+- **GIVEN** the object that exposes search to a tick
+- **WHEN** its construction is inspected
+- **THEN** it MUST hold no directive dispatcher and no reference to `do`
+- **AND** no search path MUST reach the mod's `goto`, `mine`, `place`, `attack` or
+  `set_directive` routes
+
+#### Scenario: A search above the maximum is clamped, and says so
+- **GIVEN** a search asking for more than the maximum radius or count
+- **WHEN** it is performed
+- **THEN** it MUST be narrowed to the maximum
+- **AND** the answer MUST carry the clamp, so the caller can tell the search was
+  narrower than asked
+
+#### Scenario: A search that times out is not an empty answer
+- **GIVEN** a search whose mod request fails or times out
+- **WHEN** the result reaches the caller
+- **THEN** it MUST be `{ ok: false, reason, message }`
+- **AND** it MUST NOT be an empty `matches`
+
 
 ### Requirement: A Script Can Read Its Own Inventory Through The Lookup
 
@@ -209,8 +272,10 @@ top-level return value, which ends the tick and reaches no result field
 delivered to the planner when the script reports completion, when it errors,
 or when it states an escalation — and on no other tick. Delivery MUST NOT
 depend on a player message arriving: a finished script's result MUST start a
-planner call of its own, under the per-bot hourly cap and cooldown that bound
-how often that can happen.
+planner call of its own, with NO rate cap and NO cooldown (owner A2,
+2026-11-25 00:59Z). The only bound is serialisation: at most ONE
+result-triggered planner call in flight per bot at a time, whichever script
+produced it.
 
 `api.result(v)` MUST cost one of the tick's 8 host calls. Its value MUST be
 JSON-serialised and capped by the same 2 KiB marked cut as any other result.
@@ -278,9 +343,8 @@ string, a non-object JSON value, a non-boolean `done`, or text cut mid-JSON by
 the size cap -- MUST keep the `done` trigger it had before this requirement, so
 every script written against the older contract keeps working.
 
-DECISION: a failure result MUST hand the goal back to the planner, bounded by
-the same per-bot caps as any other result-triggered call, rather than closing
-as done-with-failure. The reasoning is that the two outcomes are not
+DECISION: a failure result MUST hand the goal back to the planner rather than
+closing as done-with-failure. The reasoning is that the two outcomes are not
 symmetrical. A `done` result is the end of the work: re-planning it makes the
 planner decompose text it already finished (the 03:22Z clarify question). A
 failure is the *absence* of the outcome the player asked for, and the planner is
@@ -289,23 +353,28 @@ from elsewhere, pick another ore, or tell the player it cannot be done. Closing
 it as done silently converts "could not" into "did", which is the one reading
 no script is entitled to make on the player's behalf.
 
-The caps are what make this safe: an unbounded re-plan on a failure is the
-trial 4.2 retry loop one layer up, so a failing script MUST NOT be able to drive
-one planner call per tick. A failure result MUST consume the same per-bot
-hourly cap and cooldown as a `done` result, and when both are exhausted the
-goal MUST be left open for the player rather than closed as done.
+The owner removed the hourly cap and the cooldown (A2, 2026-11-25 00:59Z): a
+script may wake the planner on every stated trigger, and the scripts are written
+by a local model, so the planner call is the thing worth doing, not the thing to
+throttle. What still holds a failure is serialisation, not a rate: a failure
+result MUST consume the same ONE in-flight planner slot as any other
+result-triggered call, and a result that arrives while a call is in flight MUST
+stay pending rather than be dropped. No failure result closes the goal as done
+and none is discarded.
 
 #### Scenario: A failure result re-plans instead of closing
 - **GIVEN** a pending result whose script reported `{done: false}`
-- **WHEN** the result-delivery point runs and the caps allow a call
+- **WHEN** the result-delivery point runs and no planner call is in flight
 - **THEN** the planner MUST be asked what to do next
 - **AND** the goal MUST NOT be closed as done
 - **AND** the player MUST NOT be told the work succeeded
 
-#### Scenario: A failure result is bounded like any other delivery
-- **GIVEN** a pending `{done: false}` result and the per-bot cooldown already running
-- **WHEN** the result-delivery point runs
-- **THEN** no planner call MUST happen
+#### Scenario: A second failure while one is in flight waits, and is not dropped
+- **GIVEN** a `{done: false}` result already handed to the planner, and that
+  call still in flight
+- **WHEN** another `{done: false}` result becomes pending
+- **THEN** no second planner call MUST start while the first is in flight
+- **AND** the second result MUST stay pending rather than be discarded
 - **AND** the goal MUST be left open rather than closed as done
 
 #### Scenario: A successful result still closes
@@ -364,31 +433,22 @@ done.
 - **WHEN** the agent processes the failure
 - **THEN** a result MUST be delivered to the planner
 
-#### Scenario: The cooldown is the binding rate limit
-- **GIVEN** a bot with a script result delivered at some moment
-- **WHEN** further script results are pending for that bot
-- **THEN** no result-triggered planner call MUST start within 900 seconds of
-  the last one
-- **AND** at most one such call MUST start per 900 seconds per bot, so at most
-  four in any rolling hour
-- **AND** a result held back by the cooldown MUST stay pending, not be dropped
+#### Scenario: One result-triggered call in flight per bot
+- **GIVEN** a bot whose result-triggered planner call is in flight
+- **WHEN** another script result becomes pending for that bot, from any script
+- **THEN** no second result-triggered planner call MUST start until the first
+  returns
+- **AND** the pending result MUST stay in the slot, not be dropped
+- **AND** when the in-flight call returns, the pending result MUST be delivered
+  on the next pass — there is no wait to serve beyond the in-flight call, no
+  15-minute cooldown and no hourly budget
 
-#### Scenario: The cooldown is per bot, not per script
-- **GIVEN** two bots, each with a script result pending
-- **WHEN** both results are delivered within the same 15 minutes
-- **THEN** each bot MUST get its planner call, because one bot's cooldown MUST
-  NOT hold back another bot's result
-
-#### Scenario: The hourly cap is a backstop
-The cap bounds the rate even if the cooldown is shortened or removed; on its
-own, with the cooldown at 900 seconds, the cooldown already holds the rate to
-four per hour.
-- **GIVEN** the 15-minute cooldown is short enough that four result-triggered
-  planner calls for one bot fall inside one rolling hour
-- **WHEN** a fifth result is pending for that bot inside the same hour
-- **THEN** the fifth call MUST NOT start
-- **AND** the fifth result MUST stay pending, not be dropped
-- **AND** the suppressed call MUST be logged with the cap named
+#### Scenario: Serialisation is per bot, not per script and not global
+- **GIVEN** two bots, each with a script result pending at the same moment
+- **WHEN** both are delivered
+- **THEN** each bot MUST get its own planner call, because neither bot's
+  in-flight call is the other's
+- **AND** one bot's in-flight call MUST NOT hold back the other's result
 
 #### Scenario: A result has a size cap
 - **GIVEN** a script calling `api.result` with more than 2 KiB of JSON
@@ -425,7 +485,8 @@ discard; it starts working unchanged once a tick reports the goal it ran for.
 - **GIVEN** a planner call in flight for a goal
 - **WHEN** a result for that goal arrives
 - **THEN** the in-flight call MUST NOT be interrupted or given the result
-- **AND** the result MUST be delivered on a later pass under the caps
+- **AND** the result MUST be delivered on a later pass, once the in-flight call
+  has returned
 
 #### Scenario: A stale result is discarded, not delivered (DEFERRED)
 **Deferred (task 3.9):** not shipped by this change. No age rule is
@@ -1313,7 +1374,7 @@ script is no longer ticking:
    `agent.py:1259` at this change's base commit).
 2. A failure result is handed back to the planner. The script reported that it
    could not do the job; the planner is choosing another approach, so the old
-   script is not the thing to keep running. Held at `(cooldown)` forever, it
+   script is not the thing to keep running. Left bound, it
    pays a runner call every tick and can suppress its own `say` indefinitely.
 3. The player sends a stop. A player's "stop" MUST stop a script that mines or
    walks, not only the planner that wrote it.

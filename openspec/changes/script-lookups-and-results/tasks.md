@@ -10,9 +10,14 @@ document work that preceded them, kept so the reasoning is not lost.
       371095c, 5ae0372, a0146b0, b40f71b): every `file:line`
       resolves, every recommendation has its alternative and why it lost, and
       §3's loop bound has a number that could be wrong.
-- [ ] 1.2 Owner has read §3's cost sentence (up to 4 planner calls per hour per
-      bot from results) and the §1 restriction (lookups answer only what the
-      snapshot already carries), and has approved both.
+- [ ] 1.2 Owner has read §3's cost sentence and the §1 restriction (lookups
+      answer only what the snapshot already carries). SUPERSEDED in part by
+      owner A2 (2026-11-25 00:59Z): the rate caps were removed (a script may
+      wake the planner on every stated trigger), and the §1 restriction was
+      lifted (scripts get `query.*` functions beside `look`). What remains to
+      be read by the owner is the cost the caps no longer bound — a `done`
+      every tick can wake the planner once per pass — and the query budgets
+      proposed in the spec delta.
 - [x] 1.6 The snapshot bound is true nearest-K per block id, not first-K in
       scan order: squared distance per candidate, K-bounded insertion, scan
       order as the tie-break. The cost is 1331 integer distance computations
@@ -37,7 +42,11 @@ document work that preceded them, kept so the reasoning is not lost.
 - [ ] 1.5 Measure the cost of a wider radius before proposing one: time
       `getNearbyBlocks` at radius 5 (1331 cells) and radius 16 (35937 cells) on
       a test server, and record wall time per refresh. A number, not an
-      estimate.
+      estimate. **Extend to `findBlocks` at radius 32 and 48** — the two values
+      that decide whether the `query.blocks` bounds proposed in the spec delta
+      are safe; the spec's cost table is arithmetic over an assumed
+      `getBlockState` rate, and this task replaces that assumption with a
+      measurement.
 
 ## 2. Lookups (b)
 
@@ -97,16 +106,16 @@ document work that preceded them, kept so the reasoning is not lost.
       `test_a_report_over_the_cap_is_marked_not_dropped`. The UTF-8 cut uses
       `decode("utf-8", "ignore")` on the byte prefix: measured identical to a
       hand boundary walk over six paddings, so the simpler one ships.
-- [x] 3.3 The per-bot 4/hour cap and the per-bot 15-minute cooldown, as the
-      load-bearing guard on result-triggered calls. The cooldown is the binding
-      limit: at 900 s it holds the rate to four an hour, so the cap's scenario
-      is "four calls inside one hour refuse a fifth" and, measured, it is
-      reachable only if the cooldown shortens. Per-bot keying is pinned by two
-      real bots each getting a call inside the same 15 minutes (F-5); the
-      mutants key the cooldown on the script, and share one slot across
-      instances, and both must red it. (The earlier ten-distinct-scripts
-      scenario was dropped: the single slot collapses ten results to one, so it
-      proved neither the rate nor the keying.)
+- [ ] 3.3 WITHDRAWN by owner A2 (2026-11-25 00:59Z) — the 4/hour cap and the
+      15-minute cooldown are to be REMOVED, not kept. The code that implements
+      them today (`agent/result_delivery.py` — `MAX_RESULTS_PER_HOUR`,
+      `COOLDOWN_SECONDS`, `may_call`'s cooldown and hour-cap branches; the
+      `held (cooldown)` / `held (hour-cap)` branches at `agent/agent.py:1334`;
+      the tests in `agent/test_result_delivery.py` and
+      `agent/test_agent_script_branch.py` that pin them) is now to be deleted
+      by the implementation step, and the guarding concern passes to 3.12.
+      The two F-5 keying tests and the two F-6 reason-name tests go with it:
+      they pin a distinction that no longer exists.
 - [x] 3.4 `_maybe_plan_on_result()` beside `_maybe_plan`: evaluated every pass,
       acts only when a result is pending for the bot's current goal, so a
       finished script reaches `call_plan` with no player message. Pinned by a
@@ -126,15 +135,22 @@ document work that preceded them, kept so the reasoning is not lost.
       then returns on the non-empty plan, so the message-pass test pins the
       outcome (the message reached L3, the result stayed queued) rather than a
       mutant.
-- [x] 3.7 The caps are the guard, not a backstop: a fifth result within the
-      hour and a second within the cooldown are queued with the suppressing cap
-      logged, not dropped and not called. Pinned by tests; the mutant removes
-      the cap and must red them.
-- [x] 3.8 The cap and cooldown state is per bot and lives for the process
-      lifetime; `reset()` (`agent/agent.py:385-400`) MUST NOT clear it. Pinned
-      by a test that spends the cap, calls `reset()`, and asserts the fifth
-      result is still held off; the mutant clears the counters in `reset()` and
-      must red it.
+- [ ] 3.7 WITHDRAWN by A2 with 3.3. "The caps are the guard" is no longer
+      true of the product: the one thing that must hold is 3.12.
+- [ ] 3.8 WITHDRAWN by A2 with 3.3/3.7 — there is no budget state left to
+      preserve across `reset()`. A reset clearing `_plan_steps` is correct.
+
+- [ ] 3.12 **ONE result-triggered planner call in flight per bot (A2's only
+      remaining bound).** A result that arrives while a `call_plan` is in
+      flight MUST stay pending, from any script and either bot, and MUST be
+      delivered on the first pass after the call returns. THE GUARD ALREADY
+      EXISTS and must not be rebuilt: `_maybe_plan_on_result` returns when
+      `_plan_steps` is set (`agent/agent.py:1304-1306`). Pinned by a test that
+      drives two passes with a call live and asserts the second starts no call
+      and the result stays pending; the mutant deletes the `_plan_steps` check
+      and must red it. Also pinned: the "no wait to serve" property — after
+      the call returns, the very next pass delivers, with no cooldown to elapse
+      (the mutant adds a 60 s cooldown and must red it).
 - [ ] 3.9 DEFERRED -- the `goal-changed` discard. Not done, and nothing
       may promise it. A tick carries no goal id out of the sandbox (a held
       script returns SCRIPT_HELD before ticking), so every stored result has
@@ -345,19 +361,114 @@ there is no `self` or `bots` at all) — so the script guessed at `time`,
 
 - [ ] 5.1 Lookup within the snapshot: a sheep goal shears only when a sheep is
       near. Counted from the log with grep.
-- [ ] 5.2 Lookup beyond the snapshot: a diamonds-within-40 goal reports "not
-      searched that far" and escalates, rather than silently doing nothing.
+- [ ] 5.2 Lookup beyond the snapshot: SUPERSEDED by A2. A diamonds-within-40
+      goal is now answered by `query.blocks('diamond_ore', {radius: 40})` from
+      the script. The trial instead checks the CLAMP: a goal asking for more
+      than the bound gets `clamped` on the answer and the plan can see the
+      search was narrower. It also checks the error path: a timed-out query is
+      an `ok: false`, not an empty result.
 - [ ] 5.3 Result on completion: exactly one delivery, one planner call.
 - [ ] 5.4 Result on error: delivered, not silently logged.
-- [ ] 5.5 Loop bound holds: a script that claims `done` every tick yields at
-      most 4 planner calls in an hour, with a non-zero drop count.
+- [ ] 5.5 Loop rate REPORTED, not bounded: a script that claims `done` every
+      tick wakes the planner at most once per pass in a bad case (in-flight
+      rule only). The trial MEASURES calls per minute so the lead has a number
+      when deciding whether a trigger budget is wanted (open question, not a
+      requirement).
 - [ ] 5.6 A tool check: a sheep goal with no shears says so (or fetches them)
       rather than idling, now that `look.inventory()` can see it.
 
 ## 6. Out of scope, stated so it cannot drift back in
 
-- [ ] 6.1 No live mid-tick lookup (Option B). A later request for one cites
-      `design.md` §1 and the 8-host-call cap.
-- [ ] 6.2 No change to the six-function API, the host-call cap, the rate
-      windows, or the CPU budget.
+- [ ] 6.1 ~~No live mid-tick lookup (Option B).~~ **OVERRULED by owner A2
+      (2026-11-25 00:59Z):** scripts get `query.*`, which is a live mod call
+      inside the tick. The reason this line existed (1.4's "no real lookup
+      demand") was answered by the owner's direct request; the host-call cap
+      it cited is exactly what charges each query. See §7.
+- [ ] 6.2 No change to the six-function API, the 8-host-call cap, the `do`/
+      `say`/`send` rate windows, or the CPU budget. (The result-delivery
+      4/hour cap and 15-minute cooldown are NOT part of this line — A2 removes
+      them; see 3.3.) The new `query.*` functions are added BESIDE `api` and
+      `look`, charged against the existing 8-call cap, and do not change the
+      six `api.*` functions.
 - [ ] 6.3 No delivery of logs or actions to the planner.
+
+## 7. Script query functions (A2, 2026-11-25) -- BLOCKED ON AN ARCHITECTURE DECISION
+
+Owner A2 asked for "functions that encapsulate that functionality" so scripts can
+search the world like the planner's `find_blocks`. Before any code, note what the
+architecture allows and what it forbids.
+
+**What the script has today.** The script runs in **QuickJS** (`agent-script-runner/src/engine.js`,
+one runtime per bot, one fresh context per tick). That context's globals are exactly
+`api`, `snapshot`, `look` and `memory` (`src/engine.js:399-423`, `:593-637`, `:708-710`).
+There is no `fetch`, no `require`, no `os`, no `std` (by design, `:13`). `api`
+(`src/binding.js:192-500`, installed at `src/engine.js:863-864`) is the only way out, and every `api.*` method **queues a
+directive** into `state.actions` (`:323`, `:344`, `:360`, `:373`) -- the Python agent
+dispatches those AFTER the tick returns (`agent/agent.py:3738` `_run_script_tick`). Nothing
+in the sandbox makes a synchronous call to the mod and gets an answer back into the
+same tick.
+
+**Therefore a synchronous `query.blocks(...)` returning matches cannot exist as
+spec'd in the first draft of this section.** That draft was written against a
+Python file, `agent/script_sandbox.py`, that does not exist; the sandbox is JS in a
+different repo. The owner's intent is clear and reasonable; this constraint is the
+open question the lead must settle, because the answer shapes the whole feature:
+
+1. **Pull the needed data into the snapshot (recommended).** Widen what the agent
+   fetches before each tick (e.g. a `nearest` block index the agent pre-computes,
+   or widen `nearby.blocks`), so `look` can answer "nearest diamond_ore" from the
+   snapshot with zero host calls. Costs the agent one mod read per tick whether or
+   not the script uses it; keeps the sandbox hermetic and the 8-call cap untouched.
+2. **Sync host call into QuickJS.** Give the QuickJS context a host function that
+   blocks on a mod request. QuickJS can do this (`ctx.newFunction`), but it means
+   reading from the Python side across a process boundary synchronously mid-eval,
+   and the 5 s client timeout becomes a 5 s stall of the whole bot. Costs the
+   hermeticity the engine was built for.
+3. **Async query with a deferred result.** `query.blocks` returns a promise or a
+   handle; the script's NEXT tick reads the answer. No synchronous read needed, but
+   it changes the script programming model from "one pass" to "stateful across
+   ticks" -- a much larger change than A2 asked for.
+
+Do NOT start 7.x until the lead picks one. Option 1 is the only one that keeps the
+existing sandbox boundaries; option 3 is the largest change; option 2 is the one that
+trades bot responsiveness for the exact API shape asked for.
+
+Whichever is chosen, these still hold and are not optional:
+- A query MUST NOT be able to act. Read-only, no `do` path.
+- A query above a maximum radius/count MUST be clamped and say so, never silently
+  return "not found" for a search that never ran.
+- A query that fails or times out MUST be `{ ok: false, reason, message }`, never an
+  empty `matches` -- the same distinction `look` already draws (`src/look.js:103-
+  110`).
+- The mod clamps nothing today: `HttpApiServer.java:1117-1134` takes whatever
+  `radius` and `max` a caller sends, and `findBlocks` iterates the full cube
+  (`BotPlayer.java:1286-1309`). Any bound lives on the caller side.
+
+### Bounds (PROPOSAL for the lead, not an owner requirement)
+
+If option 1 or 3 is chosen and the data comes through the snapshot:
+
+| Function | Source | Bound | Default |
+|---|---|---|---|
+| `look.nearest_block(kind)` | pre-computed in snapshot | one nearest, within snapshot radius | radius 16 |
+| `look.blocks(kind, {radius, max})` | widened snapshot index | radius <= snapshot radius, max <= 64 | wrapped function's default |
+
+If option 2 is chosen, the radius must additionally be bounded against scan cost
+(tasks 7.6 measures it). A radius-48 `findBlocks` is ~950k blocks of `getBlockState`;
+Modrinth's own description reports "a noticeable lag" at radius 50. That is a
+warning, not a measurement -- 7.6 replaces it with one.
+
+- [ ] 7.0 OWNER/LEAD DECISION: option 1, 2 or 3 above. Nothing below runs until it
+      is recorded here with a date. (A2 asked for the capability; the lead owns the
+      architecture choice, per factory culture "the lead owns intent".)
+- [ ] 7.1 (after 7.0) The chosen mechanism implemented in the repo it belongs to:
+      option 1 = `agent/snapshot.py` + `agent/script_tick.py` (Python) and
+      `src/look.js` (runner); option 2/3 = `src/engine.js`/`src/binding.js`
+      (runner). Name the files at execution time, not here.
+- [ ] 7.2 The clamp and the timeout->`ok:false` shape, tested with a mutant for each
+      (remove the clamp; make timeout return empty matches).
+- [ ] 7.3 `look` stays zero host calls; any live query spends the existing 8-call
+      cap (`src/binding.js:31-32`, `:198-202`), never a second budget.
+- [ ] 7.6 MEASURE before setting any radius bound: time `findBlocks` at radius 32
+      and 48 on a test server, 3 runs each. The spec's cost line is arithmetic over
+      an assumed rate until this exists.

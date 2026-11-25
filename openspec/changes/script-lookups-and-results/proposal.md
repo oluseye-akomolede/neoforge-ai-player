@@ -43,13 +43,16 @@ was rejected.
 planner on stated conditions only.** Not every tick, not every log line. The
 return value of the script, size-capped, returning to the planner when the
 script says the goal is done, when it errors, or when an escalation threshold is
-crossed — with a hard cap on how often that can happen per hour, so a script
-cannot turn itself into a planner-per-tick loop. See `design.md` §3.
+crossed. There is no rate cap or cooldown (owner A2, 2026-11-25 00:59Z); the
+bound is serialisation — one result-triggered planner call in flight per bot, so
+a script cannot turn itself into a planner call per tick. See `design.md` §3.
 
 ## What this does not do
 
-- It does not add a lookup that reads live game state mid-tick (rejected in
-  `design.md` §1, option B).
+- ~~It does not add a lookup that reads live game state mid-tick~~ **Owner A2
+  overruled this (2026-11-25 00:59Z):** scripts get read-only `query.*`
+  functions (find_blocks, find_entities, block_at, locate) beside `look`,
+  charged to the existing 8-call cap. See §7 of `tasks.md`.
 - It does not change the six-function host API, the 8-host-calls-per-tick cap,
   the rate windows, or the tick CPU budget.
 - It does not deliver script logs or delivered actions to the planner.
@@ -59,5 +62,6 @@ cannot turn itself into a planner-per-tick loop. See `design.md` §3.
 ## Risk
 
 The expensive mistake here is a result path that wakes the planner on every
-tick: one LLM call per tick per bot, on a shared subscription. §3's caps are the
-guard, and §4 gives the trial that would catch it if the caps fail to hold.
+tick: one LLM call per tick per bot, on a shared subscription. Serialisation (one
+call in flight per bot) is the guard A2 left standing, and task 5.5 measures the
+real rate rather than assuming it.

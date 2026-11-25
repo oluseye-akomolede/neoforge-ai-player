@@ -346,7 +346,7 @@ JSON-serialised, capped at 2 KiB, and marked with a truncation marker when cut
 **(c) Last call wins.** If a script calls `api.result` more than once in a
 tick, the LAST value is the one kept; earlier calls are overwritten. The
 stored value is what goes back to the planner on the next
-done/error/escalate trigger, under §3's caps.
+done/error/escalate trigger, once no planner call is in flight.
 
 **(d) A result raises no trigger on its own.** Calling `api.result` does not
 end the tick, does not schedule a planner call, and does not change the
@@ -396,14 +396,18 @@ planner call: with no result pending it returns without calling `call_plan`.
 Results fire only on `done`, `error` or `escalate` — never per tick — so the
 call frequency is set by how often scripts finish, not by the loop interval.
 
-**The caps are the load-bearing guard.** Because this entry can start a planner
-call with no player involved, §3's caps stop being belt and braces and become
-the thing that bounds spend: **4 planner calls per bot per hour and a 15-minute
-cooldown between result-triggered calls**. A result that arrives while the cap
-or cooldown is in force is **queued in the one slot, not discarded** — the caps
-delay delivery, they do not silently drop it — and the delay is logged with the
-cap that caused it. If the slot already holds a result, rule 2's overwrite
-applies.
+**Serialisation is the guard; there is no rate cap.** Because this entry can
+start a planner call with no player involved, the one thing that must still
+hold is that a bot never runs two planner calls at once: **at most one
+result-triggered planner call in flight per bot**. A result that arrives while
+a call is in flight is **queued in the one slot, not discarded** — the
+in-flight call delays delivery, it does not drop it — and the delay is logged.
+The owner removed the 4/hour cap and the 15-minute cooldown (A2, 2026-11-25
+00:59Z): scripts are written by a local model, so a planner call they trigger
+is cheap enough to make on every stated trigger, and a rate cap bought nothing
+but latency. If the lead decides some bound beyond serialisation is needed to
+stop a per-tick loop, that is an OPEN QUESTION for the lead (see §3 below and
+the question list on the queue row), not a hidden requirement.
 
 **Ordering with `_maybe_plan`.** Both entries can want to call `call_plan` on
 the same pass. A player message wins: `_maybe_plan` runs first (it is called
@@ -448,50 +452,52 @@ and the overwrite is logged with both results' triggers. A result is
 - **holding a goal** (the bot has a current `goal_id` and is working it) — this
   is the normal case for a script that finished inside a live goal: the result
   matches the current goal, so `_maybe_plan_on_result` renders it on the next
-  pass under the caps. If a new directive arrived in the meantime, the goal ids
-  differ and rule 3's discard applies instead.
+  pass, once no planner call is in flight. If a new directive arrived in the
+  meantime, the goal ids differ and rule 3's discard applies instead.
 
 **What is never done:** a result does not interrupt a running script, does not
 interrupt an in-flight planner call, and does not queue more than one entry per
-key. The caps bound how often a result can start a planner call, and the
-discard rules bound how long one can sit before it is stale.
+key. Serialisation bounds how often a result can start a planner call —
+one in flight per bot — and the discard rules bound how long one can sit before
+it is stale.
 
 ### Bounding the loop
 
-Two bounds and one stop, in order of what does the work:
+One bound and one stop, in order of what does the work:
 
-- **The cooldown is the binding limit** — no second result-triggered planner
-  call for the same **bot** within 15 minutes, whatever script produced the
-  result. That is at most one per 900 seconds, so at most four in any rolling
-  hour, and at ~59 ticks an hour it is the difference between 4 planner calls
-  and 59. It is keyed per bot because the cooldown is per bot: what the
-  planner-call budget protects is the bot's planning rate, and which script
-  produced a result does not change what a planner call costs. This is what
-  stops a planner that keeps writing a script whose `done: true` is a bug from
-  re-planning every tick.
-- **Per bot, at most 4 result-driven planner calls per hour — a backstop.**
-  The cooldown already holds the rate to four an hour; this bound is reachable
-  only if the cooldown is shortened or removed, and it is what bounds the
-  loop then. A result beyond it is queued in the pending slot, not dropped
-  (rule 2), and the suppressed call is logged with the cap named.
+- **One result-triggered planner call in flight per bot.** A result that
+  arrives while a call is in flight stays in the slot and is delivered on the
+  next pass after the call returns, whatever script produced it and whichever
+  bot. This keeps `call_plan` from running twice against one bot, but it is
+  **not** a rate limit: with no player message and a script that reports
+  `done` every tick, the planner can be woken once per pass while the previous
+  call is still running, then again the pass it returns. How fast that is
+  depends on `call_plan` latency, not on any counter.
 - **The script stops on completion.** A `done: true` result releases the
   binding, so there is no next tick to trigger on until the planner writes a
-  new script.
+  new script. This is the only thing that stops the loop above, and it stops
+  it because a correctly-written script ends. A BUGGY script (`done: true`
+  every tick) is bounded by nothing but the in-flight rule and the cost of
+  a planner call. **Open question for the lead (not a requirement):** whether
+  a per-script or per-bot trigger budget is wanted to catch that case. A
+  failure result already unbinds the script, so the failure loop is
+  structurally closed; a `done: true` worth nothing but repeated will re-run
+  until its goal closes.
 
-**Where the cap and cooldown state lives.** Per **bot**, for the lifetime of the
-agent process — two counters and a timestamp next to the other per-bot agent
-state, keyed by bot name. It MUST **not** be cleared by `reset()`: `reset()`
-(`agent/agent.py:385-400`) clears script hold, conversation history and
-orchestration, and a reset is the one moment a bot is most likely to be handed
-a fresh goal and run again, so clearing the counters there would hand back the
-full hourly budget on demand. Losing the state on process restart is accepted —
-it costs at most one extra batch of 4 — because the alternative is persisting a
-rate counter, which is more machinery than the bound is worth. A test MUST fail
-if `reset()` clears it.
+**Where the in-flight marker lives.** Per **bot**, in the agent process — the
+existing `_plan_steps` guard is the marker today (`_maybe_plan_on_result`
+returns when `_plan_steps` is set, `agent/agent.py:1304-1306`). There is no
+counter or timestamp to persist, because there is no rate to count. Nothing
+here is cleared by `reset()`: a reset clears `_plan_steps` along with the plan,
+which is correct — there is no budget a reset could hand back.
 
-**Cost stated plainly:** worst case 4 planner calls/hour/bot from results. For
-the bots on test that is a bounded, small number; it is not zero, and the trial
-in §4 measures it.
+**Cost stated plainly:** with the rate caps removed there is no fixed worst
+case — a script that reports `done` every tick can have the planner woken on
+every pass where the previous call has returned, i.e. once per pass in a bad
+case. That cost is a planner call per pass per bot, bounded only by the
+in-flight rule. It is the reason the open question about a trigger budget is
+on the lead's desk, and §4's trial measures the rate on test so the number
+exists before anyone decides.
 
 ---
 
@@ -516,9 +522,10 @@ every claim is counted from the log with grep against a stated revision.
   and `grep -c 'result delivered'` == 1 over the run.
 - A goal whose script errors: expect a result on the error path, not a silent
   log line.
-- A deliberately looping script (returns `done: true` every tick): expect the
-  per-bot 4/hour cap and the 15-minute cooldown to hold, and the drop counter
-  to be non-zero — this is the trial that proves the loop bound actually binds.
+- A deliberately looping script (returns `done: true` every tick): expect at
+  most one planner call in flight at a time, and MEASURE the calls per minute
+  the loop produces — this is the trial that reports the rate the lead needs in
+  order to decide whether a trigger budget is wanted.
 
 **Tests that must red under a mutant** (each a test plus a deliberately wrong
 implementation that turns it red, as every prior test in this path has done):
@@ -527,8 +534,9 @@ implementation that turns it red, as every prior test in this path has done):
   lookup is unaffected.
 - A lookup that spends a host call — mutant: route through `accept()`; the test
   asserts `hostCalls` is unchanged after 20 lookups.
-- A result path that fires every tick — mutant: remove the cooldown; the test
-  drives 10 ticks and asserts exactly 1 delivered result.
+- A result path that fires while a call is in flight — mutant: drop the
+  `_plan_steps` in-flight check; the test drives two passes with a call live and
+  asserts the second does not start a call and the result stays pending.
 - A result over the size cap — mutant: drop instead of truncate; the test
   asserts the truncation marker is present.
 
@@ -537,13 +545,17 @@ implementation that turns it red, as every prior test in this path has done):
 ## §5 Out of scope
 
 - Any agent or runner code. This change is design only.
-- A lookup outside the snapshot's data (Option B). If a trial shows a recurring
-  need beyond radius 5/16, the first move is to widen the snapshot — a separate
-  decision with its own cost, measured in §5 of the tasks rather than estimated
-  here: scanning is cubic, so radius 8 is 4913 cells and radius 16 is 35937
-  against radius 5's 1331.
-- Adding a host-call lookup (`find_blocks`) inside the sandbox in this change.
-  It is costed in §1 and deferred; the task that would justify it is tasks 1.4.
+- **Widening the snapshot radius.** The beyond-snapshot path is now a set of
+  `query.*` functions beside `look` (owner A2, 2026-11-25 00:59Z; spec delta,
+  "A Script Can Query The World Beyond The Snapshot Through Named Functions"),
+  so widening `nearby.blocks` is no longer the way to answer a far question.
+  Scanning is cubic — radius 8 is 4913 cells, radius 16 is 35937, radius 32 is
+  274625 against radius 5's 1331 — and the query bounds in that requirement
+  proposal are where that cost is now argued.
+- The exact radius, count and per-minute budgets for `query.*`. They are
+  PROPOSED in the spec delta (radius ≤ 48, 2 queries/tick, 20 queries/minute)
+  and must be accepted or overruled by the lead before code; task 1.4's count
+  of real lookup demand is what makes the numbers checkable.
 - Delivering logs or actions to the planner.
 - Changing the `done`/`escalate` vocabulary into anything richer (a typed
   report schema) before a trial shows the simple object is not enough.
