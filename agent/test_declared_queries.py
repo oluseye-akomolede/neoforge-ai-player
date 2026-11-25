@@ -44,6 +44,26 @@ class TestParseAcceptsLiteralDeclarations(unittest.TestCase):
             src = f"{keyword} queries = [{{name: 'c', kind: 'blocks', id: 'minecraft:chest'}}];"
             self.assertEqual(st.parse_declared_queries(src)[0]["name"], "c", keyword)
 
+    def test_a_comment_on_the_terminator_line_before_code_is_allowed(self):
+        """F-2: `// why` on the `];` line must not refuse the script."""
+        for src in ("queries = [{name: 'c', kind: 'blocks', id: 'minecraft:chest'}]; // why\n"
+                    "api.log('start')",
+                    "queries = [{name: 'c', kind: 'blocks', id: 'minecraft:chest'}]; /* why */\n"
+                    "api.log('start')"):
+            self.assertEqual(len(st.parse_declared_queries(src)), 1, src)
+
+    def test_code_after_the_terminator_on_its_own_line_is_refused(self):
+        """F-1: `;` starts a new statement, so what follows is unvalidated.
+
+        Measured: the old tail rule accepted this and `evil()` ran, because
+        the runner service executes the script. The `+ evil()` and
+        `, evil()` forms were already refused; the `;` form was the gap.
+        """
+        for tail in ("; evil()", "; /*x*/ evil()", "; evil();", "; 2"):
+            src = "queries = [{name: 'c', kind: 'blocks', id: 'minecraft:chest'}]" + tail
+            with self.assertRaises(st.DeclaredQueriesError, msg=tail):
+                st.parse_declared_queries(src)
+
     def test_a_trailing_comment_after_the_bracket_is_allowed(self):
         src = "queries = [{name: 'c', kind: 'blocks', id: 'minecraft:chest'}]  // searched first\n"
         self.assertEqual(len(st.parse_declared_queries(src)), 1)

@@ -256,11 +256,50 @@ def _find_declaration(source):
     if m >= n:
         raise DeclaredQueriesError(
             f"{_where(source, j)}: the `queries` array is not closed")
+    # Tail rule: after the closing `]` only a terminator (or a comment) may
+    # follow, and the statement must END there. A `;` starts a NEW statement,
+    # so what comes after it is script code that was never validated --
+    # measured (review F-1): the old rule accepted `queries = [...]; evil()`
+    # while `+ evil()` was refused, which is the exact false assurance this
+    # rule exists to prevent. So after a `;` or a newline, skip trivia and
+    # require end-of-source: a `;` followed by more code on its own line is
+    # refused, and so is a newline followed by more code.
     rest = _skip_ws_and_comments(source, m + 1)
-    if rest < n and source[rest] not in ";\n":
-        raise DeclaredQueriesError(
-            f"{_where(source, rest)}: nothing may follow the closing `]` of "
-            f"`queries` but a terminator or comment")
+    if rest < n:
+        if source[rest] not in ";\n":
+            raise DeclaredQueriesError(
+                f"{_where(source, rest)}: nothing may follow the closing `]` "
+                f"of `queries` but a terminator or comment")
+        # From here, only a LINE BREAK may end the statement. Skip spaces,
+        # tabs, `\r` and comments -- but a comment's own newline does not
+        # count either, so `]; // x` followed by code on the next line stays
+        # legal while `]; evil()` and `]; /*x*/ evil()` do not.
+        after = rest + 1
+        while after < n:
+            c = source[after]
+            if c == "\n":
+                break
+            if c in " \t\r":
+                after += 1
+            elif source.startswith("//", after):
+                j = source.find("\n", after)
+                after = n if j < 0 else j   # stop BEFORE the newline
+            elif source.startswith("/*", after):
+                j = source.find("*/", after + 2)
+                if j < 0:
+                    raise DeclaredQueriesError(
+                        f"{_where(source, after)}: unterminated comment")
+                if "\n" in source[after:j]:
+                    raise DeclaredQueriesError(
+                        f"{_where(source, after)}: nothing may follow the "
+                        f"closing `]` of `queries` but a terminator or comment "
+                        f"on the same line")
+                after = j + 2
+            else:
+                raise DeclaredQueriesError(
+                    f"{_where(source, after)}: nothing may follow the closing "
+                    f"`]` of `queries` on its statement but a terminator or "
+                    f"comment -- put script code on a new line")
     return k, source[k + 1:m]
 
 

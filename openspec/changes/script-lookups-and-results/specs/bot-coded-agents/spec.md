@@ -188,6 +188,18 @@ the array while `+ evil()` still executes when the script runs — validation th
 gives false assurance). A `__proto__` or other unknown key is refused by the key
 allow-list, not by trusting the JSON parse.
 
+The terminator rule is about the STATEMENT ENDING, not about the character that
+ends it: a `;` starts a NEW statement, so `queries = [...]; evil()` is refused on
+the same grounds as `+ evil()` — accepted by a literal reading of "on its
+statement", which is why the intent is written out here (review finding F-1,
+measured: the first implementation accepted exactly that form, and the runner
+service executes the script). Concretely: after the closing `]`, the parse MUST
+skip spaces, tabs, `\r` and comments on the same line, and MUST then require
+either end-of-source or a line break; a comment must not consume its own
+newline, so `]; // why` followed by code on the next line stays legal (F-2: the
+first implementation refused it, which is narrower than "terminator or
+comment").
+
 **The declaration is validated when a script is BOUND, before it has run a tick.**
 The same parser runs at `tick()` time to read the queries; a script whose
 declaration is invalid at bind time MUST be refused there with a reason naming
