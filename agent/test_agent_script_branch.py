@@ -1979,7 +1979,7 @@ class ScriptLifetimeTest(unittest.TestCase):
 
     Three transitions end that work: the done close (already true and already
     tested), a failure handed back to the planner, and a player's stop. The
-    live symptom was a failed script held at (cooldown) 34 times in ~5 min and
+    live symptom was a failed script held 34 times in ~5 min and
     still ticking after a "stop" logged "plan finalized: cancelled". A fourth,
     reset(), was found by review of 1e2a789 (F-1) and is covered here too.
 
@@ -2031,8 +2031,8 @@ class ScriptLifetimeTest(unittest.TestCase):
 
     def test_a_failed_hand_back_unbinds_the_planners_script(self):
         # KILLS: leaving the bound script ticking after its failure re-planned.
-        # 34 (cooldown) holds in five minutes is a runner call and a picked-at
-        # cooldown every tick for a script the planner has already abandoned.
+        # 34 holds in five minutes is a runner call picked at every tick for a
+        # script the planner has already abandoned.
         self._bind_planner()
         with mock.patch.object(self.a, "_bound_script_path",
                                return_value=None), \
@@ -2443,15 +2443,13 @@ class ScriptResultReachesTheSlotTest(unittest.TestCase):
         _, _, trigger = self.a._result_slot.peek()
         self.assertEqual(trigger, "done")
 
-    def test_a_done_result_closes_even_during_a_planner_cooldown(self):
-        # Closing makes no planner call, so the planner-call caps must not
-        # hold it: a finished goal must not stay open until a 15-minute
-        # cooldown expires. The caps exist to bound LLM calls, not to delay
-        # a result the player is waiting on.
+    def test_a_done_result_closes_even_with_a_result_already_pending(self):
+        # Closing makes no planner call, so it must not be gated on the slot's
+        # delivery predicate: a finished goal must not stay open behind a
+        # result the player is waiting on.
         #
         # KILLS: checking `may_call` before the done branch.
         slot = self.a._result_slot
-        slot._cooldown = 3600              # would hold any delivery
         self.a._plan_steps = []
         self.a._active_goal_id = "goal-A"
         slot.store("goal-A", {"text": "mined 3 dirt"}, "done")
@@ -2586,18 +2584,15 @@ class ScriptResultReachesTheSlotTest(unittest.TestCase):
         self.assertEqual(len(prompts), 1)
         self.assertIn("a red flower", prompts[0])
 
-    def test_a_pending_result_is_held_off_at_the_hour_cap(self):
-        # 3.7: the caps are the guard on result-triggered calls, not a
-        # backstop behind a working path. Spend the hour on the real
-        # `_maybe_plan_on_result` (cooldown 0, so the hour cap is the bound),
-        # then report a fifth time and require the planner call to be
-        # suppressed and the result KEPT, with the cap's name logged.
+    def test_consecutive_results_each_reach_the_planner(self):
+        # A2 (2026-11-25): no per-bot 4/hour cap and no 15-minute cooldown on
+        # result-triggered calls. Five consecutive results each start a
+        # planner thread; none is held. Serialisation (a live plan) is the
+        # only bound left, and that is tested separately.
         #
-        # KILLS: an `_maybe_plan_on_result` that ignores `may_call`, which
-        # calls the planner on the fifth result.
+        # KILLS: any re-introduced rate cap or cooldown in `may_call`.
         self.a._plan_steps = []
-        self.a._result_slot = self.agent_mod.ResultSlot(
-            clock=lambda: 1000.0, cooldown_seconds=0)
+        self.a._result_slot = self.agent_mod.ResultSlot()
         calls = []
 
         class Thread:
@@ -2612,37 +2607,11 @@ class ScriptResultReachesTheSlotTest(unittest.TestCase):
                 self.a._result_slot.store("", {"text": "found"}, "escalate")
                 with mock.patch("builtins.print") as pr:
                     self.a._maybe_plan_on_result()
-        self.assertEqual(len(calls), 4, "four calls an hour, then held")
-        self.assertTrue(self.a._result_slot.has_pending(),
-                        "the fifth result is queued under the cap, not dropped")
+        self.assertEqual(len(calls), 5, "every result must reach the planner")
+        self.assertFalse(self.a._result_slot.has_pending())
         printed = " ".join(str(c.args[0]) for c in pr.call_args_list)
-        self.assertIn("held (hour-cap)", printed)
-
-    def test_a_pending_result_is_held_off_inside_the_cooldown(self):
-        # 3.7: with the real 15-minute cooldown, a second result right after
-        # a delivered one is held with the cooldown named.
-        #
-        # KILLS: a version enforcing only the hour cap.
-        self.a._plan_steps = []
-        now = [1000.0]
-        self.a._result_slot = self.agent_mod.ResultSlot(clock=lambda: now[0])
-        calls = []
-
-        def thread(**kw):
-            calls.append(kw)
-            return mock.Mock()
-
-        with mock.patch.object(self.agent_mod.threading, "Thread", thread):
-            self.a._result_slot.store("", {"text": "found"}, "escalate")
-            with mock.patch("builtins.print"):
-                self.a._maybe_plan_on_result()
-            self.a._result_slot.store("", {"text": "found again"}, "escalate")
-            with mock.patch("builtins.print") as pr:
-                self.a._maybe_plan_on_result()
-        self.assertEqual(len(calls), 1)
-        self.assertTrue(self.a._result_slot.has_pending())
-        printed = " ".join(str(c.args[0]) for c in pr.call_args_list)
-        self.assertIn("held (cooldown)", printed)
+        self.assertNotIn("hour-cap", printed)
+        self.assertNotIn("cooldown", printed)
 
     def test_a_result_arriving_mid_plan_is_queued_not_injected(self):
         # KILLS: starting a second planner while one is live, which would put
@@ -2699,21 +2668,23 @@ class NoPlannerPathMintsAGoalIdTest(unittest.TestCase):
         self.assertEqual(self.a._script_hold_seq, 4)
 
 
-class PlannerForPassHonoursTheCapsTest(unittest.TestCase):
-    """`_run_planner_for_pass` must enforce all three (F-1).
+class PlannerForPassDeliversItsGoalIdTest(unittest.TestCase):
+    """`_run_planner_for_pass` must carry the held goal id into its call (F-1).
 
     The reviewer deleted the goal id from the delivery record and 81 tests
     stayed green, because every earlier test checked the slot's predicate or
     the individual helpers and none drove the entry the loop actually calls.
-    This drives `_run_planner_for_pass` itself with an injected clock, and
-    reads the goal off the boundary that consumes it: `_run_orchestrator`'s
-    `goal_id`, whose only use is `_end_script_hold(goal_id or None)`.
+    This drives `_run_planner_for_pass` itself, and reads the goal off the
+    boundary that consumes it: `_run_orchestrator`'s `goal_id`, whose only use
+    is `_end_script_hold(goal_id or None)`.
+
+    The rate tests that used to live here (the 4/hour cap and the 15-minute
+    cooldown) went with the behaviour when owner A2 removed it on 2026-11-25.
     """
 
     def setUp(self):
         agent_mod = _agent_module()
         self.agent_mod = agent_mod
-        self.now = [1000.0]
         self.a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
         # __init__ never ran, so supply the guard it would have created.
         self.a._script_say_guard = agent_mod.ScriptSayGuard()
@@ -2722,7 +2693,7 @@ class PlannerForPassHonoursTheCapsTest(unittest.TestCase):
         self.a.profile = {}
         self.a._plan_steps = []
         self.a._plan_instruction = ""
-        self.a._result_slot = agent_mod.ResultSlot(clock=lambda: self.now[0])
+        self.a._result_slot = agent_mod.ResultSlot()
         self.a._script_hold = None
         self.a._maybe_plan = mock.Mock()
         self.plan_calls = []
@@ -2732,85 +2703,30 @@ class PlannerForPassHonoursTheCapsTest(unittest.TestCase):
             self.plan_calls.append({"text": task_text, "goal_id": goal_id})
             # A real run finishes and `_maybe_plan_on_result` refuses only
             # while `_plan_steps` is non-empty, so leave it empty for the
-            # next pass; otherwise the cap is never reached in this fixture.
+            # next pass.
             self.a._plan_steps = []
 
         self.a._run_orchestrator = fake_orchestrator
 
-    def _bot(self, name, calls):
-        """A second bot on the SAME clock, with its own slot and its own calls."""
-        b = self.agent_mod.BotRunner.__new__(self.agent_mod.BotRunner)
-        # __init__ never ran, so supply the guard it would have created.
-        b._script_say_guard = self.agent_mod.ScriptSayGuard()
-        b._lock = threading.Lock()
-        b.name = name
-        b.profile = {}
-        b._plan_steps = []
-        b._plan_instruction = ""
-        b._result_slot = self.agent_mod.ResultSlot(clock=lambda: self.now[0])
-        b._script_hold = None
-        b._maybe_plan = mock.Mock()
-        b._run_orchestrator = lambda *a, **k: calls.append(a[0])
-        return b
-
     def _pass(self, value="a red flower", goal_id=""):
-        """One pass with no message and `value` pending. Returns True if it planned.
-
-        Trigger `escalate`, not `done`: a `done` result now CLOSES its goal
-        without a planner call, so it would never reach the caps these tests
-        measure. `escalate` is the delivery path that still plans.
-        """
+        """One pass with no message and `value` pending. Returns True if it planned."""
         self.a._result_slot.store(goal_id, {"text": value, "truncated": False}, "escalate")
         before = len(self.plan_calls)
         with mock.patch("builtins.print"):
             self.a._run_planner_for_pass([])
         return len(self.plan_calls) > before
 
-    def test_the_four_a_hour_cap_turns_it_red(self):
-        # KILLS: dropping `slot.record_call()` from the delivery -- then every
-        # pass plans, so the fifth call of the hour happens.
-        #
-        # The constant is NOT free: it must exceed the 900s cooldown.
-        from result_delivery import COOLDOWN_SECONDS
-        # Exact relationship, not a loose bound: cooldown * (cap) == hour, so
-        # the cooldown alone already holds the rate to 4/hour and the cap can
-        # only bite on the boundary. Change any of the three and the reasoning
-        # below is void -- so this fails loudly.
-        from result_delivery import HOUR_SECONDS, MAX_RESULTS_PER_HOUR
-        self.assertEqual(COOLDOWN_SECONDS * MAX_RESULTS_PER_HOUR,
-                         HOUR_SECONDS,
-                         "4 gaps of cooldown exactly span the hour only at "
-                         "900s * 4; the reachability note below depends on it")
-        # Five calls inside one rolling hour is IMPOSSIBLE while the cooldown
-        # is strict at 900s: the 2nd..5th each wait >= 900s after the previous,
-        # so the 5th is >= 4*900 = 3600s after the 1st and the 1st has rolled
-        # out of the window. So the cap is reachable only when the cooldown is
-        # removed or shortened -- and this test pins exactly that: with the
-        # cooldown lifted, the 5th call in one hour is refused BY THE CAP.
-        slot = self.a._result_slot
-        slot._cooldown = 0                  # the cap must stand on its own
-        self.assertTrue(self._pass("r1"))
-        for n in (2, 3, 4):
-            self.now[0] += 60               # well inside the hour
-            self.assertTrue(self._pass(f"r{n}"))
-        self.now[0] += 60
-        self.assertFalse(self._pass("r5"),
-                         f"a fifth call in one hour must be refused: "
-                         f"{[c['text'] for c in self.plan_calls]!r}")
-        self.assertEqual(len(self.plan_calls), 4,
-                         f"calls: {[c['text'] for c in self.plan_calls]!r}")
+    def test_consecutive_results_are_all_delivered(self):
+        """A2: no rate cap or cooldown -- record_call alone gates repeats.
 
-    def test_the_fifteen_minute_cooldown_turns_it_red(self):
-        # KILLS: making `may_call` ignore `_recent_calls` -- then the second
-        # result one minute later plans immediately.
-        self.assertTrue(self._pass("r1"))
-        self.now[0] += 60
-        self.assertFalse(self._pass("r2"),
-                         f"a call one minute after the last must be held: "
-                         f"{[c['text'] for c in self.plan_calls]!r}")
-        self.now[0] += 15 * 60
-        self.assertTrue(self._pass("r3"),
-                        "the call must resume once the cooldown has expired")
+        KILLS: dropping `slot.record_call()` from the delivery -- then every
+        pass plans, but the result is never consumed.
+        """
+        for n in range(1, 6):
+            self.assertTrue(self._pass(f"r{n}"),
+                            f"result {n} must be delivered: {self.plan_calls!r}")
+        self.assertFalse(self.a._result_slot.has_pending(),
+                         "each delivered result is consumed")
 
     def test_the_goal_the_delivery_is_attributed_to_turns_it_red(self):
         # KILLS: passing a constant or empty goal_id to `_plan_with_result` --
@@ -2828,271 +2744,29 @@ class PlannerForPassHonoursTheCapsTest(unittest.TestCase):
         self.assertIn("Script result (escalate)", self.plan_calls[0]["text"])
         self.assertIn("a red flower", self.plan_calls[0]["text"])
 
+    def test_two_bots_each_receive_their_own_result(self):
+        # F-5, kept without the clock: with the rate bound gone there is no
+        # cooldown to share, but a slot shared at module level would still be
+        # wrong -- the second bot's result would overwrite or be refused by
+        # the first bot's. Two real BotRunners, each with its own ResultSlot,
+        # both driven through _run_planner_for_pass.
+        b = self.agent_mod.BotRunner.__new__(self.agent_mod.BotRunner)
+        b._script_say_guard = self.agent_mod.ScriptSayGuard()
+        b._lock = threading.Lock()
+        b.name = "B"
+        b.profile = {}
+        b._plan_steps = []
+        b._plan_instruction = ""
+        b._result_slot = self.agent_mod.ResultSlot()
+        b._script_hold = None
+        b._maybe_plan = mock.Mock()
+        calls_b = []
+        b._run_orchestrator = lambda *a, **k: calls_b.append(a[0])
 
-    def test_two_bots_each_get_a_call_inside_the_same_15_minutes(self):
-        # F-5. The scenario "the cooldown is per bot, not per script" could not
-        # fail: a cooldown keyed BY SCRIPT gave zero reds across 84 tests,
-        # because no test ever had a second bot. Two real BotRunners, each with
-        # its own ResultSlot, both driven through _run_planner_for_pass on one
-        # shared clock.
-        #
-        # KILLS (needs both bots to exist):
-        #  - a cooldown keyed by script name: both bots run the same script, so
-        #    the second is wrongly held;
-        #  - a slot shared at module level: the second bot's result overwrites
-        #    or is refused by the first bot's call.
-        calls_b, calls_c = [], []
-        b = self._bot("B", calls_b)
-        c = self._bot("C", calls_c)
-
-        def one_pass(bot):
-            bot._result_slot.store("", {"text": "r", "truncated": False}, "escalate")
-            with mock.patch("builtins.print"):
-                bot._run_planner_for_pass([])
-
-        one_pass(b)
-        self.now[0] += 60                # one minute later, well inside 15 min
-        one_pass(c)
-
+        b._result_slot.store("", {"text": "r", "truncated": False}, "escalate")
+        with mock.patch("builtins.print"):
+            b._run_planner_for_pass([])
+        self.assertTrue(self._pass("r"))
         self.assertEqual(len(calls_b), 1, f"bot B: {calls_b!r}")
-        self.assertEqual(len(calls_c), 1,
-                         f"the second bot must not be held by the first "
-                         f"bot's cooldown: {calls_c!r}")
-
-    def test_the_reason_names_the_cooldown_when_both_bounds_refuse(self):
-        # F-6. The cap alone cannot be reached at a 900s cooldown, so when
-        # both would refuse the real reason is the cooldown. Naming the cap
-        # there put 424 of 466 of the reviewer's refusals on the wrong reason.
-        slot = self.a._result_slot
-        slot.store("", {"text": "r", "truncated": False}, "escalate")
-        slot._call_times = [self.now[0] - 60] * 4   # 4 calls, newest 60s ago
-        allowed, reason = slot.may_call(goal_id="")
-        self.assertFalse(allowed)
-        self.assertEqual(reason, "cooldown",
-                         "both bounds refuse; the binding one must be named")
-
-    def test_the_reason_still_names_the_cap_when_only_the_cap_refuses(self):
-        # The other half: with the cooldown satisfied, a fifth call is still
-        # named "hour-cap". Without this, "always return cooldown" would pass
-        # the test above.
-        slot = self.a._result_slot
-        slot.store("", {"text": "r", "truncated": False}, "escalate")
-        slot._call_times = [self.now[0] - 1800] * 4  # 4 calls, newest 30m ago
-        allowed, reason = slot.may_call(goal_id="")
-        self.assertFalse(allowed)
-        self.assertEqual(reason, "hour-cap")
-
-
-
-class BoundScriptSourceIsLoggedTest(unittest.TestCase):
-    """Task 4.5 ask 2: a bound planner script's source is logged once.
-
-    Trial 4.1 could not be diagnosed: a script reported "no shears" while the
-    bot held shears, and no log recorded what the script had been given. These
-    pin the three things that make such a line useful rather than misleading:
-    it carries an identity (hash) and the bot, it is clipped WITH a marker so a
-    short script is not confused with a clipped one, and it never echoes a
-    hand-written binding's file.
-    """
-
-    def setUp(self):
-        agent_mod = _agent_module()
-        self.agent_mod = agent_mod
-        self.a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
-        self.a._script_say_guard = agent_mod.ScriptSayGuard()
-        self.a._lock = threading.Lock()
-        self.a.name = "Scout"
-        self.a.profile = {}
-        self.a._script_tick = None
-        self.a._script_loaded = False
-        self.a._script_hold = None
-        self.a._script_hold_seq = 0
-        self.a._planner_script = None
-
-    def _bind_and_capture(self, src, hand_written=False):
-        import contextlib, io
-        buf = io.StringIO()
-        path = "/bot/scripts/scout.js" if hand_written else None
-        with mock.patch.object(self.a, "_dry_tick", return_value=True), \
-             mock.patch.object(self.a, "_bound_script_path", return_value=path), \
-             contextlib.redirect_stdout(buf):
-            ok = self.a._bind_planner_script(src)
-        return ok, buf.getvalue()
-
-    def test_the_source_is_logged_with_bot_and_hash(self):
-        # KILLS: binding silently, which is exactly what made trial 4.1
-        # un-diagnosable -- nothing recorded the script that ran.
-        src = "const s = look.inventory(); api.say(s.items[0].item);"
-        ok, out = self._bind_and_capture(src)
-        self.assertTrue(ok)
-        self.assertIn("planner script source", out)
-        self.assertIn("Scout", out)
-        digest = self.agent_mod._script_digest(src)
-        self.assertIn(digest, out, f"the hash must identify the source; got:\n{out}")
-        self.assertIn("s.items[0].item", out, "the source itself must be readable")
-
-    def test_a_long_script_is_clipped_and_says_so(self):
-        # KILLS: a silent cut, which makes a clipped script look complete.
-        src = "// pad\n" * 2000
-        self.assertGreater(len(src.encode()), self.agent_mod.SCRIPT_LOG_CAP)
-        ok, out = self._bind_and_capture(src)
-        self.assertTrue(ok)
-        self.assertIn("truncated at bind", out)
-        self.assertLess(len(out.encode()), self.agent_mod.SCRIPT_LOG_CAP + 600,
-                        "the log line must stay near the cap, not echo 64 KiB")
-
-    def test_a_short_script_carries_no_truncation_marker(self):
-        # The complement: the marker must mean something. If it appeared on a
-        # short script a reader could not tell clipped from complete.
-        ok, out = self._bind_and_capture("api.say('hi');")
-        self.assertTrue(ok)
-        self.assertNotIn("truncated at bind", out)
-
-    def test_a_hand_written_binding_is_not_echoed(self):
-        # KILLS: logging a human's file, which the spec forbids -- bindings.json
-        # is the record a person already keeps.
-        src = "// human script\napi.say('mine');"
-        ok, out = self._bind_and_capture(src, hand_written=True)
-        self.assertFalse(ok, "a hand-written binding must win and bind nothing")
-        self.assertNotIn("planner script source", out)
-        self.assertNotIn("human script", out)
-
-class ScriptSpinTest(unittest.TestCase):
-    """Spec, "A Repeatedly Completed Identical Action Yields The Goal".
-
-    The identical completed action is the signal, not a world-state diff:
-    position and ages move every tick for reasons unrelated to the action, so a
-    diff would fire on a slow action or stay silent on a spin. Trial 4.3
-    (2026-11-22, bot Axiom) re-sent one GOTO 10+ times, each COMPLETED.
-    """
-
-    def setUp(self):
-        agent_mod = _agent_module()
-        self.agent_mod = agent_mod
-        self.a = agent_mod.BotRunner.__new__(agent_mod.BotRunner)
-        self.a._lock = threading.Lock()
-        self.a.name = "Scout"
-        self.a.profile = {}
-        self.a._script_tick = None
-        self.a._script_say_guard = agent_mod.ScriptSayGuard()
-        self.a._script_loaded = True
-        self.a._l3_orchestrator_dispatch = mock.Mock(return_value="COMPLETED GOTO ok")
-        self.a._unbind_planner_script = mock.Mock(return_value=True)
-        self.a._resubmit_yielded_goal = mock.Mock(return_value=True)
-        self.a._script_repeat_key = None
-        self.a._script_repeat_count = 0
-        self.a._active_goal_id = "goal-A"
-        self.a._active_goal_text = "walk to the cache"
-        self.a._script_hold = None
-        self.a._plan_instruction = ""
-
-    def _run_identically(self, n, act=None):
-        """Run n ticks whose single action is identical and COMPLETES."""
-        act = act or {"kind": "GOTO", "x": "-15", "y": "77", "z": "-28"}
-
-        class Stub:
-            def tick(_self):
-                return (True, [dict(act)], [], "ok")
-
-        self.a._script_tick = Stub()
-        results = []
-        with mock.patch("builtins.print"):
-            for _ in range(n):
-                results.append(self.a._run_script_tick())
-        return results
-
-    def test_trial_4_3_identical_goto_yields_at_the_bound(self):
-        # KILLS: never yielding on a spin (the shipped behaviour that needed a
-        # human restart).
-        results = self._run_identically(self.agent_mod.SCRIPT_REPEAT_MAX)
-        # Every tick up to and including the Nth ran the action.
-        self.assertTrue(all(results), results)
-        self.a._unbind_planner_script.assert_called_once()
-        self.a._resubmit_yielded_goal.assert_called_once()
-        self.assertEqual(self.a._resubmit_yielded_goal.call_args[0][0], "goal-A",
-                         "the ACTIVE goal must be the one re-submitted")
-
-    def test_it_does_not_yield_before_the_bound(self):
-        # KILLS: yielding one tick early, which would break a slow but correct
-        # movement by re-planning it away.
-        results = self._run_identically(self.agent_mod.SCRIPT_REPEAT_MAX - 1)
-        self.assertTrue(all(results), results)
-        self.a._unbind_planner_script.assert_not_called()
-
-    def test_a_different_kind_resets_the_count(self):
-        # KILLS: keying the run on anything coarser than the whole action (e.g.
-        # "how many ticks ran", or ignoring the kind). A script alternating
-        # GOTO and MINE is making progress; if the key missed the action it
-        # would be yielded as a spin and lose its goal mid-job.
-        self._run_identically(self.agent_mod.SCRIPT_REPEAT_MAX - 1)
-        results = self._run_identically(1, {"kind": "MINE", "target": "dirt"})
-        self.assertTrue(results[0])
-        self.a._unbind_planner_script.assert_not_called()
-        self.assertEqual(getattr(self.a, "_script_repeat_count", 1), 1,
-                         "a different KIND must start a new run")
-
-    def test_a_different_coordinate_is_a_different_action(self):
-        # KILLS: keying only on the kind. A bot patrolling between waypoints
-        # re-issues GOTO with new coordinates each time; that is progress and
-        # must not be yielded.
-        self._run_identically(self.agent_mod.SCRIPT_REPEAT_MAX - 1)
-        results = self._run_identically(1, {"kind": "GOTO", "x": "9", "y": "2", "z": "3"})
-        self.assertTrue(results[0])
-        self.a._unbind_planner_script.assert_not_called()
-
-    def test_a_two_action_tick_is_never_a_spin(self):
-        # KILLS: treating "the same action appears among several" as a loop.
-        # A tick that ran more than one distinct action is progress.
-        acts = [{"kind": "GOTO", "x": "1", "y": "2", "z": "3"},
-                {"kind": "MINE", "target": "dirt"}]
-
-        class Stub:
-            def tick(_self):
-                return (True, [dict(x) for x in acts], [], "ok")
-
-        self.a._script_tick = Stub()
-        with mock.patch("builtins.print"):
-            for _ in range(self.agent_mod.SCRIPT_REPEAT_MAX + 2):
-                self.assertTrue(self.a._run_script_tick())
-        self.a._unbind_planner_script.assert_not_called()
-
-    def test_the_spin_yield_logs_the_action_and_the_count(self):
-        self._run_identically(self.agent_mod.SCRIPT_REPEAT_MAX)
-        # The yield message names the cause; capture the prints to prove the
-        # operator can tell a spin yield from an all-refused one. _run_identically
-        # patches print itself, so drive the ticks here rather than nesting a
-        # second patch over it -- an inner patch would swallow every call and
-        # make this assertion read an empty string.
-        self.a._unbind_planner_script.reset_mock()
-        act = {"kind": "GOTO", "x": "-15", "y": "77", "z": "-28"}
-
-        class Stub:
-            def tick(_self):
-                return (True, [dict(act)], [], "ok")
-
-        self.a._script_tick = Stub()
-        with mock.patch("builtins.print") as pr:
-            for _ in range(self.agent_mod.SCRIPT_REPEAT_MAX):
-                self.a._run_script_tick()
-        text = " ".join(str(c) for c in pr.call_args_list)
-        self.assertIn("spin", text)
-        self.assertIn(str(self.agent_mod.SCRIPT_REPEAT_MAX), text)
-
-
-class ScriptSurfaceNamesSelfTest(unittest.TestCase):
-
-    def test_the_prompt_names_look_self_and_its_fields(self):
-        # Spec, "The prompt names look.self and its fields". Trial 4.3's
-        # planner guessed snapshot.self.position because no self lookup was
-        # documented; the fix must be visible where a planner reads.
-        import planner
-        src = planner.SCRIPT_SURFACE
-        self.assertIn("look.self()", src)
-        self.assertIn("health", src)
-        self.assertIn("food", src)
-        self.assertIn("snapshot.self", src,
-                      "the surface must warn against the path the trial guessed")
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
+        self.assertEqual(len(self.plan_calls), 1,
+                         f"the second bot must get its own call: {self.plan_calls!r}")

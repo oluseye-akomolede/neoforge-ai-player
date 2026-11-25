@@ -1339,9 +1339,9 @@ class BotRunner:
             return
         allowed, reason = slot.may_call(goal_id=goal_id)
         if not allowed:
-            if reason in ("hour-cap", "cooldown"):
-                print(f"[{self.name}/result] held ({reason}); "
-                      f"{len(slot._recent_calls())} call(s) this hour")
+            # No rate cap or cooldown remains (owner A2); the only refusal left
+            # here is a result whose goal is gone, handled above, so this is a
+            # belt-and-braces branch rather than a live path.
             return
         goal_id_used, value, trigger = slot.peek()
         slot.record_call()
