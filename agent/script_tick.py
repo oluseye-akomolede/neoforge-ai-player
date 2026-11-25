@@ -264,42 +264,45 @@ def _find_declaration(source):
     # rule exists to prevent. So after a `;` or a newline, skip trivia and
     # require end-of-source: a `;` followed by more code on its own line is
     # refused, and so is a newline followed by more code.
-    rest = _skip_ws_and_comments(source, m + 1)
-    if rest < n:
-        if source[rest] not in ";\n":
-            raise DeclaredQueriesError(
-                f"{_where(source, rest)}: nothing may follow the closing `]` "
-                f"of `queries` but a terminator or comment")
-        # From here, only a LINE BREAK may end the statement. Skip spaces,
-        # tabs, `\r` and comments -- but a comment's own newline does not
-        # count either, so `]; // x` followed by code on the next line stays
-        # legal while `]; evil()` and `]; /*x*/ evil()` do not.
-        after = rest + 1
-        while after < n:
-            c = source[after]
-            if c == "\n":
-                break
-            if c in " \t\r":
-                after += 1
-            elif source.startswith("//", after):
-                j = source.find("\n", after)
-                after = n if j < 0 else j   # stop BEFORE the newline
-            elif source.startswith("/*", after):
-                j = source.find("*/", after + 2)
-                if j < 0:
-                    raise DeclaredQueriesError(
-                        f"{_where(source, after)}: unterminated comment")
-                if "\n" in source[after:j]:
-                    raise DeclaredQueriesError(
-                        f"{_where(source, after)}: nothing may follow the "
-                        f"closing `]` of `queries` but a terminator or comment "
-                        f"on the same line")
-                after = j + 2
-            else:
+    # On the terminator's line only a `;` and comments may follow the `]`;
+    # anything else is unvalidated script code. The first line break ends the
+    # statement, and whatever comes after it is ordinary script.
+    #
+    # Measured (review: F-1, then the no-semicolon residual): the earlier
+    # form skipped trivia BEFORE deciding, which ate the newline, so a bare
+    # `] // why` or `]` followed by code was refused while the `];` forms were
+    # accepted -- the rule and the spec disagreed on a case no test covered.
+    # One loop now handles both: the `;` is optional, and only a non-trivia
+    # character on the terminator's line is a refusal.
+    after = m + 1
+    while after < n:
+        c = source[after]
+        if c == "\n":
+            break
+        if c in " \t\r;":
+            after += 1
+        elif source.startswith("//", after):
+            j = source.find("\n", after)
+            after = n if j < 0 else j   # stop BEFORE the newline
+        elif source.startswith("/*", after):
+            j = source.find("*/", after + 2)
+            if j < 0:
                 raise DeclaredQueriesError(
-                    f"{_where(source, after)}: nothing may follow the closing "
-                    f"`]` of `queries` on its statement but a terminator or "
-                    f"comment -- put script code on a new line")
+                    f"{_where(source, after)}: unterminated comment")
+            if "\n" in source[after:j]:
+                # Measured: letting a multi-line block comment end the rule
+                # accepted `]; /* a\n */ evil()`, and evil() runs. A comment
+                # may not carry the statement across a line, so this is
+                # refused rather than treated as a line break.
+                raise DeclaredQueriesError(
+                    f"{_where(source, after)}: a comment after the closing `]` "
+                    f"of `queries` must stay on its line")
+            after = j + 2
+        else:
+            raise DeclaredQueriesError(
+                f"{_where(source, after)}: nothing may follow the closing "
+                f"`]` of `queries` on its statement but a terminator or "
+                f"comment -- put script code on a new line")
     return k, source[k + 1:m]
 
 

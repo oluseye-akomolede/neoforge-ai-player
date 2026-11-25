@@ -193,12 +193,15 @@ ends it: a `;` starts a NEW statement, so `queries = [...]; evil()` is refused o
 the same grounds as `+ evil()` — accepted by a literal reading of "on its
 statement", which is why the intent is written out here (review finding F-1,
 measured: the first implementation accepted exactly that form, and the runner
-service executes the script). Concretely: after the closing `]`, the parse MUST
-skip spaces, tabs, `\r` and comments on the same line, and MUST then require
-either end-of-source or a line break; a comment must not consume its own
-newline, so `]; // why` followed by code on the next line stays legal (F-2: the
-first implementation refused it, which is narrower than "terminator or
-comment").
+service executes the script). Concretely: after the closing `]`, on the
+terminator's line, only spaces, tabs, `\r`, one or more `;` and comments may
+appear; anything else is refused. The first line break ends the statement and
+code may follow it. The `;` is optional — `] // why` then code on the next
+line is as legal as `]; // why` then code (F-2, then the residual the re-check
+found: pinning only the `];` shapes let the no-semicolon forms be refused while
+this sentence claimed they were allowed). A comment MUST NOT span more than one
+line: `]; /* a` / ` */ evil()` is refused, not treated as a line break —
+measured, allowing it accepted a form where `evil()` runs.
 
 **The declaration is validated when a script is BOUND, before it has run a tick.**
 The same parser runs at `tick()` time to read the queries; a script whose

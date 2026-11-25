@@ -68,6 +68,45 @@ class TestParseAcceptsLiteralDeclarations(unittest.TestCase):
         src = "queries = [{name: 'c', kind: 'blocks', id: 'minecraft:chest'}]  // searched first\n"
         self.assertEqual(len(st.parse_declared_queries(src)), 1)
 
+    def test_the_tail_rule_holds_with_and_without_the_terminator(self):
+        """The residual the reviewer found: only the `];` shapes were pinned.
+
+        `] // why` and a bare `]` followed by code were refused while `];`
+        equivalents were accepted, so the spec sentence ("a comment followed
+        by code stays legal") was false for the no-semicolon form. Both are
+        legal now, and both forms are tested.
+        """
+        L = "queries = [{name: 'c', kind: 'blocks', id: 'minecraft:chest'}]"
+        for name, src in {
+            "bare bracket, code next line": L + "\napi.log('x')",
+            "bracket, // comment, code next line": L + " // why\napi.log('x')",
+            "semicolon, // comment, code next line": L + "; // why\napi.log('x')",
+            "semicolon, one-line block comment": L + "; /* w */\napi.log('x')",
+            "semicolon, CRLF": L + ";\r\napi.log('x')",
+            "bare bracket at EOF": L,
+            "semicolon at EOF": L + ";",
+            "trailing spaces, no code": L + ";   \n",
+        }.items():
+            self.assertEqual(len(st.parse_declared_queries(src)), 1, name)
+
+    def test_code_on_the_terminator_line_is_refused_without_a_semicolon(self):
+        L = "queries = [{name: 'c', kind: 'blocks', id: 'minecraft:chest'}]"
+        for name, src in {
+            "bare bracket then code": L + " evil()",
+            "block comment then code": L + " /*x*/ evil()",
+            "semicolon and block comment then code": L + "; /*x*/ evil()",
+        }.items():
+            with self.assertRaises(st.DeclaredQueriesError, msg=name):
+                st.parse_declared_queries(src)
+
+    def test_a_block_comment_may_not_carry_the_statement_across_a_line(self):
+        """Measured: treating a multi-line block comment as the line break
+        ACCEPTED `]; /* a\\n */ evil()` -- and evil() runs."""
+        L = "queries = [{name: 'c', kind: 'blocks', id: 'minecraft:chest'}]"
+        for tail in ("; /* a\n */ evil()", "; /* a\n b */\napi.log('x')"):
+            with self.assertRaises(st.DeclaredQueriesError, msg=tail):
+                st.parse_declared_queries(L + tail)
+
     def test_an_empty_list_is_an_empty_list(self):
         self.assertEqual(st.parse_declared_queries("queries = []"), [])
 
