@@ -415,7 +415,7 @@ Cap on declared list: PROPOSED **16** queries per script, and **one `blocks` or
 pre-tick mod work: a scan query's cost is set by its radius (7.6), so the cap
 that matters is total SCAN, not count — see 7.2's budget.
 
-- [ ] 7.1 `parse_declared_queries(source)` in `agent/script_tick.py` (source is
+- [x] 7.1 `parse_declared_queries(source)` in `agent/script_tick.py` (source is
       next to where `_build_snapshot` already runs). A strict literal parse, NOT
       `ast.parse` and NOT `eval`: the script is JS and `ast.parse` accepts JS
       statements by accident (measured: `return 1` parses as Python). A working
@@ -425,7 +425,7 @@ that matters is total SCAN, not count — see 7.2's budget.
       anything but an array literal, once only, with nothing after `]` but a
       terminator/comment. Returns `[]` when absent.
 
-- [ ] 7.2 `_run_declared_queries(queries, bot)` in `agent/script_tick.py`, called
+- [x] 7.2 `_run_declared_queries(queries, bot)` in `agent/script_tick.py`, called
       from `_build_snapshot` AFTER `build_envelope`, results put on the envelope
       (top level, beside `tick`/`task`) as a `queries` map keyed by `name`. After,
       not before: one of the four reads is `/bot/{name}/locate` with a 120 s
@@ -437,23 +437,23 @@ that matters is total SCAN, not count — see 7.2's budget.
       fail the tick or drop siblings. ONE failing query MUST NOT stop the others.
       Each call passes a timeout; no retry.
 
-- [ ] 7.3 Bound the total pre-tick scan. Sum the declared `blocks`/`entities`
+- [x] 7.3 Bound the total pre-tick scan. Sum the declared `blocks`/`entities`
       cubes; if over a budget (propose 2x one radius-32 cube), run them anyway
       but log `queries_budget_exceeded` with the count so the lead can see it was
       over — a hard refusal here would silently break a script, so measure first.
 
-- [ ] 7.4 `src/look.js` (runner): add `look.queries` -- a deeply frozen copy of
+- [x] 7.4 `src/look.js` (runner): add `look.queries` -- a deeply frozen copy of
       `snapshot.queries` (absent -> an empty object) -- onto the installed `look`
       object, built in the SAME `evalCode` as `snapshot` so it shares its
       lifetime (`src/engine.js` `#installSnapshot`). `look` still closes over the snapshot for its existing accessors;
       the query results ride in on the envelope. No new host function.
 
-- [ ] 7.5 Tests, each with a mutant that must red it: the parser's nine refusals
+- [x] 7.5 Tests, each with a mutant that must red it: the parser's nine refusals
       (7.1's list); a clamp reported; timeout -> ok:false and siblings survive;
       a no-op list makes zero mod calls; `look.<name>` is frozen and equals the
       fetched result without a host call.
 
-- [ ] 7.5b (lead instruction: "delete the cap code withdrawn in 3.3/3.7/3.8 as
+- [x] 7.5b (lead instruction: "delete the cap code withdrawn in 3.3/3.7/3.8 as
       part of this") Delete the result-delivery rate cap and cooldown:
       `MAX_RESULTS_PER_HOUR` and `COOLDOWN_SECONDS` (`agent/result_delivery.py:29-30`),
       the cooldown/hour-cap branches of `may_call` (`:83-86`), the
