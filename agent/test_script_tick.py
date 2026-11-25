@@ -951,5 +951,65 @@ class TestTheScriptsOwnVerdict(unittest.TestCase):
         self.assertIs(tick.last_result["ok"], False)
 
 
+class TestDeclaredQueriesReachTheRunner(unittest.TestCase):
+    """A script's `queries = [...]` is fetched pre-tick and sent on the
+    envelope as `queries` (change script-lookups-and-results, owner A2).
+
+    The runner reads its context from `body.snapshot` alone, so the envelope
+    is the only channel that needs no runner protocol change; these tests pin
+    what actually goes across, which is the part a unit test of the parser
+    cannot see.
+    """
+
+    def _capture(self):
+        box = {}
+
+        def _post(path, data=None, **kw):
+            box["data"] = data
+            return {"contract_version": 1, "status": "ok", "actions": []}
+        return box, _post
+
+    def test_declared_queries_ride_on_the_envelope(self):
+        class Api(_FakeApi):
+            def find_blocks(self, bot, block, radius=32, max_count=10):
+                return {"ok": True, "kind": "blocks",
+                        "matches": [{"id": block, "x": 1, "y": -50, "z": 2}]}
+
+        box, post = self._capture()
+        src = ("queries = [{name: 'ore', kind: 'blocks', id: 'minecraft:diamond_ore'}];\n"
+               "api.log('hi')")
+        ScriptTick(Api(), "Scout", src, post=post).tick()
+        env = box["data"]["snapshot"]
+        self.assertEqual(env["queries"]["ore"]["matches"][0]["id"], "minecraft:diamond_ore")
+        self.assertEqual(env["queries"]["ore"]["ok"], True)
+
+    def test_no_declaration_sends_no_queries_key(self):
+        box, post = self._capture()
+        ScriptTick(_FakeApi(), "Scout", "api.log('hi')", post=post).tick()
+        self.assertNotIn("queries", box["data"]["snapshot"])
+
+    def test_a_bad_declaration_is_refused_at_construction(self):
+        # The module under test is loaded under its own name (_load), so its
+        # exception class is NOT the one `import script_tick` would give.
+        with self.assertRaises(_st.DeclaredQueriesError):
+            ScriptTick(_FakeApi(), "Scout", "queries = lookup()", post=lambda *a, **k: None)
+
+    def test_a_failed_read_does_not_stop_the_tick(self):
+        import requests
+
+        class Api(_FakeApi):
+            def find_blocks(self, bot, block, radius=32, max_count=10):
+                raise requests.exceptions.Timeout()
+
+        box, post = self._capture()
+        src = ("queries = [{name: 'ore', kind: 'blocks', id: 'minecraft:diamond_ore'}];")
+        handled, actions, refusals, detail = ScriptTick(Api(), "Scout", src, post=post).tick()
+        self.assertEqual(box["data"]["snapshot"]["queries"]["ore"]["reason"], "timeout")
+        # The script still ran: the search failing is the script's business.
+        # (Its own detail says it logged nothing; what matters is that the
+        # tick reached the runner and was not failed BY the read.)
+        self.assertNotIn("snapshot", detail)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

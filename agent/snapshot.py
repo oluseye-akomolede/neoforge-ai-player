@@ -141,7 +141,7 @@ def build_state(api, bot, *, block_radius=8, entity_radius=24.0):
     }, errors
 
 
-def build_envelope(state, *, tick, events=None, task=None):
+def build_envelope(state, *, tick, events=None, task=None, queries=None):
     """Wrap a `state` in contract §3's shared envelope.
 
     `events` are the outcomes of earlier actions, delivered by the game on the
@@ -154,14 +154,24 @@ def build_envelope(state, *, tick, events=None, task=None):
     silently replaced by a dict keyed on a field the task does not have. The
     contract does not define `task`'s shape (a known gap), so this module must
     not invent one: pass it through and let the contract settle it.
+
+    `queries` is the result map for the script's declared queries (change
+    script-lookups-and-results, `look.queries.<name>`). It rides on the envelope
+    because the runner builds its context from `body.snapshot` alone
+    (agent-script-runner `src/main.js:210-213`), so the envelope is the channel
+    that needs no runner protocol change. Omitted when None, so a tick with no
+    declared queries sends byte-identical JSON to every caller that predates it.
     """
-    return {
+    envelope = {
         "tick": int(tick),
         "server_ms": int(time.time() * 1000),
         "state": state,
         "events": list(events or []),
         "task": task,
     }
+    if queries is not None:
+        envelope["queries"] = queries
+    return envelope
 
 
 def freeze(envelope):

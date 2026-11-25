@@ -48,6 +48,525 @@ RESULT_CAP_BYTES = 2048
 # report read as complete is a report that lies about its own extent.
 RESULT_TRUNCATED_MARKER = "...[truncated]"
 
+# ── Declared queries (change script-lookups-and-results, owner A2) ──────────
+#
+# A script declares its searches once, at the top, as a LITERAL:
+#
+#   queries = [{name: "ore", kind: "blocks", id: "minecraft:diamond_ore", radius: 32}]
+#
+# and reads the results as look.queries.ore. The agent fetches them before
+# the tick, so reading one spends no host call and cannot stall the sandbox
+# mid-script. The declaration is read from the SOURCE TEXT and never executed:
+# a declaration that is executed to be read would be arbitrary code running
+# before the script's budget.
+
+# The most declarations one script may make. Bounds the pre-tick mod work by
+# count; the radius clamps below bound it per query.
+MAX_DECLARED_QUERIES = 16
+
+# Caller-side clamps. The mod clamps nothing (HttpApiServer.java:1117-1134,
+# findBlocks iterates the full cube, BotPlayer.java:1286-1309), so a script
+# asking for radius 1000 would be asking the server for one. A value over a
+# clamp is NARROWED, and the result records clamped so the script can tell
+# its search was smaller than it asked.
+MAX_BLOCK_RADIUS = 32
+MAX_ENTITY_RADIUS = 32
+MAX_RESULTS = 16
+
+# Total pre-tick scan allowed before the agent logs that a tick is over budget.
+# 2x one radius-32 cube (the search volume a radius-32 find is proportional
+# to). Over budget the queries STILL RUN, with a log line naming the count: a
+# hard refusal here would silently break a working script over a number that is
+# a proposal until task 7.6 measures the real cost.
+QUERY_SCAN_BUDGET = 2 * MAX_BLOCK_RADIUS ** 3
+
+# locate's client-side bound. The other three reads keep api.py's default
+# transport timeout: an early tick after a slow read is closer to the tick
+# being readable than to the script being starved, and api.* exposes no
+# per-call timeout knob for them. locate IS configurable and needs it -- a
+# cold structure search through ungenerated chunks is the one read that is
+# legitimately slow (api.py:143), and its 120 s default would hold the whole
+# pre-tick phase. Locating costs no tick slot once the script has drawn it,
+# because a structure does not move.
+LOCATE_TIMEOUT = 20.0
+
+# The kinds and the keys each may declare. id is the block/entity/structure
+# name for every kind; type is refused rather than aliased, because two names
+# for one key is a second thing to keep in step with no gain.
+_QUERY_KEYS = {
+    "blocks": {"name", "kind", "id", "radius", "max"},
+    "entities": {"name", "kind", "id", "radius"},
+    "block_at": {"name", "kind", "x", "y", "z"},
+    "locate": {"name", "kind", "id"},
+}
+_REQUIRED_KEYS = {
+    "blocks": {"name", "kind", "id"},
+    "entities": {"name", "kind", "id"},
+    "block_at": {"name", "kind", "x", "y", "z"},
+    "locate": {"name", "kind", "id"},
+}
+
+
+class DeclaredQueriesError(ValueError):
+    """A script's queries declaration is not an acceptable literal list."""
+
+
+def parse_declared_queries(source):
+    """Return the validated list of declared queries, or [] when absent.
+
+    A strict literal parse of [const|let|var] queries = [<object literals>],
+    NOT ast.parse and NOT eval:
+
+      * ast.parse accepts JS by accident -- measured: return 1 parses as
+        Python, so a Python parse would accept a declaration that never
+        appears in the JavaScript source this runner will execute.
+      * eval executes. The whole point of reading the source is that nothing
+        in it runs before the tick's budget.
+
+    The two rules that the first prototype lacked, and that made it pass
+    attackers (queries = [...literal...] + evil() still executed evil()):
+
+      * the declaration appears AT MOST ONCE -- a second one would diverge from
+        the one that was validated;
+      * nothing follows the closing ] on the statement but a terminator
+        (;, a newline) or a comment.
+
+    Raises DeclaredQueriesError naming the offending declaration. Absent is
+    not an error: a script that declares nothing wants nothing fetched.
+    """
+    found = _find_declaration(source if isinstance(source, str) else "")
+    if found is None:
+        return []
+    start, array_text = found
+    items = _split_array_items(array_text, start)
+    out = []
+    names = set()
+    for index, item in enumerate(items):
+        query = _parse_query_object(item, index, start)
+        if query["name"] in names:
+            raise DeclaredQueriesError(
+                f"declared query name {query['name']!r} appears twice; "
+                f"one result would overwrite the other")
+        names.add(query["name"])
+        out.append(query)
+    if len(out) > MAX_DECLARED_QUERIES:
+        raise DeclaredQueriesError(
+            f"{len(out)} declared queries; at most {MAX_DECLARED_QUERIES} "
+            f"are allowed")
+    return out
+
+
+def _where(source, offset):
+    line = source.count("\n", 0, offset) + 1
+    return f"line {line}"
+
+
+def _skip_ws_and_comments(source, i):
+    """Advance past whitespace, // and /* */ comments."""
+    n = len(source)
+    while i < n:
+        c = source[i]
+        if c in " \t\r\n":
+            i += 1
+        elif source.startswith("//", i):
+            j = source.find("\n", i)
+            i = n if j < 0 else j + 1
+        elif source.startswith("/*", i):
+            j = source.find("*/", i + 2)
+            if j < 0:
+                raise DeclaredQueriesError(
+                    f"{_where(source, i)}: unterminated comment")
+            i = j + 2
+        else:
+            break
+    return i
+
+
+def _find_declaration(source):
+    """Return `(offset_of_[, text_of_[...])` for the one declaration, or None.
+
+    A declaration is `queries` at an identifier boundary (not a property
+    `x.queries`, not `myqueries`) followed by `=`, preceded by nothing that
+    binds it to a member (`this.`), and followed by `[`.
+    """
+    hits = []
+    n = len(source)
+    i = 0
+    while True:
+        j = source.find("queries", i)
+        if j < 0:
+            break
+        i = j + len("queries")
+        before = source[j - 1] if j > 0 else ""
+        after = source[i] if i < n else ""
+        # `before` must be a non-identifier character or a dot. Written with
+        # `isidentifier` rather than a hand-rolled class: "a" + "queries" is
+        # `aqueries`, not a declaration, and `_queries`/`$queries` are
+        # different names -- but whatever is accepted on the right must NOT be
+        # accepted here, or the declaration is never seen (measured: the
+        # hand-rolled set was checked with `isalnum` and missed a plain space).
+        if before and (before + "queries").isidentifier():
+            continue
+        if before == ".":
+            # A property write (`api.queries = ...`, `x.queries = ...`) is not
+            # the declaration the agent reads; only a bare binding is.
+            raise DeclaredQueriesError(
+                f"{_where(source, j)}: `queries` must be a bare assignment, "
+                f"not a property")
+        if after.isalnum() or after in "_$":
+            continue
+        k = _skip_ws_and_comments(source, i)
+        if k >= n or source[k] != "=" or (k + 1 < n and source[k + 1] == "="):
+            continue
+        k = _skip_ws_and_comments(source, k + 1)
+        if k >= n or source[k] != "[":
+            raise DeclaredQueriesError(
+                f"{_where(source, j)}: `queries` must be assigned an array "
+                f"literal; anything dynamic is refused, not executed")
+        hits.append((j, k))
+        if len(hits) > 1:
+            raise DeclaredQueriesError(
+                f"{_where(source, hits[1][0])}: `queries` is declared more "
+                f"than once; a second declaration would diverge from the one "
+                f"that was validated")
+    if not hits:
+        return None
+    j, k = hits[0]
+    # Find the matching `]`, string-aware.
+    depth = 0
+    m = k
+    in_str = None
+    while m < n:
+        c = source[m]
+        if in_str:
+            if c == "\\":
+                m += 2
+                continue
+            if c == in_str:
+                in_str = None
+        elif c in "\"'`":
+            in_str = c
+        elif c == "[":
+            depth += 1
+        elif c == "]":
+            depth -= 1
+            if depth == 0:
+                break
+        m += 1
+    if m >= n:
+        raise DeclaredQueriesError(
+            f"{_where(source, j)}: the `queries` array is not closed")
+    rest = _skip_ws_and_comments(source, m + 1)
+    if rest < n and source[rest] not in ";\n":
+        raise DeclaredQueriesError(
+            f"{_where(source, rest)}: nothing may follow the closing `]` of "
+            f"`queries` but a terminator or comment")
+    return k, source[k + 1:m]
+
+
+def _strip_strings(text):
+    """`text` with the BODY of every string literal blanked to `_`.
+
+    SAME LENGTH as the input, always: every offset found in the mask is
+    reported against the original text, and a mask that shrank (`""` for a
+    20-character id) shifted every later index -- measured: it split
+    `{name: 'c', kind: 'blocks', ...}` after the first string, so a valid
+    declaration read as a list of nothing.
+
+    Blanking keeps quotes (so the mask still shows a literal was there) but
+    makes a comma or bracket inside one unable to be read as structure.
+    """
+    out = []
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c in "\"'`":
+            quote = c
+            out.append(quote)
+            i += 1
+            while i < n:
+                if text[i] == "\\":
+                    out.append("__")
+                    i += 2
+                    continue
+                if text[i] == quote:
+                    out.append(quote)
+                    i += 1
+                    break
+                out.append("_")
+                i += 1
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def _split_array_items(text, offset):
+    """Split the array body into object-literal texts, or refuse.
+
+    Accepts ONLY a comma-separated list of `{...}` literals (trailing comma
+    allowed). A spread, a call, an identifier or a nested array is refused
+    here rather than later, because the error names the position.
+    """
+    mask = _strip_strings(text)
+    items = []
+    depth = 0
+    start = None
+    for idx, c in enumerate(mask):
+        if c == "{":
+            if depth == 0:
+                start = idx
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth < 0:
+                raise DeclaredQueriesError(
+                    f"{_where(text, idx)}: unbalanced `}}` in `queries`")
+            if depth == 0:
+                items.append(text[start:idx + 1])
+                start = None
+        elif depth == 0 and c not in " \t\r\n,":
+            raise DeclaredQueriesError(
+                f"`queries` at {_where(text, idx)}: only object literals are "
+                f"allowed; {c!r} is not")
+    if depth != 0:
+        raise DeclaredQueriesError("`queries`: an object literal is not closed")
+    if not text.strip():
+        return []
+    return items
+
+
+
+def _parse_scalar(text):
+    """One literal value: a string, a number, true/false/null. Refuse the rest."""
+    import re
+    t = text.strip()
+    if not t:
+        raise DeclaredQueriesError("empty value in a declared query")
+    if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'":
+        try:
+            return json.loads('"' + t[1:-1].replace('\\\'', "'")
+                              .replace('"', '\\"') + '"')
+        except ValueError:
+            raise DeclaredQueriesError(f"unreadable string literal {t!r}")
+    if t in ("true", "false"):
+        return t == "true"
+    if t == "null":
+        return None
+    if re.fullmatch(r"-?\d+(\.\d+)?", t):
+        return float(t) if "." in t else int(t)
+    raise DeclaredQueriesError(
+        f"a declared query's value must be a string, number, true, false or "
+        f"null; got {t!r}")
+
+
+def _parse_query_object(item, index, base_offset):
+    """Validate one `{...}` literal and return the query dict."""
+    inner = item.strip()
+    if not (inner.startswith("{") and inner.endswith("}")):
+        raise DeclaredQueriesError(f"declared query #{index + 1} is not an object")
+    pairs = _split_object_pairs(inner[1:-1])
+    obj = {}
+    for key, value in pairs:
+        k = _parse_key(key)
+        # An unknown key (including __proto__, which a JSON parse would let
+        # through as an own property) is refused by this allow-list, not by
+        # trusting the parser.
+        if k == "__proto__":
+            raise DeclaredQueriesError("`__proto__` is not an allowed query key")
+        if k in obj:
+            raise DeclaredQueriesError(f"declared query #{index + 1} repeats key {k!r}")
+        obj[k] = _parse_scalar(value)
+    kind = obj.get("kind")
+    if kind not in _QUERY_KEYS:
+        raise DeclaredQueriesError(
+            f"declared query #{index + 1}: unknown kind {kind!r}; expected one "
+            f"of {sorted(_QUERY_KEYS)}")
+    unknown = set(obj) - _QUERY_KEYS[kind]
+    if unknown:
+        raise DeclaredQueriesError(
+            f"declared query #{index + 1} (kind {kind!r}) has key(s) "
+            f"{sorted(unknown)} it does not take")
+    missing = _REQUIRED_KEYS[kind] - set(obj)
+    if missing:
+        raise DeclaredQueriesError(
+            f"declared query #{index + 1} (kind {kind!r}) needs {sorted(missing)}")
+    name = obj["name"]
+    if not isinstance(name, str) or not name.isidentifier():
+        raise DeclaredQueriesError(
+            f"declared query #{index + 1}: name {name!r} must be a plain "
+            f"identifier, because it is read as `look.queries.<name>`")
+    if kind in ("blocks", "entities", "locate"):
+        if not isinstance(obj["id"], str) or not obj["id"]:
+            raise DeclaredQueriesError(
+                f"declared query {name!r}: id must be a non-empty string")
+    if kind == "block_at":
+        for axis in ("x", "y", "z"):
+            if not isinstance(obj[axis], int) or isinstance(obj[axis], bool):
+                raise DeclaredQueriesError(
+                    f"declared query {name!r}: {axis} must be an integer")
+    for numeric in ("radius", "max"):
+        if numeric in obj and (not isinstance(obj[numeric], int)
+                               or isinstance(obj[numeric], bool)):
+            raise DeclaredQueriesError(
+                f"declared query {name!r}: {numeric} must be an integer")
+    return obj
+
+
+def _parse_key(text):
+    t = text.strip()
+    if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'":
+        return t[1:-1]
+    if t.isidentifier():
+        return t
+    raise DeclaredQueriesError(f"unreadable key {t!r} in a declared query")
+
+
+def _split_object_pairs(body):
+    """Split `k: v, k: v` at top-level commas, respecting strings and nesting."""
+    mask = _strip_strings(body)
+    pairs = []
+    depth = 0
+    start = 0
+    for idx, c in enumerate(mask):
+        if c in "{[(":
+            depth += 1
+        elif c in "}])":
+            depth -= 1
+        elif c == "," and depth == 0:
+            pairs.append(body[start:idx])
+            start = idx + 1
+    pairs.append(body[start:])
+    out = []
+    for pair in pairs:
+        if not pair.strip():
+            continue
+        m = _strip_strings(pair)
+        colon = m.find(":")
+        if colon < 0:
+            raise DeclaredQueriesError(f"declared query entry {pair.strip()!r} has no `:`")
+        out.append((pair[:colon], pair[colon + 1:]))
+    return out
+
+
+def _refused(reason, message):
+    return {"ok": False, "reason": reason, "message": message}
+
+
+def plan_declared_queries(queries):
+    """The mod calls for a validated list: one per distinct `(kind, id)`.
+
+    Duplicates collapse because two names for one search are ONE search: the
+    second would cost the same pre-tick scan for the same answer. `block_at`
+    collapses on its coordinates instead (its "id" is a position).
+    """
+    calls = []
+    by_key = {}
+    for query in queries:
+        kind = query["kind"]
+        if kind in ("blocks", "entities", "locate"):
+            key = (kind, query["id"])
+        else:
+            key = (kind, query["x"], query["y"], query["z"])
+        if key not in by_key:
+            by_key[key] = _plan_call(query)
+            calls.append(key)
+    return [by_key[k] for k in calls]
+
+
+def _plan_call(query):
+    """`(key, call, clamped)` for one query, clamps applied caller-side."""
+    kind = query["kind"]
+    clamped = {}
+    if kind == "blocks":
+        radius = int(query.get("radius", MAX_BLOCK_RADIUS))
+        if radius > MAX_BLOCK_RADIUS:
+            clamped["radius"] = MAX_BLOCK_RADIUS
+        max_count = int(query.get("max", 10))
+        if max_count > MAX_RESULTS:
+            clamped["max"] = MAX_RESULTS
+        return kind, dict(id=query["id"], radius=min(radius, MAX_BLOCK_RADIUS),
+                          max=min(max_count, MAX_RESULTS)), clamped
+    if kind == "entities":
+        radius = int(query.get("radius", MAX_ENTITY_RADIUS))
+        if radius > MAX_ENTITY_RADIUS:
+            clamped["radius"] = MAX_ENTITY_RADIUS
+        return kind, dict(id=query["id"], radius=min(radius, MAX_ENTITY_RADIUS)), clamped
+    if kind == "block_at":
+        return kind, dict(x=query["x"], y=query["y"], z=query["z"]), clamped
+    return kind, dict(id=query["id"]), clamped
+
+
+def run_declared_queries(api, bot, queries):
+    """Run the declared queries through the four read routes. Returns a map.
+
+    Reads only `api.find_blocks`, `api.find_entities`, `api.block_at` and
+    `api.locate`. One call per distinct query; every declared name then reads
+    that call's result. A failing or timed-out call is that name's
+    `{ok: false, reason, message}` and nothing else: it does not raise, does
+    not drop siblings and does not fail the tick.
+
+    Returns `None` when nothing is declared, so the envelope carries no
+    `queries` key at all and a script without declarations sends the same bytes
+    it always did.
+    """
+    import requests
+    if not queries:
+        return None
+    planned = plan_declared_queries(queries)
+    results = []
+    scan = 0
+    for kind, params, clamped in planned:
+        if kind in ("blocks", "entities"):
+            scan += (2 * params["radius"] + 1) ** 3
+        try:
+            if kind == "blocks":
+                value = api.find_blocks(bot, params["id"],
+                                        params["radius"], params["max"])
+            elif kind == "entities":
+                value = api.find_entities(bot, params["id"],
+                                          float(params["radius"]))
+            elif kind == "block_at":
+                value = api.block_at(bot, params["x"], params["y"], params["z"])
+            else:
+                value = api.locate(bot, params["id"], timeout=LOCATE_TIMEOUT)
+        except requests.exceptions.Timeout:
+            value = _refused("timeout", f"{kind} did not answer within its bound")
+        except requests.exceptions.RequestException as e:
+            value = _refused("unavailable", f"{kind} could not be read: "
+                                            f"{type(e).__name__}: {e}")
+        except Exception as e:  # noqa: BLE001 - a bad answer is one query's problem
+            value = _refused("error", f"{kind} failed: {type(e).__name__}: {e}")
+        else:
+            if isinstance(value, dict):
+                value = dict(value)
+                value.setdefault("ok", True)
+                value.setdefault("kind", kind)
+            else:
+                value = _refused("error", f"{kind} returned a non-object answer")
+            if clamped:
+                value["clamped"] = dict(clamped)
+        results.append((kind, params, value))
+    if scan > QUERY_SCAN_BUDGET:
+        print(f"[queries] budget exceeded: declared searches scan {scan} cells, "
+              f"budget {QUERY_SCAN_BUDGET}")
+    by_key = {}
+    for kind, params, value in results:
+        if kind in ("blocks", "entities", "locate"):
+            key = (kind, params["id"])
+        else:
+            key = (kind, params["x"], params["y"], params["z"])
+        by_key[key] = value
+    out = {}
+    for query in queries:
+        kind = query["kind"]
+        if kind in ("blocks", "entities", "locate"):
+            out[query["name"]] = by_key[(kind, query["id"])]
+        else:
+            out[query["name"]] = by_key[(kind, query["x"], query["y"], query["z"])]
+    return out
+
 
 def cap_result(value=None, *, text=None):
     """Return `(text, truncated)` -- the script's report as capped JSON text.
@@ -176,7 +695,7 @@ class RefusedRecord(Exception):
 
 
 def translate_runner_actions(records):
-    """Map the runner's action records onto `action_binding`'s input shape.
+    """Map the runner's action records onto action_binding's input shape.
 
     Two shapes exist for the same thing, and this is the single place they
     meet. The runner emits `{seq, call, directive, args}` (agent-script-runner
@@ -483,6 +1002,14 @@ class ScriptTick:
         # report channel (task 5.6) so the mod is told the state of the tick
         # that was actually sent, not a state the agent inferred afterwards.
         self.last_state = None
+        # The declared-query list, read from the source ONCE here rather than
+        # per tick: the source only changes with a new object (the runner
+        # keys on `_revision`), and a parse failure is a property of the
+        # script, not of a tick. Parsed, never executed -- see
+        # `parse_declared_queries`. Raises `DeclaredQueriesError`, which the
+        # caller surfaces as the script being unrunnable, the same way an
+        # engine-level syntax error is.
+        self.queries = parse_declared_queries(script_source)
 
     @property
     def enabled(self):
@@ -511,6 +1038,19 @@ class ScriptTick:
             return False, [], [], "no script"
 
         envelope, snap_errors = self._build_snapshot()
+        # The declared searches, fetched AFTER the snapshot: `locate` has its
+        # own (bounded) timeout and none of the four reads is needed to build
+        # the snapshot itself. A read that fails becomes that NAME's
+        # `{ok:false,...}` and never changes `handled` -- a script whose search
+        # failed still runs, and decides with `look.queries.<name>.ok`.
+        if envelope is not None:
+            envelope = dict(envelope)
+            envelope["queries"] = run_declared_queries(
+                self._api, self._bot, self.queries)
+            if envelope["queries"] is None:
+                # Nothing declared: omit the key so the body stays
+                # byte-identical to what every existing caller sends.
+                envelope.pop("queries")
         # The directive this tick is running, if any, so the caller can tell an
         # idle script from one waiting on its own work in flight. Read from the
         # envelope it already built: a second GET would be a different moment.

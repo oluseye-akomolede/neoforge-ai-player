@@ -123,18 +123,23 @@ NOT spend a host call, reach the network, or reach the mod.
 - **AND** matching MUST remain exact after that one strip, so
   `look.blocks('iron')` MUST NOT match `minecraft:iron_ore`
 
-### Requirement: A Script Declares The Searches It Needs And Reads Them As `look.<name>`
+### Requirement: A Script Declares The Searches It Needs And Reads Them As `look.queries.<name>`
 
 A script MUST be able to search the world the way the planner's own
 `find_blocks` / `find_entities` / `locate` do (owner A2, 2026-11-25 00:59Z), and
 the lead settled HOW on 2026-11-25 04:17Z: **option 1 with a declared list.**
 
-A script declares the searches it wants in a top-of-script assignment named
-`queries`, using the same kinds and parameters as the bot's existing query
-functions (`agent/api.py`). Before each tick, the agent runs exactly those
-declared queries through the existing mod reads and installs each result on the
-`look` object under the declared `name`. Script code reads `look.<name>` like
-any other lookup: a plain value, no call, no host call.
+A script declares the searches it wants in a top-of-script statement named
+`queries` (`const queries = [...]` or `queries = [...]`), using the same kinds
+and parameters as the bot's existing query functions (`agent/api.py`). Before
+each tick, the agent runs exactly those declared queries through the existing
+mod reads and installs each result on the `look` object's `queries` map under
+the declared `name`. Script code reads `look.queries.<name>` like any other
+lookup: a plain value, no call, no host call. It is NOT `look.<name>` because
+`look` already has accessors named `blocks`, `entities`, `age`, `inventory`,
+`self` and `task`; a declaration named `blocks` would either overwrite one of
+them or silently lose to it, depending on the order of an edit nobody would
+notice. One reserved namespace has neither failure.
 
 ```js
 queries = [
@@ -142,13 +147,14 @@ queries = [
   {name: "cows",  kind: "entities", id: "minecraft:cow"},
   {name: "here",  kind: "block_at", x: 10, y: 64, z: 10},
 ]
-return look.ore.matches.length ? api.do("goto_block", look.ore.matches[0]) : api.done("none");
+return look.queries.ore.matches.length
+  ? api.do("goto_block", look.queries.ore.matches[0]) : api.done("none");
 ```
 
 The properties that make this the chosen design MUST hold:
 
 - **Zero host calls.** A declared query is answered from data the agent fetched
-  BEFORE the tick, so reading `look.<name>` spends none of the 8 host calls and
+  BEFORE the tick, so reading `look.queries.<name>` spends none of the 8 host calls and
   the sandbox stays hermetic (`src/engine.js` `#installSnapshot`). `look` keeps
   closing over the snapshot; the query results are additional read-only data on
   it, not a host function.
@@ -165,10 +171,10 @@ The properties that make this the chosen design MUST hold:
 (`src/engine.js:evaluate`, contract §4.4); nothing it declares at top level
 survives, and the sandbox has no JS parser exposed to the agent. The agent
 therefore MUST read the declaration from the SOURCE TEXT before evaluating,
-without executing any script code, by a strict parse that accepts only a literals
-form: an assignment `queries = <literal>` whose right side is an array of object
-literals with only the allowed keys (`name`, `kind`, `id`/`type`, `x`/`y`/`z`,
-`radius`). Anything dynamic (a function call, a property access, a spread, a
+without executing any script code, by a strict parse that accepts only a literal
+form: a declaration `[const|let|var] queries = <literal>` whose right side is an
+array of object literals with only the allowed keys (`name`, `kind`, `id`,
+`x`/`y`/`z`, `radius`, `max`). Anything dynamic (a function call, a property access, a spread, a
 template literal, a variable reference) MUST be refused at bind time with a clear
 reason, NOT silently ignored and NOT executed — a declaration that is executed to
 be read is arbitrary code running before the tick's budget.
@@ -181,6 +187,14 @@ terminator or comment** (`queries = [...literal...] + evil()` otherwise parses a
 the array while `+ evil()` still executes when the script runs — validation that
 gives false assurance). A `__proto__` or other unknown key is refused by the key
 allow-list, not by trusting the JSON parse.
+
+**The declaration is validated when a script is BOUND, before it has run a tick.**
+The same parser runs at `tick()` time to read the queries; a script whose
+declaration is invalid at bind time MUST be refused there with a reason naming
+the declaration (the path a hand-written binding already takes, `PlannerScriptBindTest`),
+so a broken declaration is visible in the bind log rather than only in a tick's
+detail line. A tick whose declaration becomes invalid mid-run (a script edited
+under a live binding) is refused at the tick, never executed with a partial list.
 
 **Kinds and parameters** (from `agent/api.py`, which wraps the mod):
 
@@ -202,7 +216,12 @@ than it asked.
 matches: [] }`, for the reason `look` already draws (`src/look.js:103-110`):
 "searched, found none" and "could not search" are different facts. One failed
 query MUST NOT fail the tick or drop the other queries — each is independent and
-each failure is reported in its own `look.<name>`.
+each failure is reported in its own `look.queries.<name>`.
+
+**A duplicate name is refused.** Two declarations with the same `name` would
+silently make one overwrite the other, so it MUST be refused at bind time with a
+reason naming the name. Duplicates of the same `(kind, id)` under DIFFERENT names
+are allowed and collapse to one mod call, because they are one search.
 
 **Read-only.** The query path MUST NOT reach any mod route that moves, mines,
 places, attacks or sets a directive. It calls only the four reads above.
@@ -214,9 +233,9 @@ The mod clamps nothing: `HttpApiServer.java:1117-1134` takes whatever `radius` a
 #### Scenario: A declared query answers from data fetched before the tick
 - **GIVEN** a script declaring `queries = [{name:"ore", kind:"blocks", id:"minecraft:diamond_ore", radius:32}]`
 - **WHEN** the tick runs
-- **THEN** `look.ore` MUST be the result of one `find_blocks` call made BEFORE
+- **THEN** `look.queries.ore` MUST be the result of one `find_blocks` call made BEFORE
   the script was evaluated
-- **AND** reading `look.ore` MUST spend no host call
+- **AND** reading `look.queries.ore` MUST spend no host call
 
 #### Scenario: A tick with no declared queries costs no mod read
 - **GIVEN** a script with no `queries` assignment
@@ -235,12 +254,12 @@ The mod clamps nothing: `HttpApiServer.java:1117-1134` takes whatever `radius` a
 - **GIVEN** `{kind:"blocks", id:"minecraft:stone", radius:128}`
 - **WHEN** the query is run
 - **THEN** the mod MUST be asked for at most radius 32
-- **AND** `look.<name>` MUST carry the clamp (e.g. `clamped: {radius: 32}`)
+- **AND** `look.queries.<name>` MUST carry the clamp (e.g. `clamped: {radius: 32}`)
 
 #### Scenario: A failed query is not an empty one
 - **GIVEN** a declared query whose mod call times out
 - **WHEN** the tick runs
-- **THEN** `look.<name>` MUST be `{ ok: false, reason: "timeout", ... }`
+- **THEN** `look.queries.<name>` MUST be `{ ok: false, reason: "timeout", ... }`
 - **AND** it MUST NOT be `{ ok: true, matches: [] }`
 - **AND** the other declared queries MUST still be present and correct
 - **AND** the tick MUST NOT fail because of it

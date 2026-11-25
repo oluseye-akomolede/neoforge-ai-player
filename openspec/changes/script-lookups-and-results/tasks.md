@@ -395,14 +395,20 @@ there is no `self` or `bots` at all) — so the script guessed at `time`,
 ## 7. Script query functions: declared list (A2, resolved by lead 2026-11-25 04:17Z)
 
 Lead chose option 1 with a change: not a fixed prefetch, a script-declared list.
-A script sets `queries = [{name, kind, ...}]` at the top; before each tick the
-agent runs exactly those through `agent/api.py` and installs results as
-`look.<name>`. Zero host calls, no stall, no state across ticks, no-op when the
+A script sets `queries = [{name, kind, ...}]` (or `const queries = ...`) at the
+top; before each tick the agent runs exactly those through `agent/api.py` and
+installs results as `look.queries.<name>` (a reserved map: `look` already has
+`blocks`/`entities`/`age`/`inventory`/`self`/`task` accessors a declaration name
+must not collide with). Zero host calls, no stall, no state across ticks, no-op when the
 list is empty. Rejected option 2 because it needs a new network path + mod key in
 the shared runner and turns a slow read into a stalled tick.
 
-Spec delta: done (specs/bot-coded-agents, "A Script Declares The Searches..."). Reviewer
-checks the spec before code (lead instruction).
+Spec delta: done (specs/bot-coded-agents, "A Script Declares The Searches...").
+Runner reads the queries from the ENVELOPE (`snapshot.queries`), not a new
+context field: `src/main.js:210-213` builds the runner context from
+`body.snapshot` and `body.memory` only, so the envelope is the one channel the
+agent already sends that needs no runner protocol change. Reviewer checks the
+spec before code (lead instruction).
 
 Cap on declared list: PROPOSED **16** queries per script, and **one `blocks` or
 `entities` query per distinct `(kind, id)`** (duplicates collapse). 16 bounds the
@@ -420,8 +426,11 @@ that matters is total SCAN, not count — see 7.2's budget.
       terminator/comment. Returns `[]` when absent.
 
 - [ ] 7.2 `_run_declared_queries(queries, bot)` in `agent/script_tick.py`, called
-      from `_build_snapshot` BEFORE `build_envelope`, results put on the envelope
-      as a `queries` map keyed by `name`. Per-query call to `api.find_blocks` /
+      from `_build_snapshot` AFTER `build_envelope`, results put on the envelope
+      (top level, beside `tick`/`task`) as a `queries` map keyed by `name`. After,
+      not before: one of the four reads is `/bot/{name}/locate` with a 120 s
+      default bound (`api.py:143`), so the pre-tick mod work must be bounded
+      explicitly (7.3) and the envelope it rides on is already built. Per-query call to `api.find_blocks` /
       `find_entities` / `block_at` / `locate`; clamps caller-side (radius<=32,
       max<=16, entities radius<=32); a clamp sets `clamped` on that query's
       result; a failed/timed-out call is `{ok:false,reason,message}` and does NOT
@@ -433,9 +442,10 @@ that matters is total SCAN, not count — see 7.2's budget.
       but log `queries_budget_exceeded` with the count so the lead can see it was
       over — a hard refusal here would silently break a script, so measure first.
 
-- [ ] 7.4 `src/look.js` (runner): add the `queries` map onto the installed
-      `look` object as read-only frozen data, so `look.<name>` is the result
-      object. `look` still closes over the snapshot for its existing accessors;
+- [ ] 7.4 `src/look.js` (runner): add `look.queries` -- a deeply frozen copy of
+      `snapshot.queries` (absent -> an empty object) -- onto the installed `look`
+      object, built in the SAME `evalCode` as `snapshot` so it shares its
+      lifetime (`src/engine.js` `#installSnapshot`). `look` still closes over the snapshot for its existing accessors;
       the query results ride in on the envelope. No new host function.
 
 - [ ] 7.5 Tests, each with a mutant that must red it: the parser's nine refusals
@@ -454,6 +464,9 @@ that matters is total SCAN, not count — see 7.2's budget.
       `agent/agent.py:5316+`** — that is the STANDING-ORDERS lane's own failure
       backoff (keyed by `sid`), a different mechanism that must survive. Deleting
       it by name-match is the trap here.
+
+7.5b committed as 389a658 on minecraft-wt-deepseek (tests green; a
+re-added cap in `may_call`'s caller reds both new tests).
 
 - [ ] 7.6 MEASURE before setting 7.2/7.3 numbers: time `findBlocks` radius 32 and
       48 on a test server (3 runs each). Replaces the assumed 5 ms/cell.
