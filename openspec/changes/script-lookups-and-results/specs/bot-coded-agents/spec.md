@@ -123,61 +123,133 @@ NOT spend a host call, reach the network, or reach the mod.
 - **AND** matching MUST remain exact after that one strip, so
   `look.blocks('iron')` MUST NOT match `minecraft:iron_ore`
 
-### Requirement: A Script Can Search The World Beyond The Snapshot
+### Requirement: A Script Declares The Searches It Needs And Reads Them As `look.<name>`
 
-A script MUST be able to search beyond its snapshot, the way the planner's own
-`find_blocks` / `find_entities` / `locate` do (owner A2, 2026-11-25 00:59Z). How
-that is exposed is NOT yet decided, because the code as it stands forbids the
-obvious synchronous form and the choice is architectural.
+A script MUST be able to search the world the way the planner's own
+`find_blocks` / `find_entities` / `locate` do (owner A2, 2026-11-25 00:59Z), and
+the lead settled HOW on 2026-11-25 04:17Z: **option 1 with a declared list.**
 
-**The constraint, stated so no implementer repeats the first draft's mistake.**
-The script runs in QuickJS (`agent-script-runner/src/engine.js`), one fresh context
-per tick, whose only globals are `api`, `snapshot`, `look` and `memory`
-(`src/engine.js:399-423`, `:593-637`, `:708-710`). It has no `fetch`, `require`,
-`os` or `std` (`:13`). The only outbound path, `api.*` (`src/binding.js:192-500`), installed via `newFunction` at `src/engine.js:863-864`),
-queues directives into `state.actions` that the Python agent dispatches AFTER the
-tick (`agent/agent.py:3738`). Nothing in the sandbox can make a synchronous call to
-the mod and read the answer back inside the same tick. So a synchronous
-`query.blocks()` returning matches is not buildable without changing the sandbox
-boundary -- see `tasks.md` §7 for the three options and their costs.
+A script declares the searches it wants in a top-of-script assignment named
+`queries`, using the same kinds and parameters as the bot's existing query
+functions (`agent/api.py`). Before each tick, the agent runs exactly those
+declared queries through the existing mod reads and installs each result on the
+`look` object under the declared `name`. Script code reads `look.<name>` like
+any other lookup: a plain value, no call, no host call.
 
-Whatever is chosen, these MUST hold: a search MUST be read-only and MUST NOT reach
-`do`; a search above any maximum MUST be clamped and MUST report the clamp rather
-than answer "not found" for a search that never ran that far; and a search that
-fails or times out MUST be `{ ok: false, reason, message }`, never an empty
-`matches`, because "searched and found none" and "could not search" are different
-facts and a script is entitled to tell them apart (`src/look.js:103-110`).
+```js
+queries = [
+  {name: "ore",   kind: "blocks",   id: "minecraft:diamond_ore", radius: 32},
+  {name: "cows",  kind: "entities", id: "minecraft:cow"},
+  {name: "here",  kind: "block_at", x: 10, y: 64, z: 10},
+]
+return look.ore.matches.length ? api.do("goto_block", look.ore.matches[0]) : api.done("none");
+```
+
+The properties that make this the chosen design MUST hold:
+
+- **Zero host calls.** A declared query is answered from data the agent fetched
+  BEFORE the tick, so reading `look.<name>` spends none of the 8 host calls and
+  the sandbox stays hermetic (`src/engine.js` `#installSnapshot`). `look` keeps
+  closing over the snapshot; the query results are additional read-only data on
+  it, not a host function.
+- **No stall.** The mod reads happen on the agent's tick boundary, before the
+  script is evaluated, never inside it, so a slow `findBlocks` delays that tick's
+  start (a bounded, visible cost) rather than blocking mid-script with no
+  timeout.
+- **No state across ticks.** The results live for exactly the tick they were
+  fetched for, like the snapshot itself (§4.4: nothing a script declares survives).
+- **A tick with no declared queries costs zero mod reads.** No `queries`
+  assignment, or an empty list, MUST fetch nothing.
+
+**How `queries` is read.** The script is JavaScript and runs as a function body
+(`src/engine.js:evaluate`, contract §4.4); nothing it declares at top level
+survives, and the sandbox has no JS parser exposed to the agent. The agent
+therefore MUST read the declaration from the SOURCE TEXT before evaluating,
+without executing any script code, by a strict parse that accepts only a literals
+form: an assignment `queries = <literal>` whose right side is an array of object
+literals with only the allowed keys (`name`, `kind`, `id`/`type`, `x`/`y`/`z`,
+`radius`). Anything dynamic (a function call, a property access, a spread, a
+template literal, a variable reference) MUST be refused at bind time with a clear
+reason, NOT silently ignored and NOT executed — a declaration that is executed to
+be read is arbitrary code running before the tick's budget.
+
+Two rules the parse MUST also enforce, because dropping them was measured to
+pass attackers (prototype in tasks 7.1): **the declaration MUST appear at most
+once** (a second `queries =` later in the script would diverge from the one that
+was validated), and **nothing MAY follow the closing `]` on its statement except a
+terminator or comment** (`queries = [...literal...] + evil()` otherwise parses as
+the array while `+ evil()` still executes when the script runs — validation that
+gives false assurance). A `__proto__` or other unknown key is refused by the key
+allow-list, not by trusting the JSON parse.
+
+**Kinds and parameters** (from `agent/api.py`, which wraps the mod):
+
+| kind | declared keys | mod call | caller-side clamp |
+|---|---|---|---|
+| `blocks` | `id`, `radius`, `max` | `api.find_blocks(bot, id, radius, max)` (`api.py:110`) | radius <= 32, max <= 16 |
+| `entities` | `id`, `radius` | `api.find_entities(bot, id, radius)` (`api.py:208`) | radius <= 32 |
+| `block_at` | `x`, `y`, `z` | `api.block_at(bot, x, y, z)` (`api.py:113`) | one cell |
+| `locate` | `id` | `api.locate(bot, id)` (`api.py:143`) | fixed chunk_radius 100 |
+
+The clamps above are a PROPOSAL; the numbers that decide their safety are
+measured by tasks 7.6 (scan cost) and the lead accepts or overrules them. A
+declared value above a clamp MUST be narrowed to it and the clamp MUST be
+reported in that query's result, so the script can tell a search was narrower
+than it asked.
+
+**A failed or timed-out query is not an empty result.** Each result MUST be
+`{ ok: false, reason, message }` on failure or timeout, never `{ ok: true,
+matches: [] }`, for the reason `look` already draws (`src/look.js:103-110`):
+"searched, found none" and "could not search" are different facts. One failed
+query MUST NOT fail the tick or drop the other queries — each is independent and
+each failure is reported in its own `look.<name>`.
+
+**Read-only.** The query path MUST NOT reach any mod route that moves, mines,
+places, attacks or sets a directive. It calls only the four reads above.
 
 The mod clamps nothing: `HttpApiServer.java:1117-1134` takes whatever `radius` and
 `max` it is sent, and `findBlocks` iterates the full cube
-(`BotPlayer.java:1286-1309`). Any bound lives on the caller side.
+(`BotPlayer.java:1286-1309`). So the clamp lives in the agent, before the call.
 
-#### Scenario: A search beyond the snapshot does not read as "nothing there"
-- **GIVEN** a snapshot whose `nearby.blocks` covers radius 5
-- **WHEN** the script asks for a block within 40 blocks
-- **THEN** the answer MUST NOT be an empty list that reads as "nothing there"
-- **AND** it MUST distinguish "did not search that far" from "searched, none found"
-- **AND** the snapshot lookup itself MUST still spend no host call
+#### Scenario: A declared query answers from data fetched before the tick
+- **GIVEN** a script declaring `queries = [{name:"ore", kind:"blocks", id:"minecraft:diamond_ore", radius:32}]`
+- **WHEN** the tick runs
+- **THEN** `look.ore` MUST be the result of one `find_blocks` call made BEFORE
+  the script was evaluated
+- **AND** reading `look.ore` MUST spend no host call
 
-#### Scenario: A search cannot act
-- **GIVEN** the object that exposes search to a tick
-- **WHEN** its construction is inspected
-- **THEN** it MUST hold no directive dispatcher and no reference to `do`
-- **AND** no search path MUST reach the mod's `goto`, `mine`, `place`, `attack` or
-  `set_directive` routes
+#### Scenario: A tick with no declared queries costs no mod read
+- **GIVEN** a script with no `queries` assignment
+- **WHEN** the tick runs
+- **THEN** no `find_blocks`, `find_entities`, `block_at` or `locate` call MUST be made
+- **AND** `look` MUST still answer from the snapshot as before
 
-#### Scenario: A search above the maximum is clamped, and says so
-- **GIVEN** a search asking for more than the maximum radius or count
-- **WHEN** it is performed
-- **THEN** it MUST be narrowed to the maximum
-- **AND** the answer MUST carry the clamp, so the caller can tell the search was
-  narrower than asked
+#### Scenario: A dynamic declaration is refused, not executed
+- **GIVEN** `queries = [getQuery()]` or `queries = someVar`
+- **WHEN** the script is bound
+- **THEN** it MUST be refused with a reason naming the declaration, before any
+  part of it runs
+- **AND** no code inside the declaration MUST execute
 
-#### Scenario: A search that times out is not an empty answer
-- **GIVEN** a search whose mod request fails or times out
-- **WHEN** the result reaches the caller
-- **THEN** it MUST be `{ ok: false, reason, message }`
-- **AND** it MUST NOT be an empty `matches`
+#### Scenario: A declared value above the clamp is narrowed and says so
+- **GIVEN** `{kind:"blocks", id:"minecraft:stone", radius:128}`
+- **WHEN** the query is run
+- **THEN** the mod MUST be asked for at most radius 32
+- **AND** `look.<name>` MUST carry the clamp (e.g. `clamped: {radius: 32}`)
+
+#### Scenario: A failed query is not an empty one
+- **GIVEN** a declared query whose mod call times out
+- **WHEN** the tick runs
+- **THEN** `look.<name>` MUST be `{ ok: false, reason: "timeout", ... }`
+- **AND** it MUST NOT be `{ ok: true, matches: [] }`
+- **AND** the other declared queries MUST still be present and correct
+- **AND** the tick MUST NOT fail because of it
+
+#### Scenario: A query cannot act
+- **GIVEN** the code that runs declared queries
+- **WHEN** its call sites are inspected
+- **THEN** they MUST be only `find_blocks`, `find_entities`, `block_at`, `locate`
+- **AND** no `goto`, `mine`, `place`, `attack` or `set_directive` route
 
 
 ### Requirement: A Script Can Read Its Own Inventory Through The Lookup
