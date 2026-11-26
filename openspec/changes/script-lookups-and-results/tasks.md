@@ -145,19 +145,21 @@ document work that preceded them, kept so the reasoning is not lost.
 - [x] 3.8 WITHDRAWN by A2 with 3.3/3.7 — there is no budget state left to
       preserve across `reset()`. A reset clearing `_plan_steps` is correct.
 
-- [ ] 3.12 **ONE result-triggered planner call in flight per bot (A2's only
+- [x] 3.12 **ONE result-triggered planner call in flight per bot (A2's only
       remaining bound).** A result that arrives while a `call_plan` is in
       flight MUST stay pending, from any script and either bot, and MUST be
       delivered on the first pass after the call returns. THE GUARD ALREADY
       EXISTS and must not be rebuilt: `_maybe_plan_on_result` returns when
-      `_plan_steps` is set (the `if self._plan_steps:` guard in `_maybe_plan_on_result`, `agent/agent.py`). NOT YET PINNED (checked
-      2026-11-26): the guard is in the tree, but the two tests this task
-      describes do not exist. What IS tested is the adjacent 3.5/3.6
-      behaviour — `test_agent_script_branch.py::ScriptResultReachesTheSlotTest.test_a_pending_result_starts_one_planner_call_carrying_the_result`
-      and `test_result_delivery.py::TestNoRateCapRemains.test_pending_result_is_allowed_no_matter_how_many_were_delivered`
-      (the "no cooldown" half). Neither drives a pass with a call live and
-      asserts the result stays pending, and neither is paired with the
-      `_plan_steps` mutant. Left open so the gap is visible.
+      `_plan_steps` is set (the `if self._plan_steps:` guard in `_maybe_plan_on_result`, `agent/agent.py`). PROVEN (checked
+      2026-11-26) by `test_agent_script_branch.py::ScriptResultReachesTheSlotTest.test_a_result_arriving_mid_plan_is_queued_not_injected`:
+      it sets `_plan_steps` live, stores a result, calls `_maybe_plan_on_result`,
+      and asserts no thread started AND `has_pending()` is still true. Mutant
+      verified by hand: replacing that guard with `if False:` reddens exactly
+      this test (`FAILED (failures=1)`, 19 in the class) and nothing else.
+      Correction to an earlier note here: I first recorded this as unpinned
+      after searching for the two test names this task suggested; the test
+      exists under a name describing the behaviour. The two named above are
+      the adjacent 3.5/3.6 behaviour and the "no cooldown" half.
 - [x] 3.9 DEFERRED -- the `goal-changed` discard. Not done, and nothing
       may promise it. A tick carries no goal id out of the sandbox (a held
       script returns SCRIPT_HELD before ticking), so every stored result has
@@ -391,7 +393,7 @@ there is no `self` or `bots` at all) — so the script guessed at `time`,
       inside the tick. The reason this line existed (1.4's "no real lookup
       demand") was answered by the owner's direct request; the host-call cap
       it cited is exactly what charges each query. See §7.
-- [ ] 6.2 No change to the six-function API, the 8-host-call cap, the `do`/
+- [x] 6.2 No change to the seven-function API, the 8-host-call cap, the `do`/
       `say`/`send` rate windows, or the CPU budget. (The result-delivery
       4/hour cap and 15-minute cooldown are NOT part of this line — A2 removes
       them; see 3.3.) The new `query.*` functions are added BESIDE `api` and
@@ -403,7 +405,12 @@ there is no `self` or `bots` at all) — so the script guessed at `time`,
       `remember`, `result`, `say`, `send`. The constraint itself still holds
       (the pre-existing six are unchanged, `query.*` sits beside them, and
       `MAX_HOST_CALLS` is still 8 at `src/binding.js:32`), so this is
-      recorded rather than ticked. The live spec says "six `api` methods"
+      recorded rather than ticked. TICKED (checked 2026-11-26) once the count
+      was fixed and the constraint was found pinned: `agent-script-runner/test/binding.test.mjs`
+      `"4.2 the host-call cap is enforced and a rejection is a real object"` (the
+      8-call cap), `"4.2 a rejected call does not count toward the host-call
+      budget"`, and the `do`/`say`/`send` window tests at `:35`,`:63`,`:79`.
+      The live spec says "six `api` methods"
       in `openspec/specs/bot-coded-agents/spec.md`; that text needs the same
       correction outside this task list.
 - [ ] 6.3 No delivery of logs or actions to the planner. NOT YET PINNED
@@ -411,6 +418,14 @@ there is no `self` or `bots` at all) — so the script guessed at `time`,
       prompt's contents does not establish a negative — a later edit could
       add log or action text without reddening anything. Needs a test that
       builds the planner prompt and asserts the absence.
+      *Re-checked 2026-11-26 (lead asked for the evidence list): still nothing
+      proves it. `grep -n "def test_" agent/test_agent_script_branch.py` shows
+      log lines are tested for REACHING the agent log
+      (`test_a_script_log_line_reaches_the_agent_log`) and for the display cap,
+      but no test builds the planner prompt and asserts a log or an action is
+      absent from it. What would prove it: a test that builds the result-carrying
+      prompt and asserts the log lines and dispatched actions present in the same
+      tick's report do not appear in it. Left open.*
 
 ## 7. Script query functions: declared list (A2, resolved by lead 2026-11-25 04:17Z)
 
