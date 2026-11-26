@@ -279,9 +279,11 @@ returns a live reference the script could mutate back into the shared literal.
 **Design decision:** `look` results are deep copies, not views. A script that
 mutates a returned array must not affect the next lookup in the same tick.
 
-**How it cannot reach a secret.** The snapshot is built from six
-`api` reads (the `_read` calls in `agent/snapshot.py`) — health, food, position, inventory, blocks,
-entities. It carries no token, no game id, no environment. A lookup over it can
+**How it cannot reach a secret.** The snapshot is built from five
+`api` reads in `agent/snapshot.py` — status, directive, inventory, blocks,
+entities. Health, food and position are fields of the status body, not reads
+of their own, so they inherit the same provenance without costing a call. It
+carries no token, no game id, no environment. A lookup over it can
 therefore only return data the game already handed the bot. This is the reason
 the snapshot is the right substrate and a live read is not: a live read would
 put the agent's own request path within a script's reach.
