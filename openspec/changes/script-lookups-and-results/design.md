@@ -54,8 +54,9 @@ Everything below uses 5 and 16, because those are the numbers the product has.
 at `:418`; the freeze source is built at `:771` and the global is set at
 `:778`), separate from `api`.
 
-**Only six host functions exist** (`src/binding.js:230-330`): `do`, `say`,
-`send`, `recall`, `remember`, `log`.
+**Seven host functions exist** (`src/binding.js:230-330`): `do`, `say`,
+`send`, `recall`, `remember`, `log`, and `result` (added by 3.1 of this
+change).
 
 **The host-call budget is 8 per tick and it is shared**
 (`src/binding.js:32` `MAX_HOST_CALLS`, counted in `accept()` at

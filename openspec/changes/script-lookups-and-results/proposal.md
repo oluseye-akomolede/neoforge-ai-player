@@ -53,7 +53,7 @@ a script cannot turn itself into a planner call per tick. See `design.md` §3.
   overruled this (2026-11-25 00:59Z):** scripts get read-only `query.*`
   functions (find_blocks, find_entities, block_at, locate) beside `look`,
   charged to the existing 8-call cap. See §7 of `tasks.md`.
-- It does not change the six-function host API, the 8-host-calls-per-tick cap,
+- It does not change the seven-function host API, the 8-host-calls-per-tick cap,
   the rate windows, or the tick CPU budget.
 - It does not deliver script logs or delivered actions to the planner.
 - It does not change how a script is written, validated, or bound (step a).

@@ -620,7 +620,7 @@ tick its goal id, not a promise about this ship.
 A feature the planner cannot see is a feature no planner-written script can
 use. The planner prompt's script section (the text the LLM is given when it may
 answer with a program instead of steps) MUST document every call a script can
-make, in the shape the runner actually binds: the six `api.*` host calls, the
+make, in the shape the runner actually binds: the seven `api.*` host calls, the
 `look` global, and `api.result(v)`. It MUST state each one's signature, what it
 returns, and when to reach for it. It MUST NOT describe a call that the runner
 does not bind, because a prompt that offers one teaches the model to write
@@ -635,7 +635,8 @@ section (`planner.PLANNER_PROMPT`) and the L3 script prompt
 `USE_L3_PLAN_LAYER` is on. BOTH MUST carry the same facts. Fixing one and
 leaving the other stale is the failure this requirement exists to prevent: the
 L3 prompt told the model "this is the whole surface" and named only the six
-original calls, so a bot on the live path could not see `look` or `api.result`
+original calls (the count before `api.result` was added), so a bot on the live
+path could not see `look` or `api.result`
 at all (seen live 2026-11-21). The two MUST share one text so they cannot drift
 apart.
 
