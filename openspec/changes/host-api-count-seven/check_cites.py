@@ -105,7 +105,7 @@ def main():
     present = {(m.group(1) + ".js", int(m.group(2)), int(m.group(3) or m.group(2)))
                for m in re.finditer(r"(binding|engine|fleet)\.js:(\d+)(?:-(\d+))?", text)}
 
-    failures, ungoverned, vanished = [], [], []
+    failures, ungoverned, vanished, moved = [], [], [], []
     governed = set()
     for cite, verb, pattern, attest in CHECKS:
         fname, rng = cite.split(":")
@@ -116,8 +116,25 @@ def main():
         # would otherwise always pass. Fail it instead.
         if (fname, start, end) not in present:
             print(f"FAIL {cite:<18} {verb}")
-            print(f"       cite is NOT in {DELTA} -- stale CHECKS entry")
-            vanished.append(cite)
+            # Distinguish the two causes. The presence set is exact-tuple, so a
+            # stale entry and a moved range look identical to it. Compare the
+            # entry against the NEAREST cite in this file:
+            #   PROSE moved  -- some adjacent cite is close to the entry, so
+            #                   the sentence's range probably shifted.
+            #   STALE entry  -- nothing in this file is near it; the entry
+            #                   names a position the prose no longer mentions.
+            near = sorted((p for p in present if p[0] == fname),
+                          key=lambda p: min(abs(p[1] - end), abs(start - p[2])))
+            close = near[0] if near and min(abs(near[0][1] - end),
+                                            abs(start - near[0][2])) <= 8 else None
+            if close:
+                print(f"       PROSE moved: {fname} is cited but not at {start}-{end}.")
+                print(f"       Nearest cite: {close[0]}:{close[1]}-{close[2]}"
+                      " -- update the cite or this CHECKS entry.")
+                moved.append(cite)
+            else:
+                print(f"       STALE entry: nothing near {cite} in {DELTA}.")
+                vanished.append(cite)
             continue
         body = line_at(repo, rev, fname, start, end)
         if body is None:
@@ -140,8 +157,12 @@ def main():
         print(f"{len(ungoverned)} cite(s) present in the delta with NO claim:")
         for u in ungoverned:
             print(f"  {u}")
+    if moved:
+        print(f"{len(moved)} CHECKS entr(y/ies) whose cite RANGE moved in the delta:")
+        for m in moved:
+            print(f"  {m}")
     if vanished:
-        print(f"{len(vanished)} CHECKS entr(y/ies) whose cite is no longer in the delta:")
+        print(f"{len(vanished)} CHECKS entr(y/ies) whose cite has left the delta:")
         for v in vanished:
             print(f"  {v}")
     if failures:
@@ -150,8 +171,8 @@ def main():
     if ungoverned:
         print("\nFAILED: ungoverned cites are unverified, not passing")
         return 1
-    if vanished:
-        print("\nFAILED: stale CHECKS entries (cite left the prose)")
+    if moved or vanished:
+        print("\nFAILED: CHECKS entries do not match the delta's cites")
         return 1
     print("all clean -- NOTE: this binds code to these claims, not the prose to")
     print("them. The sentences still need reading. See the docstring.")
