@@ -10,7 +10,7 @@ document work that preceded them, kept so the reasoning is not lost.
       371095c, 5ae0372, a0146b0, b40f71b): every `file:line`
       resolves, every recommendation has its alternative and why it lost, and
       §3's loop bound has a number that could be wrong.
-- [ ] 1.2 Owner has read §3's cost sentence and the §1 restriction (lookups
+- [x] 1.2 Owner has read §3's cost sentence and the §1 restriction (lookups
       answer only what the snapshot already carries). SUPERSEDED in part by
       owner A2 (2026-11-25 00:59Z): the rate caps were removed (a script may
       wake the planner on every stated trigger), and the §1 restriction was
@@ -18,6 +18,11 @@ document work that preceded them, kept so the reasoning is not lost.
       be read by the owner is the cost the caps no longer bound — a `done`
       every tick can wake the planner once per pass — and the query budgets
       proposed in the spec delta.
+      *Ticked 2026-11-26 22:47Z:* the lead put that cost and the budgets (at
+      most 16 declared queries per tick, radius clamped to 32, at most 16
+      results each) to the owner in plain words (row 75302489) with the
+      recommendation to accept as-is and watch the wake cost in the next
+      trial. Owner answered verbatim: "Ok" (qitem-human-answer-c5ef014a).
 - [x] 1.6 The snapshot bound is true nearest-K per block id, not first-K in
       scan order: squared distance per candidate, K-bounded insertion, scan
       order as the tie-break. The cost is 1331 integer distance computations
