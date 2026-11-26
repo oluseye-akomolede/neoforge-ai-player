@@ -173,6 +173,37 @@ be safe by never calling `api.do` at all, which would defeat the gate.
 - **AND** the `_script_loaded` latch is NOT reset
 - **AND** no tick is missed
 
+### Requirement: The Script Prompt Names The Host API The Sandbox Binds
+
+A planner-authored script runs in a sandbox whose host API is a fixed surface.
+The prompt that asks for the script MUST name that surface, and MUST NOT name
+a method the sandbox does not bind: a model that follows the prompt exactly
+then writes a call that throws, and the failure surfaces later as an opaque
+`script_error` at the dry gate rather than as a prompt defect.
+
+At 2026-11-26 the sandbox binds exactly `do`, `say`, `send`, `recall`,
+`result`, `remember`, `log` (`agent-script-runner/src/binding.js:327-496`,
+the `api` object `createApi` returns; `result` is at `:412`). The bot
+snapshot is a read-only global named `snapshot` (`engine.js:737-850`,
+`#installSnapshot`), not an `api` method. The proposal's own dry-tick check
+still answers to `validate_proposal`; the prompt's API section MUST agree
+with the binding.
+
+#### Scenario: The prompt's API list matches the sandbox's binding
+- **GIVEN** the script prompt shipped in `_SCRIPT_SYSTEM_PROMPT`
+- **AND** the host API the runner binds
+- **WHEN** both lists are compared
+- **THEN** every method the prompt names is bound by the runner
+- **AND** every method the runner binds is named by the prompt
+- **AND** the prompt names `snapshot` as a global rather than an `api` method
+
+#### Scenario: A prompt naming an unbound method is a defect, not a model failure
+- **GIVEN** a prompt that instructs the model to call `api.get_snapshot()`
+- **AND** a sandbox that binds no such method
+- **WHEN** the model follows the prompt
+- **THEN** the resulting dry-tick failure is a prompt defect
+- **AND** the prompt is what MUST change
+
 ### Requirement: A Planner-Written Script's Source Is Logged When It Binds
 
 When the agent binds a script the planner wrote, it MUST log that script's

@@ -35,23 +35,37 @@ describe the surface were never restated.
 
 ## What changes
 
-Three requirements, and nothing else in the spec:
+Four requirements, and nothing else in the spec:
 
 1. "The Planner MAY Author A Script As The Plan For A Goal" — two mentions
    (the "six-method `api` surface" paragraph, and the "six `api` methods"
-   scenario).
+   scenario). Count only.
 2. "A Written Script MUST Pass A Dry Tick Before It Is Bound" — one mention.
+   Count only.
 3. "A Planner-Written Script's Source Is Logged When It Binds" — one mention,
    in the sentence that spells the surface out as "the six host calls and
-   `look`".
+   `look`". Count only.
+4. "The Script Prompt Names The Host API The Sandbox Binds" — the fourth stale
+   mention, and the only one that is an **enumerated exact set** rather than a
+   count: "the sandbox binds exactly `do`, `say`, `send`, `recall`, `remember`,
+   `log`". `result` is missing, so the set is false and the requirement's own
+   scenario ("every method the runner binds is named by the prompt") fails.
+   Two of its cites were also wrong: `binding.js:109-135` is
+   `createBotState`/`createTickState` and contains no `api` surface (the `api`
+   object is `:327-496`, with `result` at `:412`), and `engine.js:660-680` is a
+   `finally` block in `#evalSource`, not the snapshot global (`#installSnapshot`
+   is `:737-850`). This requirement gets `result` added to the set, the date
+   re-stamped, and both cites corrected. Its scenarios are unchanged.
 
-In each, only the count changes to seven, and where the surface is enumerated
-`result` is added. No obligation is restated or reworded.
+In requirements 1–3 only the count changes. Requirement 4 is the one place the
+surface is enumerated, and `result` is added there. No obligation is restated
+or reworded; no scenario is added, removed or renamed.
 
 ## What does not change
 
-- The unrelated "over six" in a log-line example (`(no additional)`). That is a
-  different sentence about a log message, not about the `api` surface.
+- The unrelated "over six" in a log-line example (live `:1144`). That sits in a
+  different requirement about a log message, not about the `api` surface, and is
+  outside all four ranges.
 - `MAX_HOST_CALLS = 8` and every budget (`do:30/min`, `say:30/min`,
   `send:20/min`) — untouched by this change and unrelated to the count.
 - Every scenario's GIVEN/WHEN/THEN semantics: the scenarios are carried over
