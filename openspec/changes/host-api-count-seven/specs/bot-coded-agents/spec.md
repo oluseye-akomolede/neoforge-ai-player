@@ -85,8 +85,9 @@ avoid spending by never calling `api.do` — which would defeat the gate.
 The throwaway state is created **inside the runner**, not by the agent. The
 agent does not execute the script: it sends it to the runner service, and
 `botState` lives in that process, one long-lived object per cached bot worker
-(`engine.js:254` creates it, `:853` passes it every tick, and `fleet.js:165`
-reuses the worker across requests). A caller therefore cannot hand in a
+(`engine.js:254` creates it, `:853` passes it every tick, and the `#ensure`
+lookup at `fleet.js:166` reuses the worker across requests). A caller
+therefore cannot hand in a
 `botState` over the wire. The runner request MUST carry an explicit **dry
 flag**; when it is set, the runner evaluates the tick against a throwaway
 `botState` of its own and never reads or writes the worker's live one. The flag
