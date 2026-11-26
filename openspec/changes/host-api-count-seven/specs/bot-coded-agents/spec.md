@@ -59,33 +59,33 @@ writer that clears it. Without that reset this requirement is unimplementable;
 with it, every other requirement here is ordinary work.
 
 **A dry tick MUST NOT consume the bot's rate budget.** Actions cost nothing to
-*discard* — `api.do` pushes onto a sandbox-local array (`binding.js:244-251`)
+*discard* — `api.do` pushes onto a sandbox-local array (`binding.js:342-346`)
 that the agent throws away — but `acceptAction` records the call in
-`botState.actionTimes` (`binding.js:154-174`), which is per-BOT state that
-deliberately survives a tick (`binding.js:45-52`, `resetTickState` does not
+`botState.actionTimes` (`binding.js:214-216`), which is per-BOT state that
+deliberately survives a tick (`binding.js:111-118`, `resetTickState` does not
 touch it). The budgets are `do:30/min`, `say:30/min`, `send:20/min`
-(`binding.js:44`). A dry tick that spends up to 8 `do` slots for a script that
+(`binding.js:96`). A dry tick that spends up to 8 `do` slots for a script that
 is then rejected takes those slots from the bot's real work. The dry tick MUST
 spend no rate budget: neither `actionTimes` nor `logTimes` may be changed by it.
-Both live on the same `createBotState` object (`binding.js:59-65`) and both
+Both live on the same `createBotState` object (`binding.js:111-118`) and both
 survive a tick for the same reason; `api.log` spends `logTimes` exactly as
-`api.do` spends `actionTimes` (`binding.js:337-346`), and `log` is one of the
+`api.do` spends `actionTimes` (`binding.js:459-466`), and `log` is one of the
 seven `api` methods.
 
 The mechanism that satisfies this is that the dry tick runs against a
 **throwaway `botState`**, not the bot's live one. `createApi` already takes
-`botState` as a parameter (`binding.js:126-136`); the engine passes its
-long-lived object (`engine.js:783`) and the default exists only so a direct
+`botState` as a parameter (`binding.js:192-195`); the engine passes its
+long-lived object (`engine.js:851-853`) and the default exists only so a direct
 caller gets sane behaviour. A dry tick passes its own, so it neither reads nor
 writes the live window. This is deliberate, not incidental: `acceptAction`
-(`binding.js:154-174`) always either rejects or pushes, with no
+(`binding.js:214-216`) always either rejects or pushes, with no
 check-without-spending mode, so a dry tick sharing the live window could only
 avoid spending by never calling `api.do` — which would defeat the gate.
 
 The throwaway state is created **inside the runner**, not by the agent. The
 agent does not execute the script: it sends it to the runner service, and
 `botState` lives in that process, one long-lived object per cached bot worker
-(`engine.js:249` creates it, `:783` passes it every tick, and `fleet.js:166`
+(`engine.js:254` creates it, `:853` passes it every tick, and `fleet.js:165`
 reuses the worker across requests). A caller therefore cannot hand in a
 `botState` over the wire. The runner request MUST carry an explicit **dry
 flag**; when it is set, the runner evaluates the tick against a throwaway
@@ -97,7 +97,7 @@ stated: without the flag the requirement is not implementable, because no
 request the agent can send reaches the state the requirement protects.
 
 **A dry tick MUST NOT carry its memory forward.** `api.remember` writes
-per-tick `state.memoryOut` (`binding.js:314`), so the sandbox write is
+per-tick `state.memoryOut` (`binding.js:436`), so the sandbox write is
 naturally discarded — but `script_tick.py:387` adopts the returned memory
 (`self._memory = result.memory`), so the hazard is downstream of the sandbox,
 not inside it. The dry tick's returned memory MUST be discarded rather than
@@ -126,14 +126,14 @@ nothing, interrupts no task, spends no rate budget and carries no memory.
 - **WHEN** a planner-authored script that calls `api.do` is dry-ticked
 - **THEN** the dry tick evaluates against a rate window of its own, not the
   bot's live one (`createApi` takes `botState` as a parameter,
-  `binding.js:126-136`)
+  `binding.js:192-195`)
 - **AND** the bot's real script keeps its full budget
 - **AND** neither `botState.actionTimes` nor `botState.logTimes` is changed by
   the dry tick
 
 A dry tick therefore never reports `rate_limited` on the bot's live budget: it
 neither reads nor writes it. This is the stronger guarantee, and it is the only
-one the mechanism supports — `acceptAction` (`binding.js:154-174`) has no
+one the mechanism supports — `acceptAction` (`binding.js:214-216`) has no
 check-without-spending mode, so a dry tick sharing the live window could only
 be safe by never calling `api.do` at all, which would defeat the gate.
 
@@ -187,7 +187,8 @@ At 2026-11-26 the sandbox binds exactly `do`, `say`, `send`, `recall`,
 a read-only global named `snapshot` (`engine.js:737-850`,
 `#installSnapshot`), not an `api` method. The proposal's own dry-tick check
 still answers to `validate_proposal`; the prompt's API section MUST agree with
-the binding. Both cites were checked at runner `b48c4ad`, so a reader can
+the binding. Every `binding.js`, `engine.js` and `fleet.js` cite in this
+requirement was checked against runner `b48c4ad`, so a reader can
 re-derive them instead of trusting this date.
 
 #### Scenario: The prompt's API list matches the sandbox's binding

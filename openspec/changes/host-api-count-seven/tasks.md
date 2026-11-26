@@ -22,13 +22,16 @@
 - [ ] 1.5 Confirm no enumerated `api` name list needed `result` inserted EXCEPT
       the one in requirement 4, and that the rate budgets
       (`do`/`say`/`send`) do not gain `result` — `result` has no rate budget.
-- [ ] 1.6 Re-verify every cite inside the four blocks at a NAMED runner rev,
-      not just the counts, and name that rev in the prose. Two in requirement 4
-      were stale and are fixed here: `binding.js:109-135` (createBotState, no
-      api surface → `:327-496`) and `engine.js:660-680` (a finally block in
-      `#evalSource`, not the snapshot global → `:737-850`, `#installSnapshot`).
-      Both verified at runner `b48c4ad`, which the requirement text now names
-      (reviewer R-1: "re-verified at the current rev" cannot be checked later).
+- [ ] 1.6 Re-verify EVERY cite inside the four blocks at a NAMED runner rev,
+      not just the counts, and name that rev in the prose. This row's first two
+      attempts failed here: attempt 1 fixed two cites by hand and claimed the
+      rest, attempt 2 fixed the two the reviewer named and still claimed the
+      rest. The reviewer then found four more wrong. The full pass found 14
+      distinct cites and ALL of them were stale, not four. Every one is now
+      re-resolved at runner `b48c4ad` and lands on the construct its sentence
+      names. The rule: resolve each cite with `git show <rev>:src/<f>.js |
+      sed -n '<s>,<e>p'` and read the first line — never carry a number
+      forward from an earlier revision of the prose.
 
 ## 2. Validation
 
