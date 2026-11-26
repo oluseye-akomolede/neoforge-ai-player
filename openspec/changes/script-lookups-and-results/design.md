@@ -7,7 +7,7 @@ Read before acting. Every claim about existing behaviour below carries a
 ## Facts this design rests on
 
 **The tick's data is already complete for most lookups.** Every tick the agent
-sends a snapshot built by `agent/snapshot.py:49-77`:
+sends a snapshot built by the `_read`-built snapshot in `agent/snapshot.py`:
 
 | Field | Source | Shape |
 |---|---|---|
@@ -19,11 +19,11 @@ sends a snapshot built by `agent/snapshot.py:49-77`:
 | `nearby.mobs` | `api.entities(bot, 24.0)` line 74 | **radius 16 in practice** — see below |
 | `task` | directive line 76 | object or null |
 
-Wrapped by `build_envelope` (`snapshot.py:80-100`) with `tick`, `server_ms`,
+Wrapped by `build_envelope` (`agent/snapshot.py`) with `tick`, `server_ms`,
 `events`, and sent as the tick request's `snapshot` key
-(`agent/script_tick.py:419`).
+(`ScriptTick.__init__`, `agent/script_tick.py`).
 
-**The radii the agent asks for are not the radii the bot gets.** `snapshot.py:49`
+**The radii the agent asks for are not the radii the bot gets.** The snapshot's `_read` builder in `agent/snapshot.py`
 defaults `block_radius=8, entity_radius=24.0`, but the request lands on endpoints
 that ignore the radius: `HttpApiServer.java:505` returns `bot.getCachedBlocks()`
 and `:504` returns `bot.getCachedEntities()`, neither reading a radius from the
@@ -69,7 +69,7 @@ host call is spending a slot that a game action wanted.
 **The snapshot is up to 2 seconds old.** The caches refresh every 40 ticks
 (`BotPlayer.java:531-532`), and a tick is 20 ticks/s, so a script reads data
 aged 0–2000 ms. Fine for "nearest sheep" at walking speed; a real hazard for
-"is there lava adjacent". `server_ms` is in the envelope (`snapshot.py:80-100`),
+"is there lava adjacent". `server_ms` is in the envelope (`build_envelope` in `agent/snapshot.py`),
 so the age is reportable rather than merely known.
 
 **What is NOT established:** whether radius 5/16 is wide enough for the lookups
@@ -227,7 +227,7 @@ Its numbers are in the next section.
 
 `findBlocks(blockName, radius, maxCount)` already exists
 (`BotPlayer.java:1238-1263`) and is already reachable from a planner step as
-`agent/api.py:110` (`find_blocks`, default radius 32). It returns **real
+`agent/api.py` `find_blocks` (default radius 32). It returns **real
 registry ids** (`info.put("block", id)`, `:1253`), no deduplication, and stops at
 `maxCount` (default 10). It scans the same cube, but **on demand for one query**
 rather than every 40 ticks for all queries.
@@ -279,7 +279,7 @@ returns a live reference the script could mutate back into the shared literal.
 mutates a returned array must not affect the next lookup in the same tick.
 
 **How it cannot reach a secret.** The snapshot is built from six
-`api` reads (`snapshot.py:68-76`) — health, food, position, inventory, blocks,
+`api` reads (the `_read` calls in `agent/snapshot.py`) — health, food, position, inventory, blocks,
 entities. It carries no token, no game id, no environment. A lookup over it can
 therefore only return data the game already handed the bot. This is the reason
 the snapshot is the right substrate and a live read is not: a live read would
@@ -289,13 +289,13 @@ put the agent's own request path within a script's reach.
 2 s stale (facts above). A lookup that answers "is there lava adjacent" from
 2000 ms-old data is a hazard, and the script cannot currently tell. `look` gains
 `look.age_ms()` and every result object carries `age_ms`, computed from the
-envelope's `server_ms` (`snapshot.py:80-100`) and the tick's own time — no new
+envelope's `server_ms` (`build_envelope` in `agent/snapshot.py`) and the tick's own time — no new
 field on the wire, no extra call. A script that cares can refuse to act on stale
 data; one that does not is at least able to log it.
 
 **What the dry tick sees.** A dry tick runs the same script against the same
 snapshot: `snapshot` is set unconditionally in the tick body at
-`agent/script_tick.py:419`, while `dry` is added only when set at `:425-426`, so
+`ScriptTick.__init__` in `agent/script_tick.py`, while `dry` is added only when the `self._dry` flag is set, so
 the snapshot travels on both paths. Lookups behave identically under dry, which is what
 makes the dry gate a true preview of what the script will see. This follows
 from Option A falling out of the snapshot; under Option B it would not be true
@@ -381,8 +381,8 @@ is only rendered into a `call_plan` for that same `goal_id`.
 
 **What triggers the planner call that reads it.** Today the only path that
 starts the planner from the world is `_maybe_plan(new_messages)`
-(`agent/agent.py:518`, called at `:3413`), and it returns immediately on
-`if not new_messages: return` (`:520`). A script that reaches `done` releases
+(`_maybe_plan`, `agent/agent.py`), and it returns immediately on
+`if not new_messages: return` in `_maybe_plan`. A script that reaches `done` releases
 its binding and says nothing, so **without a new entry point a finished
 script's result would go nowhere until a player happened to speak** — which
 defeats step c, whose point is that the planner gets the result back.
@@ -486,7 +486,7 @@ One bound and one stop, in order of what does the work:
 
 **Where the in-flight marker lives.** Per **bot**, in the agent process — the
 existing `_plan_steps` guard is the marker today (`_maybe_plan_on_result`
-returns when `_plan_steps` is set, `agent/agent.py:1304-1306`). There is no
+returns when `_plan_steps` is set, the `if self._plan_steps:` guard in `_maybe_plan_on_result`, `agent/agent.py`). There is no
 counter or timestamp to persist, because there is no rate to count. Nothing
 here is cleared by `reset()`: a reset clears `_plan_steps` along with the plan,
 which is correct — there is no budget a reset could hand back.

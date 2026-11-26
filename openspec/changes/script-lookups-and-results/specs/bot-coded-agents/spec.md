@@ -215,10 +215,10 @@ under a live binding) is refused at the tick, never executed with a partial list
 
 | kind | declared keys | mod call | caller-side clamp |
 |---|---|---|---|
-| `blocks` | `id`, `radius`, `max` | `api.find_blocks(bot, id, radius, max)` (`api.py:110`) | radius <= 32, max <= 16 |
-| `entities` | `id`, `radius` | `api.find_entities(bot, id, radius)` (`api.py:208`) | radius <= 32 |
-| `block_at` | `x`, `y`, `z` | `api.block_at(bot, x, y, z)` (`api.py:113`) | one cell |
-| `locate` | `id` | `api.locate(bot, id)` (`api.py:143`) | fixed chunk_radius 100 |
+| `blocks` | `id`, `radius`, `max` | `api.find_blocks(bot, id, radius, max)` (`agent/api.py` `find_blocks`) | radius <= 32, max <= 16 |
+| `entities` | `id`, `radius` | `api.find_entities(bot, id, radius)` (`agent/api.py` `find_entities`) | radius <= 32 |
+| `block_at` | `x`, `y`, `z` | `api.block_at(bot, x, y, z)` (`agent/api.py` `block_at`) | one cell |
+| `locate` | `id` | `api.locate(bot, id)` (`agent/api.py` `locate`) | fixed chunk_radius 100 |
 
 The clamps above are a PROPOSAL; the numbers that decide their safety are
 measured by tasks 7.6 (scan cost) and the lead accepts or overrules them. A
@@ -894,7 +894,7 @@ refused — never leave a bot wedged or spam the server thread.
 
 The failure this requirement exists to stop: on 2026-11-22 a script dispatched
 `MINE {"kind": "MINE", "x": 16, "y": 89, "z": -16}` with no `target`.
-`_ALLOWED_ARGS` admits `x`, `y` and `z` for every kind (`agent/action_binding.py:53`),
+`_ALLOWED_ARGS` admits `x`, `y` and `z` for every kind (`_ALLOWED_ARGS` in `agent/action_binding.py`),
 so binding passed it. The mod's `BotBrain.applyDirective` installed `MineBehavior`
 before calling `start()` (`BotBrain.java:169-170` before this change);
 `MineBehavior.start()` reads `directive.getTarget()` (`MineBehavior.java:71`
@@ -1143,7 +1143,7 @@ whole `GET /bot/{name}/directive` body (`HttpApiServer.java:1338` answers it wit
 `progress.result` is where a behaviour's `putResult` fields land. Passing only
 the inner `directive` map here is what made `result` unreadable, and the
 envelope's `events` field is NOT the carrier: nothing populates it
-(`snapshot.py:150` defaults it to `[]` and no caller passes it).
+(`build_envelope` in `agent/snapshot.py` defaults it to `[]` and no caller passes it).
 
 `look.task()` MUST return `{ok: true, id, type, status, result, phase,
 failure_reason}`:
@@ -1207,7 +1207,7 @@ only clears when the goal ends, so a hand-written script on a goal-less bot is
 reachable. Yielding there unbinds nothing, clears a live `_plan_steps`, and
 resubmits an empty goal -- every `SCRIPT_IDLE_MAX` ticks, forever. With no
 goal, the idle line is the correct output and nothing else MUST happen. Such a
-tick MUST NOT even be COUNTED (`agent.py:3462`): climbing to the bound,
+tick MUST NOT even be COUNTED (the `if not self._has_active_goal(): return False` branch that guards `_note_script_idle_tick`, `agent/agent.py`): climbing to the bound,
 resetting and climbing again is the same unbounded repeat in a quieter form.
 The log MUST NOT say a goal was unfinished unless one exists: the same
 predicate decides both, so they cannot disagree.
@@ -1226,7 +1226,7 @@ wants with a re-plan it does not. A directive counts as in progress when
 `Directive.java:22`); a `COMPLETED` directive is a result to read, not work in
 flight. Such a tick MUST NOT advance the idle run. The status is read from the
 envelope that same tick already built, recorded as `ScriptTick.last_task`
-(`script_tick.py:471`), not from a second request: a fresh `GET` would answer
+(`ScriptTick.last_task`, set in `agent/script_tick.py`), not from a second request: a fresh `GET` would answer
 for a different moment than the script was given.
 
 Third, and overriding the second where they disagree, an `ACTIVE` directive
@@ -1236,7 +1236,7 @@ terminal exit keeps its status `ACTIVE` indefinitely, so the idle bound can
 never fire. `FOLLOW` is the demonstrated case -- it returns `RUNNING` for every
 PRESENT target (`FollowBehavior.java:94`, `:99`, `:107`) and its only terminal
 exit (`OFFLINE_GIVEUP_TICKS`, `:31`, gated at `:66`) requires the target
-ABSENT -- and a script may issue it, since `action_binding.py:41` binds
+ABSENT -- and a script may issue it, since `MOD_DIRECTIVE_KINDS` in `agent/action_binding.py` admits
 `FOLLOW`. After `SCRIPT_DIRECTIVE_MAX_TICKS` consecutive `ACTIVE` ticks the
 goal MUST be yielded for re-planning, with a log line naming the bound and
 saying the directive produced no terminal result. The directive itself MUST
@@ -1305,7 +1305,7 @@ idled until the agent was restarted.
 
 The mod ALREADY retains the terminal directive: `BotBrain.toMap()` answers from
 `lastDirective`/`lastProgress` once `activeDirective` is null
-(`BotBrain.java:222-225`), which `agent.py:2718` relies on -- that branch is
+(`BotBrain.java:222-225`), which the `lastDirective` fallback in `agent/agent.py` relies on -- that branch is
 the "Directive lost after connection errors" fallback, which is only safe
 because the mod answers from `lastDirective`. The retention was destroyed by
 the agent, not the mod: on seeing `COMPLETED` the L1 poller called
@@ -1313,7 +1313,7 @@ the agent, not the mod: on seeing `COMPLETED` the L1 poller called
 retention fields (`BotBrain.java:62-64`). Those calls are REMOVED by this
 change, so the line numbers moved with them: the `COMPLETED` branch's now-gone
 cancel sat immediately before the `print(f"...Directive COMPLETED...")` at
-`agent.py:2754`, and the `FAILED`/`CANCELLED` branch is at `agent.py:2765`.
+the `Directive COMPLETED` print in `agent/agent.py`, and the `FAILED`/`CANCELLED` branch is `elif status in ("FAILED", "CANCELLED")` in the same function.
 The fix belongs where the damage was: a completion or failure that the agent
 has FINISHED observing MUST NOT be followed by a cancel that wipes the record
 the scripts read. Cancellation for a directive still running (stuck,
@@ -1375,7 +1375,7 @@ actual arrival position and an `adjusted_from` field naming the coordinates
 that were asked for, so a script's own arrival check can be written against
 what happened rather than what it requested. The result MUST ride the existing
 `ProgressReport.putResult` channel. That channel has two consumers and they are
-NOT the same: `agent.py:1410-1413` renders it into a `COMPLETED <type> {...}
+NOT the same: the `Directive COMPLETED` observer line in `agent/agent.py` renders it into a `COMPLETED <type> {...}
 result={...}` line for the PLANNER, and `look.task()` reads it back to the
 SCRIPT (see "A Script Can Read The Directive's Result"). Emitting it is only
 half of this requirement; a script that cannot read it is the other half, and

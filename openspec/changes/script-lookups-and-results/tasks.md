@@ -150,7 +150,7 @@ document work that preceded them, kept so the reasoning is not lost.
       flight MUST stay pending, from any script and either bot, and MUST be
       delivered on the first pass after the call returns. THE GUARD ALREADY
       EXISTS and must not be rebuilt: `_maybe_plan_on_result` returns when
-      `_plan_steps` is set (`agent/agent.py:1304-1306`). Pinned by a test that
+      `_plan_steps` is set (the `if self._plan_steps:` guard in `_maybe_plan_on_result`, `agent/agent.py`). Pinned by a test that
       drives two passes with a call live and asserts the second starts no call
       and the result stays pending; the mutant deletes the `_plan_steps` check
       and must red it. Also pinned: the "no wait to serve" property — after
@@ -324,7 +324,7 @@ Found live on prod (lead, 15:1xZ): Mystic told a player "It's getting dark —
 overworld time is 0 (night)" during daylight. Chain, each link verified at the
 source rather than taken from the report: `BotPlayer.getStatus()` (:756-790) has
 no time field; `build_state` copies only health/food/position; the planner prompt
-at `l3_planner.py:311` and `:457` tells the planner the world is `s.self, s.bots,
+(the prose since replaced by `_SNAPSHOT_SCHEMA` in `agent/l3_planner.py`) told the planner the world is `s.self, s.bots,
 s.inventory`, none of which the envelope has (the real path is `s.state.*`, and
 there is no `self` or `bots` at all) — so the script guessed at `time`,
 `world_time`, `day_time`, `server_time`, found nothing, and fell back to
@@ -434,7 +434,7 @@ that matters is total SCAN, not count — see 7.2's budget.
       from `_build_snapshot` AFTER `build_envelope`, results put on the envelope
       (top level, beside `tick`/`task`) as a `queries` map keyed by `name`. After,
       not before: one of the four reads is `/bot/{name}/locate` with a 120 s
-      default bound (`api.py:143`), so the pre-tick mod work must be bounded
+      default bound (`agent/api.py` `locate`), so the pre-tick mod work must be bounded
       explicitly (7.3) and the envelope it rides on is already built. Per-query call to `api.find_blocks` /
       `find_entities` / `block_at` / `locate`; clamps caller-side (radius<=32,
       max<=16, entities radius<=32); a clamp sets `clamped` on that query's
