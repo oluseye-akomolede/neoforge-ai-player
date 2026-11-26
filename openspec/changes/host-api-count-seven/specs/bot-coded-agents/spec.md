@@ -182,12 +182,13 @@ then writes a call that throws, and the failure surfaces later as an opaque
 `script_error` at the dry gate rather than as a prompt defect.
 
 At 2026-11-26 the sandbox binds exactly `do`, `say`, `send`, `recall`,
-`result`, `remember`, `log` (`agent-script-runner/src/binding.js:327-496`,
-the `api` object `createApi` returns; `result` is at `:412`). The bot
-snapshot is a read-only global named `snapshot` (`engine.js:737-850`,
+`result`, `remember`, `log` (`agent-script-runner/src/binding.js:327-496`, the
+`api` object `createApi` returns; `result` is at `:412`). The bot snapshot is
+a read-only global named `snapshot` (`engine.js:737-850`,
 `#installSnapshot`), not an `api` method. The proposal's own dry-tick check
-still answers to `validate_proposal`; the prompt's API section MUST agree
-with the binding.
+still answers to `validate_proposal`; the prompt's API section MUST agree with
+the binding. Both cites were checked at runner `b48c4ad`, so a reader can
+re-derive them instead of trusting this date.
 
 #### Scenario: The prompt's API list matches the sandbox's binding
 - **GIVEN** the script prompt shipped in `_SCRIPT_SYSTEM_PROMPT`
