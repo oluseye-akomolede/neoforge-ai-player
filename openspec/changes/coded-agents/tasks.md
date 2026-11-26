@@ -382,13 +382,23 @@ dependencies, and are not started until this change is approved.
       because the sender cannot tell a restart from a day rollover. Unit test
       with a fake poster: cadence, on-change send, no retry/backlog, previous
       figure carried and absent on first report.
-      **Built in `agent/script_report.py`, wired at the metering seam in
-      `agent.py`. 19 unittest tests, driven through the real
-      `_run_script_tick`. Mutant: emitting `previous_code_hours`
+      **Built in `agent/script_report.py`. 19 unittest tests, driven through
+      the real `_run_script_tick`. Mutant: emitting `previous_code_hours`
       unconditionally reddens `test_absent_on_a_rise`. Measured payload:
       **225 bytes** with every field at its design cap, printed by the
       test itself on a named payload -- the reproducible figure the
       design defers to this task.**
+      **CORRECTION (2026-11-26): this task was ticked while the sender was
+      NOT wired in production.** The original text above claimed it was
+      "wired at the metering seam in `agent.py`"; it was not. Every test
+      attached `script_reporter` by hand or built the runner with `__new__`,
+      so all 19 passed while the live test deploy reported `none` for every
+      bot. Now wired unconditionally in `BotRunner.__init__` beside
+      `CodeTimeMeter`, with `agent/api.py:post_script_report` as the poster
+      (it raises on any non-2xx, which `_post` does not). Three construction
+      tests added, which redden when the wiring is removed. The lesson is
+      recorded in the spec: a channel attached only by a test is not
+      attached.
 - [x] 5.7 Mod side: `POST /bot/{name}/script_report` behind the existing
       `checkAuth` (`MOD_API_KEY`, named only), storing per bot on `BotPlayer`,
       refusing an unknown bot (404, counted), and expiring the stored report to

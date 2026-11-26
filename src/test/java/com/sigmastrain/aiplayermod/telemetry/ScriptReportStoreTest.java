@@ -1,5 +1,6 @@
 package com.sigmastrain.aiplayermod.telemetry;
 
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.junit.jupiter.api.AfterEach;
@@ -178,6 +179,21 @@ class ScriptReportStoreTest {
         // Absence must also not become a JSON null: a null would read as a
         // claim that a previous figure exists.
         assertFalse(ScriptReportStore.toJson("Scout", e, 1L).has("previous_code_hours"));
+    }
+
+    @Test
+    void toleratesANullPreviousCodeHoursAsAbsence() {
+        // record() does NOT refuse a null here: `!isJsonNull()` routes it down
+        // the absent path (ScriptReportStore.java:92-93). Pinned because a
+        // commit message once claimed the opposite, and the receiver's real
+        // behaviour is what a future sender change has to be safe against.
+        JsonObject o = body("script", 1.0, "2026-11-24T04:20:00Z");
+        o.add("previous_code_hours", JsonNull.INSTANCE);
+        assertTrue(ScriptReportStore.record("Scout", o, 1L), "a null is accepted");
+        var e = ScriptReportStore.get("Scout");
+        assertNull(e.previousCodeHours(), "a null must not become a figure");
+        assertFalse(ScriptReportStore.toJson("Scout", e, 1L).has("previous_code_hours"),
+                "a null must not be echoed back as a claim");
     }
 
     @Test

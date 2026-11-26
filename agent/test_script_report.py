@@ -388,5 +388,169 @@ class RunnerSeamTest(unittest.TestCase):
         self.assertRegex(stamp, r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 
+class ProductionWiringTest(unittest.TestCase):
+    """The sender is attached by CONSTRUCTION, not by the test (task 5.6).
+
+    Every other test in this file attaches `script_reporter` by hand, which is
+    why the whole suite stayed green while the live test deploy of 2026-11-26
+    13:30Z reported `none` for all three bots. A test that wires the feature it
+    is testing cannot notice the feature being unwired in production, so these
+    drive the real `__init__` -- `RunnerSeamTest` uses `__new__` and so never
+    exercises it.
+    """
+
+    def setUp(self):
+        import agent as agent_mod
+        self.agent_mod = agent_mod
+
+    def _constructed(self, name="Scout"):
+        """A BotRunner built through its real `__init__`, not by attribute.
+
+        `name` is a parameter because the wiring must not depend on it: a
+        sender attached only for one bot reads as complete to a suite that
+        always constructs that bot (reviewer F-1, 2026-11-26). The production
+        labels are three different bots, so any of them can be the one that
+        silently reports nothing.
+        """
+        return self.agent_mod.BotRunner({"name": name})
+
+    def test_a_constructed_agent_has_a_report_sender(self):
+        """FAILS on the code before this change: the attribute did not exist."""
+        a = self._constructed()
+        self.assertIsInstance(
+            getattr(a, "script_reporter", None), sr.ReportSender,
+            "BotRunner.__init__ did not attach a ReportSender; the production "
+            "path would never report")
+
+    def test_the_sender_is_attached_whatever_the_bot_is_called(self):
+        """F-1: the attach must be unconditional, not true of one name.
+
+        The requirement says a conditional attach is indistinguishable from the
+        feature not existing. Three tests all constructing "Scout" reproduce
+        that blindness exactly: `... if self.name == "Scout" else None` left
+        the suite green. These are the production labels other than the one the
+        rest of this class happens to use.
+        """
+        for name in ("Alex", "Pilot", "builder-2", "Scout"):
+            with self.subTest(name=name):
+                a = self._constructed(name)
+                self.assertIsInstance(
+                    getattr(a, "script_reporter", None), sr.ReportSender,
+                    f"BotRunner.__init__ attached no ReportSender for bot "
+                    f"{name!r}; the wiring is conditional on the bot's name")
+                self.assertIs(
+                    a.script_reporter._poster,
+                    self.agent_mod.api.post_script_report,
+                    f"bot {name!r} got a sender that does not post through "
+                    f"the production transport")
+
+    def test_the_constructed_sender_posts_to_the_report_route(self):
+        """The attached sender's poster must be the production poster, not a
+        stub: a sender wired to nothing is as silent as no sender at all."""
+        a = self._constructed()
+        self.assertIs(a.script_reporter._poster, self.agent_mod.api.post_script_report,
+                      "the attached sender does not post through the "
+                      "production transport")
+
+    def test_a_constructed_agent_reports_a_sent_tick(self):
+        """End to end through __init__: construct, run a sent tick, see a post.
+
+        The post is captured at the production poster's own boundary (the HTTP
+        call), so this exercises the real route string and body shape rather
+        than a recorder the test installed.
+        """
+        a = self._constructed()
+        a._script_tick = None
+        a._script_loaded = True
+        a._script_hold = None
+        a._script_hold_seq = 0
+        a._script_say_guard = self.agent_mod.ScriptSayGuard()
+        a._result_slot = self.agent_mod.ResultSlot()
+        a._lock = threading.Lock()
+        a._l3_orchestrator_dispatch = mock.Mock(return_value="COMPLETED")
+        a._run_directive = mock.Mock(return_value={"success": True})
+        a._active_goal_id = "goal-A"
+        a._plan_instruction = ""
+
+        class Stub:
+            last_state = "script"
+            last_deliveries = []
+            last_result = None
+            last_logs = []
+            _revision = "sha256:abc"
+
+            def tick(_self):
+                return (True, [], [], "ok")
+
+        a._script_tick = Stub()
+
+        posted = []
+        with mock.patch.object(self.agent_mod.api.requests, "post",
+                               side_effect=lambda url, **kw: posted.append((url, kw))
+                               or mock.Mock(raise_for_status=lambda: None,
+                                            json=lambda: {"ok": True})):
+            a._run_script_tick()
+
+        self.assertEqual(len(posted), 1,
+                         f"a sent tick produced {len(posted)} posts, expected 1")
+        url, kw = posted[0]
+        self.assertTrue(url.endswith("/bot/Scout/script_report"),
+                        f"posted to {url!r}, not the report route")
+        self.assertEqual(kw["json"]["script_state"], "script")
+        self.assertEqual(kw["headers"]["Content-Type"], "application/json")
+
+
+class PosterRaisesTest(unittest.TestCase):
+    """The transport must RAISE on a non-2xx (task 5.6, 'dropped stays honest').
+
+    The mod refuses a malformed report with 400 and its error body is JSON, so
+    a poster that only fails when the body is unparseable would report a
+    refusal as a success.
+    """
+
+    def setUp(self):
+        import agent as agent_mod
+        self.agent_mod = agent_mod
+
+    def _post_with(self, response):
+        with mock.patch.object(self.agent_mod.api.requests, "post",
+                               return_value=response) as post:
+            self.agent_mod.api.post_script_report("Scout", {"script_state": "script"})
+        return post
+
+    def test_a_400_raises_even_with_a_json_body(self):
+        response = mock.Mock()
+        response.raise_for_status.side_effect = RuntimeError("400 Client Error")
+        response.json.return_value = {"error": "invalid report"}
+        with self.assertRaises(RuntimeError):
+            self._post_with(response)
+
+    def test_a_500_raises(self):
+        response = mock.Mock()
+        response.raise_for_status.side_effect = RuntimeError("500 Server Error")
+        with self.assertRaises(RuntimeError):
+            self._post_with(response)
+
+    def test_a_200_returns_the_body(self):
+        response = mock.Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"ok": True}
+        post = self._post_with(response)
+        url = post.call_args[0][0]
+        self.assertTrue(url.endswith("/bot/Scout/script_report"), url)
+
+    def test_a_raised_post_counts_as_dropped_not_sent(self):
+        """The sender's own counter must see the raise, or `dropped` lies."""
+        def bad_poster(name, body):
+            raise RuntimeError("refused")
+
+        sender = sr.ReportSender(bad_poster)
+        sent = sender.report("Scout", "script", 0.5, 3, "2026-11-26T00:00:00Z", "r1",
+                             now=0.0)
+        self.assertFalse(sent, "a refused post was reported as sent")
+        self.assertEqual(sender.dropped, 1)
+        self.assertEqual(sender.sent, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

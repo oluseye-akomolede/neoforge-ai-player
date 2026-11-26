@@ -28,6 +28,7 @@ import waypoints
 from result_delivery import ResultSlot
 from script_say_guard import ScriptSayGuard
 from code_time import CodeTimeMeter
+from script_report import ReportSender
 import mc_items
 import terrain_db
 import skill_author
@@ -490,6 +491,13 @@ class BotRunner:
         # boundary and restart persistence are undefined in the spec and are
         # reported, not invented (see code_time.py).
         self.code_time = CodeTimeMeter()
+        # The report channel's sender (coded-agents 5.6). Built HERE, beside the
+        # meter it reports, because a reporter attached only by a test is not a
+        # reporter: the wired-in-production requirement says so, and the live
+        # test deploy of 2026-11-26 13:30Z showed exactly that failure -- 19
+        # green tests, every live bot reporting `none`. NOT conditional: an
+        # optional attach is indistinguishable from a missing feature.
+        self.script_reporter = ReportSender(api.post_script_report)
         # A script the planner authored, carried as SOURCE TEXT in the process
         # and never written to disk (spec, "A Planner-Authored Script Lives In
         # Memory, Not On Disk"). It is the only form available: the agent has

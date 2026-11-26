@@ -643,6 +643,42 @@ silently stored against a name that may be created later.
 - **THEN** the report is refused
 - **AND** no status for that name appears, and no bot is created by the report
 
+### Requirement: The Report Channel Is Wired Where The Agent Is Constructed
+
+A report channel that is only attached by a test is not a channel. The agent
+MUST attach its reporter as part of constructing a bot in production — the same
+place it constructs the bot's code-time meter — so that every scripted bot the
+real entrypoint builds has one. It MUST NOT be attached by a caller, a test, or
+an optional wiring step that a deployment can omit: attaching it conditionally
+is indistinguishable, from the mod's side, from the feature not existing.
+
+A bot constructed the way production constructs it MUST therefore produce
+reports without any further assignment.
+
+The transport MUST signal failure by raising, including on any non-2xx
+response. A poster that returns normally on a refused report would make the
+sender's dropped count understate its failures, and the sender's own contract
+(`script_report.py`) relies on that raise to keep `dropped` honest. A non-2xx is
+a real possibility rather than a theoretical one: the mod refuses a report whose
+`observed_at` does not parse or whose usage figure is out of range, with 400.
+
+This requirement constrains WHERE the wiring lives and HOW failure is signalled.
+It does not change the payload, the cadence, or the freshness bound, which the
+preceding requirement owns.
+
+#### Scenario: A production-built agent reports without being wired by hand
+- **GIVEN** an agent constructed the way the production entrypoint constructs one
+- **WHEN** that agent runs a script tick that is sent to the runner
+- **THEN** its reporter is attached as part of that construction
+- **AND** the tick results in a POST to `/bot/{name}/script_report`
+- **AND** no test-only assignment is needed to make this happen
+
+#### Scenario: A refused report is counted as dropped, not sent
+- **GIVEN** a reporter whose transport receives a non-2xx response
+- **WHEN** the sender posts a due report
+- **THEN** the transport raises
+- **AND** the sender counts the report as dropped rather than sent
+
 ### Requirement: Daily Code-Hour Cap Is Set In Mod Settings
 The daily cap is a **per-bot** allowance, configured in the mod settings
 following the existing `serverDir/config/aiplayermod-*.json` convention, and

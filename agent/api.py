@@ -40,6 +40,29 @@ def _delete(path, data=None):
     return r.json()
 
 
+def post_script_report(name, body):
+    """Post one script report for `name` to the mod (coded-agents 5.6).
+
+    RAISES on failure, including any non-2xx -- that is the whole contract this
+    function has with its caller. `ReportSender` catches the raise and counts
+    the report as dropped; if this returned normally on a refusal, a refused
+    report would be recorded as sent and `dropped` would lie.
+
+    `_post` is deliberately NOT reused: it returns `r.json()` and therefore
+    raises only when the error body happens not to be JSON. A mod that answers
+    400 with a JSON error object -- which the 5.7 handler does -- would come
+    back from `_post` looking like success.
+    """
+    r = requests.post(
+        f"{MOD_API_URL}/bot/{name}/script_report",
+        json=body,
+        headers=_headers(),
+        timeout=5,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
 def get_directive(bot):
     """Current or last-completed directive as the mod reports it."""
     return _get(f"/bot/{bot}/directive")
