@@ -111,7 +111,7 @@ document work that preceded them, kept so the reasoning is not lost.
       `test_a_report_over_the_cap_is_marked_not_dropped`. The UTF-8 cut uses
       `decode("utf-8", "ignore")` on the byte prefix: measured identical to a
       hand boundary walk over six paddings, so the simpler one ships.
-- [ ] 3.3 WITHDRAWN by owner A2 (2026-11-25 00:59Z) — the 4/hour cap and the
+- [x] 3.3 WITHDRAWN by owner A2 (2026-11-25 00:59Z) — the 4/hour cap and the
       15-minute cooldown are to be REMOVED, not kept. The code that implements
       them today (`agent/result_delivery.py` — `MAX_RESULTS_PER_HOUR`,
       `COOLDOWN_SECONDS`, `may_call`'s cooldown and hour-cap branches; the
@@ -140,9 +140,9 @@ document work that preceded them, kept so the reasoning is not lost.
       then returns on the non-empty plan, so the message-pass test pins the
       outcome (the message reached L3, the result stayed queued) rather than a
       mutant.
-- [ ] 3.7 WITHDRAWN by A2 with 3.3. "The caps are the guard" is no longer
+- [x] 3.7 WITHDRAWN by A2 with 3.3. "The caps are the guard" is no longer
       true of the product: the one thing that must hold is 3.12.
-- [ ] 3.8 WITHDRAWN by A2 with 3.3/3.7 — there is no budget state left to
+- [x] 3.8 WITHDRAWN by A2 with 3.3/3.7 — there is no budget state left to
       preserve across `reset()`. A reset clearing `_plan_steps` is correct.
 
 - [ ] 3.12 **ONE result-triggered planner call in flight per bot (A2's only
@@ -150,13 +150,15 @@ document work that preceded them, kept so the reasoning is not lost.
       flight MUST stay pending, from any script and either bot, and MUST be
       delivered on the first pass after the call returns. THE GUARD ALREADY
       EXISTS and must not be rebuilt: `_maybe_plan_on_result` returns when
-      `_plan_steps` is set (the `if self._plan_steps:` guard in `_maybe_plan_on_result`, `agent/agent.py`). Pinned by a test that
-      drives two passes with a call live and asserts the second starts no call
-      and the result stays pending; the mutant deletes the `_plan_steps` check
-      and must red it. Also pinned: the "no wait to serve" property — after
-      the call returns, the very next pass delivers, with no cooldown to elapse
-      (the mutant adds a 60 s cooldown and must red it).
-- [ ] 3.9 DEFERRED -- the `goal-changed` discard. Not done, and nothing
+      `_plan_steps` is set (the `if self._plan_steps:` guard in `_maybe_plan_on_result`, `agent/agent.py`). NOT YET PINNED (checked
+      2026-11-26): the guard is in the tree, but the two tests this task
+      describes do not exist. What IS tested is the adjacent 3.5/3.6
+      behaviour — `test_agent_script_branch.py::ScriptResultReachesTheSlotTest.test_a_pending_result_starts_one_planner_call_carrying_the_result`
+      and `test_result_delivery.py::TestNoRateCapRemains.test_pending_result_is_allowed_no_matter_how_many_were_delivered`
+      (the "no cooldown" half). Neither drives a pass with a call live and
+      asserts the result stays pending, and neither is paired with the
+      `_plan_steps` mutant. Left open so the gap is visible.
+- [x] 3.9 DEFERRED -- the `goal-changed` discard. Not done, and nothing
       may promise it. A tick carries no goal id out of the sandbox (a held
       script returns SCRIPT_HELD before ticking), so every stored result has
       goal `""`, and the entry that delivers a result reads its goal from the
@@ -366,7 +368,7 @@ there is no `self` or `bots` at all) — so the script guessed at `time`,
 
 - [ ] 5.1 Lookup within the snapshot: a sheep goal shears only when a sheep is
       near. Counted from the log with grep.
-- [ ] 5.2 Lookup beyond the snapshot: SUPERSEDED by A2. A diamonds-within-40
+- [x] 5.2 Lookup beyond the snapshot: SUPERSEDED by A2. A diamonds-within-40
       goal is now answered by `query.blocks('diamond_ore', {radius: 40})` from
       the script. The trial instead checks the CLAMP: a goal asking for more
       than the bound gets `clamped` on the answer and the plan can see the
@@ -384,7 +386,7 @@ there is no `self` or `bots` at all) — so the script guessed at `time`,
 
 ## 6. Out of scope, stated so it cannot drift back in
 
-- [ ] 6.1 ~~No live mid-tick lookup (Option B).~~ **OVERRULED by owner A2
+- [x] 6.1 ~~No live mid-tick lookup (Option B).~~ **OVERRULED by owner A2
       (2026-11-25 00:59Z):** scripts get `query.*`, which is a live mod call
       inside the tick. The reason this line existed (1.4's "no real lookup
       demand") was answered by the owner's direct request; the host-call cap
@@ -395,7 +397,20 @@ there is no `self` or `bots` at all) — so the script guessed at `time`,
       them; see 3.3.) The new `query.*` functions are added BESIDE `api` and
       `look`, charged against the existing 8-call cap, and do not change the
       six `api.*` functions.
-- [ ] 6.3 No delivery of logs or actions to the planner.
+      *Correction (checked 2026-11-26):* the number in this line is stale.
+      This change adds `api.result` (task 3.1, `agent-script-runner/src/binding.js`),
+      so the runner now binds SEVEN `api` methods — `do`, `log`, `recall`,
+      `remember`, `result`, `say`, `send`. The constraint itself still holds
+      (the pre-existing six are unchanged, `query.*` sits beside them, and
+      `MAX_HOST_CALLS` is still 8 at `src/binding.js:32`), so this is
+      recorded rather than ticked. The live spec says "six `api` methods"
+      in `openspec/specs/bot-coded-agents/spec.md`; that text needs the same
+      correction outside this task list.
+- [ ] 6.3 No delivery of logs or actions to the planner. NOT YET PINNED
+      (checked 2026-11-26): no test asserts this absence. A grep for the
+      prompt's contents does not establish a negative — a later edit could
+      add log or action text without reddening anything. Needs a test that
+      builds the planner prompt and asserts the absence.
 
 ## 7. Script query functions: declared list (A2, resolved by lead 2026-11-25 04:17Z)
 
