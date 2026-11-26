@@ -679,10 +679,38 @@ preceding requirement owns.
 - **THEN** the transport raises
 - **AND** the sender counts the report as dropped rather than sent
 
-### Requirement: Daily Code-Hour Cap Is Set In Mod Settings
-The daily cap is a **per-bot** allowance, configured in the mod settings
-following the existing `serverDir/config/aiplayermod-*.json` convention, and
-MUST default to unlimited.
+### Requirement: Daily Code-Hour Cap Is Read From The Deployment Environment
+The daily cap is a **per-bot** allowance, read from ONE environment variable on
+the agent deployment, `CODE_HOURS_CAP`, in hours per day per bot, and MUST
+default to unlimited when it is unset or empty.
+
+> **Source decided by the owner (B2, 2026-11-26).** The earlier title of this
+> requirement said "Set In Mod Settings" and named
+> `serverDir/config/aiplayermod-*.json`. That convention is superseded: the
+> agent has no channel to read that file, and the deployment environment is a
+> source it already reads at startup for every other setting. The rest of this
+> requirement -- per-bot accounting, the pause-and-keep-safe behaviour, and
+> every scenario below -- is unchanged by that move.
+
+The value MUST be read ONCE, when the meter is constructed, and MUST NOT be
+re-read per tick: a cap that changed mid-process would make a bot's allowance
+depend on when the pod happened to be rescheduled rather than on its usage.
+
+A value that is not a positive finite number -- `0`, a negative number, `abc`,
+`nan`, `inf` -- MUST NOT be treated as a cap of some other value. It MUST be
+reported loudly at startup and the cap MUST fall back to unlimited. Falling
+back is chosen over refusing to start because configuration in this agent is
+imported before the health gate runs: a process that refuses to start cannot
+report why, and every other setting in `agent/config.py` already resolves a bad
+value this way (warn, name the variable and the value, use the default). The
+one thing never permitted is silence -- a bot running against a cap the
+operator did not intend is worse than a bot running uncapped with a log line.
+
+Leaving the variable unset on a deployment is how "unlimited while testing" is
+configured. Manifests MUST NOT set `CODE_HOURS_CAP=""`: an explicit empty value
+and an absent one would then mean the same thing by two different routes, and a
+reader could not tell a deliberate unlimited from an unset one.
+
 
 The cap MUST be counted per bot. No player identity is required to enforce it,
 and a bot's usage MUST NOT be summed with any other bot's: exhausting one bot's
@@ -700,6 +728,26 @@ that identity first; it MUST NOT be introduced by reinterpreting this cap.
 - **WHEN** no cap is configured
 - **THEN** scripts run without being stopped by the cap
 - **AND** usage is still metered
+
+#### Scenario: An unset or empty variable means unlimited
+- **WHEN** `CODE_HOURS_CAP` is unset, or is set to an empty string
+- **THEN** the bot's cap is unlimited
+- **AND** usage is still metered
+
+#### Scenario: A positive number is the cap
+- **WHEN** `CODE_HOURS_CAP` is `1.5`
+- **THEN** the bot's cap is 1.5 hours per day
+
+#### Scenario: An unusable value is reported and falls back to unlimited
+- **WHEN** `CODE_HOURS_CAP` is `0`, a negative number, or a non-number such as `abc`
+- **THEN** startup reports the variable and the offending value loudly
+- **AND** the bot's cap is unlimited
+- **AND** the value is never silently treated as some other non-zero cap
+
+#### Scenario: The cap is read once, not per tick
+- **WHEN** `CODE_HOURS_CAP` changes while an agent process is running
+- **THEN** the running bot's cap is unchanged
+- **AND** the new value takes effect only when a meter is constructed again
 
 #### Scenario: Each bot has its own allowance
 - **WHEN** two bots, owned by the same player, have both run scripts

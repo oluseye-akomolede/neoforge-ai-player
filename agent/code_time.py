@@ -45,19 +45,30 @@ module guess:
 
 ## The cap seam
 
-`daily_cap_hours` is the ONE place a cap value would be read. It is hardwired
-to `UNLIMITED` for this release (owner decision B: default unlimited). There is
-deliberately no env var and no wire field: the cap's SOURCE is still open --
-"set in mod settings" (aiplayermod-scripts.json) is the owner's term, but the
-agent has no channel to read that file today, and the lead is taking that
-choice to the owner. Enforcement (pause at exhaustion) is task 5.4, not here.
+`daily_cap_hours` is the ONE place a cap value is read, and it is resolved when
+a meter is constructed from the deployment's `CODE_HOURS_CAP` (owner decision
+B2, 2026-11-26: hours per day per bot, unset or empty = unlimited). The source
+is now settled -- it was "open" in the earlier draft of this docstring, and
+that is no longer true.
+
+Reading it once at construction, not per tick, is the spec's requirement
+("The cap is read once, not per tick"): a cap that moved mid-process would make
+a bot's allowance depend on when the pod was rescheduled rather than on usage.
+Enforcement (pause at exhaustion) is task 5.4, not here; this module still only
+exposes the value.
 """
 
 import threading
 
-# Owner decision B: the default is unlimited. The cap source is still open, so
-# this is the seam, not a configured value -- see the module docstring.
+import config
+
+# Owner decision B: the default is unlimited.
 UNLIMITED = None
+
+# Sentinel for "no cap argument was passed", distinct from an explicit
+# UNLIMITED (None), so a caller that means unlimited can say so and a caller
+# that says nothing gets the deployment's configured cap.
+_UNSET = object()
 
 # A tick's period, in seconds. Configurable via TICK_DELAY for a test or a
 # deployment, but the spec fixes the real cadence at 2.0 s (0.5 ticks/s); the
@@ -78,9 +89,21 @@ class CodeTimeMeter:
     total is guarded by a lock.
     """
 
-    def __init__(self, tick_period=TICK_DELAY, daily_cap_hours=UNLIMITED):
+    def __init__(self, tick_period=TICK_DELAY, daily_cap_hours=_UNSET):
+        """`daily_cap_hours` defaults to the deployment's configured cap.
+
+        The default is deliberately NOT evaluated at import time: reading the
+        env var at import would fix one value for the process but make it
+        untestable without reloading config, and a caller that passes an
+        explicit cap (tests do) must win. Resolved once, here, so every
+        construction site gets the configured cap without having to remember
+        to thread it -- a bot whose meter was built by a path that forgot the
+        argument would otherwise run uncapped while its neighbour did not.
+        """
         self._tick_period = float(tick_period)
-        self._daily_cap_hours = daily_cap_hours
+        self._daily_cap_hours = (config.code_hours_cap()
+                                 if daily_cap_hours is _UNSET
+                                 else daily_cap_hours)
         self._seconds = 0.0
         self._ticks = 0
         self._lock = threading.Lock()
@@ -126,12 +149,12 @@ class CodeTimeMeter:
     # -- the one cap seam (task 5.3 is deferred; this is read-only here) -----
 
     def daily_cap_hours(self):
-        """The cap this bot is held to -- UNLIMITED for this release.
+        """The cap this bot is held to, in hours per day, or UNLIMITED (None).
 
-        The single seam where a cap value would be read. Hardwired to
-        UNLIMITED: no env var, no wire field, because the cap source is still
-        open (see the module docstring). Task 5.4 will compare `usage_hours()`
-        against whatever this returns; today it cannot fire.
+        Captured at construction from the deployment's `CODE_HOURS_CAP` unless
+        the caller passed one; see the module docstring. Task 5.4 will compare
+        `usage_hours()` against this; nothing compares it yet, so a configured
+        cap is recorded and reported but never fires.
         """
         return self._daily_cap_hours
 

@@ -100,6 +100,56 @@ SKILL_AUTHOR_INTERVAL = float(os.getenv("SKILL_AUTHOR_INTERVAL", "90.0"))
 
 PROFILE_PATH = os.getenv("PROFILE_PATH", os.path.join(os.path.dirname(__file__), "profiles", "default.json"))
 
+def _cap_from_env(name: str):
+    """Read an hours-per-day cap, or None for unlimited (coded-agents 5.6/B2).
+
+    None is the cap's unlimited marker, matching `code_time.UNLIMITED`, so
+    "unset" and "unlimited" are one value rather than two spellings of it.
+
+    A value that is not a positive finite number falls back to unlimited with a
+    loud line, for the same reason `_float_env` does: config is imported before
+    the health gate runs, so refusing to start would kill the surface that could
+    report the misconfiguration. The row's open question -- refuse or fall back
+    -- is settled this way, and the spec says why.
+
+    Not `_float_env`: that helper rejects non-positive values as an unusable
+    TIMEOUT, and its message would name this variable as one. The arithmetic is
+    the same; the sentence a reader sees is not.
+    """
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return None                      # unset/empty = unlimited, silently
+    try:
+        value = float(raw)
+    except ValueError:
+        print(f"config: {name}={raw!r} is not a number; cap is unlimited",
+              file=sys.stderr)
+        return None
+    if not math.isfinite(value) or value <= 0:
+        print(f"config: {name}={raw!r} is not a positive number of hours; "
+              f"cap is unlimited", file=sys.stderr)
+        return None
+    return value
+
+
+# The daily code-hours cap, in hours per day per bot. Unset on test and prod is
+# how "unlimited while testing" is configured -- see the coded-agents spec,
+# "Daily Code-Hour Cap Is Read From The Deployment Environment".
+CODE_HOURS_CAP = _cap_from_env("CODE_HOURS_CAP")
+
+
+def code_hours_cap():
+    """The configured cap as a function, so callers name it rather than import
+    a value copied into their module at import time.
+
+    Resolved ONCE at import (`CODE_HOURS_CAP`), not on every call: a bot builds
+    its meter once, and re-reading would print a bad-value warning once per bot
+    instead of once per process. A test that needs a different value sets the
+    env var and reloads `config`, which is honest about the once-per-process
+    semantics the spec now states.
+    """
+    return CODE_HOURS_CAP
+
 TICK_DELAY = float(os.getenv("TICK_DELAY", "2.0"))
 BUSY_POLL_DELAY = float(os.getenv("BUSY_POLL_DELAY", "0.5"))
 

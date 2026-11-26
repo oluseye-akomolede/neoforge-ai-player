@@ -24,6 +24,7 @@ import unittest
 from unittest import mock
 
 import importlib
+import os
 
 
 # agent.py imports psycopg2 / fastapi / uvicorn at module scope. None is
@@ -65,6 +66,7 @@ for _m in _STUBS:
     sys.modules.setdefault(_m, _Mod(_m))
 sys.modules["psycopg2"].extras = sys.modules["psycopg2.extras"]
 
+import code_time
 from code_time import CodeTimeMeter
 
 
@@ -106,6 +108,29 @@ class _StubTick:
 class MeterUnitTest(unittest.TestCase):
     """The counter's own arithmetic -- the unit is the period, counted once."""
 
+    def test_a_meter_built_under_a_cap_env_is_capped(self):
+        """The behavioural red, not an import red.
+
+        Uses only `CodeTimeMeter(...).daily_cap_hours()`, which exists on the
+        pre-change tree -- so on that tree this test FAILS ON ITS ASSERTION
+        (the meter returns None whatever the environment says) rather than
+        erroring on a missing attribute. That distinction matters: the other
+        tests in this class would pass a refactor that renamed things and kept
+        the hardwiring, so at least one has to be red for the right reason.
+        """
+        env = {"CODE_HOURS_CAP": "3.0"}
+        with mock.patch.dict("os.environ", env, clear=False):
+            import config as cfg
+            importlib.reload(cfg)
+            try:
+                m = CodeTimeMeter(tick_period=2.0)
+                self.assertEqual(
+                    m.daily_cap_hours(), 3.0,
+                    "a meter built while CODE_HOURS_CAP is set must take that "
+                    "cap; returning unlimited means the env var is not read")
+            finally:
+                importlib.reload(cfg)
+
     def test_one_tick_adds_one_period(self):
         m = CodeTimeMeter(tick_period=2.0)
         m.record_tick()
@@ -120,11 +145,74 @@ class MeterUnitTest(unittest.TestCase):
         self.assertAlmostEqual(m.usage_hours(), 1.0, places=9)
 
     def test_cap_is_unlimited_and_never_exhausts(self):
-        m = CodeTimeMeter(tick_period=2.0)
+        # Explicitly unlimited. The default is no longer unconditionally None
+        # (it comes from CODE_HOURS_CAP), so relying on the default here would
+        # make this test pass or fail on the machine's environment rather than
+        # on the behaviour it names.
+        m = CodeTimeMeter(tick_period=2.0, daily_cap_hours=code_time.UNLIMITED)
         for _ in range(10_000):
             m.record_tick()
         self.assertIsNone(m.daily_cap_hours(), "the cap must default to unlimited")
         self.assertFalse(m.is_exhausted(), "an unlimited cap must never exhaust")
+
+
+class CapFromTheEnvironmentTest(unittest.TestCase):
+    """The cap's source (owner B2): one deployment env var, read per meter.
+
+    `config` resolves CODE_HOURS_CAP once at import, so each case reloads it
+    under a patched environment. That is the same once-per-process semantics
+    the spec states ("The cap is read once, not per tick"), not a convenience
+    of the test -- a test that patched the module attribute would prove the
+    meter reads a global, not that the global comes from the environment.
+    """
+
+    def _cap_with_env(self, value):
+        env = {"CODE_HOURS_CAP": value} if value is not None else {}
+        with mock.patch.dict("os.environ", env, clear=False):
+            if value is None:
+                os.environ.pop("CODE_HOURS_CAP", None)
+            import config as cfg
+            importlib.reload(cfg)
+            try:
+                return cfg.CODE_HOURS_CAP
+            finally:
+                importlib.reload(cfg)     # restore the real environment's value
+
+    def test_unset_means_unlimited(self):
+        """FAILS on the pre-change tree only in the sense that no such source
+        existed; the value itself is the spec's 'unset = unlimited'."""
+        self.assertIsNone(self._cap_with_env(None))
+
+    def test_empty_means_unlimited(self):
+        self.assertIsNone(self._cap_with_env(""))
+
+    def test_a_positive_number_is_the_cap(self):
+        self.assertEqual(self._cap_with_env("1.5"), 1.5)
+
+    def test_zero_negative_and_nonsense_fall_back_to_unlimited(self):
+        for bad in ("0", "-2", "abc", "nan", "inf"):
+            with self.subTest(value=bad):
+                with mock.patch("sys.stderr") as err:
+                    self.assertIsNone(self._cap_with_env(bad))
+                said = "".join(c.args[0] for c in err.write.call_args_list)
+                self.assertIn("CODE_HOURS_CAP", said, "the log must name the variable")
+                self.assertIn(repr(bad), said, "the log must name the bad value")
+
+    def test_the_meter_takes_the_configured_cap_without_an_argument(self):
+        """A meter built by a path that forgot the argument still gets the cap.
+
+        This is the defect class the 5.6 wiring row was about: a value threaded
+        at every call site is a value some future call site will omit.
+        """
+        with mock.patch.object(code_time.config, "code_hours_cap", return_value=2.5):
+            m = CodeTimeMeter(tick_period=2.0)
+        self.assertEqual(m.daily_cap_hours(), 2.5)
+
+    def test_an_explicit_argument_still_wins(self):
+        with mock.patch.object(code_time.config, "code_hours_cap", return_value=2.5):
+            m = CodeTimeMeter(tick_period=2.0, daily_cap_hours=code_time.UNLIMITED)
+        self.assertIsNone(m.daily_cap_hours(),
+                          "an explicit UNLIMITED must not be overwritten by the env")
 
 
 class MeteringThroughTheSendPointTest(unittest.TestCase):
