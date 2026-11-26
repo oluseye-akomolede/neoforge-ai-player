@@ -1,23 +1,47 @@
 #!/usr/bin/env python3
-"""Check that every runner code-cite in the delta lands on what its SENTENCE says.
+"""Check that each runner code-cite in the delta lands on the construct its
+claim names, and that the delta has no cite outside those claims.
 
-Why this exists
----------------
-A previous check in this change ("print the first cited line and read it")
+WHAT THIS CHECK IS (read this before quoting it at archive)
+-----------------------------------------------------------
+It is a manual aid. `git grep` finds no caller -- it is not wired into any
+gate, CI, or archive step, and nothing runs it automatically.
+
+The property it establishes is exactly this:
+
+    1. Each of the claims hardcoded in CHECKS holds against the runner at the
+       named rev: the cited lines match the pattern, and the pattern encodes
+       the ACTION the claim asserts (not merely that the identifier appears).
+    2. No cite in the delta sits outside CHECKS. Any cite not covered fails as
+       "ungoverned" -- including one added anywhere in the text, not just at a
+       known position.
+
+What it does NOT establish, and an earlier version of this docstring wrongly
+implied: it does not read the prose. The verb phrases are string literals in
+CHECKS; the delta is read only to harvest cite tokens and to confirm each
+CHECKS cite is still present in it. So the check binds CODE to CLAIM. It does
+not bind CLAIM to PROSE. If a sentence's verb were reworded while its cite
+stayed put, the check would still pass -- the sentence could become false with
+the check green. Reviewer L-1 raised exactly that (their M3). Reading the
+sentences is still required; this narrows what a human must re-read, it does
+not replace it.
+
+Presence is asserted, so a CHECKS entry whose cite has left the prose fails
+rather than lingering as a stale row that always passes (their M5).
+
+Why it exists
+-------------
+An earlier check in this change ("print the first cited line and read it")
 passed all 14 stale cites, because it asked "does this line mention the
 identifier the cite sits next to?" That is symbol presence. The defect is a
-cite landing on a line that is about the right *thing* but does not do the
-right *action*: 165 is `async #ensure(...) {`, a definition, while the sentence
-claimed it "reuses the worker" -- the reuse is the `this.#workers.get` on 166,
-and the body settles it (`:182` discards a dead worker, `:207` spawns only when
-that lookup missed).
-
-So each cite is paired with the VERB PHRASE of its own clause, and checked by
-the line it lands on satisfying that phrase -- an explicit pattern, or a human
-attestation with the evidence that was read. A cite with neither fails.
+cite landing on a line about the right *thing* that does not do the right
+*action*: 165 is `async #ensure(...) {`, a definition, while the claim said it
+"reuses the worker" -- the reuse is the `this.#workers.get` on 166, and the
+body settles it (`:182` discards a dead worker, `:207` spawns only when that
+lookup missed). Naming the action in the pattern is what makes 165 fail.
 
 Usage:  python3 check_cites.py <runner-repo> <rev>
-Exit 0 = every cite satisfied. Exit 1 = at least one failed.
+Exit 0 = every claim holds and no cite is ungoverned. Exit 1 = otherwise.
 """
 import re
 import subprocess
@@ -25,8 +49,9 @@ import sys
 
 DELTA = "openspec/changes/host-api-count-seven/specs/bot-coded-agents/spec.md"
 
-# (cite, verb phrase from the sentence, must-include regex on the landing line,
-#  attestation -- the evidence read when the pattern alone is not decisive)
+# (cite, the CLAIM this pattern encodes -- written here, not read from the
+#  delta, must-include regex on the landing line, attestation -- the evidence
+#  read when the pattern alone is not decisive)
 CHECKS = [
     ("binding.js:342-346", "api.do pushes onto a sandbox-local array",
      r"state\.actions\.push", "push inside the do() body"),
@@ -80,13 +105,20 @@ def main():
     present = {(m.group(1) + ".js", int(m.group(2)), int(m.group(3) or m.group(2)))
                for m in re.finditer(r"(binding|engine|fleet)\.js:(\d+)(?:-(\d+))?", text)}
 
-    failures, ungoverned = [], []
+    failures, ungoverned, vanished = [], [], []
     governed = set()
     for cite, verb, pattern, attest in CHECKS:
         fname, rng = cite.split(":")
         start, _, end = rng.partition("-")
         start, end = int(start), int(end or start)
         governed.add((fname, start, end))
+        # L-1/M5: a claim whose cite has left the prose is a stale row that
+        # would otherwise always pass. Fail it instead.
+        if (fname, start, end) not in present:
+            print(f"FAIL {cite:<18} {verb}")
+            print(f"       cite is NOT in {DELTA} -- stale CHECKS entry")
+            vanished.append(cite)
+            continue
         body = line_at(repo, rev, fname, start, end)
         if body is None:
             failures.append((cite, verb, "FILE UNREADABLE at rev"))
@@ -103,18 +135,26 @@ def main():
     for fname, start, end in sorted(present - governed):
         ungoverned.append(f"{fname}:{start}" + (f"-{end}" if end != start else ""))
 
-    print(f"\n{len(CHECKS)} cites checked against the verb of their own sentence")
+    print(f"\n{len(CHECKS)} hardcoded claims checked against runner {rev}")
     if ungoverned:
-        print(f"{len(ungoverned)} cite(s) present in the delta with NO verb check:")
+        print(f"{len(ungoverned)} cite(s) present in the delta with NO claim:")
         for u in ungoverned:
             print(f"  {u}")
+    if vanished:
+        print(f"{len(vanished)} CHECKS entr(y/ies) whose cite is no longer in the delta:")
+        for v in vanished:
+            print(f"  {v}")
     if failures:
         print(f"\n{len(failures)} FAILED")
         return 1
     if ungoverned:
         print("\nFAILED: ungoverned cites are unverified, not passing")
         return 1
-    print("all clean")
+    if vanished:
+        print("\nFAILED: stale CHECKS entries (cite left the prose)")
+        return 1
+    print("all clean -- NOTE: this binds code to these claims, not the prose to")
+    print("them. The sentences still need reading. See the docstring.")
     return 0
 
 
