@@ -1476,8 +1476,8 @@ transitions end that work, and each MUST leave the bot in a state where the
 script is no longer ticking:
 
 1. The goal closes `done` -- already true, and before this change the only
-   case that unbound (`_unbind_planner_script` at the `done` close,
-   `agent.py:1259` at this change's base commit).
+   case that unbound was the `_unbind_planner_script()` call at the `done`
+   close, just after `_complete_task_board_task`.
 2. A failure result is handed back to the planner. The script reported that it
    could not do the job; the planner is choosing another approach, so the old
    script is not the thing to keep running. Left bound, it
