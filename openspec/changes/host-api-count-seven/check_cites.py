@@ -123,6 +123,14 @@ def main():
             #                   the sentence's range probably shifted.
             #   STALE entry  -- nothing in this file is near it; the entry
             #                   names a position the prose no longer mentions.
+            # Two expressions, ONE comparison, on purpose: the gap measured from
+            # the entry's edges (start/end) to each candidate's edges. The sort
+            # picks the closest candidate by that distance and the very next
+            # line re-evaluates the same distance to test it against the
+            # threshold. If you change one, change the other -- a sort and a
+            # test that measure differently would pick a candidate and then
+            # accept/reject a different one, and the failure would hide behind a
+            # plausible message.
             near = sorted((p for p in present if p[0] == fname),
                           key=lambda p: min(abs(p[1] - end), abs(start - p[2])))
             close = near[0] if near and min(abs(near[0][1] - end),
