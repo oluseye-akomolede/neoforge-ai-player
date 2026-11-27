@@ -233,6 +233,19 @@ matches: [] }`, for the reason `look` already draws (`src/look.js:103-110`):
 query MUST NOT fail the tick or drop the other queries — each is independent and
 each failure is reported in its own `look.queries.<name>`.
 
+**What a successful result looks like.** The mod answers `find_blocks` as
+`{blocks: [...]}` and `find_entities` as `{entities: [...]}`
+(`HttpApiServer.java`, `find_blocks` / `find_entities` cases), and the runner
+binds the agent's `queries` map verbatim. So the agent MUST rename those lists
+to `matches` before installing them: the examples above read
+`look.queries.ore.matches`, and a script written exactly as this spec shows MUST
+work. A `blocks` or `entities` result is `{ ok: true, kind, matches: [...] }`.
+`block_at` and `locate` are single answers, not lists: their result keeps the
+mod's own fields (`block_at`: the block map; `locate`: its `found`/position
+fields) and adds `ok` and `kind`. A unit test that stubs `find_blocks` to return
+`matches` directly does NOT satisfy this requirement — it hides the real
+response shape the agent has to normalise.
+
 **A duplicate name is refused.** Two declarations with the same `name` would
 silently make one overwrite the other, so it MUST be refused at bind time with a
 reason naming the name. Duplicates of the same `(kind, id)` under DIFFERENT names
@@ -251,6 +264,17 @@ The mod clamps nothing: `HttpApiServer.java:1117-1134` takes whatever `radius` a
 - **THEN** `look.queries.ore` MUST be the result of one `find_blocks` call made BEFORE
   the script was evaluated
 - **AND** reading `look.queries.ore` MUST spend no host call
+- **AND** with the real `find_blocks` answer `{blocks: [...]}`, the script MUST
+  read `{ok: true, kind: "blocks", matches: [...]}` (the agent renamed the list)
+
+#### Scenario: A script reads matches exactly as this spec's example does
+- **GIVEN** a declared `blocks` query and a real `find_blocks` answer carrying two blocks
+- **WHEN** the tick installs the result
+- **THEN** `look.queries.<name>.matches` MUST be those two blocks, `ok` MUST be true
+- **AND** `look.queries.<name>.blocks` MUST be absent
+- **AND** the test MUST feed the api's real response shape, not a hand-made `matches`
+  (the 2026-11-27 live probe read `matches` from the spec example and got undefined
+  while `ok` was true, because the agent passed `{blocks: [...]}` through)
 
 #### Scenario: A tick with no declared queries costs no mod read
 - **GIVEN** a script with no `queries` assignment
