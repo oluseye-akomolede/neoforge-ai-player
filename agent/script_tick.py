@@ -631,7 +631,7 @@ def _normalise_query_result(kind, value):
     byte-identical, and both arrive here as `{matches: [], ok: true}`. The
     agent cannot tell them apart because the distinction is destroyed before
     it sees the answer; making a failed search reportable needs `find_blocks`
-    to carry an error key the way `surface_scan` does. Until then this
+    to carry an error key the way `scan_data` does. Until then this
     function's guard covers a missing key, not a failed search.
 
     `block_at` and `locate` keep whatever fields the mod sent and gain `ok`
@@ -653,9 +653,10 @@ def _normalise_query_result(kind, value):
         value["matches"] = sent
     # An answer the mod already marked as failed is not a success just because
     # it also carries a list. Today find_blocks cannot send this (it swallows
-    # its own exception), but surface_scan can, and the O-1 fix for find_blocks
-    # will. Without this, `{blocks: [], error: "..."}` would report ok=true --
-    # a silent wrong answer on the day the search actually broke.
+    # its own exception) and no declared query kind sends an error key, but the
+    # O-1 fix for find_blocks will. Without this, `{blocks: [], error: "..."}`
+    # would report ok=true -- a silent wrong answer on the day the search
+    # actually broke.
     if value.get("error") not in (None, "", False):
         value["ok"] = False
         value.setdefault("reason", "error")

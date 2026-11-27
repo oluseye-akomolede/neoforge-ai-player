@@ -1023,8 +1023,9 @@ class TestDeclaredQueriesReachTheRunner(unittest.TestCase):
     def test_an_answer_marked_failed_is_not_reported_as_a_success(self):
         # Today's find_blocks swallows its own exception (it completes with a
         # bare empty list), so this shape is not reachable on find_blocks yet.
-        # surface_scan already sends it, and the follow-up that makes a failed
-        # search reportable will send it on blocks too. Without this guard the
+        # No declared query kind sends an error key today either (scan_data can,
+        # but it is not one of the four kinds); the follow-up that makes a failed
+        # search reportable will send it on blocks. Without this guard the
         # answer would carry error="boom" AND ok=true -- a silent wrong answer
         # on the day a real search broke.
         class Api(_FakeApi):
