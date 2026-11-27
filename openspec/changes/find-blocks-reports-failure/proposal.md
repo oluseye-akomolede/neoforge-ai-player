@@ -33,7 +33,7 @@ The throw is real and it is the only evidence of the failure: `findBlocks`
 reaches the level, the registry and `formatBlockPos`, any of which can throw.
 The mod catches it, logs it on the server, and answers 200.
 
-## What this change does
+## What Changes
 
 1. **The mod distinguishes the two outcomes.** A `find_blocks` whose search
    throws answers with an `error` key naming it, plus its empty list, rather
@@ -45,41 +45,43 @@ The mod catches it, logs it on the server, and answers 200.
 
 ## Ordering against `script-lookups-and-results`
 
-This change is written as **ADDED** against `bot-coded-agents`, not MODIFIED,
-and that is a deliberate constraint rather than a preference.
+**This section replaces an earlier one that was wrong.** An earlier draft of this
+change argued the requirement was not yet live and fixed an archive order against
+`script-lookups-and-results`. That was true of the tree I tested and false of
+`origin/main`: `script-lookups-and-results` was archived at `bf560d2`, which was
+by then main's tip, and the requirement has been live since. The builder caught
+it before writing any Java. The lesson is recorded here because it shaped the
+delta: a scratch archive proves a property of the tree it ran on, and main moves.
 
-The requirement it qualifies — "A Script Declares The Searches It Needs And
-Reads Them As `look.queries.<name>`" — is not in `openspec/specs/bot-coded-agents/spec.md`
-at `2f019c0`. It lives only in the pending change `script-lookups-and-results`.
-I found this by writing the delta as MODIFIED first and running
-`openspec validate --strict` (rc=0, "valid") and then `openspec archive`, which
-warned: *"Archive would refuse this delta: bot-coded-agents MODIFIED failed for
-header … not found"*. **Validation passing did not mean the change was
-archivable** — the informational line, not the exit code, carried that.
+So the requirement "A Script Declares The Searches It Needs And Reads Them As
+`look.queries.<name>`" is **live** in `openspec/specs/bot-coded-agents/spec.md` at
+`:1619`, with seven scenarios. This change is therefore **MODIFIED** against that
+requirement, not ADDED beside it.
 
-So the spec requirement here is ADDED, and the two changes have a fixed archive
-order: `script-lookups-and-results` first, this second. Verified by archiving
-this change into a scratch copy of `origin/main`'s `openspec/`: it applies
-(`+2, ~0, -0`) and the specs stay at 16/16.
+That is forced, not a preference: an ADDED delta cannot modify a live
+requirement, and ADDED would have stranded the seven existing scenarios instead
+of extending them. The delta was generated from the live text by substitution,
+not retyped, so no scenario can be dropped by omission — ten scenarios in the
+delta are the seven live ones verbatim plus three new.
 
-**The cost of that order, stated plainly:** while
-`script-lookups-and-results` is unarchived, the live spec contains no text
-defining `look.queries` at all, so this requirement describes a construct with no
-live definition. Archiving this change first makes the spec *more* incoherent,
-not less — I archived it into the scratch tree and confirmed the resulting spec
-names `look.queries` with nothing defining it. Archiving `script-lookups-and-results`
-first closes that gap; this change should not land alone.
+There is no archive-order constraint left. `script-lookups-and-results` is
+already archived, so this change can land in order whenever it is ready.
 
-That pending change is also the normative source for the shape this change
-extends, including the sentence "A failed or timed-out query is not an empty
-result", and it already carries the agent-side failure rule. This change is the
-mod-side half of it, split out because the mod half is a new jar and the agent
-half is already deployed.
+## What the live spec already says, and what it does not
 
-**This is not the agent's job to fix and not a behaviour change the agent can
-make.** The agent cannot invent the distinction; it can only pass on what the
-mod sends. Until the mod sends it, `run_declared_queries` is provably unable to
-tell the two apart, and the guard it already carries is dead code.
+The live requirement already carries the general rule, at `:1730-1735`:
+
+> **A failed or timed-out query is not an empty result.** Each result MUST be
+> `{ ok: false, reason, message }` on failure or timeout, never
+> `{ ok: true, matches: [] }` …
+
+So the agent-side obligation is already normative and this change does not invent
+it. What the live text does not do is place any obligation on the **mod**: it
+never says a caught exception must carry an `error` key, and its only failure
+scenario (`:1799`) is `GIVEN … a declared query whose mod call times out` —
+timeout only. A thrown `findBlocks` or `findEntities` is uncovered. Both sites
+violate the general rule today. That is the gap this change closes, and it closes
+it from the producer side so the rule becomes reachable.
 
 ## Repo and deploy scope
 
@@ -95,13 +97,14 @@ tell the two apart, and the guard it already carries is dead code.
 
 ## What this does not do
 
-- **It does not touch `find_entities`.** That route has the same swallow at
-  `:1134` and the same missing `error` key. It is the same defect in a sibling
-  handler and it is out of scope here on purpose: one defect, one change, one
-  reviewable diff. It is recorded in the delta's reasoning and should be filed
-  as its own row rather than quietly swept in. If the lead would rather fix both
-  in one diff, say so before the builder starts — the shape is identical and the
-  cost is one more case.
+- **`find_entities` is IN scope**, by the lead's decision of 11:58Z, reached
+  independently from the live spec text: the general rule says a failed query
+  MUST be `{ok: false, …}` and never `{ok: true, matches: []}`, and `:1134`
+  breaks it exactly as `:1124` does. Both verbs are fixed here, each with its own
+  api-http requirement so that neither half ships without a spec witness. They
+  are two cases in one file with one wire shape and one consumer; reviewing them
+  apart would review the identical delta twice, and shipping them apart would
+  leave the mod lying about one verb for another release cycle.
 - **It does not change `scan_data` or `surface_scan`.** `scan_data` already
   answers `{blocks: [], count: 0, error: "..."}` on its failure path (`:1420`)
   and is the model this change copies. `surface_scan` (`:1425`) is a different
