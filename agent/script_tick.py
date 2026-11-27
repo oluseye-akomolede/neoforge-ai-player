@@ -602,6 +602,51 @@ def _refused(reason, message):
     return {"ok": False, "reason": reason, "message": message}
 
 
+#: The mod returns a LIST under a per-verb key (`HttpApiServer.java`: `blocks`
+#: at :1126, `entities` at :1136), while a script reads `look.queries.<n>.matches`
+#: -- that is the name this spec's own examples use. These are the verbs whose
+#: list has to be renamed; `block_at` and `locate` are single answers that keep
+#: the mod's own fields.
+_LIST_KEY = {"blocks": "blocks", "entities": "entities"}
+
+
+def _normalise_query_result(kind, value):
+    """Return the result a SCRIPT sees for one query, whatever the mod sent.
+
+    The mod answers `find_blocks` with `{blocks: [...]}` and `find_entities`
+    with `{entities: [...]}` -- no `ok`, no `kind`, and no `matches`. A script
+    written as this spec's examples (`look.queries.ore.matches[0]`) therefore
+    read undefined from a perfectly good answer; the 2026-11-27 live probe saw
+    `ok=true` beside `n=-1` for exactly this reason. The rename belongs here,
+    in the agent, because it is the agent that invites scripts to say
+    `matches`; the mod's wire shape is not the script's vocabulary.
+
+    A list answer whose list is missing is an ERROR result, not an empty
+    `matches`: an empty list means "searched, found nothing", which is the
+    opposite conclusion and would be a silent wrong answer.
+
+    `block_at` and `locate` keep whatever fields the mod sent and gain `ok`
+    and `kind` -- `block_at`'s block map and `locate`'s `found`/position
+    fields are the answer, so renaming anything would destroy information.
+    """
+    if not isinstance(value, dict):
+        return _refused("error", f"{kind} returned a non-object answer")
+    value = dict(value)
+    if kind in _LIST_KEY:
+        key = _LIST_KEY[kind]
+        sent = value.get(key, value.get("matches"))
+        if not isinstance(sent, list):
+            return _refused("error", f"{kind} returned no {key} list")
+        # Drop the mod's key: the script reads `matches`, and leaving the old
+        # name in place would let two spellings of one answer drift apart
+        # (the spec pins `.blocks` as ABSENT once renamed).
+        value.pop(key, None)
+        value["matches"] = sent
+    value.setdefault("ok", True)
+    value.setdefault("kind", kind)
+    return value
+
+
 def plan_declared_queries(queries):
     """The mod calls for a validated list: one per distinct `(kind, id)`.
 
@@ -687,13 +732,8 @@ def run_declared_queries(api, bot, queries):
         except Exception as e:  # noqa: BLE001 - a bad answer is one query's problem
             value = _refused("error", f"{kind} failed: {type(e).__name__}: {e}")
         else:
-            if isinstance(value, dict):
-                value = dict(value)
-                value.setdefault("ok", True)
-                value.setdefault("kind", kind)
-            else:
-                value = _refused("error", f"{kind} returned a non-object answer")
-            if clamped:
+            value = _normalise_query_result(kind, value)
+            if clamped and value.get("ok"):
                 value["clamped"] = dict(clamped)
         results.append((kind, params, value))
     if scan > QUERY_SCAN_BUDGET:

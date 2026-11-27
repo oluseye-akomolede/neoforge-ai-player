@@ -972,8 +972,12 @@ class TestDeclaredQueriesReachTheRunner(unittest.TestCase):
     def test_declared_queries_ride_on_the_envelope(self):
         class Api(_FakeApi):
             def find_blocks(self, bot, block, radius=32, max_count=10):
-                return {"ok": True, "kind": "blocks",
-                        "matches": [{"id": block, "x": 1, "y": -50, "z": 2}]}
+                # The REAL mod shape (HttpApiServer.java:1126): a list under
+                # `blocks`, with no `ok`, no `kind` and no `matches`. A stub
+                # that answers `matches` directly hides the rename the agent
+                # owes the script, which is how the 2026-11-27 live probe
+                # read `matches` as undefined from an `ok: true` result.
+                return {"blocks": [{"id": block, "x": 1, "y": -50, "z": 2}]}
 
         box, post = self._capture()
         src = ("queries = [{name: 'ore', kind: 'blocks', id: 'minecraft:diamond_ore'}];\n"
@@ -982,6 +986,55 @@ class TestDeclaredQueriesReachTheRunner(unittest.TestCase):
         env = box["data"]["snapshot"]
         self.assertEqual(env["queries"]["ore"]["matches"][0]["id"], "minecraft:diamond_ore")
         self.assertEqual(env["queries"]["ore"]["ok"], True)
+        self.assertEqual(env["queries"]["ore"]["kind"], "blocks")
+        # The mod's own key is renamed AWAY, not mirrored: two spellings of
+        # one answer is how the drift this fix removes would start again.
+        self.assertNotIn("blocks", env["queries"]["ore"])
+
+    def test_an_entities_result_is_renamed_too(self):
+        class Api(_FakeApi):
+            def find_entities(self, bot, target, radius=32):
+                return {"entities": [{"type": target, "x": 4, "y": -60, "z": 9}]}
+
+        box, post = self._capture()
+        src = "queries = [{name: 'cow', kind: 'entities', id: 'minecraft:cow'}];"
+        ScriptTick(Api(), "Scout", src, post=post).tick()
+        got = box["data"]["snapshot"]["queries"]["cow"]
+        self.assertEqual(got["matches"][0]["type"], "minecraft:cow")
+        self.assertEqual(got["ok"], True)
+        self.assertNotIn("entities", got)
+
+    def test_a_list_answer_missing_its_list_is_an_error_not_empty(self):
+        # "searched, found nothing" and "the answer was not a list" are
+        # different conclusions; reporting the second as an empty `matches`
+        # would tell the script the world is empty when it was not read.
+        class Api(_FakeApi):
+            def find_blocks(self, bot, block, radius=32, max_count=10):
+                return {"ok": True}
+
+        box, post = self._capture()
+        src = "queries = [{name: 'ore', kind: 'blocks', id: 'minecraft:diamond_ore'}];"
+        ScriptTick(Api(), "Scout", src, post=post).tick()
+        got = box["data"]["snapshot"]["queries"]["ore"]
+        self.assertEqual(got["ok"], False)
+        self.assertEqual(got["reason"], "error")
+        self.assertNotIn("matches", got)
+
+    def test_block_at_keeps_the_mods_own_fields(self):
+        # A single answer is not a list: renaming anything here would destroy
+        # the information the script asked for.
+        class Api(_FakeApi):
+            def block_at(self, bot, x, y, z):
+                return {"block": "minecraft:stone", "x": x, "y": y, "z": z}
+
+        box, post = self._capture()
+        src = "queries = [{name: 'here', kind: 'block_at', x: 1, y: 2, z: 3}];"
+        ScriptTick(Api(), "Scout", src, post=post).tick()
+        got = box["data"]["snapshot"]["queries"]["here"]
+        self.assertEqual(got["block"], "minecraft:stone")
+        self.assertEqual(got["ok"], True)
+        self.assertEqual(got["kind"], "block_at")
+        self.assertNotIn("matches", got)
 
     def test_no_declaration_sends_no_queries_key(self):
         box, post = self._capture()
