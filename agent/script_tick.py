@@ -182,23 +182,106 @@ def _skip_ws_and_comments(source, i):
     return i
 
 
+def _mask_comments(text):
+    """`text` with every comment BODY blanked to `_`, SAME LENGTH.
+
+    Same contract as `_strip_strings`, and for the same reason: offsets found
+    in the mask are reported against the original text, so a mask that shrank
+    would shift every later index.
+
+    This exists because a comment is not code. Before it, `_find_declaration`
+    scanned the raw source, so a script whose COMMENT mentioned
+    `look.queries.<name>` was refused as a property assignment -- the live A2
+    E2E failure (2026-11-27): Axiom's line 3 was a comment and the declaration
+    it was meant to describe never bound.
+
+    Quotes are left intact, so a `//` inside a string is NOT treated as a
+    comment: this pass runs FIRST on the raw source, then `_strip_strings`
+    blanks the string bodies. That order is load-bearing and was measured the
+    hard way -- stripping strings first let an apostrophe in a COMMENT open a
+    string, leaving a lone quote that ran to EOF and swallowed the declaration
+    (1 and 3 apostrophes dropped it; 2 and 4 survived by accident).
+    """
+    out = []
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c in "\"'`":
+            # A string literal: copy it through untouched. `_strip_strings`
+            # normally ran first and blanked the body, but this pass must be
+            # safe on its own, so it tracks quotes rather than assuming.
+            quote = c
+            out.append(c)
+            i += 1
+            while i < n:
+                if text[i] == "\\":
+                    out.append(text[i:i + 2])
+                    i += 2
+                    continue
+                out.append(text[i])
+                if text[i] == quote:
+                    i += 1
+                    break
+                i += 1
+            continue
+        if text.startswith("//", i):
+            j = text.find("\n", i)
+            j = n if j < 0 else j
+            out.append("__" + "_" * (j - i - 2))
+            i = j
+            continue
+        if text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            if j < 0:
+                # Unterminated: blank to the end. `_skip_ws_and_comments`
+                # raises for this, so it is not silently swallowed -- this
+                # pass only has to not mistake the body for code.
+                j = n - 2
+            out.append("__" + "_" * (j - i - 2) + "__")
+            i = j + 2
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def _find_declaration(source):
     """Return `(offset_of_[, text_of_[...])` for the one declaration, or None.
 
     A declaration is `queries` at an identifier boundary (not a property
-    `x.queries`, not `myqueries`) followed by `=`, preceded by nothing that
-    binds it to a member (`this.`), and followed by `[`.
+    `x.queries = ...`, not `myqueries`) followed by `=`, and followed by `[`.
+
+    SCANNING IS DONE ON CODE, NOT RAW TEXT. Comments and string bodies are
+    masked to `_` first (`_mask_comments`, `_strip_strings`, both
+    same-length), so neither can be read as a declaration or as a property.
+    A property READ (`look.queries.ore`) is legal and is not the declaration:
+    only a property ASSIGNMENT (`api.queries = [...]`) is refused, because only
+    an assignment could diverge from the declaration the agent validated.
     """
+    # Mask, then scan the mask, but take the array text from the ORIGINAL
+    # source -- the mask has string bodies blanked and cannot be parsed.
+    #
+    # ORDER MATTERS: comments are masked on the RAW source first. Stripping
+    # strings first lets an apostrophe inside a COMMENT open a string (a
+    # comment is free prose -- "the bot's name"), which leaves a lone quote
+    # that then runs to EOF and swallows everything after it, including the
+    # declaration. Measured before the swap: a 1/3-apostrophe comment before
+    # the declaration dropped it (queries 0), 2/4 survived by accident. With
+    # comments masked first, a string's `//` and an apostrophe still parse,
+    # because the comment mask respects strings while the string mask no
+    # longer sees prose.
+    masked = _strip_strings(_mask_comments(source))
     hits = []
     n = len(source)
     i = 0
     while True:
-        j = source.find("queries", i)
+        j = masked.find("queries", i)
         if j < 0:
             break
         i = j + len("queries")
-        before = source[j - 1] if j > 0 else ""
-        after = source[i] if i < n else ""
+        before = masked[j - 1] if j > 0 else ""
+        after = masked[i] if i < n else ""
         # `before` must be a non-identifier character or a dot. Written with
         # `isidentifier` rather than a hand-rolled class: "a" + "queries" is
         # `aqueries`, not a declaration, and `_queries`/`$queries` are
@@ -207,19 +290,42 @@ def _find_declaration(source):
         # hand-rolled set was checked with `isalnum` and missed a plain space).
         if before and (before + "queries").isidentifier():
             continue
-        if before == ".":
-            # A property write (`api.queries = ...`, `x.queries = ...`) is not
-            # the declaration the agent reads; only a bare binding is.
-            raise DeclaredQueriesError(
-                f"{_where(source, j)}: `queries` must be a bare assignment, "
-                f"not a property")
         if after.isalnum() or after in "_$":
             continue
-        k = _skip_ws_and_comments(source, i)
-        if k >= n or source[k] != "=" or (k + 1 < n and source[k + 1] == "="):
+        if before == ".":
+            # Property access. A READ (`look.queries.ore`) is what a script is
+            # meant to do and is legal; only an ASSIGNMENT diverges from the
+            # validated declaration. Decide by what follows `queries`: skip
+            # space and comments, and refuse only on a lone `=`.
+            k = _skip_ws_and_comments(masked, i)
+            assigned = (k < n and masked[k] == "="
+                        and not (k + 1 < n and masked[k + 1] == "="))
+            # Compound assignment to a property is also an assignment:
+            # `api.queries += [...]`, `||=`, `??=`. The validated literal still
+            # governs the first declaration, but refusing these is the same
+            # rule -- only an assignment can diverge. Read the whole operator
+            # run: `||=` and `??=` are TWO characters before the `=`, so testing
+            # only masked[k+1] == "=" misses them (measured: they were ACCEPTed).
+            if not assigned and k < n:
+                run = k
+                while run < n and masked[run] in "+-*/%&|^?<>":
+                    run += 1
+                # A pure operator run ending in `=` is an assignment; `==` and
+                # `===` are compares (their run never contains a non-`=` before
+                # the `=` at the position tested, so they fall through).
+                if run > k and run < n and masked[run] == "=" and \
+                        not (run + 1 < n and masked[run + 1] == "="):
+                    assigned = True
+            if assigned:
+                raise DeclaredQueriesError(
+                    f"{_where(source, j)}: `queries` must be a bare assignment, "
+                    f"not a property")
             continue
-        k = _skip_ws_and_comments(source, k + 1)
-        if k >= n or source[k] != "[":
+        k = _skip_ws_and_comments(masked, i)
+        if k >= n or masked[k] != "=" or (k + 1 < n and masked[k + 1] == "="):
+            continue
+        k = _skip_ws_and_comments(masked, k + 1)
+        if k >= n or masked[k] != "[":
             raise DeclaredQueriesError(
                 f"{_where(source, j)}: `queries` must be assigned an array "
                 f"literal; anything dynamic is refused, not executed")
@@ -1049,8 +1155,17 @@ class ScriptTick:
         # keys on `_revision`), and a parse failure is a property of the
         # script, not of a tick. Parsed, never executed -- see
         # `parse_declared_queries`. Raises `DeclaredQueriesError`, which the
-        # caller surfaces as the script being unrunnable, the same way an
-        # engine-level syntax error is.
+        # caller surfaces as the script being unrunnable.
+        #
+        # NOT the same as an engine syntax error, and worth stating because the
+        # two differ: an UNTERMINATED string literal is not detected here.
+        # `_strip_strings` treats the rest of the file as string body and blanks
+        # it to EOF, so a declaration after it is silently lost and `queries`
+        # reads `[]`. (Measured: `_mask_comments` leaves such a file untouched;
+        # it is the string pass that eats it.) That is safe only because
+        # invalid JS cannot reach a tick -- the engine rejects it first. Do not
+        # rely on this stage to catch malformed source; it catches schema
+        # violations.
         self.queries = parse_declared_queries(script_source)
 
     @property

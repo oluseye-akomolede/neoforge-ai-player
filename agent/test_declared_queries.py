@@ -302,5 +302,157 @@ class TestEnvelopeCarriesQueries(unittest.TestCase):
         json.dumps(env)  # serialisable as the runner body requires
 
 
+class TestParseReadsCodeNotText(unittest.TestCase):
+    """Reading a declared query is the FEATURE; only writing one is refused.
+
+    Live A2 E2E failure, 2026-11-27: the parser scanned raw source, so any
+    occurrence of `queries` preceded by "." raised "must be a bare
+    assignment, not a property" -- which refused every script that READS
+    `look.queries.<name>`, and every script whose COMMENT or string mentions
+    it. The spec's own documented example could not bind.
+
+    The spec requires the read: "A declared query answers from data fetched
+    before the tick" (script-lookups-and-results, bot-coded-agents,
+    `#### Scenario: A declared query answers from data fetched before the
+    tick`), whose THEN is that `look.queries.ore` MUST be the result of a
+    `find_blocks` call made before evaluation and MUST spend no host call.
+    """
+
+    # The exact script in the spec delta (script-lookups-and-results,
+    # "the searches it wants to run"), which is the example the feature
+    # documentation tells an author to write.
+    SPEC_EXAMPLE = '''queries = [
+  {name: "ore",   kind: "blocks",   id: "minecraft:diamond_ore", radius: 32},
+  {name: "cows",  kind: "entities", id: "minecraft:cow"},
+]
+return look.queries.ore.matches.length
+  ? api.do("goto_block", look.queries.ore.matches[0]) : api.done("none");
+'''
+
+    def test_the_spec_own_example_binds_and_yields_its_queries(self):
+        """(a) The documented example must bind -- it did not."""
+        got = st.parse_declared_queries(self.SPEC_EXAMPLE)
+        self.assertEqual([q["name"] for q in got], ["ore", "cows"])
+
+    def test_a_declared_query_answers_from_data_fetched_before_the_tick(self):
+        """(c) The spec scenario by NAME: reading the result is legal.
+
+        scenario: "A declared query answers from data fetched before the
+        tick" -- `look.queries.ore` MUST be readable and MUST spend no host
+        call. This test proves the BIND side: a script that reads it parses.
+        """
+        src = ("queries = [{name: 'ore', kind: 'blocks', "
+               "id: 'minecraft:diamond_ore'}];\n"
+               "return look.queries.ore.matches.length;")
+        got = st.parse_declared_queries(src)
+        self.assertEqual([q["name"] for q in got], ["ore"])
+
+    def test_a_comment_mentioning_look_queries_binds(self):
+        """(b) A comment is not code. Live: Axiom's line 3 was a comment."""
+        src = ("// I want look.queries.ore and look.queries.cows here\n"
+               "queries = [{name: 'ore', kind: 'blocks', id: 'minecraft:stone'}];\n"
+               "return 1;")
+        got = st.parse_declared_queries(src)
+        self.assertEqual([q["name"] for q in got], ["ore"])
+
+    def test_a_comment_with_an_apostrophe_binds(self):
+        """Regression: house style writes "the bot's ..." in comments.
+
+        The apostrophe used to open a string inside the comment, leaving a
+        lone quote that ran to EOF and swallowed the declaration -- the script
+        bound with ZERO queries and no error. An ODD count failed, an even
+        count survived by accident, which is why every apostrophe-free fixture
+        passed. Comments are now masked before strings are stripped.
+        """
+        for n in (1, 2, 3, 4):
+            with self.subTest(apostrophes=n):
+                src = ("// " + " ".join(f"a{i}'s" for i in range(n)) + "\n"
+                       "queries = [{name: 'ore', kind: 'blocks', "
+                       "id: 'minecraft:stone'}];\n"
+                       "return 1;")
+                got = st.parse_declared_queries(src)
+                self.assertEqual([q["name"] for q in got], ["ore"])
+
+    def test_a_string_containing_a_comment_marker_and_an_apostrophe_binds(self):
+        """The other direction: masking comments first must not break strings.
+
+        A string holding both `//` and an apostrophe is still a string -- the
+        comment mask has to respect string bounds, or this test would fail the
+        same way the apostrophe case did before the order swap.
+
+        Asserted on the MASK, not through parse_declared_queries: every
+        string-typed query field is pattern-constrained (name must be an
+        identifier, id must be a valid item id, radius an int), so no VALID
+        declaration can carry arbitrary prose. Routing this through the schema
+        tests the schema, not the masking.
+        """
+        src = ("queries = [\"see // it's fine\"]\n"
+               "return 1;")
+        masked = st._strip_strings(st._mask_comments(src))
+        # The string body is blanked, and the `//` inside it did not start a
+        # comment that ate the rest of the line.
+        self.assertNotIn("fine", masked)
+        self.assertIn("queries", masked)
+        self.assertIn("return 1;", masked)
+
+    def test_compound_property_assignment_is_refused(self):
+        """`+=`, `||=`, `??=` diverge from the validated literal, so refuse.
+
+        The two-character operators are the ones that need the whole operator
+        run read: testing only the character after `queries` sees `|` or `?`,
+        not the `=` two positions later, and ACCEPTs them.
+        """
+        base = ("queries = [{name: 'ore', kind: 'blocks', "
+                "id: 'minecraft:stone'}];\n")
+        for op in ("+=", "||=", "??="):
+            with self.subTest(op=op):
+                with self.assertRaises(st.DeclaredQueriesError):
+                    st.parse_declared_queries(
+                        base + f"api.queries {op} [];\nreturn 1;")
+
+    def test_a_property_comparison_is_not_an_assignment(self):
+        """`==` and `===` are compares; refusing them would break real code."""
+        base = ("queries = [{name: 'ore', kind: 'blocks', "
+                "id: 'minecraft:stone'}];\n")
+        for cmp in ("if (look.queries == null) {}", "if (look.queries === null) {}"):
+            with self.subTest(cmp=cmp):
+                got = st.parse_declared_queries(base + cmp + "\nreturn 1;")
+                self.assertEqual([q["name"] for q in got], ["ore"])
+
+    def test_a_string_mentioning_look_queries_binds(self):
+        """A string literal is not code either."""
+        src = ("queries = [{name: 'ore', kind: 'blocks', id: 'minecraft:stone'}];\n"
+               "api.say('reading look.queries.ore now');\n"
+               "return look.queries.ore.matches.length;")
+        got = st.parse_declared_queries(src)
+        self.assertEqual([q["name"] for q in got], ["ore"])
+
+    def test_a_property_assignment_is_still_refused(self):
+        """(d) A property WRITE is dynamic and stays refused."""
+        for src in ("api.queries = [];",
+                    "look.queries = [{name: 'a', kind: 'blocks', id: 'minecraft:stone'}];"):
+            with self.assertRaises(st.DeclaredQueriesError) as ctx:
+                st.parse_declared_queries(src)
+            self.assertIn("bare assignment", str(ctx.exception))
+
+    def test_a_property_read_is_not_a_property_assignment(self):
+        """The distinction the defect collapsed: read legal, write refused."""
+        read_only = "return look.queries.ore.matches.length;"
+        self.assertEqual(st.parse_declared_queries(read_only), [])
+        with self.assertRaises(st.DeclaredQueriesError):
+            st.parse_declared_queries("api.queries = [];")
+
+    def test_duplicate_and_trailing_junk_are_still_refused(self):
+        """(e)(f) The two refusals that already worked must keep working."""
+        with self.assertRaises(st.DeclaredQueriesError) as ctx:
+            st.parse_declared_queries(
+                "queries = [{name: 'a', kind: 'blocks', id: 'minecraft:chest'}];\n"
+                "queries = [{name: 'b', kind: 'blocks', id: 'minecraft:dirt'}];")
+        self.assertIn("more than once", str(ctx.exception))
+        with self.assertRaises(st.DeclaredQueriesError):
+            st.parse_declared_queries(
+                "queries = [{name: 'c', kind: 'blocks', id: 'minecraft:chest'}] + evil();")
+
+
 if __name__ == "__main__":
     unittest.main()
