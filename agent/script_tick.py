@@ -195,9 +195,12 @@ def _mask_comments(text):
     E2E failure (2026-11-27): Axiom's line 3 was a comment and the declaration
     it was meant to describe never bound.
 
-    Quotes are left intact (`_strip_strings` blanks their bodies), so a `//`
-    inside a string is NOT treated as a comment: strip strings first, then
-    comments, and neither pass can be fooled by the other's payload.
+    Quotes are left intact, so a `//` inside a string is NOT treated as a
+    comment: this pass runs FIRST on the raw source, then `_strip_strings`
+    blanks the string bodies. That order is load-bearing and was measured the
+    hard way -- stripping strings first let an apostrophe in a COMMENT open a
+    string, leaving a lone quote that ran to EOF and swallowed the declaration
+    (1 and 3 apostrophes dropped it; 2 and 4 survived by accident).
     """
     out = []
     i = 0
@@ -1152,8 +1155,14 @@ class ScriptTick:
         # keys on `_revision`), and a parse failure is a property of the
         # script, not of a tick. Parsed, never executed -- see
         # `parse_declared_queries`. Raises `DeclaredQueriesError`, which the
-        # caller surfaces as the script being unrunnable, the same way an
-        # engine-level syntax error is.
+        # caller surfaces as the script being unrunnable.
+        #
+        # NOT the same as an engine syntax error, and worth stating because the
+        # two differ: an UNTERMINATED string literal is not detected here. The
+        # masker blanks to end-of-line and a declaration after it is silently
+        # lost, so `queries` reads `[]`. That is safe only because invalid JS
+        # cannot reach a tick -- the engine rejects it first. Do not rely on
+        # this stage to catch malformed source; it catches schema violations.
         self.queries = parse_declared_queries(script_source)
 
     @property
