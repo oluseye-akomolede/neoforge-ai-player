@@ -625,6 +625,15 @@ def _normalise_query_result(kind, value):
     `matches`: an empty list means "searched, found nothing", which is the
     opposite conclusion and would be a silent wrong answer.
 
+    That rule only reaches what the wire still carries. `find_blocks` catches
+    its own exception and completes with a bare empty list (HttpApiServer
+    :1123-1126), so at the wire a failed search and a genuine empty one are
+    byte-identical, and both arrive here as `{matches: [], ok: true}`. The
+    agent cannot tell them apart because the distinction is destroyed before
+    it sees the answer; making a failed search reportable needs `find_blocks`
+    to carry an error key the way `surface_scan` does. Until then this
+    function's guard covers a missing key, not a failed search.
+
     `block_at` and `locate` keep whatever fields the mod sent and gain `ok`
     and `kind` -- `block_at`'s block map and `locate`'s `found`/position
     fields are the answer, so renaming anything would destroy information.
@@ -642,6 +651,14 @@ def _normalise_query_result(kind, value):
         # (the spec pins `.blocks` as ABSENT once renamed).
         value.pop(key, None)
         value["matches"] = sent
+    # An answer the mod already marked as failed is not a success just because
+    # it also carries a list. Today find_blocks cannot send this (it swallows
+    # its own exception), but surface_scan can, and the O-1 fix for find_blocks
+    # will. Without this, `{blocks: [], error: "..."}` would report ok=true --
+    # a silent wrong answer on the day the search actually broke.
+    if value.get("error") not in (None, "", False):
+        value["ok"] = False
+        value.setdefault("reason", "error")
     value.setdefault("ok", True)
     value.setdefault("kind", kind)
     return value

@@ -1020,6 +1020,39 @@ class TestDeclaredQueriesReachTheRunner(unittest.TestCase):
         self.assertEqual(got["reason"], "error")
         self.assertNotIn("matches", got)
 
+    def test_an_answer_marked_failed_is_not_reported_as_a_success(self):
+        # Today's find_blocks swallows its own exception (it completes with a
+        # bare empty list), so this shape is not reachable on find_blocks yet.
+        # surface_scan already sends it, and the follow-up that makes a failed
+        # search reportable will send it on blocks too. Without this guard the
+        # answer would carry error="boom" AND ok=true -- a silent wrong answer
+        # on the day a real search broke.
+        class Api(_FakeApi):
+            def find_blocks(self, bot, block, radius=32, max_count=10):
+                return {"blocks": [], "count": 0, "error": "boom"}
+
+        box, post = self._capture()
+        src = "queries = [{name: 'ore', kind: 'blocks', id: 'minecraft:diamond_ore'}];"
+        ScriptTick(Api(), "Scout", src, post=post).tick()
+        got = box["data"]["snapshot"]["queries"]["ore"]
+        self.assertEqual(got["ok"], False)
+        self.assertEqual(got["reason"], "error")
+
+    def test_a_genuine_empty_answer_is_still_a_success(self):
+        # The failure guard must not turn "searched, found nothing" into an
+        # error: that would be the same wrong conclusion in the other
+        # direction, and a real empty search is the common case.
+        class Api(_FakeApi):
+            def find_blocks(self, bot, block, radius=32, max_count=10):
+                return {"blocks": []}
+
+        box, post = self._capture()
+        src = "queries = [{name: 'ore', kind: 'blocks', id: 'minecraft:diamond_ore'}];"
+        ScriptTick(Api(), "Scout", src, post=post).tick()
+        got = box["data"]["snapshot"]["queries"]["ore"]
+        self.assertEqual(got["ok"], True)
+        self.assertEqual(got["matches"], [])
+
     def test_block_at_keeps_the_mods_own_fields(self):
         # A single answer is not a list: renaming anything here would destroy
         # the information the script asked for.
