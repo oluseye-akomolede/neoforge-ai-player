@@ -626,13 +626,14 @@ def _normalise_query_result(kind, value):
     opposite conclusion and would be a silent wrong answer.
 
     That rule only reaches what the wire still carries. `find_blocks` catches
-    its own exception and completes with a bare empty list (HttpApiServer
-    :1123-1126), so at the wire a failed search and a genuine empty one are
-    byte-identical, and both arrive here as `{matches: [], ok: true}`. The
-    agent cannot tell them apart because the distinction is destroyed before
-    it sees the answer; making a failed search reportable needs `find_blocks`
-    to carry an error key the way `scan_data` does. Until then this
-    function's guard covers a missing key, not a failed search.
+    its own exception in HttpApiServer (catch at :1124, send at :1126) and
+    completes the search answer with an `error` key the way `scan_data` does,
+    so at the wire a failed search is `{blocks: [], error: "..."}` and a
+    genuine empty one is `{blocks: []}` -- distinguishable here. Before that
+    fix both arrived as `{matches: [], ok: true}`, and the agent could not tell
+    them apart because the distinction was destroyed before it saw the answer.
+    `find_entities` is answered by the same code path (catch at :1134, send at
+    :1136), so one rule covers both verbs.
 
     `block_at` and `locate` keep whatever fields the mod sent and gain `ok`
     and `kind` -- `block_at`'s block map and `locate`'s `found`/position
@@ -660,6 +661,13 @@ def _normalise_query_result(kind, value):
     if value.get("error") not in (None, "", False):
         value["ok"] = False
         value.setdefault("reason", "error")
+        # The live requirement says a failure is `{ok: false, reason, message}`,
+        # but the mod-failure path carries the text under `error`. Mirror it into
+        # `message` so that obligation holds for the failures this change makes
+        # reachable. setdefault, so a mod that already sent `message` keeps its
+        # own wording. `error` stays put: it is the key the mod sent, and two
+        # names for one string is a stated choice, not an oversight.
+        value.setdefault("message", value["error"])
     value.setdefault("ok", True)
     value.setdefault("kind", kind)
     return value

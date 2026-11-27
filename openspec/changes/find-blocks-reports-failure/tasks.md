@@ -28,40 +28,51 @@ past each catch; the lead's O-1 message carries them and they are wrong.
 
 ## 1. Mod: both handlers distinguish failure from empty
 
-- [ ] 1.1 `HttpApiServer` `find_blocks` (`:1117-1127`): on the `catch` at `:1124`
+- [x] 1.1 `HttpApiServer` `find_blocks` (`:1117-1127`): on the `catch` at `:1124`
       complete the future with a sentinel carrying the exception, and answer
       `{blocks: [...], error: "<text>"}`; on success answer `{blocks: [...]}`
       byte-identical to today. Factor the `Throwable → answer map` decision into a
       small static method so it is testable without a Minecraft classpath.
+      Done: `searchAnswer(String listKey, List values, Throwable failure)` added
+      near `healthBody`; `find_blocks` captures into `AtomicReference`, sends
+      `searchAnswer("blocks", boundedJoin(...), blockFailure.get())`.
       *Test:* `src/test/java/com/sigmastrain/aiplayermod/api/FindBlocksFailureTest.java`
       (new) calls that method directly, the way `BoundedWaitTest` tests the bound.
       *Mutant that must red it:* revert to `List.of()` with no `error` key. The
       failure and empty cases then produce the same map and
-      `failureAndEmptyAreDistinguishable` fails.
-- [ ] 1.2 `HttpApiServer` `find_entities` (`:1128-1137`): the identical change on
+      `blocksFailureAndEmptyAreDistinguishable` fails.
+- [x] 1.2 `HttpApiServer` `find_entities` (`:1128-1137`): the identical change on
       the `catch` at `:1134`, answering `{entities: [...], error: "<text>"}`.
       This is the whole reason `find_entities` is in this change rather than its
       own; it is not optional padding.
-      *Test:* the same test class, `entitiesFailureAndEmptyAreDistinguishable`,
-      against the same static method with the `entities` key.
-      *Mutant that must red it:* revert `:1134` to `List.of()` with no `error`
-      key while leaving `find_blocks` fixed. The `find_blocks` tests stay green
-      and only the `entities` test reddens — which is the point: it proves the
-      entity half is separately covered rather than riding on the block half.
-- [ ] 1.3 Keep both log lines. `AIPlayerMod.LOGGER.error("findBlocks error", e)`
+      Done: same `searchAnswer("entities", boundedJoin(...), entityFailure.get())`.
+      *Test:* the same test class, `entitiesFailureAndEmptyAreDistinguishable`
+      and the entity twins, against the same static method with the `entities` key.
+      *Mutant that must red it (helper level):* make `searchAnswer` return the same
+      map for a `null` and a non-null failure under the `entities` key — the
+      `entities` cases redden and the `blocks` cases stay green. Proves each verb
+      is covered by its own test, not riding the other.
+      *Measured limit (say this, do not imply coverage):* reverting the entity
+      handler's `sendJson(...)` call to `Map.of("entities", ...)` leaves the whole
+      suite GREEN. These tests call `searchAnswer` directly; they do not enter the
+      handler. That wiring is witnessed by the diff read and the 5.6 live probe,
+      not by JUnit. The class docstring says so; do not let a green run read as
+      end-to-end.
+- [x] 1.3 Keep both log lines. `AIPlayerMod.LOGGER.error("findBlocks error", e)`
       at `:1124` and `("findEntities error", e)` at `:1134` MUST remain at error
       level with the throwable. A fix that tells the caller but drops the
       server-side log loses the operator's only view.
-      *Test:* assert the answer's `error` text carries the exception type, which
-      is what the agent's normaliser keys on; if a logging seam exists, assert
-      the call too.
-      *Mutant that must red it:* delete the `LOGGER.error` call while keeping the
-      `error` key. If no seam asserts the log, this mutant is NOT caught and that
-      must be said in the task's completion note rather than implied.
-- [ ] 1.4 Success paths unchanged for both verbs. Not its own edit; it is the
+      *Test:* none — no logging seam exists that a unit test can assert.
+      *Mutant:* delete the `LOGGER.error` call while keeping the `error` key.
+      **Measured: the mutant leaves the suite GREEN — NOT caught.** No seam
+      asserts the log, so the log's survival rests on the diff read, not on a
+      test. Said here rather than implied. Both log lines are present (`grep -c`
+      = 2) and untouched by the fix.
+- [x] 1.4 Success paths unchanged for both verbs. Not its own edit; it is the
       constraint on 1.1 and 1.2.
-      *Test:* `successPathIsUnchanged` asserts `{blocks: [<two blocks>]}` and
-      `{entities: [<two entities>]}` carry exactly their list key and nothing new.
+      *Test:* `blocksSuccessPathIsUnchanged` asserts `{blocks: [<two blocks>]}` and
+      `entitiesSuccessPathIsUnchanged` asserts `{entities: [<two entities>]}` carry
+      exactly their list key and nothing new. Both green.
       *Mutant that must red it:* add an `error` key to the success map. The test
       must redden; a test that would tolerate an extra key is not pinning the
       promise.
@@ -79,14 +90,24 @@ without knowing which verb produced it.
       `{entities: [], error: "findEntities error: ..."}` through
       `_normalise_query_result` and assert (for each) `ok is False`,
       `reason == "error"`, `message` carries the mod's text, `matches == []`.
+      `message` carries it only because of the `setdefault("message",
+      value["error"])` line added beside the guard (reviewer ruling A, 12:05Z):
+      the mod sends the text under `error`, and that line mirrors it so the live
+      `{ok, reason, message}` obligation holds on the path this change makes
+      reachable. `error` STAYS too — two names for one string, a stated choice,
+      asserted by the exact-key-set check in the test.
       Add the twins: `{blocks: []}` and `{entities: []}` with no error key stay
       `ok is True, matches == []`.
       *Mutant that must red it:* delete the guard at `agent/script_tick.py:660`
       (`if value.get("error") not in (None, "", False):`). Both failure cases then
-      report `ok=True`. **Run it and record the tally** with the exact
-      invocation; at `9a8a083` it reddened exactly
-      `test_an_answer_marked_failed_is_not_reported_as_a_success`, so confirm the
-      count against the new twins or explain the new number.
+      report `ok=True`. **Measured: 2 red, both `…marked_failed_is_not_reported_as_a_success`
+      tests (one per verb)**, 71 still green, ran from `agent/` as
+      `(ulimit -v 4194304; nice -n 19 python3 -B -m unittest test_script_tick)`,
+      `Ran 73`, `FAILED (errors=2)`. At `9a8a083` it reddened 1 (block only); the
+      count is 2 now because the entity twin is new.
+      *Second mutant that must red it:* delete the `setdefault("message", …)`
+      line. **Measured: exactly those same 2 tests, nothing else** — `Ran 73`,
+      `FAILED (errors=2)`, rc=1; restored and re-ran to `Ran 73`, `OK`, rc=0.
 - [ ] 2.2 `agent/test_script_tick.py`: run declared `blocks` and `entities`
       queries through `run_declared_queries` with the api returning the mod's
       failure maps, asserting each installed `look.queries.<name>` is
@@ -97,14 +118,16 @@ without knowing which verb produced it.
 
 ## 3. Comment hygiene, in the commit that lands the mod fix
 
-- [ ] 3.1 `agent/script_tick.py:628-635` narrates the swallow as
+- [x] 3.1 `agent/script_tick.py:628-635` narrates the swallow as
       `HttpApiServer:1123-1126` and speaks of `find_blocks` alone. At `bf560d2`
       the catch is `:1124` and the send is `:1126`; `:1123` is the `try`. Both
       the range and the singular verb go stale with this change, and the
       "Until then…" clause stops being true once an error key ships.
-      *Test:* none; `python3 -m py_compile agent/script_tick.py` and the suite.
-- [ ] 3.2 The `api-http` delta's `HttpApiServer:1117-1127` cite (`:16`) is correct
-      at `bf560d2` and stays correct. Do not edit it.
+      Done: rewritten to cite catch `:1124` / send `:1126` and `find_entities`
+      catch `:1134` / send `:1136`, naming both verbs and the shared rule.
+      *Test:* `python3 -m py_compile agent/script_tick.py` and the suite (green).
+- [x] 3.2 The `api-http` delta's `HttpApiServer:1117-1127` cite (`:16`) is correct
+      at `bf560d2` and stays correct. Do not edit it. Left untouched.
 
 ## 4. api-http delta: answered — option B (lead, 12:00Z)
 
@@ -123,28 +146,41 @@ requirement stating what its answer must be. Row
       byte-identical to the version on `main` at `938dba1`.
       *Test:* the same `FindBlocksFailureTest` seam, a second case built from
       `find_entities`'s own catch at `:1134`.
-      *Mutant that must red it:* leave `:1134` completing `List.of()` and answer
-      `Map.of("entities", ...)` with no `error` key. `anEntityFailureAndAnEmpty
-      ResultAreDistinguishable` fails. A mutant in the block path alone MUST NOT
-      redden this case, and vice versa — that is what "both verbs are proved the
-      same way" pins.
+      *Mutant that must red it (helper level):* a `searchAnswer` that answers the
+      same map for a failure and a success under the `entities` key reddens the
+      entity cases and leaves the block cases green — that is "both verbs are
+      proved the same way" at the helper seam.
+      *Measured limit:* reverting the handler's entity `sendJson` leaves the suite
+      green (see 1.2). The entity half is separately proven at the helper; the
+      handler wiring is not JUnit-witnessed for either verb.
 
 ## 5. Verification
 
-- [ ] 5.1 `./gradlew :test --tests '*FindBlocksFailure*' --rerun --no-build-cache`
+- [x] 5.1 `./gradlew :test --tests '*FindBlocksFailure*' --rerun --no-build-cache`
       with `-Xmx2g`, `--max-workers=2`, `nice -n 19`. Read the JUnit XML tally;
       `FROM-CACHE` is not a run.
-- [ ] 5.2 From inside `agent/`: `python3 -B -m unittest test_script_tick`. Report
+      **Measured: `tests="9" skipped="0" failures="0" errors="0"`, rc=0**, from
+      repo root `neoforge-ai-player/`; `searchAnswer` confirmed in the compiled
+      `HttpApiServer.class` via `javap`.
+- [x] 5.2 From inside `agent/`: `python3 -B -m unittest test_script_tick`. Report
       `Ran N` and `OK` from stderr with the cwd and command. `-B` so a stale
       `.pyc` cannot re-run the unmutated module under a mutant.
-- [ ] 5.3 `openspec validate find-blocks-reports-failure --strict` returns rc=0
+      **Measured: `Ran 73 tests`, `OK`, rc=0**, cwd `agent/`, command
+      `(ulimit -v 4194304; nice -n 19 python3 -B -m unittest test_script_tick)`,
+      redirected to a file and grepped (the suite prints script-log chatter to
+      stdout before the stderr summary).
+- [x] 5.3 `openspec validate find-blocks-reports-failure --strict` returns rc=0
       "valid" — recorded, but it does NOT prove the delta type. It counts
       ERROR+WARNING; an ADDED-only delta that should be MODIFIED is INFO. The
       type is proven by the scenario check below.
-- [ ] 5.4 Delta type check, run and record the output: the delta must carry all
+      **Measured: "Change 'find-blocks-reports-failure' is valid".**
+- [x] 5.4 Delta type check, run and record the output: the delta must carry all
       7 live scenarios of `bot-coded-agents/spec.md:1619` **verbatim** (bodies,
       not just names) plus the 3 new ones. Measured once already: 7 carried, 0
       missing, 3 new, intro paragraph identical. Re-run it at the committed rev.
+      **Re-run at HEAD: live scenarios 7, delta 10, live missing from delta [],
+      new in delta 3 — carried 7, new 3.** Body-level verbatim check (earlier)
+      confirmed 7 of 7 unchanged, intro identical.
 - [ ] 5.5 Archive `find-blocks-reports-failure` only after landing and review.
       `script-lookups-and-results` is ALREADY archived on `origin/main`
       (`bf560d2`), so there is no ordering constraint left — the superseded

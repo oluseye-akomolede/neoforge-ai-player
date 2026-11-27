@@ -1021,13 +1021,11 @@ class TestDeclaredQueriesReachTheRunner(unittest.TestCase):
         self.assertNotIn("matches", got)
 
     def test_an_answer_marked_failed_is_not_reported_as_a_success(self):
-        # Today's find_blocks swallows its own exception (it completes with a
-        # bare empty list), so this shape is not reachable on find_blocks yet.
-        # No declared query kind sends an error key today either (scan_data can,
-        # but it is not one of the four kinds); the follow-up that makes a failed
-        # search reportable will send it on blocks. Without this guard the
-        # answer would carry error="boom" AND ok=true -- a silent wrong answer
-        # on the day a real search broke.
+        # find_blocks now sends an error key on a failed search (the mod fix,
+        # HttpApiServer find_blocks), so this is the reachable shape on a
+        # broken search rather than a hypothetical. Without the guard at
+        # script_tick.py:660 the answer would carry error="boom" AND ok=true --
+        # a silent wrong answer on the day a real search broke.
         class Api(_FakeApi):
             def find_blocks(self, bot, block, radius=32, max_count=10):
                 return {"blocks": [], "count": 0, "error": "boom"}
@@ -1038,6 +1036,57 @@ class TestDeclaredQueriesReachTheRunner(unittest.TestCase):
         got = box["data"]["snapshot"]["queries"]["ore"]
         self.assertEqual(got["ok"], False)
         self.assertEqual(got["reason"], "error")
+        # The live obligation is {ok, reason, message}. The mod sends the text
+        # under `error`, and the normaliser mirrors it into `message`; `error`
+        # stays put (two names for one string is a stated choice). Assert the
+        # exact key set so the duplication is deliberate and would redden if
+        # either the setdefault were removed or `error` were stripped.
+        self.assertEqual(got["message"], "boom")
+        self.assertEqual(got["error"], "boom")
+        # `count` is the mod's own extra field and passes through untouched
+        # (only the list key is renamed to `matches`); the rest are the rule's.
+        self.assertEqual(
+            set(got) - {"matches"},
+            {"ok", "reason", "message", "error", "kind", "count"},
+        )
+
+    def test_an_entity_answer_marked_failed_is_not_reported_as_a_success(self):
+        # The error-key rule is one rule for both search verbs -- the normaliser
+        # reads the key without knowing which verb produced it. This exercises
+        # the entities path, whose failure the Java change now also carries, so
+        # a test written for find_blocks cannot be read as covering find_entities.
+        class Api(_FakeApi):
+            def find_entities(self, bot, target, radius=32):
+                return {"entities": [], "error": "findEntities error: boom"}
+
+        box, post = self._capture()
+        src = "queries = [{name: 'cow', kind: 'entities', id: 'minecraft:cow'}];"
+        ScriptTick(Api(), "Scout", src, post=post).tick()
+        got = box["data"]["snapshot"]["queries"]["cow"]
+        self.assertEqual(got["ok"], False)
+        self.assertEqual(got["reason"], "error")
+        # The mod's own text reaches the script as `message` (the live
+        # obligation), and is still under `error` too. Direct assert: this
+        # reddens if the setdefault("message", value["error"]) is removed.
+        self.assertEqual(got["message"], "findEntities error: boom")
+        self.assertEqual(
+            set(got) - {"matches"},
+            {"ok", "reason", "message", "error", "kind"},
+        )
+
+    def test_a_genuine_empty_entity_answer_is_still_a_success(self):
+        # The converse on the entity path: {entities: []} with no error key is
+        # "searched, found nothing", which must stay ok=true.
+        class Api(_FakeApi):
+            def find_entities(self, bot, target, radius=32):
+                return {"entities": []}
+
+        box, post = self._capture()
+        src = "queries = [{name: 'cow', kind: 'entities', id: 'minecraft:cow'}];"
+        ScriptTick(Api(), "Scout", src, post=post).tick()
+        got = box["data"]["snapshot"]["queries"]["cow"]
+        self.assertEqual(got["ok"], True)
+        self.assertEqual(got["matches"], [])
 
     def test_a_genuine_empty_answer_is_still_a_success(self):
         # The failure guard must not turn "searched, found nothing" into an

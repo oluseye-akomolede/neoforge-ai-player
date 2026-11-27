@@ -201,6 +201,29 @@ public class HttpApiServer {
         return body;
     }
 
+    /**
+     * The answer a search verb sends. Pure: its only inputs are the list key, the
+     * result list, and whatever Throwable the off-loop call raised (null on success).
+     *
+     * A failed search must not be indistinguishable from an empty one. When a
+     * failure is present the answer carries a non-blank {@code error} string, the
+     * same key {@code scan_data} uses for its own failures; when it is absent the
+     * answer is just {@code {<listKey>: [...]}} with no error key at all. A genuine
+     * empty result therefore stays a success, and an empty failed result does not.
+     */
+    static Map<String, Object> searchAnswer(String listKey, List<Map<String, Object>> values, Throwable failure) {
+        Map<String, Object> answer = new LinkedHashMap<>();
+        answer.put(listKey, values == null ? List.of() : values);
+        if (failure != null) {
+            String detail = failure.getMessage();
+            if (detail == null || detail.isBlank()) {
+                detail = failure.getClass().getSimpleName();
+            }
+            answer.put("error", detail);
+        }
+        return answer;
+    }
+
     // ── /skills ── (GET = catalog, POST = off-loop register)
 
     private void handleSkills(HttpExchange exchange) throws IOException {
@@ -1119,21 +1142,23 @@ public class HttpApiServer {
                 int radius = body.has("radius") ? body.get("radius").getAsInt() : 32;
                 int max = body.has("max") ? body.get("max").getAsInt() : 10;
                 var blockFuture = new java.util.concurrent.CompletableFuture<List<Map<String, Object>>>();
+                var blockFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
                 BotManager.getServer().execute(() -> {
                     try { blockFuture.complete(bot.findBlocks(block, radius, max)); }
-                    catch (Exception e) { blockFuture.complete(List.of()); AIPlayerMod.LOGGER.error("findBlocks error", e); }
+                    catch (Exception e) { blockFailure.set(e); blockFuture.complete(List.of()); AIPlayerMod.LOGGER.error("findBlocks error", e); }
                 });
-                sendJson(exchange, 200, Map.of("blocks", boundedJoin(blockFuture)));
+                sendJson(exchange, 200, searchAnswer("blocks", boundedJoin(blockFuture), blockFailure.get()));
             }
             case "find_entities" -> {
                 String target = body.get("target").getAsString();
                 double radius = body.has("radius") ? body.get("radius").getAsDouble() : 32.0;
                 var entityFuture = new java.util.concurrent.CompletableFuture<List<Map<String, Object>>>();
+                var entityFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
                 BotManager.getServer().execute(() -> {
                     try { entityFuture.complete(bot.findEntities(target, radius)); }
-                    catch (Exception e) { entityFuture.complete(List.of()); AIPlayerMod.LOGGER.error("findEntities error", e); }
+                    catch (Exception e) { entityFailure.set(e); entityFuture.complete(List.of()); AIPlayerMod.LOGGER.error("findEntities error", e); }
                 });
-                sendJson(exchange, 200, Map.of("entities", boundedJoin(entityFuture)));
+                sendJson(exchange, 200, searchAnswer("entities", boundedJoin(entityFuture), entityFailure.get()));
             }
             case "swap" -> {
                 int from = body.get("from").getAsInt();
