@@ -355,6 +355,70 @@ return look.queries.ore.matches.length
         got = st.parse_declared_queries(src)
         self.assertEqual([q["name"] for q in got], ["ore"])
 
+    def test_a_comment_with_an_apostrophe_binds(self):
+        """Regression: house style writes "the bot's ..." in comments.
+
+        The apostrophe used to open a string inside the comment, leaving a
+        lone quote that ran to EOF and swallowed the declaration -- the script
+        bound with ZERO queries and no error. An ODD count failed, an even
+        count survived by accident, which is why every apostrophe-free fixture
+        passed. Comments are now masked before strings are stripped.
+        """
+        for n in (1, 2, 3, 4):
+            with self.subTest(apostrophes=n):
+                src = ("// " + " ".join(f"a{i}'s" for i in range(n)) + "\n"
+                       "queries = [{name: 'ore', kind: 'blocks', "
+                       "id: 'minecraft:stone'}];\n"
+                       "return 1;")
+                got = st.parse_declared_queries(src)
+                self.assertEqual([q["name"] for q in got], ["ore"])
+
+    def test_a_string_containing_a_comment_marker_and_an_apostrophe_binds(self):
+        """The other direction: masking comments first must not break strings.
+
+        A string holding both `//` and an apostrophe is still a string -- the
+        comment mask has to respect string bounds, or this test would fail the
+        same way the apostrophe case did before the order swap.
+
+        Asserted on the MASK, not through parse_declared_queries: every
+        string-typed query field is pattern-constrained (name must be an
+        identifier, id must be a valid item id, radius an int), so no VALID
+        declaration can carry arbitrary prose. Routing this through the schema
+        tests the schema, not the masking.
+        """
+        src = ("queries = [\"see // it's fine\"]\n"
+               "return 1;")
+        masked = st._strip_strings(st._mask_comments(src))
+        # The string body is blanked, and the `//` inside it did not start a
+        # comment that ate the rest of the line.
+        self.assertNotIn("fine", masked)
+        self.assertIn("queries", masked)
+        self.assertIn("return 1;", masked)
+
+    def test_compound_property_assignment_is_refused(self):
+        """`+=`, `||=`, `??=` diverge from the validated literal, so refuse.
+
+        The two-character operators are the ones that need the whole operator
+        run read: testing only the character after `queries` sees `|` or `?`,
+        not the `=` two positions later, and ACCEPTs them.
+        """
+        base = ("queries = [{name: 'ore', kind: 'blocks', "
+                "id: 'minecraft:stone'}];\n")
+        for op in ("+=", "||=", "??="):
+            with self.subTest(op=op):
+                with self.assertRaises(st.DeclaredQueriesError):
+                    st.parse_declared_queries(
+                        base + f"api.queries {op} [];\nreturn 1;")
+
+    def test_a_property_comparison_is_not_an_assignment(self):
+        """`==` and `===` are compares; refusing them would break real code."""
+        base = ("queries = [{name: 'ore', kind: 'blocks', "
+                "id: 'minecraft:stone'}];\n")
+        for cmp in ("if (look.queries == null) {}", "if (look.queries === null) {}"):
+            with self.subTest(cmp=cmp):
+                got = st.parse_declared_queries(base + cmp + "\nreturn 1;")
+                self.assertEqual([q["name"] for q in got], ["ore"])
+
     def test_a_string_mentioning_look_queries_binds(self):
         """A string literal is not code either."""
         src = ("queries = [{name: 'ore', kind: 'blocks', id: 'minecraft:stone'}];\n"

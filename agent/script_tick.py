@@ -250,15 +250,25 @@ def _find_declaration(source):
     `x.queries = ...`, not `myqueries`) followed by `=`, and followed by `[`.
 
     SCANNING IS DONE ON CODE, NOT RAW TEXT. Comments and string bodies are
-    masked to `_` first (`_strip_strings`, `_mask_comments`, both same-length),
-    so neither can be read as a declaration or as a property. A property READ
-    (`look.queries.ore`) is legal and is not the declaration: only a property
-    ASSIGNMENT (`api.queries = [...]`) is refused, because only an assignment
-    could diverge from the declaration the agent validated.
+    masked to `_` first (`_mask_comments`, `_strip_strings`, both
+    same-length), so neither can be read as a declaration or as a property.
+    A property READ (`look.queries.ore`) is legal and is not the declaration:
+    only a property ASSIGNMENT (`api.queries = [...]`) is refused, because only
+    an assignment could diverge from the declaration the agent validated.
     """
     # Mask, then scan the mask, but take the array text from the ORIGINAL
     # source -- the mask has string bodies blanked and cannot be parsed.
-    masked = _mask_comments(_strip_strings(source))
+    #
+    # ORDER MATTERS: comments are masked on the RAW source first. Stripping
+    # strings first lets an apostrophe inside a COMMENT open a string (a
+    # comment is free prose -- "the bot's name"), which leaves a lone quote
+    # that then runs to EOF and swallows everything after it, including the
+    # declaration. Measured before the swap: a 1/3-apostrophe comment before
+    # the declaration dropped it (queries 0), 2/4 survived by accident. With
+    # comments masked first, a string's `//` and an apostrophe still parse,
+    # because the comment mask respects strings while the string mask no
+    # longer sees prose.
+    masked = _strip_strings(_mask_comments(source))
     hits = []
     n = len(source)
     i = 0
@@ -287,6 +297,22 @@ def _find_declaration(source):
             k = _skip_ws_and_comments(masked, i)
             assigned = (k < n and masked[k] == "="
                         and not (k + 1 < n and masked[k + 1] == "="))
+            # Compound assignment to a property is also an assignment:
+            # `api.queries += [...]`, `||=`, `??=`. The validated literal still
+            # governs the first declaration, but refusing these is the same
+            # rule -- only an assignment can diverge. Read the whole operator
+            # run: `||=` and `??=` are TWO characters before the `=`, so testing
+            # only masked[k+1] == "=" misses them (measured: they were ACCEPTed).
+            if not assigned and k < n:
+                run = k
+                while run < n and masked[run] in "+-*/%&|^?<>":
+                    run += 1
+                # A pure operator run ending in `=` is an assignment; `==` and
+                # `===` are compares (their run never contains a non-`=` before
+                # the `=` at the position tested, so they fall through).
+                if run > k and run < n and masked[run] == "=" and \
+                        not (run + 1 < n and masked[run + 1] == "="):
+                    assigned = True
             if assigned:
                 raise DeclaredQueriesError(
                     f"{_where(source, j)}: `queries` must be a bare assignment, "
