@@ -1158,11 +1158,14 @@ class ScriptTick:
         # caller surfaces as the script being unrunnable.
         #
         # NOT the same as an engine syntax error, and worth stating because the
-        # two differ: an UNTERMINATED string literal is not detected here. The
-        # masker blanks to end-of-line and a declaration after it is silently
-        # lost, so `queries` reads `[]`. That is safe only because invalid JS
-        # cannot reach a tick -- the engine rejects it first. Do not rely on
-        # this stage to catch malformed source; it catches schema violations.
+        # two differ: an UNTERMINATED string literal is not detected here.
+        # `_strip_strings` treats the rest of the file as string body and blanks
+        # it to EOF, so a declaration after it is silently lost and `queries`
+        # reads `[]`. (Measured: `_mask_comments` leaves such a file untouched;
+        # it is the string pass that eats it.) That is safe only because
+        # invalid JS cannot reach a tick -- the engine rejects it first. Do not
+        # rely on this stage to catch malformed source; it catches schema
+        # violations.
         self.queries = parse_declared_queries(script_source)
 
     @property
