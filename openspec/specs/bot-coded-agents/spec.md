@@ -1643,7 +1643,7 @@ queries = [
 var first = look.queries.ore.matches[0]
 return first
   ? api.do("goto", {x: first.position.x, y: first.position.y, z: first.position.z})
-  : api.result("none");
+  : api.done("none");
 ```
 
 A `blocks` match carries `block` (registry id), `name` (display name) and
@@ -1809,6 +1809,57 @@ The mod clamps nothing: `HttpApiServer.java:1117-1134` takes whatever `radius` a
 - **WHEN** its call sites are inspected
 - **THEN** they MUST be only `find_blocks`, `find_entities`, `block_at`, `locate`
 - **AND** no `goto`, `mine`, `place`, `attack` or `set_directive` route
+
+**An answer carrying an `error` key is a failure, not an empty list.**
+Both search verbs catch their own exception and complete with an empty list
+(`HttpApiServer` `find_blocks` at `:1124`, `find_entities` at `:1134`), so today
+a search that threw and a search that found nothing are the same bytes on the
+wire. The mod MUST answer a failed search from either verb with an `error` key
+beside its list (`{blocks: [], error: "<reason>"}` and
+`{entities: [], error: "<reason>"}`, the shape `scan_data` already uses at
+`:1420`), and this agent MUST read that key as a failure for that query only:
+`look.queries.<name>` is
+`{ok: false, reason: "error", message: <the mod's own text>}`. A bare
+`{blocks: []}` or `{entities: []}` with no `error` key MUST stay
+`{ok: true, matches: []}`, because that is a search that ran and found nothing --
+the opposite fact, and the one a planner acts on. Both halves are required: the
+mod fix alone leaves the agent reporting success on a failed search, and the
+agent guard alone is inert while nothing sends an error key. The agent half is
+one rule for both verbs, because `_normalise_query_result` reads the `error` key
+without knowing which verb produced it; a second, parallel agent rule for
+`entities` would be a copy that can drift.
+
+#### Scenario: A search that threw is a failure, not an empty result
+- **GIVEN** a declared `blocks` query, and the mod answering
+  `{blocks: [], error: "findBlocks error: ..."}` because its search threw
+- **AND** a declared `entities` query, and the mod answering
+  `{entities: [], error: "findEntities error: ..."}` because its search threw
+- **WHEN** the tick runs
+- **THEN** each `look.queries.<name>` MUST be `{ ok: false, reason: "error" }`
+- **AND** each `message` MUST carry the mod's own error text, so the planner can
+  tell a broken search from a world with nothing in it
+- **AND** the other declared queries MUST still be present and correct
+- **AND** the tick MUST NOT fail because of either one
+
+#### Scenario: A genuine empty result stays a success
+- **GIVEN** a declared `blocks` query, and the mod answering `{blocks: []}` with
+  no `error` key because the search ran and found nothing
+- **AND** a declared `entities` query, and the mod answering `{entities: []}`
+  with no `error` key for the same reason
+- **WHEN** the tick runs
+- **THEN** each `look.queries.<name>` MUST be `{ ok: true, matches: [] }`
+- **AND** neither MUST carry `ok: false`, so the fix never turns a world with
+  nothing in it into a reported failure
+
+#### Scenario: The error-key path is driven by the mod's answer, not a raising stub
+- **GIVEN** the tests for the scenarios above
+- **WHEN** they are inspected
+- **THEN** they MUST feed `{blocks: [], error: ...}` and
+  `{entities: [], error: ...}` through the agent's declared-query normaliser
+- **AND** they MUST NOT stand in for it by making `find_blocks` or
+  `find_entities` raise, because a raising stub exercises the transport's
+  `except` branch rather than the error-key path, and the guard could be deleted
+  with the suite still green
 
 ### Requirement: A Script Can Read Its Own Inventory Through The Lookup
 

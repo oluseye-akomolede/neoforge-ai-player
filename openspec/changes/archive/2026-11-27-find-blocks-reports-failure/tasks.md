@@ -85,7 +85,7 @@ it; these tasks prove it reads the mod's new answer. **One scenario covers both
 verbs** (reviewer: do not write two) because the normaliser reads the `error` key
 without knowing which verb produced it.
 
-- [ ] 2.1 `agent/test_script_tick.py`: drive the mod's real failure answers
+- [x] 2.1 `agent/test_script_tick.py`: drive the mod's real failure answers
       `{blocks: [], error: "findBlocks error: ..."}` and
       `{entities: [], error: "findEntities error: ..."}` through
       `_normalise_query_result` and assert (for each) `ok is False`,
@@ -108,10 +108,21 @@ without knowing which verb produced it.
       *Second mutant that must red it:* delete the `setdefault("message", …)`
       line. **Measured: exactly those same 2 tests, nothing else** — `Ran 73`,
       `FAILED (errors=2)`, rc=1; restored and re-ran to `Ran 73`, `OK`, rc=0.
-- [ ] 2.2 `agent/test_script_tick.py`: run declared `blocks` and `entities`
+- [x] 2.2 `agent/test_script_tick.py`: run declared `blocks` and `entities`
       queries through `run_declared_queries` with the api returning the mod's
       failure maps, asserting each installed `look.queries.<name>` is
       `{ok: false, reason: "error"}` and its siblings are untouched.
+      **VERIFIED BY THE REVIEWER (2026-11-27) against `38f3ef0` in a clean
+      extraction, by driving the shape directly rather than by naming a test.**
+      Both verbs with `{<key>: [], error: "..."}` through `run_declared_queries`
+      gave `ok=False, reason='error', message=<the mod text>, matches=[]`; keys
+      `['error','kind','matches','message','ok','reason']`. A mixed run with one
+      failing and two succeeding queries showed the siblings unaffected
+      (`okq` `ok=True` with 1 match, `ent` `ok=True` with 0). Note for the record:
+      the three existing `run_declared_queries` tests cover the success path and
+      the missing-list path, NOT the error-key path — this requirement is
+      witnessed by the probe above, and a future reader should not assume a
+      named test covers it.
       **A test whose fake `find_blocks`/`find_entities` raises does NOT satisfy
       this** — it proves the transport's `except` branch, not the error-key path,
       and the guard could be deleted with the suite still green.
@@ -181,13 +192,46 @@ requirement stating what its answer must be. Row
       **Re-run at HEAD: live scenarios 7, delta 10, live missing from delta [],
       new in delta 3 — carried 7, new 3.** Body-level verbatim check (earlier)
       confirmed 7 of 7 unchanged, intro identical.
-- [ ] 5.5 Archive `find-blocks-reports-failure` only after landing and review.
+- [x] 5.5 Archive `find-blocks-reports-failure` only after landing and review.
       `script-lookups-and-results` is ALREADY archived on `origin/main`
       (`bf560d2`), so there is no ordering constraint left — the superseded
       task 3a is void. After archiving,
       `grep -c "A Script Declares The Searches" openspec/specs/bot-coded-agents/spec.md`
       MUST be 1.
-- [ ] 5.6 End-to-end, on a test server: a search that throws in a live world
+      **DONE (reviewer, 2026-11-27).** Archived off `origin/main` `38f3ef0` as
+      `2026-11-27-find-blocks-reports-failure`. `openspec validate --specs
+      --strict`: 16 passed, 0 failed. Archive applied `+2 added, ~1 modified,
+      -0 removed`; post-archive scenario counts read back per requirement —
+      `A Failed Block Search` 5, `A Failed Entity Search` 4, the modified
+      `A Script Declares The Searches` 10 (7 carried in order + 3 new). The four
+      archived files are sha256-identical to their `38f3ef0` originals. The
+      `script-lookups-and-results` ordering constraint was already satisfied
+      (`bf560d2`), so nothing was ever at risk of archiving ahead of it.
+- [x] 5.6 End-to-end, on a test server: a search that throws in a live world
       reaches `look.queries.<name>` as `{ok: false, reason: "error"}` for both a
       `blocks` and an `entities` query. This is a deploy-run-plan check, not a
       JUnit test; record the command and its output in the deploy notes.
+      **AMENDED BEFORE RUNNING (2026-11-27): the probe cannot reach
+      `reason:"error"`.** `findBlocks` (`BotPlayer.java:1286`) and `findEntities`
+      (`:1313`) are total — no `throw`, and every call they make is pure or
+      total — so no request data makes them fail. Fault injection was rejected
+      (a leftover fault jar has a normal `promote` route to prod) and the
+      handler-level unit test was rejected (`BotPlayer`'s constructor is private
+      `:77`, `player` is `private final` `:55`, so any testable helper is a
+      sibling and the `Map.of` revert stays green). The error path is therefore a
+      named limitation: a diff read, covered by unit tests on `searchAnswer`
+      only. See 5.6a.
+- [x] 5.6a Run the clean-jar probe and record what it actually shows. **DONE
+      (lead, 2026-11-27, test server on md5 `78572859`, rollback `2fd5ea53`).**
+      Axiom declared `blocks 'stone' r32`, `blocks 'zzzznotablock'`,
+      `entities 'zzzznotanentity'`. Log line verbatim:
+      `O1Q stone[ok=true n=10 hasErrorKey=false] emptyBlocks[ok=true n=0
+      hasErrorKey=false] emptyEntities[ok=true n=0 hasErrorKey=false]`.
+      Read narrowly: success returns real matches (n=10) with no error key, and
+      a genuine empty stays `ok:true` with no error key **for both verbs** — the
+      boundary O-1 must not break is proven live. The error path is NOT exercised
+      and this result does not show it. **Deploy notes MUST NOT say "probe
+      passed".** The correct sentence is: "Success, empty and timeout verified
+      live; error path not exercised, covered by unit tests on `searchAnswer`
+      only." A run recording exactly success/empty/timeout is the expected
+      result, not a failed probe — do not retry it.
