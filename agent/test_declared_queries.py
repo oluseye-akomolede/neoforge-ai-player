@@ -320,13 +320,18 @@ class TestParseReadsCodeNotText(unittest.TestCase):
 
     # The exact script in the spec delta (script-lookups-and-results,
     # "the searches it wants to run"), which is the example the feature
-    # documentation tells an author to write.
+    # documentation tells an author to write. Kept verbatim to the spec:
+    # the 2026-11-27 live probe showed why that matters -- an example that
+    # names a non-existent action (`goto_block`) or passes a match object
+    # where `goto` wants x/y/z teaches an author a script that is refused.
     SPEC_EXAMPLE = '''queries = [
   {name: "ore",   kind: "blocks",   id: "minecraft:diamond_ore", radius: 32},
   {name: "cows",  kind: "entities", id: "minecraft:cow"},
 ]
-return look.queries.ore.matches.length
-  ? api.do("goto_block", look.queries.ore.matches[0]) : api.done("none");
+var first = look.queries.ore.matches[0]
+return first
+  ? api.do("goto", {x: first.position.x, y: first.position.y, z: first.position.z})
+  : api.done("none");
 '''
 
     def test_the_spec_own_example_binds_and_yields_its_queries(self):

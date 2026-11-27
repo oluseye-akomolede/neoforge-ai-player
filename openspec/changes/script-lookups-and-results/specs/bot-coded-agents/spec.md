@@ -147,9 +147,17 @@ queries = [
   {name: "cows",  kind: "entities", id: "minecraft:cow"},
   {name: "here",  kind: "block_at", x: 10, y: 64, z: 10},
 ]
-return look.queries.ore.matches.length
-  ? api.do("goto_block", look.queries.ore.matches[0]) : api.done("none");
+var first = look.queries.ore.matches[0]
+return first
+  ? api.do("goto", {x: first.position.x, y: first.position.y, z: first.position.z})
+  : api.done("none");
 ```
+
+A `blocks` match carries `block` (registry id), `name` (display name) and
+`position` (`{x, y, z}`) — the fields `BotPlayer.findBlocks` builds — and the
+action that walks there is the existing `goto` kind taking `x`/`y`/`z`, not a
+`goto_block` kind (there is none; an example that says otherwise is refused at
+dispatch, found on the 2026-11-27 live probe).
 
 The properties that make this the chosen design MUST hold:
 
