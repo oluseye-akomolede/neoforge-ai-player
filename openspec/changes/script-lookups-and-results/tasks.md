@@ -505,3 +505,16 @@ re-added cap in `may_call`'s caller reds both new tests).
 
 - [ ] 7.6 MEASURE before setting 7.2/7.3 numbers: time `findBlocks` radius 32 and
       48 on a test server (3 runs each). Replaces the assumed 5 ms/cell.
+
+## Archive note (2026-11-27)
+
+Code for (b) lookups and (c) results shipped to prod this day: agent
+`2f019c0` @sha256:4a8c28da, runner `463e31b` @sha256:94b4cdd5, live-proven on
+test (`look.queries.stone.matches` = 10 real blocks) and clean on prod.
+
+The unticked tasks above are measurement and trial work, not unshipped code:
+1.4, 1.5, 5.1, 5.3, 5.4, 5.5, 5.6, 6.3 and 7.6. None of them blocks the
+shipped behaviour; each is a verification still owed, and they are carried in
+the rollout record (qitem-20261110052117-3192fee80efe72d2, resolution) rather
+than dropped. 6.3's gap is a missing test for an absence, not a behaviour
+change.
