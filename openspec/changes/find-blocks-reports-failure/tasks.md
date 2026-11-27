@@ -106,16 +106,28 @@ without knowing which verb produced it.
 - [ ] 3.2 The `api-http` delta's `HttpApiServer:1117-1127` cite (`:16`) is correct
       at `bf560d2` and stays correct. Do not edit it.
 
-## 4. api-http delta: BLOCKED on the A/B/C answer
+## 4. api-http delta: answered — option B (lead, 12:00Z)
 
 The `api-http` ADDED requirement (`A Failed Block Search Answers With An Error,
 Not A Bare Empty List`) and its five scenarios name `/find_blocks` only. With
 `find_entities` in scope, the `:1134-1136` change would ship with no api-http
 requirement stating what its answer must be. Row
 `qitem-20261127115907-7364ff65543d072d` asks reviewer and lead to pick A, B or C.
-- [ ] 4.1 Resolve A/B/C. Do not start 4.2 before it is answered.
-- [ ] 4.2 If A or B: add the entity requirement/scenarios. If C: remove 1.2 and
-      1.3's entity half and file it separately.
+- [x] 4.1 Resolve A/B/C. Do not start 4.2 before it is answered.
+      **Answered: B** (lead, 12:00Z) — a second ADDED `api-http` requirement for
+      `find_entities`, block scenarios left byte-identical.
+- [x] 4.2 Add the entity requirement/scenarios. Done as a second ADDED
+      requirement in `specs/api-http/spec.md`, `A Failed Entity Search Answers
+      With An Error, Not A Bare Empty List`, with four scenarios. The five block
+      scenarios above it are untouched. The first 71 lines of the file are
+      byte-identical to the version on `main` at `938dba1`.
+      *Test:* the same `FindBlocksFailureTest` seam, a second case built from
+      `find_entities`'s own catch at `:1134`.
+      *Mutant that must red it:* leave `:1134` completing `List.of()` and answer
+      `Map.of("entities", ...)` with no `error` key. `anEntityFailureAndAnEmpty
+      ResultAreDistinguishable` fails. A mutant in the block path alone MUST NOT
+      redden this case, and vice versa — that is what "both verbs are proved the
+      same way" pins.
 
 ## 5. Verification
 

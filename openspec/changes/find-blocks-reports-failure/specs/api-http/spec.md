@@ -68,3 +68,52 @@ functions and the agent's declared-queries runner) already handles
 - **AND** the end-to-end answer (a real search throwing in a real world) belongs
   to the deploy run plan, and the proposal MUST say so rather than implying the
   JUnit test proves it
+
+### Requirement: A Failed Entity Search Answers With An Error, Not A Bare Empty List
+
+`POST /bot/{name}/find_entities` MUST answer a search that failed distinguishably
+from a search that succeeded and found nothing, on exactly the same terms as the
+block search above. A successful search MUST answer `{entities: [...]}`, empty or
+not, exactly as it does today. A search whose `BotPlayer.findEntities` call throws
+MUST answer with an `error` key naming the failure beside its list:
+`{entities: [], error: "..."}`.
+
+This is the same defect at the neighbouring case. `find_entities` runs
+`bot.findEntities` on the server thread, its `catch` completes the future with
+`List.of()` and logs `findEntities error` (`HttpApiServer:1134`), and the handler
+answers `Map.of("entities", boundedJoin(...))` — no `error` key on any path. The
+two verbs are two cases in one file with one wire shape and one consumer, so
+fixing one and not the other would leave the mod reporting a broken entity search
+as "no entities there" for another release cycle. The live `bot-coded-agents`
+requirement already forbids this outcome in general terms ("Each result MUST be
+`{ ok: false, reason, message }` on failure or timeout, never
+`{ ok: true, matches: [] }`"); both sites violate it today.
+
+#### Scenario: An entity search that throws answers with an error key
+- **GIVEN** a bot whose `findEntities` call throws
+- **WHEN** the agent posts to `/bot/{name}/find_entities`
+- **THEN** the response MUST carry an `error` key naming the failure
+- **AND** it MUST still carry an `entities` list, so a caller that reads only
+  `entities` is not broken
+- **AND** the response MUST NOT be a bare `{entities: []}` with nothing else
+
+#### Scenario: A genuine empty entity result carries no error key
+- **GIVEN** a bot whose `findEntities` call returns an empty list because nothing
+  matched
+- **WHEN** the agent posts to `/bot/{name}/find_entities`
+- **THEN** the response MUST be `{entities: []}`
+- **AND** it MUST NOT carry an `error` key
+
+#### Scenario: The entity success path is unchanged
+- **GIVEN** a bot whose `findEntities` call returns two entities
+- **WHEN** the agent posts to `/bot/{name}/find_entities`
+- **THEN** the response MUST be `{entities: [<two entities>]}` and nothing else
+  MUST have changed about it
+
+#### Scenario: Both verbs are proved the same way
+- **GIVEN** the JUnit suite under `src/test/java/com/sigmastrain/aiplayermod/api/`
+- **WHEN** either verb's failure path is tested
+- **THEN** the test MUST exercise that verb's own catch, not a stub that returns
+  the already-failed shape
+- **AND** a test written for `find_blocks` MUST NOT be counted as covering
+  `find_entities`
