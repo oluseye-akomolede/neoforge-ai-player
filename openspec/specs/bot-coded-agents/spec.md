@@ -1643,7 +1643,7 @@ queries = [
 var first = look.queries.ore.matches[0]
 return first
   ? api.do("goto", {x: first.position.x, y: first.position.y, z: first.position.z})
-  : api.done("none");
+  : api.result("none");
 ```
 
 A `blocks` match carries `block` (registry id), `name` (display name) and
