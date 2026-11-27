@@ -182,23 +182,93 @@ def _skip_ws_and_comments(source, i):
     return i
 
 
+def _mask_comments(text):
+    """`text` with every comment BODY blanked to `_`, SAME LENGTH.
+
+    Same contract as `_strip_strings`, and for the same reason: offsets found
+    in the mask are reported against the original text, so a mask that shrank
+    would shift every later index.
+
+    This exists because a comment is not code. Before it, `_find_declaration`
+    scanned the raw source, so a script whose COMMENT mentioned
+    `look.queries.<name>` was refused as a property assignment -- the live A2
+    E2E failure (2026-11-27): Axiom's line 3 was a comment and the declaration
+    it was meant to describe never bound.
+
+    Quotes are left intact (`_strip_strings` blanks their bodies), so a `//`
+    inside a string is NOT treated as a comment: strip strings first, then
+    comments, and neither pass can be fooled by the other's payload.
+    """
+    out = []
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c in "\"'`":
+            # A string literal: copy it through untouched. `_strip_strings`
+            # normally ran first and blanked the body, but this pass must be
+            # safe on its own, so it tracks quotes rather than assuming.
+            quote = c
+            out.append(c)
+            i += 1
+            while i < n:
+                if text[i] == "\\":
+                    out.append(text[i:i + 2])
+                    i += 2
+                    continue
+                out.append(text[i])
+                if text[i] == quote:
+                    i += 1
+                    break
+                i += 1
+            continue
+        if text.startswith("//", i):
+            j = text.find("\n", i)
+            j = n if j < 0 else j
+            out.append("__" + "_" * (j - i - 2))
+            i = j
+            continue
+        if text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            if j < 0:
+                # Unterminated: blank to the end. `_skip_ws_and_comments`
+                # raises for this, so it is not silently swallowed -- this
+                # pass only has to not mistake the body for code.
+                j = n - 2
+            out.append("__" + "_" * (j - i - 2) + "__")
+            i = j + 2
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def _find_declaration(source):
     """Return `(offset_of_[, text_of_[...])` for the one declaration, or None.
 
     A declaration is `queries` at an identifier boundary (not a property
-    `x.queries`, not `myqueries`) followed by `=`, preceded by nothing that
-    binds it to a member (`this.`), and followed by `[`.
+    `x.queries = ...`, not `myqueries`) followed by `=`, and followed by `[`.
+
+    SCANNING IS DONE ON CODE, NOT RAW TEXT. Comments and string bodies are
+    masked to `_` first (`_strip_strings`, `_mask_comments`, both same-length),
+    so neither can be read as a declaration or as a property. A property READ
+    (`look.queries.ore`) is legal and is not the declaration: only a property
+    ASSIGNMENT (`api.queries = [...]`) is refused, because only an assignment
+    could diverge from the declaration the agent validated.
     """
+    # Mask, then scan the mask, but take the array text from the ORIGINAL
+    # source -- the mask has string bodies blanked and cannot be parsed.
+    masked = _mask_comments(_strip_strings(source))
     hits = []
     n = len(source)
     i = 0
     while True:
-        j = source.find("queries", i)
+        j = masked.find("queries", i)
         if j < 0:
             break
         i = j + len("queries")
-        before = source[j - 1] if j > 0 else ""
-        after = source[i] if i < n else ""
+        before = masked[j - 1] if j > 0 else ""
+        after = masked[i] if i < n else ""
         # `before` must be a non-identifier character or a dot. Written with
         # `isidentifier` rather than a hand-rolled class: "a" + "queries" is
         # `aqueries`, not a declaration, and `_queries`/`$queries` are
@@ -207,19 +277,26 @@ def _find_declaration(source):
         # hand-rolled set was checked with `isalnum` and missed a plain space).
         if before and (before + "queries").isidentifier():
             continue
-        if before == ".":
-            # A property write (`api.queries = ...`, `x.queries = ...`) is not
-            # the declaration the agent reads; only a bare binding is.
-            raise DeclaredQueriesError(
-                f"{_where(source, j)}: `queries` must be a bare assignment, "
-                f"not a property")
         if after.isalnum() or after in "_$":
             continue
-        k = _skip_ws_and_comments(source, i)
-        if k >= n or source[k] != "=" or (k + 1 < n and source[k + 1] == "="):
+        if before == ".":
+            # Property access. A READ (`look.queries.ore`) is what a script is
+            # meant to do and is legal; only an ASSIGNMENT diverges from the
+            # validated declaration. Decide by what follows `queries`: skip
+            # space and comments, and refuse only on a lone `=`.
+            k = _skip_ws_and_comments(masked, i)
+            assigned = (k < n and masked[k] == "="
+                        and not (k + 1 < n and masked[k + 1] == "="))
+            if assigned:
+                raise DeclaredQueriesError(
+                    f"{_where(source, j)}: `queries` must be a bare assignment, "
+                    f"not a property")
             continue
-        k = _skip_ws_and_comments(source, k + 1)
-        if k >= n or source[k] != "[":
+        k = _skip_ws_and_comments(masked, i)
+        if k >= n or masked[k] != "=" or (k + 1 < n and masked[k + 1] == "="):
+            continue
+        k = _skip_ws_and_comments(masked, k + 1)
+        if k >= n or masked[k] != "[":
             raise DeclaredQueriesError(
                 f"{_where(source, j)}: `queries` must be assigned an array "
                 f"literal; anything dynamic is refused, not executed")
